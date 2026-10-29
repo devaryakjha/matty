@@ -48,10 +48,10 @@ back. Concretely:
 - **Degrade honestly.** Features Matty does not support yet (webapp plugins,
   Boards, Calls) get a clear "Open in browser" path instead of silently missing
   content.
-- **Reusable UI goes to gpuicn first.** As with Bonsai, a missing reusable
-  interaction (for example a mention-aware composer or a reaction picker) is
-  built, tested and released in gpuicn before Matty adopts it. Mattermost
-  models, API calls and app state stay in Matty.
+- **Reusable UI comes from gpuicn.** Arya is building the missing reusable
+  components (section 2) in gpuicn's styling. Matty consumes them and never
+  carries its own one-off substitutes. Mattermost models, API calls and app
+  state stay in Matty.
 
 ## 2. What we build on
 
@@ -63,7 +63,8 @@ InputGroup, Field/Form, Select, Combobox, Autocomplete, Menu, ContextMenu,
 Menubar, Dialog, AlertDialog, Drawer, Popover, Tooltip, PreviewCard, Toast,
 Tabs, Toggle/ToggleGroup, Switch, Checkbox, RadioGroup, Avatar, Progress,
 Meter, Empty, ScrollArea, Separator, Collapsible, Accordion, Toolbar,
-**Sidebar** (groups, badges, icon rail, collapse, actions), **Resizable**
+NavigationMenu, Slider, NumberField and others (the registry is the full
+list), **Sidebar** (groups, badges, icon rail, collapse, actions), **Resizable**
 (nested, controlled, keyboard resize) and **VirtualList** (fixed-height rows,
 stable IDs, single and multi selection). The showcase app already composes
 SidebarLayout, Resizable, Input and a local message log, which is a useful
@@ -75,7 +76,7 @@ big ones for a chat client, and they exist upstream:
 | Kit primitive | Use in Matty |
 | --- | --- |
 | `MessageScroller` | Variable-height virtualized message list with tail-follow, `prepend` for history paging, `scroll_to_item`, jump-to-latest button and an accessible `Log` role |
-| `Message`, `MessageGroup` | Message row slots (avatar, header, body, footer) and grouping by sender. Kit's reaction region (`BubbleReactions`) belongs to `Bubble`, which Matty does not use for left-aligned team chat, so G1 builds its own reaction-chip row |
+| `Message`, `MessageGroup` | Message row slots (avatar, header, body, footer) and grouping by sender. Kit's reaction region (`BubbleReactions`) belongs to `Bubble`, which Matty does not use for left-aligned team chat, so G1 needs its own reaction-chip row |
 | `Attachment` | File and image cards with upload progress, retry and remove |
 | `TextView::markdown` with plugins | Rendering Mattermost Markdown, with plugins for @mentions, ~channels, emoji and custom links |
 | `Command` | Quick switcher (Cmd/Ctrl+K) and command palette |
@@ -86,14 +87,19 @@ big ones for a chat client, and they exist upstream:
 **gpui-icons 0.5.0.** All 1,924 Lucide icons embedded, no runtime fetching.
 Enough for every chrome icon Matty needs.
 
-### Gaps to fill in gpuicn (before Matty adopts them)
+### Components Matty needs from gpuicn
 
-Each of these becomes a gpuicn issue and ships in a gpuicn release, with the
-same native-interaction, accessibility and performance evidence gpuicn already
-requires. During an alpha Matty may pin the merged gpuicn commit; every beta
-or stable Matty release pins a tagged gpuicn release.
+Arya is adding these to gpuicn, in gpuicn's styling, with the evidence gpuicn
+already requires. They are not Matty work items: this table is Matty's list of
+requirements and the milestone that needs each one, so the two projects can be
+sequenced. Matty's job is to state what it needs precisely (the behaviors in section 4
+and the findings of spikes S1 and S4) and to report gaps it finds while
+integrating. Until a component lands, Matty screens that need it are built
+against the gpuicn branch or wait; they do not get a temporary local copy.
+During an alpha Matty may pin a merged gpuicn commit; every beta or stable
+Matty release pins a tagged gpuicn release.
 
-| Gap | Built from | Needed by |
+| Component | Likely Kit base | Needed by |
 | --- | --- | --- |
 | G1. Styled message list and message row (Nova look, hover toolbar, grouping, day dividers, "new messages" line, reaction-chip row) | Kit `MessageScroller`, `Message` | M1 |
 | G2. Rich text / Markdown view with theme tokens and a plugin hook for inline entities | Kit `TextView` | M1 |
@@ -106,6 +112,46 @@ or stable Matty release pins a tagged gpuicn release.
 | G9. Hover card for user profiles | Kit `HoverCard` | M2 |
 | G10. Title bar with platform-correct window controls | Kit `TitleBar` | M1 |
 
+**Cross-cutting requirement: images come from Matty.** Avatars
+(`users/{id}/image`), custom emoji (`emoji/{id}/image`), file thumbnails and
+previews (`files/{id}/thumbnail`, `/preview`) and the image proxy all need the
+session token, and GPUI's `img(url)` sends no headers. So every image slot in
+G1, G6, G7, G8 and G9 takes an `ImageSource` or decoded image that Matty
+supplies from its media cache. gpuicn never fetches over the network.
+
+**What Matty needs from each component.** These are requirements for Arya to
+build against; the spikes and integration work will add to them.
+
+- **G1 message list and row:** rows are rendered by the caller. Day dividers
+  and the "New messages" line are caller-supplied separator rows with stable
+  IDs. The caller decides grouping; G1 offers a "continuation" row variant
+  that shows the time in the gutter on hover. Slots for the hover toolbar and
+  a reaction-chip row (`on_toggle(emoji)` and a tooltip slot for who
+  reacted). Row variants for pending, failed, highlighted (permalink target)
+  and mentions-you. A keyboard selection mode (Up/Down plus an `on_key`
+  callback for single-key actions). Text selection across rows with copy.
+  `prepend` that keeps the anchor row in place (verified by S1). A per-row
+  accessible description.
+- **G2 rich text:** use Kit's `TextView` plugin hook (`MarkdownPlugin`).
+  Minimum: custom link schemes (`matty://user/<id>`, `matty://channel/<id>`)
+  rendered with theme token colors and delivered to an `on_link_click`
+  callback with the raw href; inline images at text height for `:emoji:`.
+  `matty-markdown` rewrites mentions, channels and emoji to those links
+  before rendering, so gpuicn needs no custom inline parser.
+- **G3 composer:** the caret rectangle in window coordinates; get and set the
+  selection range; insert at caret; `on_paste` that can claim image and file
+  payloads; `is_composing()` so Enter during IME composition never sends; an
+  `on_key` hook that runs before the default so Matty owns Enter,
+  Shift+Enter, Up-at-top and Tab; auto-grow up to a maximum height; an
+  autocomplete popup anchored to the caret (reusing gpuicn's Autocomplete
+  styling where it fits).
+- **G7 emoji picker:** `custom: Vec<(name, ImageSource)>`, recents owned by
+  the caller, `on_pick(shortcode)`, search starting at two characters as in
+  Mattermost.
+- **G10 title bar:** Linux draws its own window controls; Windows supports
+  snap-layout hit testing on the maximize button; the drag region excludes
+  interactive children such as the search box.
+
 What stays in Matty: the Mattermost API client, WebSocket, sync engine, cache,
 Markdown flavor rules (which entities exist, how a mention resolves), unread
 logic, notification policy, and every screen composition.
@@ -117,8 +163,9 @@ logic, notification policy, and every screen composition.
   width changes. Kit's `MessageScroller` is built on that same `list`. Before
   M1 starts, run a spike (S1, section 11): 50k mixed-height messages, window
   resize, prepend 200 older messages, and check that the anchor message stays
-  put and the scrollbar does not jump. If it fails, the fix goes upstream
-  before anything else.
+  put and the scrollbar does not jump. Matty runs it against G1 (or Kit's
+  scroller directly if G1 is not ready yet) and reports the result to gpuicn;
+  any fix belongs in gpuicn or GPUI.
 - **Platform qualification.** gpuicn's native evidence is macOS only. Windows
   and Linux need their own qualification passes, which is why they ship one
   milestone later than macOS (section 10).
@@ -185,8 +232,12 @@ starts early.
   (keywords *(beta)*) following the user's server-side notification preferences and per-channel
   overrides; dock/taskbar badge; clicking opens the right message. DND is
   respected.
-- **Unread correctness:** a channel is marked viewed only when its window is
-  focused and the channel is visible; "Mark as unread" from a message.
+- **Unread correctness:** switching channels calls
+  `channels/members/me/view` with `prev_channel_id`. While a channel stays
+  open, Matty marks it viewed again (debounced) when a new post arrives only
+  if the window is focused, the channel is visible and the list is at the
+  bottom. A user scrolled up into history never has newer messages marked
+  read. "Mark as unread" from a message.
 - **Files:** upload by picker, drag and drop and paste, with progress; download
   to the user's Downloads folder with "Show in folder"; image lightbox.
 - **Settings:** theme (system/light/dark), message display (standard/compact),
@@ -266,12 +317,13 @@ starts early.
  rail   sidebar         channel                           right pane
 ```
 
-- **Server rail** (M2, only when more than one server): 64px, server icons
-  with unread dot and mention count, drag to reorder.
+- **Rail**: 64px. In M1 it appears when the user belongs to more than one
+  team and shows team icons with unread dots and mention counts, as
+  Mattermost does. In M2 it also holds servers (server icons above, the
+  current server's teams below), with drag to reorder.
 - **Sidebar**: 240px default, resizable 200–400px, collapsible with
-  Cmd/Ctrl+Shift+D (Slack's binding). Team switcher at the top (or team icons
-  in the rail when the server has several teams, matching Mattermost), then
-  Threads and Drafts entries, then the user's categories. Own avatar and status
+  Cmd/Ctrl+Shift+D (Slack's binding). Team name at the top, then Threads and
+  Drafts entries, then the user's categories. Own avatar and status
   at the bottom.
 - **Channel view**: header (name, favorite, member count, pinned count,
   channel info), message list, composer. Composer grows to ~40% of height, then
@@ -292,18 +344,17 @@ test.
 - When at the bottom, new messages stick to the bottom. When scrolled up, new
   messages do not move the viewport; a "Jump to latest (N new)" pill appears.
 - Loading older history keeps the anchor message at the same screen position.
-- Images and embeds reserve space using server-provided dimensions so the
+- Images and embeds reserve space using the dimensions in `post.metadata` so the
   list does not jump when they load.
 - Messages from the same sender within 5 minutes collapse under one header;
   hovering a collapsed message shows its time in the gutter.
 - Hovering a message shows a floating action bar (react, reply, more) at the
   top right, as in Slack and Discord. Every hover action is also reachable by
   keyboard and context menu.
-- Keyboard message selection: the user enters it explicitly (Up from an
-  empty composer with Alt held, Shift+Tab from the composer, or clicking a
-  message's gutter). While a message is selected, Up/Down move the selection
+- Keyboard message selection: the user enters it explicitly (Shift+Tab from
+  the composer, or clicking a message's gutter). While a message is selected, Up/Down move the selection
   and single keys act on it (R reply, E edit, Delete removes own, + react,
-  P pin, S save, U mark unread), as in Discord and Slack's message
+  P pin, S save, U mark unread), as in Discord's keyboard message
   navigation. Escape returns to the composer. When no message is selected,
   any printable key focuses the composer and types into it (section 4.4).
   Single keys therefore never steal ordinary typing.
@@ -319,8 +370,10 @@ test.
 - Typing `@`, `~`, `:` (after two characters) or `/` at the start opens an
   inline autocomplete above the composer; Tab or Enter accepts, Escape closes.
 - Up in an empty composer edits your last message in place.
-- Cmd/Ctrl+B, I, Shift+X (strike), K (link), Shift+C (code) wrap the
-  selection in Markdown.
+- Cmd/Ctrl+B (bold), Cmd/Ctrl+I (italic) and Cmd/Ctrl+Alt+K (link), which are
+  Mattermost's bindings, plus Cmd/Ctrl+Shift+X (strike) and Cmd/Ctrl+Shift+C
+  (code) from Slack, wrap the selection in Markdown. Cmd/Ctrl+K stays the
+  quick switcher everywhere.
 - Paste of an image or file adds an attachment chip; drop on the window does
   the same for the current channel.
 - Drafts persist per channel and thread, and appear in the Drafts view with a
@@ -331,25 +384,31 @@ test.
 ### 4.4 Keyboard shortcuts
 
 Use Mattermost's published shortcuts so muscle memory transfers. Cmd on macOS,
-Ctrl elsewhere. A Cmd/Ctrl+/ sheet lists them all.
+Ctrl elsewhere. Bindings marked (MM) are Mattermost's; the others are Slack
+conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 
 | Action | Shortcut |
 | --- | --- |
-| Quick switcher | Cmd+K |
-| Search | Cmd+F (in app), Cmd+Shift+F for files (M2) |
-| Previous / next channel | Alt+Up / Alt+Down |
-| Previous / next unread channel | Alt+Shift+Up / Alt+Shift+Down |
-| Back / forward in history | Cmd+[ / Cmd+] |
-| Previous / next team or server | Cmd+Alt+Up / Down; Cmd+1…9 for server n |
-| Mark channel read | Escape in the channel |
-| Mark all read | Shift+Escape |
-| Edit last message | Up in empty composer |
-| Reply to last message | Shift+Up in empty composer |
-| React to last message | Cmd+Shift+\ |
-| Toggle sidebar | Cmd+Shift+D (Slack's binding; not a Mattermost one) |
-| Recent mentions | Cmd+Shift+M |
+| Quick switcher | Cmd+K (MM) |
+| Direct messages menu | Cmd+Shift+K (MM) |
+| Search | Cmd+Shift+F (MM); Cmd+F also focuses search when not in a text field |
+| Previous / next channel | Alt+Up / Alt+Down (MM) |
+| Previous / next unread channel | Alt+Shift+Up / Alt+Shift+Down (MM) |
+| Back / forward in history | Cmd+[ / Cmd+] on macOS, Alt+Left / Alt+Right on Windows and Linux (MM) |
+| Switch server n (M2) | Cmd+1…9 |
+| Unreads filter | Cmd+Shift+U (MM) |
+| Channel info | Cmd+Shift+I (MM) |
+| Toggle / expand right pane | Cmd+. / Cmd+Shift+. (MM) |
+| Recent mentions | Cmd+Shift+M (MM) |
+| Upload files | Cmd+U (MM) |
+| Edit last message | Up in empty composer (MM) |
+| Reply to last message | Shift+Up in empty composer (MM) |
+| React to last message | Cmd+Shift+\ (MM) |
+| Focus composer | Cmd+Shift+L (MM), or just start typing |
+| Mark channel read | Escape in the channel (Matty addition, from Slack) |
+| Mark all read | Shift+Escape (Matty addition, from Slack) |
+| Toggle sidebar | Cmd+Shift+D (Slack) |
 | Close right pane | Escape |
-| Focus composer | Cmd+Shift+L or just start typing |
 | Zoom in / out / reset | Cmd+= / Cmd+- / Cmd+0 |
 | Preferences | Cmd+, |
 
@@ -357,9 +416,8 @@ Ctrl elsewhere. A Cmd/Ctrl+/ sheet lists them all.
 channel view and no message is selected, as in Slack and Telegram.
 Alt+Up/Down switch channels everywhere except inside a multi-line composer
 draft on macOS, where they keep their text-navigation meaning. Before M1,
-check every binding in this table against Mattermost's current shortcut list
-and the OS reserved shortcuts on each platform, and mark which ones are
-Matty additions.
+recheck the table against Mattermost's current shortcut page and each OS's
+reserved shortcuts.
 
 ### 4.5 Onboarding and empty, loading and error states
 
@@ -509,8 +567,23 @@ the database.
 - **Writes:** posts, patches, deletes, reactions, `channels/members/me/view`
   for marking read, `users/{id}/posts/{post}/set_unread` for mark unread,
   `files` for upload with progress, typing over the WebSocket.
+- **M1 feature endpoints:** search and recent mentions with
+  `POST teams/{tid}/posts/search` (`terms`, `is_or_search`,
+  `time_zone_offset`, `page`, `per_page`; mentions use the user's mention
+  keys); saved messages with `users/{uid}/posts/flagged` and the
+  `flagged_post` preference category; pinned with `channels/{cid}/pinned`
+  and `POST posts/{id}/pin` / `unpin`; header counts from
+  `channels/{cid}/stats`; browse with `teams/{tid}/channels` and
+  `.../channels/search`; join with `POST channels/{cid}/members`; leave with
+  `DELETE channels/{cid}/members/{uid}`; reactions with `POST reactions` and
+  `DELETE users/{uid}/posts/{pid}/reactions/{emoji}`; status with
+  `PUT users/{uid}/status` (`dnd_end_time` for DND with a duration); edit with
+  `PUT posts/{id}/patch`; delete with `DELETE posts/{id}`; permalinks with
+  `GET posts/{id}` then `channels/{cid}`. This list is the M0 scope for
+  `matty-api`.
 - **Login details:** `POST /users/login` with
-  `{login_id, password, token, device_id}`; an MFA requirement is detected by
+  `{login_id, password, token, device_id}`, plus `ldap_only: true` when the
+  user picked the LDAP method; an MFA requirement is detected by
   the error id `mfa.validate_token.authenticate.app_error`, not by the HTTP
   status.
 - **Rate limits:** respect `X-RateLimit-*` and back off on 429.
@@ -526,21 +599,32 @@ the database.
   and a full REST resync is mandatory: `users/{uid}/teams/{tid}/channels/members`
   for unreads, `posts?since=` for channels with cached posts (newest visible
   first), and `threads?since=` under CRT. `since` always uses the last server
-  timestamp seen, never the local clock.
-- Answer server pings, and run a client-side liveness timeout so a silently
+  timestamp seen, never the local clock. A `since` response includes deleted
+  posts (`delete_at` set), which are applied as deletes. `posts?since=` is not
+  paged, so when the gap is long (default: over 6 hours) or the response
+  passes a size cap, Matty drops that channel's cached posts and reloads the
+  latest page instead of replaying everything.
+- Send `{"action":"ping"}` about every 30s as the webapp does, answer
+  server pings, and run a client-side liveness timeout so a silently
   dead socket is noticed within ~30s.
 - Reconnect with jittered exponential backoff, capped at 30s, and immediately
   on OS network-change and wake-from-sleep signals.
 - Handle at least: `posted`, `post_edited`, `post_deleted`, `reaction_added`,
   `reaction_removed`, `typing`, `status_change`, `channel_viewed`,
   `multiple_channels_viewed`, `channel_created/updated/deleted`,
-  `user_added/removed`, `user_updated`, `preference(s)_changed`,
+  `user_added/removed`, `user_updated`, `new_user`, `user_role_updated`,
+  `preference(s)_changed`, `preferences_deleted`, `channel_restored`,
+  `channel_scheme_updated` (permissions change which actions are offered),
+  `update_team`, `delete_team`,
   `sidebar_category_*`, `thread_updated`, `thread_read_changed`,
   `thread_follow_changed`, `emoji_added`, `config_changed`,
   `license_changed`, `ephemeral_message`, `post_unread`,
   `channel_member_updated`, `direct_added`, `group_added`, `added_to_team`,
   `leave_team`, `channel_converted`, `draft_created`, `draft_updated`,
   `draft_deleted`, and in M3 `post_acknowledgement_added/removed`.
+  `channel_viewed` is deprecated in favor of `multiple_channels_viewed`, so
+  handle both. `posted` and `post_edited` carry the post as a JSON string
+  inside `data.post`, decoded a second time.
 - The sync engine is the only writer to the store. It applies each event as a
   transaction and emits a typed change set (channel X posts changed, unread
   counts changed). Views subscribe to the change sets they care about.
@@ -588,8 +672,9 @@ the database.
   `matty://`, and (c) the personal access token fallback. Development builds
   use `dev-` prefixed tokens, which the server routes to `mattermost-dev://`,
   so dev and release builds never fight over the scheme.
-- Store tokens in the OS keychain (`keyring` crate: Keychain, Credential
-  Manager, Secret Service; the Secrets portal under Flatpak). Linux often has
+- Store tokens in the OS keychain: the `keyring` crate (Keychain, Credential
+  Manager, Secret Service), and `oo7` under Flatpak, which speaks the Secret
+  portal. Linux often has
   no secret service running (minimal desktops, WSL); then fall back to a
   file encrypted with a key derived from a user-chosen passphrase, with a
   visible warning in settings, rather than failing sign-in. Never store a
@@ -597,8 +682,11 @@ the database.
 - TLS through rustls with the OS trust store (`rustls-platform-verifier`) so
   corporate CAs work. Show a clear error for certificate problems; no "ignore
   certificate" button in M1.
-- Links open in the system browser. Link previews come from the server's
-  OpenGraph endpoint. Inline Markdown images and preview thumbnails go through
+- Links open in the system browser. Link previews and image dimensions come
+  from `post.metadata` (`embeds` of type `opengraph`, `image`, `link` and
+  `message_attachment`, `images`, and `files[].width/height`), gated by
+  `EnableLinkPreviews`; the `/opengraph` endpoint is only for previews while
+  composing. Inline Markdown images and preview thumbnails go through
   the server's image proxy when it is enabled. When it is not (the common
   case), Matty does what the webapp does and loads them directly, so images
   never look broken; a privacy setting "Load remote images: always / ask"
@@ -643,7 +731,7 @@ clients) and app preferences locally.
 
 | Server-synced | Local to Matty |
 | --- | --- |
-| Display name format, clock (12/24h), message display (standard/compact), collapsed reply threads, send on Ctrl+Enter, notification preferences, theme (when using Mattermost themes), timezone | Window size and pane widths, launch at login, tray behavior, text scale, cache size, download folder, update channel (stable/beta), log level |
+| Display name format, clock (12/24h), message display (standard/compact), collapsed reply threads, send on Ctrl+Enter, notification preferences, theme (the `theme` preference category, used when importing Mattermost themes), timezone | Window size and pane widths, launch at login, tray behavior, text scale, cache size, download folder, update channel (stable/beta), log level |
 
 ## 8. Accessibility and internationalization
 
@@ -680,7 +768,7 @@ M0 baseline:
 | Keypress to glyph in composer | < 16ms |
 | Idle memory, 1 server, 50 channels | < 150MB |
 | Idle CPU with WebSocket connected | ~0%, no idle frames |
-| Install size | < 40MB |
+| Install size | < 40MB, including the embedded Lucide SVGs and Geist fonts (the gpuicn showcase build is the baseline) |
 
 Each is checked in CI where possible (headless timings for store and sync)
 and manually on the reference machines before each release.
@@ -737,14 +825,15 @@ and manually on the reference machines before each release.
   - S4 composer capabilities: does gpuicn Textarea expose the caret's pixel
     position (to anchor autocomplete), selection ranges (formatting wrap),
     paste interception for images and files, and correct IME composition for
-    Japanese, Chinese and Korean input and dead keys? Gaps go into G3.
+    Japanese, Chinese and Korean input and dead keys? Findings go to Arya as
+    requirements for G3.
 
 ## 12. Milestone acceptance
 
 | Milestone | Done when |
 | --- | --- |
 | M0 | Spikes S1–S4 pass or have an agreed workaround; API and sync crates pass integration tests against the Docker server; the window shows a cached sidebar from the store; performance baseline recorded; design file with core screens approved by Arya |
-| M1 alpha | Every M1 item not marked *(beta)* works end to end on macOS against the current Mattermost release; keyboard-only, IME and VoiceOver journeys pass; G1–G8 and G10 are merged in gpuicn and Matty pins that exact gpuicn commit; budgets met or exceptions agreed; signed, notarized build auto-updates from the beta feed; one week of dogfooding without data loss or wrong unread state |
+| M1 alpha | Every M1 item not marked *(beta)* works end to end on macOS against the current Mattermost release; keyboard-only, IME and VoiceOver journeys pass; G1–G8 and G10 are available in gpuicn (merged commit pinned); budgets met or exceptions agreed; signed, notarized build auto-updates from the beta feed; one week of dogfooding without data loss or wrong unread state |
 | M1 beta | Every *(beta)* item works; the gpuicn gaps are in a tagged gpuicn release and Matty pins it instead of a commit; no known crash; tested against the last two ESRs; Homebrew cask |
 | M2 | Every M2 item works on macOS, Windows and Linux with per-platform evidence; screen reader passes on each; installers on all three |
 | M3 | Each item ships on its own with the same per-platform evidence as M2, behind a setting where it changes existing behavior |
@@ -759,8 +848,9 @@ and manually on the reference machines before each release.
    distinct brand?
 4. **Distribution:** is there an Apple Developer ID and a Windows code
    signing certificate available, or should the plan budget for them?
-5. **gpuicn sequencing:** OK to open gpuicn issues for G1–G10 and treat them
-   as gpuicn work ahead of the matching Matty milestone?
+5. **gpuicn sequencing:** which of G1–G10 land first? Matty's M0 can start on
+   the API, sync and store crates without any of them; M1 screen work starts
+   with G1–G5 and G10.
 
 ## Review history
 
@@ -773,3 +863,11 @@ and manually on the reference machines before each release.
   composer spike S4, remote image policy, Linux keyring fallback, platform
   notification identity requirements, Docker image choice and extra sync
   property tests.
+- 29 October 2026: second review (Fable 5.1). It confirmed 20 of the 23
+  earlier findings were fully addressed and fixed the remaining three (the
+  Alt+Up selection gesture, the Flatpak keyring backend, shortcut
+  attribution). New: gpuicn components are Arya's work and Matty states
+  precise per-component requirements; all image slots take images from
+  Matty; bounded resync after long gaps; the full M1 endpoint list; more
+  WebSocket events; a precise mark-read rule; the M1 team rail; Mattermost's
+  actual shortcut set; link previews from `post.metadata`.
