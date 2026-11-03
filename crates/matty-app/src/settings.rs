@@ -172,7 +172,7 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
             return (Settings::default(), Loaded::Missing);
         }
         Err(error) => {
-            eprintln!("matty: could not read {}: {error}", path.display());
+            tracing::warn!(path = %path.display(), %error, "could not read settings");
             return (Settings::default(), Loaded::Missing);
         }
     };
@@ -185,13 +185,14 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
             let mut aside = path.as_os_str().to_owned();
             aside.push(format!(".corrupt-{stamp}"));
             let aside = PathBuf::from(aside);
-            eprintln!(
-                "matty: settings file {} is not valid ({error}); using defaults and keeping it as {}",
-                path.display(),
-                aside.display()
+            tracing::warn!(
+                path = %path.display(),
+                kept_as = %aside.display(),
+                %error,
+                "settings file is not valid; using defaults"
             );
             if let Err(error) = std::fs::rename(path, &aside) {
-                eprintln!("matty: could not move the corrupt settings aside: {error}");
+                tracing::warn!(%error, "could not move the corrupt settings aside");
             }
             (Settings::default(), Loaded::Corrupt(aside))
         }
@@ -277,10 +278,7 @@ impl SettingsStore {
                     .background_spawn(async move { save(&path, &settings).map_err(|e| (path, e)) })
                     .await;
                 if let Err((path, error)) = written {
-                    eprintln!(
-                        "matty: could not save settings to {}: {error}",
-                        path.display()
-                    );
+                    tracing::warn!(path = %path.display(), %error, "could not save settings");
                 }
             }));
         }

@@ -7,6 +7,7 @@
 #![allow(missing_docs)]
 
 pub mod actions;
+pub mod logging;
 mod main_window;
 pub mod settings;
 mod ui;
@@ -15,8 +16,8 @@ use std::borrow::Cow;
 
 use gpui_icons::LucideAssetSource;
 use gpui_kit::{
-    App, AppContext as _, Bounds, Window, WindowAppearance, WindowBounds, WindowOptions, point, px,
-    size,
+    App, AppContext as _, Bounds, Entity, Window, WindowAppearance, WindowBounds, WindowOptions,
+    point, px, size,
 };
 use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
@@ -31,13 +32,28 @@ pub fn run() {
     gpui_kit::platform::application()
         .with_assets(LucideAssetSource)
         .run(|cx: &mut App| {
+            // Settings load after this, so their level applies just below.
+            let logs = logging::init(logging::default_dir().as_deref(), Default::default());
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
             ui::theme::init(cx);
             load_fonts(cx);
-            SettingsStore::init(settings::default_path(), cx);
+            let settings = SettingsStore::init(settings::default_path(), cx);
+            if let Some(logs) = logs {
+                follow_log_level(&settings, logs, cx);
+            }
             actions::bind(cx);
             open_main_window(cx);
             cx.activate(true);
         });
+}
+
+/// Keeps the logger's level in step with the `log_level` setting.
+fn follow_log_level(settings: &Entity<SettingsStore>, logs: logging::LevelHandle, cx: &mut App) {
+    logs.set(settings.read(cx).get().log_level);
+    cx.subscribe(settings, move |store, _: &settings::SettingsChanged, cx| {
+        logs.set(store.read(cx).get().log_level);
+    })
+    .detach();
 }
 
 fn load_fonts(cx: &mut App) {
