@@ -5,6 +5,7 @@
 
 mod migrations;
 mod open;
+pub mod sidebar;
 
 pub use migrations::{LATEST_VERSION, schema_version};
 pub use open::{BUSY_TIMEOUT, Store, database_file_name, default_path};

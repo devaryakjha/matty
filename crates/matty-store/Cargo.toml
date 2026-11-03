@@ -12,6 +12,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+matty-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true
 url.workspace = true
@@ -19,3 +22,7 @@ dirs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[bench]]
+name = "sidebar"
+harness = false
