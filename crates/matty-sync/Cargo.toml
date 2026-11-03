@@ -16,11 +16,12 @@ async-channel.workspace = true
 matty-api.workspace = true
 matty-store.workspace = true
 rusqlite.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock.workspace = true

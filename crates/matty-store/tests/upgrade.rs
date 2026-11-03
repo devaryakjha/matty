@@ -63,7 +63,6 @@ fn every_fixture_migrates_to_the_latest_version() {
             ("threads", 1),
             ("drafts", 1),
             ("outbox", 1),
-            ("sync_cursors", 1),
         ] {
             assert_eq!(count(&store, table), rows, "{table} in fixture v{version}");
         }

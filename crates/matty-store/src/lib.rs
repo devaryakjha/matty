@@ -7,6 +7,7 @@ pub mod evict;
 pub mod media;
 mod migrations;
 mod open;
+pub mod outbox;
 pub mod posts;
 pub mod sidebar;
 
