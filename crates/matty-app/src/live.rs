@@ -47,6 +47,8 @@ pub struct Live {
     /// A channel sync made ready (joined, created, a new direct message)
     /// that the sidebar has yet to show.
     ready: Option<String>,
+    /// The search on screen and its results once they come.
+    search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
 }
 
 /// How long a typing notice lasts without another.
@@ -87,6 +89,8 @@ pub struct Update {
     pub ready: Option<SharedString>,
     /// A join the server refused, for Browse to show as not joined again.
     pub join_failed: Option<SharedString>,
+    /// The search's results, or its failure.
+    pub search: Option<crate::right_pane::SearchModel>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -168,6 +172,7 @@ impl Live {
                 stats: None,
                 typing: Vec::new(),
                 ready: None,
+                search: None,
             },
             changes,
         ))
@@ -289,6 +294,56 @@ impl Live {
         self.typing
             .retain(|(_, since)| now.saturating_duration_since(*since) < TYPING_FOR);
         (self.typing.len() != before).then(|| self.typing_names())
+    }
+
+    /// Searches the shown team; the results come as [`Update::search`].
+    pub fn search(&mut self, terms: &str) {
+        let Some(team_id) = self.team.clone() else {
+            return;
+        };
+        let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
+        self.search = Some((terms.to_owned(), None));
+        self.send(Command::Search {
+            team_id,
+            terms: terms.to_owned(),
+            time_zone_offset: offset,
+        });
+    }
+
+    /// The search model for what has come back so far.
+    fn search_model(&self) -> Option<crate::right_pane::SearchModel> {
+        let (terms, posts) = self.search.as_ref()?;
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            username: &self.me.1,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+        };
+        Some(crate::right_pane::SearchModel {
+            query: terms.clone().into(),
+            searching: posts.is_none(),
+            results: posts
+                .iter()
+                .flat_map(|posts| posts.iter())
+                .map(|post| crate::right_pane::ListedPost {
+                    channel_id: post.channel_id.clone().into(),
+                    channel_name: self
+                        .channel_name(&post.channel_id)
+                        .unwrap_or_else(|| "Another channel".into()),
+                    post: crate::transcript::listed_post(post, &self.users, &viewer),
+                })
+                .collect(),
+        })
+    }
+
+    /// A channel's name in any team's sidebar.
+    fn channel_name(&self, channel_id: &str) -> Option<SharedString> {
+        self.sections
+            .values()
+            .flat_map(|sections| sections.iter())
+            .flat_map(|section| section.channels.iter())
+            .find(|channel| channel.id == channel_id)
+            .map(|channel| channel.display_name.clone().into())
     }
 
     /// The team on screen.
@@ -414,6 +469,23 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
+            ChangeSet::Search { terms, posts } => {
+                if let Some((asked, results)) = self.search.as_mut()
+                    && asked == terms
+                {
+                    *results = Some(posts.clone());
+                    update.search = self.search_model();
+                }
+            }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "search", ..
+            }) => {
+                // Shown as no results rather than searching forever.
+                if let Some((_, results)) = self.search.as_mut() {
+                    *results = Some(Arc::from(Vec::new()));
+                    update.search = self.search_model();
+                }
+            }
             ChangeSet::Channel(channel) if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 update.details = self.shown_details();
@@ -452,6 +524,13 @@ impl Live {
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
+                }
+                if self
+                    .search
+                    .as_ref()
+                    .is_some_and(|(_, posts)| posts.is_some())
+                {
+                    update.search = self.search_model();
                 }
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
@@ -1050,5 +1129,56 @@ mod tests {
             .map(|p| p.username.to_string())
             .collect();
         assert_eq!(names, ["ada", "zed"]);
+    }
+
+    #[test]
+    fn search_results_name_their_channel_and_ignore_older_searches() {
+        let mut live = live();
+        live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![channel("town", "O", 0, 0)])]),
+        });
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        live.search("lunch");
+        let hit = |id: &str, channel: &str| matty_api::models::Post {
+            id: id.into(),
+            channel_id: channel.into(),
+            user_id: "ada".into(),
+            message: "lunch?".into(),
+            ..Default::default()
+        };
+        let stale = live.apply(&ChangeSet::Search {
+            terms: "lunc".into(),
+            posts: Arc::from(vec![hit("p0", "town")]),
+        });
+        assert_eq!(stale.search, None);
+        let model = live
+            .apply(&ChangeSet::Search {
+                terms: "lunch".into(),
+                posts: Arc::from(vec![hit("p1", "town"), hit("p2", "elsewhere")]),
+            })
+            .search
+            .unwrap();
+        assert!(!model.searching);
+        assert_eq!(
+            model
+                .results
+                .iter()
+                .map(|r| (r.post.id.as_ref(), r.channel_name.as_ref()))
+                .collect::<Vec<_>>(),
+            [("p1", "town"), ("p2", "Another channel")]
+        );
+        // Names arriving later redraw the results.
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            username: "ada".into(),
+            ..User::default()
+        }])));
+        assert_eq!(
+            update.search.unwrap().results[0].post.author.as_ref(),
+            "ada"
+        );
     }
 }

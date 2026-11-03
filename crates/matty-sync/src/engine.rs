@@ -209,6 +209,16 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Searches the team's messages;
+    /// [`ChangeSet::Search`](crate::ChangeSet::Search) answers.
+    Search {
+        /// The team.
+        team_id: String,
+        /// What the user typed, modifiers included.
+        terms: String,
+        /// The user's offset from UTC in seconds, for `on:` and the like.
+        time_zone_offset: i32,
+    },
     /// Creates a channel the user is then in;
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
     CreateChannel {
@@ -338,6 +348,10 @@ impl std::fmt::Debug for Command {
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
+            Self::Search { team_id, .. } => f
+                .debug_struct("Search")
+                .field("team_id", team_id)
+                .finish_non_exhaustive(),
             Self::FindPeople { team_id } => f
                 .debug_struct("FindPeople")
                 .field("team_id", team_id)
@@ -355,6 +369,9 @@ pub(crate) enum Message {
     Command(Command),
     Subscribe(async_channel::Sender<ChangeSet>),
 }
+
+/// Search results asked for at once.
+const SEARCH_PAGE: u32 = 60;
 
 /// What a batch touched, so each view gets one fresh snapshot.
 #[derive(Default)]
@@ -745,6 +762,19 @@ impl Engine {
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
+                Message::Command(Command::Search {
+                    team_id,
+                    terms,
+                    time_zone_offset,
+                }) => {
+                    let mut query = matty_api::SearchQuery::new(terms);
+                    query.time_zone_offset = time_zone_offset;
+                    query.per_page = SEARCH_PAGE;
+                    writes.push(Write::Search {
+                        team_id,
+                        query: Box::new(query),
+                    });
+                }
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
                 }
@@ -1070,6 +1100,10 @@ impl Engine {
                 team_id,
                 channels: Arc::from(channels),
                 members: Arc::new(members),
+            }),
+            Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
+                terms,
+                posts: Arc::from(posts),
             }),
             Loaded::People { team_id, users } => {
                 sidebar::upsert_users(self.store.conn(), &users)?;
@@ -1428,7 +1462,9 @@ impl Engine {
         let ids: BTreeSet<String> = changes
             .iter()
             .flat_map(|change| match change {
-                ChangeSet::Posts { posts, .. } | ChangeSet::Thread { posts, .. } => &posts[..],
+                ChangeSet::Posts { posts, .. }
+                | ChangeSet::Thread { posts, .. }
+                | ChangeSet::Search { posts, .. } => &posts[..],
                 _ => &[],
             })
             .map(|post| post.user_id.clone())

@@ -92,6 +92,15 @@ pub enum ChangeSet {
         /// Members by channel id.
         members: Arc<std::collections::HashMap<String, i64>>,
     },
+    /// Search results, best first: the answer to
+    /// [`Command::Search`](crate::Command::Search). Their authors come
+    /// ahead in [`ChangeSet::Users`].
+    Search {
+        /// What was searched for.
+        terms: String,
+        /// The posts that matched.
+        posts: Arc<[Post]>,
+    },
     /// A team's active people: the answer to
     /// [`Command::FindPeople`](crate::Command::FindPeople).
     People {

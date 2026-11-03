@@ -573,6 +573,14 @@ impl MainWindow {
             self.new_message
                 .update(cx, |view, cx| view.set_profiles(people, cx));
         }
+        // Only while the pane still shows that search.
+        if let Some(model) = update.search
+            && let Some(RightPaneContent::Search(shown)) = self.right_pane.read(cx).content()
+            && shown.query == model.query
+        {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        }
         if let Some(id) = update.join_failed {
             self.browse
                 .update(cx, |browse, cx| browse.set_joined(&id, false, cx));
@@ -1176,6 +1184,11 @@ impl MainWindow {
     /// preview answers from its fixtures and a live session shows the
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = self.live.as_mut()
+            && !query.is_empty()
+        {
+            live.search(&query);
+        }
         let preview = crate::preview::enabled();
         let model = SearchModel {
             results: if preview {

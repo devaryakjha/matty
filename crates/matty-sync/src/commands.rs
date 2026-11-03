@@ -2,7 +2,7 @@
 //! answers with a [`Loaded`] that the engine writes like any other result.
 
 use matty_api::models::{Draft, Reaction};
-use matty_api::{ApiError, Client, NewChannel, PostPatch};
+use matty_api::{ApiError, Client, NewChannel, PostPatch, SearchQuery};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::load::Loaded;
@@ -65,6 +65,10 @@ pub(crate) enum Write {
     People {
         team_id: String,
     },
+    Search {
+        team_id: String,
+        query: Box<SearchQuery>,
+    },
     Create(Box<NewChannel>),
 }
 
@@ -86,6 +90,7 @@ impl Write {
             Self::Leave { .. } => "leave channel",
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
+            Self::Search { .. } => "search",
             Self::Create(_) => "create channel",
         }
     }
@@ -104,7 +109,9 @@ impl Write {
             Self::Status { .. } => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id } | Self::Leave { channel_id } => channel_id.clone(),
-            Self::Browse { team_id } | Self::People { team_id } => team_id.clone(),
+            Self::Browse { team_id } | Self::People { team_id } | Self::Search { team_id, .. } => {
+                team_id.clone()
+            }
             Self::Create(channel) => channel.name.clone(),
         }
     }
@@ -265,6 +272,13 @@ pub(crate) async fn run(
                     }
                 }
                 Some(Loaded::People { team_id, users })
+            }
+            Write::Search { team_id, query } => {
+                let results = client.search_posts(&team_id, &query).await?;
+                Some(Loaded::Search {
+                    posts: results.list.ordered().cloned().collect(),
+                    terms: query.terms,
+                })
             }
             Write::Create(new) => {
                 let channel = client.create_channel(&new).await?;
