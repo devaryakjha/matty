@@ -148,7 +148,14 @@ impl MainWindow {
         });
         cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
             ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
-            ChannelEvent::Send(_) => {}
+            // Sync picks these up once it owns the channel model; the view
+            // already shows the change.
+            ChannelEvent::Send(_)
+            | ChannelEvent::ToggleReaction { .. }
+            | ChannelEvent::ToggleSave(_)
+            | ChannelEvent::TogglePin(_)
+            | ChannelEvent::Edit(_)
+            | ChannelEvent::Delete(_) => {}
         })
         .detach();
         cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {

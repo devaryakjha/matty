@@ -124,6 +124,9 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         mentions_me: false,
         edited: false,
         continues: false,
+        mine: false,
+        saved: false,
+        pinned: false,
     };
     let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
         emoji: emoji.into(),
@@ -160,6 +163,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         Post {
             edited: true,
+            pinned: true,
             ..post(
                 "p4",
                 "Lena Fischer",
@@ -175,6 +179,17 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "Today",
             "Does anyone have the link to the design doc? I only find the plan.",
         ),
+        Post {
+            mine: true,
+            saved: true,
+            ..post(
+                "p5b",
+                "Arya",
+                "08:03",
+                "Today",
+                "It is in the repo under docs, one sec.",
+            )
+        },
         Post {
             mentions_me: true,
             reactions: vec![reaction("🙏", 1, false)],
@@ -209,7 +224,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
     let (posts, loading, first_unread) = match id {
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
-        _ => (posts, false, Some(5)),
+        _ => (posts, false, Some(6)),
     };
     Some(ChannelModel {
         id: row.id.clone(),
@@ -248,6 +263,9 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         mentions_me: false,
         edited: false,
         continues,
+        mine: author == "Arya",
+        saved: false,
+        pinned: false,
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),

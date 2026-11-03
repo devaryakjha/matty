@@ -11,11 +11,14 @@ use gpui_kit::{
 use crate::sidebar::ChannelKind;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
+    alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerState},
+    dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
+    menu::{Menu, MenuItem, MenuState},
     message::{
         Message, MessageHighlight, Reaction, day_divider, message_action, message_actions,
         new_messages_divider,
@@ -52,6 +55,10 @@ pub struct Post {
     /// True when the previous post is from the same author within five
     /// minutes; the row then hides its avatar and header.
     pub continues: bool,
+    /// Written by the current user: Edit and Delete appear in its menu.
+    pub mine: bool,
+    pub saved: bool,
+    pub pinned: bool,
 }
 
 /// A channel with the posts loaded for it.
@@ -109,13 +116,45 @@ pub enum ChannelEvent {
     Send(SharedString),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
+    /// The user added or removed their reaction; the view already shows it.
+    ToggleReaction {
+        post: SharedString,
+        emoji: SharedString,
+    },
+    /// Saved or unsaved a post; the view already shows it.
+    ToggleSave(SharedString),
+    /// Pinned or unpinned a post to the channel; the view already shows it.
+    TogglePin(SharedString),
+    /// The user wants to edit their post.
+    Edit(SharedString),
+    /// The user confirmed deleting their post; the view already removed it.
+    Delete(SharedString),
 }
+
+/// What a More-menu item does to the view.
+type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<ChannelView>)>;
+
+/// The reactions one click away, as Mattermost's recent-emoji row. The full
+/// picker arrives with the emoji data from sync.
+const QUICK_REACTIONS: [(&str, &str); 6] = [
+    ("👍", "Thumbs up"),
+    ("❤️", "Heart"),
+    ("😂", "Joy"),
+    ("🎉", "Tada"),
+    ("👀", "Eyes"),
+    ("🚀", "Rocket"),
+];
 
 pub struct ChannelView {
     model: Option<ChannelModel>,
     rows: Vec<Row>,
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
+    /// One menu for every post: its items are set when it opens.
+    menu: Entity<MenuState>,
+    delete: DialogHandle,
+    /// The post the delete dialog asks about.
+    deleting: Option<SharedString>,
 }
 
 impl EventEmitter<ChannelEvent> for ChannelView {}
@@ -125,11 +164,15 @@ impl ChannelView {
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let composer = cx.new(|cx| ComposerState::new(8, window, cx));
+        let menu = cx.new(|cx| MenuState::new([], cx));
         let mut this = Self {
             model: None,
             rows,
             list,
             composer,
+            menu,
+            delete: DialogHandle::new(false),
+            deleting: None,
         };
         this.set_model(model, window, cx);
         this
@@ -163,6 +206,261 @@ impl ChannelView {
         });
         self.model = model;
         cx.notify();
+    }
+
+    /// Applies `change` to the post with `id`, if it is loaded, and redraws.
+    /// Rows index posts, so nothing else moves.
+    fn mutate_post(
+        &mut self,
+        id: &SharedString,
+        change: impl FnOnce(&mut Post),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(post) = self
+            .model
+            .as_mut()
+            .and_then(|channel| channel.posts.iter_mut().find(|post| &post.id == id))
+        else {
+            return false;
+        };
+        change(post);
+        cx.notify();
+        true
+    }
+
+    /// Flips the user's reaction locally and tells sync. A chip that drops
+    /// to zero disappears, as on the server.
+    fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
+        let changed = self.mutate_post(
+            &id,
+            |post| {
+                if let Some(at) = post.reactions.iter().position(|r| r.emoji == emoji) {
+                    let reaction = &mut post.reactions[at];
+                    if reaction.mine {
+                        reaction.mine = false;
+                        reaction.count = reaction.count.saturating_sub(1);
+                        if reaction.count == 0 {
+                            post.reactions.remove(at);
+                        }
+                    } else {
+                        reaction.mine = true;
+                        reaction.count += 1;
+                    }
+                } else {
+                    post.reactions.push(PostReaction {
+                        emoji: emoji.clone(),
+                        count: 1,
+                        mine: true,
+                    });
+                }
+            },
+            cx,
+        );
+        if changed {
+            cx.emit(ChannelEvent::ToggleReaction { post: id, emoji });
+        }
+    }
+
+    fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
+            cx.emit(ChannelEvent::ToggleSave(id));
+        }
+    }
+
+    fn toggle_pin(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let mut now_pinned = false;
+        let changed = self.mutate_post(
+            &id,
+            |post| {
+                post.pinned = !post.pinned;
+                now_pinned = post.pinned;
+            },
+            cx,
+        );
+        if changed {
+            if let Some(channel) = self.model.as_mut() {
+                channel.pinned = if now_pinned {
+                    channel.pinned + 1
+                } else {
+                    channel.pinned.saturating_sub(1)
+                };
+            }
+            cx.emit(ChannelEvent::TogglePin(id));
+        }
+    }
+
+    /// Removes the post from the transcript and tells sync. The rows are
+    /// rebuilt because the dividers around it may go too.
+    fn delete_post(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        let Some(at) = model.posts.iter().position(|post| post.id == id) else {
+            return;
+        };
+        model.posts.remove(at);
+        // The "New messages" line stays above the same post.
+        model.first_unread = model.first_unread.and_then(|first| {
+            let first = if at < first { first - 1 } else { first };
+            (first < model.posts.len()).then_some(first)
+        });
+        self.set_model(Some(model), window, cx);
+        cx.emit(ChannelEvent::Delete(id));
+    }
+
+    /// Opens the shared menu at the pointer with `items`.
+    fn open_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.open_at(Some(at), window, cx);
+        });
+    }
+
+    fn reaction_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        QUICK_REACTIONS
+            .iter()
+            .map(|(emoji, name)| {
+                let view = view.clone();
+                let id = id.clone();
+                let emoji: SharedString = (*emoji).into();
+                let label: SharedString = format!("{emoji}  {name}").into();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("react.{name}").into()),
+                    label,
+                )
+                .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
+                .on_click(move |_, _, cx| {
+                    let (view, id, emoji) = (view.clone(), id.clone(), emoji.clone());
+                    view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                        .ok();
+                })
+            })
+            .collect()
+    }
+
+    fn more_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        let act = |name: &'static str, label: SharedString, run: MenuAction| {
+            let view = view.clone();
+            MenuItem::new(
+                gpui_kit::ElementId::Name(format!("post.menu.{name}").into()),
+                label,
+            )
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| run(this, window, cx)).ok();
+            })
+        };
+        let body = post.body.clone();
+        let mut items = vec![
+            act(
+                "copy",
+                "Copy text".into(),
+                Box::new(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+                }),
+            ),
+            {
+                let id = id.clone();
+                act(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_pin(id.clone(), cx)),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
+                )
+            },
+        ];
+        if post.mine {
+            let edit_id = id.clone();
+            let delete_id = id.clone();
+            items.push(MenuItem::separator());
+            items.push(act(
+                "edit",
+                "Edit".into(),
+                Box::new(move |_, _, cx| cx.emit(ChannelEvent::Edit(edit_id.clone()))),
+            ));
+            items.push(act(
+                "delete",
+                "Delete…".into(),
+                Box::new(move |this, window, cx| {
+                    this.deleting = Some(delete_id.clone());
+                    this.delete.open(window, cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        items
+    }
+
+    /// "Delete message?" with the action named in the button (PLAN §4.5).
+    fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let channel: SharedString = match self.model.as_ref() {
+            Some(channel) => match channel.kind {
+                ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
+                    "this conversation".into()
+                }
+                _ => format!("#{}", channel.name).into(),
+            },
+            None => "the channel".into(),
+        };
+        let popup = dialog_popup("post.delete.popup", "Delete message", cx)
+            .child(dialog_title("post.delete.title", cx).child("Delete this message?"))
+            .child(
+                dialog_description("post.delete.description", cx).child(format!(
+                    "It is removed for everyone in {channel}. This cannot be undone."
+                )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel("post.delete.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action("post.delete.confirm")
+                            .variant(ButtonVariant::Destructive)
+                            .label("Delete"),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
+            view.update(cx, |this, cx| {
+                if let Some(id) = this.deleting.take() {
+                    this.delete_post(id, window, cx);
+                }
+            })
+            .ok();
+            true
+        })
     }
 
     fn header(&self, channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
@@ -285,13 +583,23 @@ impl ChannelView {
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
         let thread_id = id.clone();
+        let react_items = Self::reaction_items_for(post, cx);
+        let more_items = Self::more_items_for(post, cx);
+        let save_id = id.clone();
         let actions = message_actions(cx)
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                LucideIcon::FaceSlightlySmilingPlus,
-                "Add reaction",
-                cx,
-            ))
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                    LucideIcon::FaceSlightlySmilingPlus,
+                    "Add reaction",
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        this.open_menu(react_items.clone(), event.position(), window, cx)
+                    },
+                )),
+            )
             .child(
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
@@ -303,18 +611,34 @@ impl ChannelView {
                     cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
                 })),
             )
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                LucideIcon::Bookmark,
-                "Save",
-                cx,
-            ))
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
-                LucideIcon::Ellipsis,
-                "More actions",
-                cx,
-            ));
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                    if post.saved {
+                        LucideIcon::BookmarkCheck
+                    } else {
+                        LucideIcon::Bookmark
+                    },
+                    if post.saved { "Unsave" } else { "Save" },
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
+            )
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
+                    LucideIcon::Ellipsis,
+                    "More actions",
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        this.open_menu(more_items.clone(), event.position(), window, cx)
+                    },
+                )),
+            );
+        let reaction_post = id.clone();
+        let view = cx.entity().downgrade();
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
             .timestamp(post.time.clone())
@@ -336,6 +660,11 @@ impl ChannelView {
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
+            .on_reaction(move |emoji, _, cx| {
+                let (id, emoji) = (reaction_post.clone(), emoji.clone());
+                view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                    .ok();
+            })
             .actions(actions)
             .px(scaled(&theme, metrics::GUTTER))
             .child(markdown(
@@ -642,7 +971,7 @@ impl ChannelView {
 }
 
 impl Render for ChannelView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .size_full()
@@ -663,6 +992,9 @@ impl Render for ChannelView {
         root.child(self.header(&channel, cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(self.composer(cx))
+            // Zero-size host for the shared post menu; it opens at the pointer.
+            .child(Menu::new(&self.menu, "Message actions").context_area(div()))
+            .child(self.delete_dialog(window, cx))
     }
 }
 
@@ -681,6 +1013,9 @@ mod tests {
             mentions_me: false,
             edited: false,
             continues: false,
+            mine: false,
+            saved: false,
+            pinned: false,
         }
     }
 

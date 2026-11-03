@@ -141,6 +141,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   link. Errors are one `meta` sentence in `destructive` with an icon, placed
   above the button they concern; a request in flight puts a spinner in the
   primary button and never blocks the window.
+- **Post actions** live in the hover toolbar: add reaction, reply in
+  thread, save (the bookmark fills when saved) and a More menu. Add
+  reaction opens a menu of the six quick reactions with the user's own
+  checked, until the emoji data arrives for the full picker. More holds
+  Copy text, Pin/Unpin, Save/Unsave and, on the user's own posts, Edit and
+  Delete. Reactions, saves and pins apply in the view at once and a chip
+  that drops to zero disappears. Delete asks in an alert dialog whose
+  button says Delete (PLAN §4.5); nothing destructive happens from a menu
+  alone.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.
