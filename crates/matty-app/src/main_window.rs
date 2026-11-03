@@ -13,7 +13,8 @@ use gpui_kit::{
 };
 
 use crate::actions::{
-    self, ChannelInfo, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher,
+    self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
+    OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
     RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
@@ -23,7 +24,7 @@ use crate::settings::{
     RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
     ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
-use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
+use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::switcher::{Switcher, SwitcherEvent};
 use crate::ui::{
@@ -85,6 +86,10 @@ pub struct MainWindow {
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
     connection: ConnectionState,
+    /// Channels opened in order, for Back and Forward; `history_at` is the
+    /// one shown now.
+    history: Vec<SharedString>,
+    history_at: usize,
 }
 
 impl MainWindow {
@@ -157,20 +162,15 @@ impl MainWindow {
             window,
             |this, _, event: &SidebarEvent, window, cx| {
                 let id = match event {
-                    SidebarEvent::Select(id) => id,
+                    SidebarEvent::Select(id) => id.clone(),
                     // Threads and Drafts views land in M1 with sync.
                     SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts => return,
                 };
-                this.selected_channel = Some(id.clone());
-                if crate::preview::enabled() {
-                    let model = crate::preview::channel(id);
-                    this.channel
-                        .update(cx, |view, cx| view.set_model(model, window, cx));
-                }
-                cx.notify();
+                this.open_channel(id, window, cx);
             },
         )
         .detach();
+        let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         Self {
             settings,
             login,
@@ -186,6 +186,8 @@ impl MainWindow {
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
             connection: crate::preview::connection(),
+            history,
+            history_at: 0,
         }
     }
 
@@ -246,6 +248,21 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.selected_channel.as_ref() != Some(&id) {
+            self.history.truncate(self.history_at + 1);
+            self.history.push(id.clone());
+            self.history_at = self.history.len() - 1;
+        }
+        self.show_channel(id, window, cx);
+    }
+
+    /// Shows `id` without touching the history: Back and Forward use it.
+    fn show_channel(
+        &mut self,
+        id: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.selected_channel = Some(id.clone());
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
@@ -255,6 +272,31 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_model(model, window, cx));
         }
         cx.notify();
+    }
+
+    fn go_history(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.history_at.checked_add_signed(delta) else {
+            return;
+        };
+        let Some(id) = self.history.get(at).cloned() else {
+            return;
+        };
+        self.history_at = at;
+        self.show_channel(id, window, cx);
+    }
+
+    /// Alt+Up/Down and Alt+Shift+Up/Down from PLAN §4.4.
+    fn step_channel(
+        &mut self,
+        step: Step,
+        unread_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = self.sidebar.read(cx).model().neighbor(step, unread_only);
+        if let Some(id) = next {
+            self.open_channel(id, window, cx);
+        }
     }
 
     /// Opens the thread under `post_id` in the right pane. Until sync lands
@@ -460,7 +502,7 @@ impl MainWindow {
                         "Back",
                         LucideIcon::ChevronLeft,
                         Box::new(HistoryBack),
-                        false,
+                        self.history_at > 0,
                         cx,
                     ))
                     .child(Self::icon_button(
@@ -468,7 +510,7 @@ impl MainWindow {
                         "Forward",
                         LucideIcon::ChevronRight,
                         Box::new(HistoryForward),
-                        false,
+                        self.history_at + 1 < self.history.len(),
                         cx,
                     )),
             )
@@ -941,6 +983,28 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(Some(-ZOOM_STEP), cx)))
             .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
             .on_action(move |_: &ShowShortcuts, window, cx| shortcuts.open(window, cx))
+            .on_action(
+                cx.listener(|this, _: &HistoryBack, window, cx| this.go_history(-1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &HistoryForward, window, cx| this.go_history(1, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousChannel, window, cx| {
+                this.step_channel(Step::Previous, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextChannel, window, cx| {
+                this.step_channel(Step::Next, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousUnreadChannel, window, cx| {
+                this.step_channel(Step::Previous, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
+                this.step_channel(Step::Next, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| {
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.mark_all_read(cx))
+            }))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
