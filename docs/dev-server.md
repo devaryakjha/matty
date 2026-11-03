@@ -42,3 +42,36 @@ Set in `docker/compose.yml` through `MM_*` environment variables:
 | Port | 8065 | `MATTY_MM_PORT` changes it. |
 
 Data lives in the `matty-dev_db` and `matty-dev_data` Docker volumes.
+
+## Seed data
+
+```sh
+scripts/dev-server up
+scripts/seed.py                 # about 35 seconds at the default size
+scripts/seed.py --posts 10000 --users 50
+```
+
+`scripts/seed.py` uses only the Python standard library. It creates:
+
+- `admin` (system admin) and `tester`, the account tests sign in as (email
+  and password, no MFA, no LDAP or SSO), plus `--users` more (default 20),
+  each with a generated avatar. Every password is `Password1!`.
+- Teams `dev` and `ops`, each with 15 channels: Town Square, Off-Topic, 10
+  more public and 3 private.
+- Five direct messages and a self DM for `tester`, and two group messages.
+- `--posts` posts (default 2,000). `busy` gets 40% of them for scrolling;
+  `markdown` starts with one post per Markdown construct (PLAN §6.8) and
+  others recur elsewhere; `empty` stays empty. About a fifth are thread
+  replies, and some carry reactions, uploaded PNG images, or pins.
+- Five custom emoji, used in posts and reactions.
+- Custom sidebar categories Projects and Social, and up to ten saved posts,
+  for `tester`.
+
+It writes credentials and ids to `docker/seed-output.json` (ignored by git)
+for tests to read: users, teams, channels with their thread roots, image,
+pinned and Markdown post ids, emoji and saved posts.
+
+Running it again creates nothing new: everything is looked up before it is
+created, and posts resume from the last seeded post in each channel, so a run
+that failed partway can be rerun. After changing `--posts` or `--users`, run
+`scripts/dev-server reset` first.
