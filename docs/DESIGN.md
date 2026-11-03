@@ -260,6 +260,36 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   time" as the caption, zoom, arrows and ←/→, an Open (download) action
   before Close, and Escape returning focus. The thread pane and the Saved,
   Pinned, Mentions and Search listings show the same chips and lightbox.
+- **Editing in place** (PLAN §4.3 edit): Edit in a post's menu, or Up in
+  an empty composer for the last own post, swaps the post body for a
+  `Composer` holding the text with the caret at the end, a `meta` hint
+  "Enter to save · Escape to cancel" and Ghost Cancel and Default Save
+  buttons, and scrolls the row into view (`design-25`). Enter or Save
+  keeps the text and adds "(edited)" at once; Escape, Cancel, an unchanged
+  or emptied body closes the editor with nothing sent. Shift+Up in an
+  empty composer still opens the newest post's thread. Focus returns to
+  the main composer either way.
+- **Channel info** (PLAN §3 M1 navigation: leave a channel, mute) opens
+  from the header's info button or its members count (`design-26`). The
+  pane starts with the channel name, purpose and header, then one row of
+  Sm chips: Favorite/Favorited and Mute/Muted as Outline that turn
+  Secondary when on, "N pinned" opening the Pinned listing, and Leave as a
+  `destructive` Ghost button on its own line (not for DMs and groups).
+  Leave confirms in an `alert_dialog` naming the channel. "MEMBERS · 42"
+  lists the loaded profiles as 36px rows with a Sm avatar carrying the
+  presence dot, the name and `@handle`; a row opens the same profile card
+  as avatars in the transcript, and "Show all 42 members" asks sync for
+  the rest. The header star and the pane's Favorite chip stay in step.
+- **Live transcript** (PLAN §3 M1 reading: jump to unread, jump to
+  latest; §4.5 unread correctness): a channel opens at its "New messages"
+  line when it has one, so nothing unread scrolls past, and the list's
+  own pill reads "Jump to latest" from there (`design-27`). Posts the
+  server sends are appended through `ChannelView::append_posts`, which
+  keeps the scroll position: at the end they simply appear, and while the
+  reader is scrolled up the pill turns `primary` and counts them ("2 new
+  messages"), clearing once the list is back at the end. `update_post`
+  and `remove_post` apply server edits and deletes in place. In preview
+  two posts land in #general twelve seconds after it opens.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

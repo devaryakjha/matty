@@ -71,7 +71,13 @@ pub fn channel_model(
             mine: post.user_id == viewer.user_id,
             saved: false,
             pinned: post.is_pinned,
-            status: PostStatus::Sent,
+            // Sync's optimistic copy of a send keeps the client's id until
+            // the server's post replaces it.
+            status: if !post.pending_post_id.is_empty() && post.id == post.pending_post_id {
+                PostStatus::Pending
+            } else {
+                PostStatus::Sent
+            },
             replies: None,
             files: Vec::new(),
         });
@@ -84,6 +90,7 @@ pub fn channel_model(
         members: 0,
         pinned: rows.iter().filter(|post| post.pinned).count(),
         favorite: false,
+        muted: row.muted,
         purpose: None,
         loading: posts.is_none(),
         posts: rows,
@@ -235,8 +242,23 @@ mod tests {
         assert_eq!(model.posts[2].time, 12 * 60);
         assert!(model.posts[2].mentions_me && !model.posts[1].mentions_me);
         assert!(model.posts[3].mine);
+        assert_eq!(model.posts[3].status, PostStatus::Sent);
         assert_eq!(model.max_post_size, 4000);
         assert!(!model.loading);
+    }
+
+    #[test]
+    fn an_unsent_post_is_pending() {
+        let zone = TimeZone::UTC;
+        let mut sending = post("me:1", "me", NOON, "on its way");
+        sending.pending_post_id = "me:1".into();
+        let mut sent = post("p9", "me", NOON, "arrived");
+        sent.pending_post_id = "me:0".into();
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let posts = [sent, sending];
+        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        assert_eq!(model.posts[0].status, PostStatus::Sent);
+        assert_eq!(model.posts[1].status, PostStatus::Pending);
     }
 
     #[test]

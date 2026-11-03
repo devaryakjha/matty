@@ -21,7 +21,7 @@ use crate::actions::{
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
-use crate::live::Live;
+use crate::live::{ChannelUpdate, Live};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
@@ -259,6 +259,7 @@ impl MainWindow {
             |this, _, event: &ChannelEvent, window, cx| match event {
                 ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
+                ChannelEvent::OpenInfo => this.show_channel_info(cx),
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
@@ -288,6 +289,15 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::SaveEdit { post, text } => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::EditPost {
+                            post_id: post.to_string(),
+                            message: text.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::ToggleFavorite(_) => this.refresh_channel_info(cx),
                 // Sync picks these up in later changes; the view already
                 // shows the change.
                 ChannelEvent::Upload { .. }
@@ -296,7 +306,6 @@ impl MainWindow {
                 | ChannelEvent::OpenFile(_)
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
-                | ChannelEvent::Edit(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
             },
@@ -311,6 +320,25 @@ impl MainWindow {
                     cx.notify();
                 }
                 RightPaneEvent::Search(query) => this.search(query.clone(), window, cx),
+                RightPaneEvent::OpenPinned => this.show_pinned(cx),
+                RightPaneEvent::OpenDirect { display_name, .. } => {
+                    this.open_direct(display_name.clone(), window, cx)
+                }
+                RightPaneEvent::Mention(username) => {
+                    let text = format!("@{username} ");
+                    this.channel
+                        .update(cx, |channel, cx| channel.insert_text(text, window, cx));
+                }
+                RightPaneEvent::ToggleFavorite { favorite, .. } => {
+                    let favorite = *favorite;
+                    this.channel
+                        .update(cx, |channel, cx| channel.set_favorite(favorite, cx));
+                }
+                RightPaneEvent::ToggleMute { muted, .. } => {
+                    let muted = *muted;
+                    this.channel
+                        .update(cx, |channel, cx| channel.set_muted(muted, cx));
+                }
                 // The post itself scrolls into view once sync can page to it.
                 RightPaneEvent::Jump { channel, .. } => {
                     this.open_channel(channel.clone(), window, cx)
@@ -451,9 +479,33 @@ impl MainWindow {
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
         }
-        if let Some(model) = update.channel {
-            self.channel
-                .update(cx, |view, cx| view.set_model(Some(model), window, cx));
+        match update.channel {
+            Some(ChannelUpdate::Replace(model)) => self
+                .channel
+                .update(cx, |view, cx| view.set_model(Some(model), window, cx)),
+            Some(ChannelUpdate::Patch {
+                removed,
+                updated,
+                appended,
+            }) => self.channel.update(cx, |view, cx| {
+                // The composer's own "Sending…" rows give way to sync's copy
+                // of the same send, which this patch carries.
+                let local: Vec<SharedString> = view
+                    .model()
+                    .into_iter()
+                    .flat_map(|model| &model.posts)
+                    .filter(|post| post.id.starts_with("pending-"))
+                    .map(|post| post.id.clone())
+                    .collect();
+                for id in local.iter().chain(&removed) {
+                    view.remove_post(id, window, cx);
+                }
+                for post in updated {
+                    view.update_post(post, cx);
+                }
+                view.append_posts(appended, cx);
+            }),
+            None => {}
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
@@ -837,6 +889,17 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Mentions(posts), cx);
+    }
+
+    /// Keeps an open info pane in step with the channel header's star.
+    fn refresh_channel_info(&mut self, cx: &mut Context<Self>) {
+        let showing = matches!(
+            self.right_pane.read(cx).content(),
+            Some(RightPaneContent::ChannelInfo(_))
+        );
+        if showing && self.right_pane_open {
+            self.show_channel_info(cx);
+        }
     }
 
     /// Shows the current channel's info in the right pane.

@@ -11,7 +11,7 @@ use matty_api::models::User;
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
 
-use crate::channel::ChannelModel;
+use crate::channel::{ChannelModel, Post};
 use crate::login::{SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
 use crate::settings::SavedAccount;
@@ -35,6 +35,8 @@ pub struct Live {
     posts: Option<Arc<[matty_api::models::Post]>>,
     max_post_size: Option<usize>,
     zone: jiff::tz::TimeZone,
+    /// The posts the channel view shows now, to send it only what changed.
+    shown: Option<Vec<Post>>,
 }
 
 /// What a change set means for the window.
@@ -45,10 +47,60 @@ pub struct Update {
     /// The shown team's display name, for the sidebar header.
     pub team_name: Option<SharedString>,
     pub connection: Option<ConnectionState>,
-    /// The open channel, to replace the channel view's model.
-    pub channel: Option<ChannelModel>,
+    /// What changed in the open channel's view.
+    pub channel: Option<ChannelUpdate>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
+}
+
+/// A change to the open channel's view.
+#[derive(Debug, PartialEq)]
+pub enum ChannelUpdate {
+    /// Show this model, as on opening a channel; resets the scroll.
+    Replace(ChannelModel),
+    /// Patch the posts on screen and keep the scroll.
+    Patch {
+        removed: Vec<SharedString>,
+        updated: Vec<Post>,
+        appended: Vec<Post>,
+    },
+}
+
+/// How to go from the posts on screen to `new` without a reset, or `None`
+/// when only a reset will do: a post appeared between two shown ones, or
+/// the order changed.
+fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
+    let kept: HashMap<&str, &Post> = old.iter().map(|post| (post.id.as_ref(), post)).collect();
+    let present: std::collections::HashSet<&str> =
+        new.iter().map(|post| post.id.as_ref()).collect();
+    let removed: Vec<SharedString> = old
+        .iter()
+        .filter(|post| !present.contains(post.id.as_ref()))
+        .map(|post| post.id.clone())
+        .collect();
+    let remaining: Vec<&str> = old
+        .iter()
+        .map(|post| post.id.as_ref())
+        .filter(|id| present.contains(id))
+        .collect();
+    let (head, tail) = new.split_at(remaining.len().min(new.len()));
+    if head
+        .iter()
+        .map(|post| post.id.as_ref())
+        .ne(remaining.iter().copied())
+    {
+        return None;
+    }
+    let updated = head
+        .iter()
+        .filter(|post| kept.get(post.id.as_ref()) != Some(post))
+        .cloned()
+        .collect();
+    Some(ChannelUpdate::Patch {
+        removed,
+        updated,
+        appended: tail.to_vec(),
+    })
 }
 
 impl Live {
@@ -73,6 +125,7 @@ impl Live {
                 posts: None,
                 max_post_size: None,
                 zone: jiff::tz::TimeZone::system(),
+                shown: None,
             },
             changes,
         ))
@@ -96,8 +149,24 @@ impl Live {
             channel_id: row.id.to_string(),
         });
         self.posts = None;
+        self.shown = None;
         self.open = Some(row);
         self.channel_model().expect("a channel is open")
+    }
+
+    /// The open channel's view change for the latest posts: the first
+    /// snapshot replaces the model, later ones patch it.
+    fn channel_update(&mut self) -> Option<ChannelUpdate> {
+        let model = self.channel_model()?;
+        if model.loading {
+            return None;
+        }
+        let update = self
+            .shown
+            .as_deref()
+            .and_then(|old| patch(old, &model.posts));
+        self.shown = Some(model.posts.clone());
+        Some(update.unwrap_or(ChannelUpdate::Replace(model)))
     }
 
     fn channel_model(&self) -> Option<ChannelModel> {
@@ -164,7 +233,7 @@ impl Live {
                     .is_some_and(|row| row.id.as_ref() == channel_id)
                 {
                     self.posts = Some(posts.clone());
-                    update.channel = self.channel_model();
+                    update.channel = self.channel_update();
                 }
             }
             ChangeSet::Users(users) => {
@@ -172,7 +241,7 @@ impl Live {
                     self.users.insert(user.id.clone(), user.clone());
                 }
                 if self.posts.is_some() {
-                    update.channel = self.channel_model();
+                    update.channel = self.channel_update();
                 }
             }
             ChangeSet::Config(capabilities) => {
@@ -562,5 +631,46 @@ mod tests {
         user.first_name.clear();
         user.last_name.clear();
         assert_eq!(saved_account("https://x", &user).display_name, "ada");
+    }
+
+    fn shown(id: &str, body: &str) -> Post {
+        Post {
+            id: id.into(),
+            author: "a".into(),
+            time: 600,
+            day: "Today".into(),
+            body: body.into(),
+            reactions: vec![],
+            mentions_me: false,
+            edited: false,
+            continues: false,
+            mine: false,
+            saved: false,
+            pinned: false,
+            status: crate::channel::PostStatus::Sent,
+            replies: None,
+            files: vec![],
+        }
+    }
+
+    #[test]
+    fn new_posts_append_and_changes_patch_in_place() {
+        let old = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
+        let new = [shown("a", "one"), shown("c", "3"), shown("d", "four")];
+        assert_eq!(
+            patch(&old, &new),
+            Some(ChannelUpdate::Patch {
+                removed: vec!["b".into()],
+                updated: vec![shown("c", "3")],
+                appended: vec![shown("d", "four")],
+            })
+        );
+    }
+
+    #[test]
+    fn a_post_between_shown_ones_resets() {
+        let old = [shown("a", "one"), shown("c", "three")];
+        let new = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
+        assert_eq!(patch(&old, &new), None);
     }
 }
