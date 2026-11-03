@@ -27,6 +27,7 @@ use crate::settings::{
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::switcher::{Switcher, SwitcherEvent};
+use crate::threads::{ThreadsEvent, ThreadsModel, ThreadsView};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
@@ -85,6 +86,10 @@ pub struct MainWindow {
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
+    /// The Threads view stands in for the channel while the sidebar's
+    /// Threads row is chosen.
+    threads: Entity<ThreadsView>,
+    threads_open: bool,
     connection: ConnectionState,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
@@ -139,6 +144,23 @@ impl MainWindow {
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        let threads_model = if crate::preview::enabled() {
+            crate::preview::threads()
+        } else {
+            ThreadsModel::default()
+        };
+        let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
+        cx.subscribe(&threads, |this, _, event: &ThreadsEvent, cx| {
+            // Sync owns the server side; the sidebar count follows at once.
+            if let ThreadsEvent::MarkAllRead = event {
+                this.sidebar.update(cx, |sidebar, cx| {
+                    let mut model = sidebar.model().clone();
+                    model.unread_threads = 0;
+                    sidebar.set_model(model, cx);
+                });
+            }
+        })
+        .detach();
         // No session store yet: the sign-in card shows unless the preview
         // fixtures stand in for a signed-in workspace.
         let login_model = match crate::preview::login() {
@@ -181,8 +203,9 @@ impl MainWindow {
             |this, _, event: &SidebarEvent, window, cx| {
                 let id = match event {
                     SidebarEvent::Select(id) => id.clone(),
-                    // Threads and Drafts views land in M1 with sync.
-                    SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts => return,
+                    SidebarEvent::OpenThreads => return this.show_threads(cx),
+                    // The Drafts view lands with draft sync.
+                    SidebarEvent::OpenDrafts => return,
                 };
                 this.open_channel(id, window, cx);
             },
@@ -203,6 +226,8 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
+            threads,
+            threads_open: false,
             connection: crate::preview::connection(),
             history,
             history_at: 0,
@@ -275,12 +300,23 @@ impl MainWindow {
     }
 
     /// Shows `id` without touching the history: Back and Forward use it.
+    /// Shows the followed threads in place of the channel.
+    fn show_threads(&mut self, cx: &mut Context<Self>) {
+        self.threads_open = true;
+        self.right_pane_open = false;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.select(Some(crate::sidebar::THREADS_ID.into()), cx)
+        });
+        cx.notify();
+    }
+
     fn show_channel(
         &mut self,
         id: gpui_kit::SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.threads_open = false;
         self.selected_channel = Some(id.clone());
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
@@ -347,6 +383,9 @@ impl MainWindow {
     /// Resizable sizes its first pane, so the persisted right-pane width is
     /// turned into a channel width from the space the split has.
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if self.threads_open {
+            return self.threads.clone().into_any_element();
+        }
         if !self.right_pane_open {
             return self.channel.clone().into_any_element();
         }

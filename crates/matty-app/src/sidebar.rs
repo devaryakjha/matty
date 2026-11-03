@@ -200,6 +200,9 @@ fn element_id(prefix: &str, id: &SharedString) -> gpui_kit::ElementId {
 }
 
 /// What the sidebar asks the window to do.
+/// The `selected` id that marks the Threads row, which is not a channel.
+pub const THREADS_ID: &str = "~threads";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarEvent {
     /// The user opened the Threads entry above the categories.
@@ -446,8 +449,10 @@ impl SidebarView {
                      event: SidebarEvent,
                      cx: &mut Context<Self>| {
             let strong = count > 0;
+            let selected = self.model.selected.as_deref() == Some(id);
             let mut item = SidebarItem::new(id, label)
                 .size(SidebarItemSize::Small)
+                .selected(selected)
                 .icon(
                     div()
                         .size(scaled(&theme, 20.))
@@ -483,7 +488,7 @@ impl SidebarView {
             .gap(px(1.))
             .pb(theme.space(3.))
             .child(entry(
-                "sidebar.threads",
+                THREADS_ID,
                 "Threads",
                 LucideIcon::MessageSquareText,
                 self.model.unread_threads,

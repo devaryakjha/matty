@@ -64,7 +64,7 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
-        unread_threads: 3,
+        unread_threads: 2,
         drafts: 1,
         categories: vec![
             Category::new(
@@ -107,6 +107,7 @@ use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
 use crate::right_pane::ThreadModel;
+use crate::threads::{ThreadRow, ThreadsModel};
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
@@ -280,6 +281,52 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             DEFAULT_MAX_POST_SIZE
         },
     })
+}
+
+/// The threads the user follows, for the Threads view.
+pub fn threads() -> ThreadsModel {
+    let row = |channel_id: &str, post_id: &str, summary: ReplySummary| {
+        thread(channel_id, post_id).map(|thread| ThreadRow {
+            channel_id: channel_id.into(),
+            thread,
+            summary,
+        })
+    };
+    let summary = |count, last_time: &str, participants: &[&str], unread| ReplySummary {
+        count,
+        last_time: last_time.into(),
+        participants: participants.iter().map(|name| (*name).into()).collect(),
+        following: true,
+        unread,
+    };
+    ThreadsModel {
+        threads: [
+            row(
+                "general",
+                "p2",
+                summary(1, "10:02", &["Lena Fischer"], true),
+            ),
+            row(
+                "design",
+                "p6",
+                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], true),
+            ),
+            row(
+                "general",
+                "p5",
+                summary(3, "08:13", &["Arya", "Jonas Weber"], false),
+            ),
+            row(
+                "help-desk",
+                "p8",
+                summary(3, "Yesterday", &["Arya", "Sam Okafor"], false),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        loading: false,
+    }
 }
 
 /// The thread under `post_id` in `channel_id`: the post as root plus three

@@ -174,6 +174,16 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `meta`, and a ghost Follow/Following button. The whole line is a hover
   target that opens the thread; replies never appear inline in the
   channel.
+- **Threads view** (PLAN §4.4) replaces the channel when the sidebar's
+  Threads row is chosen: a 360px list on the left and the selected thread
+  on the right, drawn by the same view as the right pane. The header holds
+  "Threads", a joined All / Unread toggle (Unread carries its count) and
+  Mark all as read when anything is unread. Rows are avatar, author,
+  "in #channel", time; a two-line plain-text snippet of the root in
+  `muted-foreground`; then the participants' small avatars and "2 new
+  replies" in `primary` or "3 replies" in `meta`, plus a `primary` dot at
+  the right while unread. Selecting a row reads it. The empty list says how
+  threads get there.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.
