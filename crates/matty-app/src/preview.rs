@@ -108,10 +108,12 @@ use crate::attachments::{self, AttachmentStatus, PostFile, Upload, UploadSource}
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
+use crate::directory::DirectoryChannel;
 use crate::drafts::{Draft, DraftsModel};
 use crate::profile::UserProfile;
 use crate::right_pane::{ListedPost, ThreadModel};
 use crate::threads::{ThreadRow, ThreadsModel};
+use gpui_kit::SharedString;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
@@ -138,10 +140,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         replies: None,
         files: vec![],
     };
-    let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
+    let reaction = |emoji: &str, count: usize, mine: bool, users: &[&str]| PostReaction {
         emoji: emoji.into(),
         count,
         mine,
+        users: users.iter().map(|user| user.to_string().into()).collect(),
     };
     let posts = vec![
         post(
@@ -152,7 +155,15 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "Morning all. The release branch is cut, so anything that is not a fix waits for next week.",
         ),
         Post {
-            reactions: vec![reaction("👍", 4, true), reaction("🚀", 2, false)],
+            reactions: vec![
+                reaction(
+                    "👍",
+                    4,
+                    true,
+                    &["Sam Okafor", "Lena Fischer", "Jonas Weber"],
+                ),
+                reaction("🚀", 2, false, &["Sam Okafor", "Priya Nair"]),
+            ],
             replies: Some(ReplySummary {
                 count: 1,
                 last_time: hm("10:02"),
@@ -220,7 +231,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         Post {
             mentions_me: true,
-            reactions: vec![reaction("🙏", 1, false)],
+            reactions: vec![reaction("🙏", 1, false, &["Priya Nair"])],
             ..post(
                 "p6",
                 "Priya Nair",
@@ -487,6 +498,120 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
 
 /// What the composer tray shows after Attach: a thumbnail, a file still
 /// uploading and one that failed.
+/// The team's public channels for Browse: the sidebar's plus five more.
+pub fn directory() -> Vec<DirectoryChannel> {
+    let joined: Vec<SharedString> = sidebar()
+        .categories
+        .into_iter()
+        .flat_map(|category| category.rows)
+        .filter(|row| row.kind == ChannelKind::Public)
+        .map(|row| row.id)
+        .collect();
+    let entry = |id: &str, name: &str, purpose: Option<&str>, members: usize| DirectoryChannel {
+        id: id.into(),
+        name: name.into(),
+        purpose: purpose.map(Into::into),
+        members,
+        joined: joined.iter().any(|j| j.as_ref() == id),
+    };
+    vec![
+        entry(
+            "announcements",
+            "announcements",
+            Some("Company-wide news; read-only for most people."),
+            120,
+        ),
+        entry(
+            "design",
+            "design",
+            Some("Mockups, reviews and the design system."),
+            18,
+        ),
+        entry(
+            "dev-rust",
+            "dev-rust",
+            Some("Rust questions, crate picks and clippy fights."),
+            38,
+        ),
+        entry(
+            "general",
+            "general",
+            Some("Announcements and anything that does not fit elsewhere"),
+            42,
+        ),
+        entry("gpui", "gpui", None, 11),
+        entry(
+            "help-desk",
+            "help-desk",
+            Some("Ask IT about laptops, accounts and access."),
+            42,
+        ),
+        entry(
+            "hiring",
+            "hiring",
+            Some("Open roles and interview loops."),
+            12,
+        ),
+        entry(
+            "off-topic",
+            "off-topic",
+            Some("Pets, food, weekend plans."),
+            77,
+        ),
+        entry("random", "random", None, 40),
+        entry("town-square", "town-square", None, 42),
+        entry(
+            "ux-research",
+            "ux-research",
+            Some("Interview notes and study plans."),
+            9,
+        ),
+    ]
+}
+
+/// An empty channel for one just joined from Browse.
+pub fn joined_channel(channel: &DirectoryChannel) -> ChannelModel {
+    let mut model = empty_channel(
+        channel.id.clone(),
+        channel.name.clone(),
+        ChannelKind::Public,
+        channel.purpose.clone(),
+    );
+    model.members = channel.members;
+    model
+}
+
+/// A channel with nothing in it yet: just created, or a new direct message.
+pub fn empty_channel(
+    id: SharedString,
+    name: SharedString,
+    kind: ChannelKind,
+    purpose: Option<SharedString>,
+) -> ChannelModel {
+    let members = match kind {
+        ChannelKind::Direct { .. } => 2,
+        ChannelKind::Group { members } => members,
+        _ => 1,
+    };
+    ChannelModel {
+        id,
+        name,
+        kind,
+        header: None,
+        members,
+        pinned: 0,
+        favorite: false,
+        muted: false,
+        purpose,
+        loading: false,
+        posts: vec![],
+        first_unread: None,
+        max_post_size: DEFAULT_MAX_POST_SIZE,
+        profiles: profiles(),
+        typing: vec![],
+    }
+}
+
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -724,6 +849,12 @@ mod tests {
             .collect();
         assert!(!ids.is_empty());
         assert_eq!(uploads().len(), 3);
+        let directory = directory();
+        assert_eq!(directory.iter().filter(|c| !c.joined).count(), 5);
+        for entry in directory.iter().filter(|c| c.joined) {
+            assert!(channel(&entry.id).is_some(), "{} has a fixture", entry.id);
+        }
+        joined_channel(&directory[0]);
         assert_eq!(incoming("general").len(), 2);
         assert!(incoming("design").is_empty());
         for id in &ids {

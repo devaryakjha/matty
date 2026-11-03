@@ -54,6 +54,17 @@ pub enum RemoteImages {
     Ask,
 }
 
+/// Which key sends a message from the composer; the other inserts a
+/// newline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendKey {
+    #[default]
+    Enter,
+    /// Ctrl+Enter, or Cmd+Enter on macOS.
+    ModEnter,
+}
+
 /// How post times read: "8:02 PM" or "20:02".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -136,6 +147,8 @@ pub struct Settings {
     pub log_level: LogLevel,
     pub load_remote_images: RemoteImages,
     pub clock: ClockFormat,
+    /// Enter sends by default; Ctrl+Enter for people who write in paragraphs.
+    pub send_on: SendKey,
     pub account: Option<SavedAccount>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
@@ -159,6 +172,7 @@ impl Default for Settings {
             log_level: LogLevel::Info,
             load_remote_images: RemoteImages::Always,
             clock: ClockFormat::TwentyFourHour,
+            send_on: SendKey::Enter,
             account: None,
             unknown: serde_json::Map::new(),
         }

@@ -290,6 +290,27 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   messages"), clearing once the list is back at the end. `update_post`
   and `remove_post` apply server edits and deletes in place. In preview
   two posts land in #general twelve seconds after it opens.
+- **Browse channels** (PLAN §3 M1 "Finding people and channels"): the
+  sidebar's pencil is a gpuicn `Menu` with "New message", "Browse
+  channels" and "Create channel" (`design-28`). Browse is a dialog: title,
+  "11 public channels in Matty", a search field that filters on name and
+  purpose as you type, then one row per channel with `#`, the name, the
+  member count in `meta` and the purpose on a second line. Channels the
+  user is already in show an `Outline` "View" that opens them; the rest
+  show a `Default` "Join", which closes the dialog, adds the row to the
+  Channels category and opens the channel at its empty state. Rows are
+  clickable too.
+- **New message and Create channel** (PLAN §3 M1): "New message" is a
+  dialog with a people search over the team's profiles; each row has the
+  presence avatar, name, `@handle` and position, and picking one opens
+  the existing conversation or starts a new one under Direct messages
+  (`design-29`). "Create channel" is a short form: a required Name whose
+  description shows the address it will get ("~design-reviews", by
+  Mattermost's handle rules), an optional Purpose, and a Public/Private
+  radio group with one line each on what it means; Create stays disabled
+  until the handle is two characters long, and the new channel opens at
+  its empty state with the purpose as its line. Sync owns both on the
+  server (PLAN §4.3).
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a
@@ -298,8 +319,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   (`design-18`); 24-hour is the default. A compact message density waits
   on gpuicn's `Message` growing one; Matty does not fake it with
   continuation rows.
+  "Send message with" picks Enter (default; Shift+Enter for a new line) or
+  Ctrl+Enter, Cmd+Enter on macOS (Enter then starts a new line); the
+  modifier combination always sends, whichever is chosen, in the channel
+  composer and in thread replies (`design-30`).
   Every change applies behind the dialog as it is made; the only button is
   Done.
+- **Who reacted**: hovering a reaction chip shows gpuicn's tooltip with
+  the names, "You, Sam Okafor and 2 others reacted with 👍", built from
+  `PostReaction::summary` (`design-30`). "You" comes first, three names at
+  most, and while sync still has only the count the text falls back to
+  "3 others reacted".
 
 ## 5. Components
 

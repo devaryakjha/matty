@@ -16,7 +16,7 @@ use gpui_kit::{
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
-use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
+use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -39,6 +39,7 @@ use crate::ui::{
     popover::popover,
     skeleton::Skeleton,
     theme::UiTheme,
+    tooltip::text_tooltip,
 };
 
 /// One reaction chip under a post.
@@ -48,6 +49,55 @@ pub struct PostReaction {
     pub count: usize,
     /// Whether the current user is among the reactors.
     pub mine: bool,
+    /// Display names of the other people who reacted, for the tooltip;
+    /// may be shorter than `count` while sync is still loading them.
+    pub users: Vec<SharedString>,
+}
+
+impl PostReaction {
+    /// "You, Priya Nair and Sam Okafor reacted with 👍", shortening past
+    /// three names to "and 2 others".
+    pub fn summary(&self) -> String {
+        let mut names: Vec<String> = Vec::new();
+        if self.mine {
+            names.push("You".to_string());
+        }
+        names.extend(self.users.iter().map(|user| user.to_string()));
+        let unnamed = self.count.saturating_sub(names.len());
+        let shown = names.len().min(3);
+        let others = names.len() - shown + unnamed;
+        let mut parts: Vec<String> = names.into_iter().take(shown).collect();
+        if others > 0 {
+            parts.push(match others {
+                1 => "1 other".to_string(),
+                n => format!("{n} others"),
+            });
+        }
+        let who = match parts.len() {
+            0 => "Nobody".to_string(),
+            1 => parts.remove(0),
+            _ => {
+                let last = parts.pop().unwrap_or_default();
+                format!("{} and {last}", parts.join(", "))
+            }
+        };
+        format!("{who} reacted with {}", self.emoji)
+    }
+}
+
+/// The tooltip builder for a message's reaction chips, looking each chip
+/// up in `reactions` by emoji.
+pub fn reaction_tooltip(
+    reactions: Vec<PostReaction>,
+) -> impl Fn(&Reaction, &mut Window, &mut App) -> gpui_kit::AnyView + 'static {
+    move |reaction, _, cx| {
+        let text = reactions
+            .iter()
+            .find(|r| r.emoji == reaction.emoji)
+            .map(PostReaction::summary)
+            .unwrap_or_else(|| format!("{} reacted with {}", reaction.count, reaction.emoji));
+        text_tooltip(text.into(), cx)
+    }
 }
 
 /// Where a post is on its way to the server.
@@ -314,9 +364,16 @@ impl ChannelView {
     ) -> Self {
         cx.subscribe(
             &SettingsStore::global(cx),
-            |_, _, _: &SettingsChanged, cx| cx.notify(),
+            |this, store, _: &SettingsChanged, cx| {
+                let send_on = store.read(cx).get().send_on;
+                this.composer.update(cx, |composer, _| {
+                    composer.set_submit_on_enter(send_on == SendKey::Enter)
+                });
+                cx.notify();
+            },
         )
         .detach();
+        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let view = cx.weak_entity();
@@ -324,10 +381,24 @@ impl ChannelView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
             state.set_triggers(['@', '~', ':'], cx);
+            state.set_submit_on_enter(send_on == SendKey::Enter);
             // Up in an empty composer edits the last own post, Shift+Up
             // replies to the newest one; the editor sees arrows first, so
-            // the keymap rows alone never fire.
+            // the keymap rows alone never fire. Ctrl+Enter (Cmd+Enter on
+            // macOS) always sends, which is the only way when the
+            // preference puts a newline on Enter.
             state.set_on_key(move |keystroke, window, cx| {
+                if keystroke.key == "enter"
+                    && (keystroke.modifiers.control || keystroke.modifiers.platform)
+                {
+                    return keys
+                        .update(cx, |this, cx| {
+                            let text = this.composer.read(cx).value(cx);
+                            this.send(text, window, cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                }
                 if keystroke.key != "up" {
                     return false;
                 }
@@ -1147,6 +1218,7 @@ impl ChannelView {
                         emoji: emoji.clone(),
                         count: 1,
                         mine: true,
+                        users: vec![],
                     });
                 }
             },
@@ -1657,6 +1729,7 @@ impl ChannelView {
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
+            .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .on_reaction(move |emoji, _, cx| {
                 let (id, emoji) = (reaction_post.clone(), emoji.clone());
                 view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
@@ -2286,6 +2359,33 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reaction_summaries_read_like_a_sentence() {
+        let reaction = |count, mine, users: &[&str]| PostReaction {
+            emoji: "👍".into(),
+            count,
+            mine,
+            users: users
+                .iter()
+                .map(|u| SharedString::from(u.to_string()))
+                .collect(),
+        };
+        assert_eq!(reaction(1, true, &[]).summary(), "You reacted with 👍");
+        assert_eq!(
+            reaction(2, false, &["Priya Nair", "Sam Okafor"]).summary(),
+            "Priya Nair and Sam Okafor reacted with 👍"
+        );
+        assert_eq!(
+            reaction(4, true, &["Priya Nair", "Sam Okafor", "Lena Fischer"]).summary(),
+            "You, Priya Nair, Sam Okafor and 1 other reacted with 👍"
+        );
+        // Sync has the count before the names.
+        assert_eq!(
+            reaction(3, false, &[]).summary(),
+            "3 others reacted with 👍"
+        );
+    }
 
     fn post(id: &str, day: &str) -> Post {
         Post {

@@ -10,6 +10,7 @@ pub mod account;
 pub mod actions;
 pub mod attachments;
 pub mod channel;
+pub mod directory;
 pub mod drafts;
 pub mod emoji;
 pub mod live;

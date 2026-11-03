@@ -12,9 +12,9 @@ use gpui_kit::{
 
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
-use crate::channel::{ChannelModel, Post, PostStatus};
+use crate::channel::{ChannelModel, Post, PostStatus, reaction_tooltip};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
-use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
+use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -166,13 +166,36 @@ impl RightPaneView {
     pub fn new(me: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.subscribe(
             &SettingsStore::global(cx),
-            |_, _, _: &SettingsChanged, cx| cx.notify(),
+            |this, store, _: &SettingsChanged, cx| {
+                let send_on = store.read(cx).get().send_on;
+                this.composer.update(cx, |composer, _| {
+                    composer.set_submit_on_enter(send_on == SendKey::Enter)
+                });
+                cx.notify();
+            },
         )
         .detach();
+        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
         let list = cx.new(|cx| MessageListState::new(0, cx));
+        let keys = cx.weak_entity();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
+            state.set_submit_on_enter(send_on == SendKey::Enter);
+            // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
+            state.set_on_key(move |keystroke, window, cx| {
+                if keystroke.key != "enter"
+                    || !(keystroke.modifiers.control || keystroke.modifiers.platform)
+                {
+                    return false;
+                }
+                keys.update(cx, |this, cx| {
+                    let text = this.composer.read(cx).value(cx);
+                    this.reply(text, window, cx);
+                    true
+                })
+                .unwrap_or(false)
+            });
             state
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
@@ -567,6 +590,7 @@ impl RightPaneView {
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
+            .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))
             .child(markdown(
                 gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
