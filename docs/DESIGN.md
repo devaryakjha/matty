@@ -53,9 +53,12 @@ Semantic colors Matty adds on top (`style::Palette`):
 | `online` | `#16a34a` | `#3fb950` | Presence dot |
 | `away` | `#f59e0b` | `#f2b038` | Presence dot |
 | `dnd` | `#dc2626` | `#f0564f` | Presence dot |
-| `mention_highlight` | `#fff5cc` | `#3a3417` | Row background behind a post that mentions you |
-| `unread_line` | `#3056d3` | `#4a6de8` | The "New messages" divider |
-| `link` | `#2b4fc7` | `#7c9bff` | Links in post bodies |
+
+Mentions, the "New messages" line and links need no token of their own:
+gpuicn's `Message` tints a mention row with `primary` at 6% behind a 2px
+`primary` left border, draws the "New messages" rule in `destructive`,
+and Markdown links use `primary`. Matty keeps those so every gpuicn app
+reads the same way.
 
 Contrast: every foreground on its surface is at least 4.5:1, every
 `muted-foreground` at least 4.5:1 on `background` and `sidebar`, and the
@@ -109,9 +112,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Mention counts are `primary` pills.
 - **Channel view** has a 48px header (name in `title`, star, member count,
   pinned count, info) over the post list and the composer. Posts use 20px
-  horizontal gutters, 36px avatars, Medium author and `meta` time, grouped
+  horizontal gutters, 32px avatars, Medium author and `meta` time, grouped
   within five minutes of the same author, day dividers with a centered pill,
-  and a `unread_line` "New messages" rule. The composer is a bordered card
+  and the "New messages" rule. The composer is a bordered card
   with 10px radius, 12px padding and a formatting row below the text.
 - **Right pane** (default 400px, 320 to 560) shares the header height and
   separates from the channel with a hairline.

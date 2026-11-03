@@ -16,6 +16,7 @@ use crate::actions::{
     self, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher, RecentMentions,
     ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
 };
+use crate::channel::ChannelView;
 use crate::settings::{
     SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
@@ -25,7 +26,6 @@ use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
-    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     kbd::{Kbd, format_shortcut},
     resizable::{PaneLimits, Resizable},
     theme::UiTheme,
@@ -39,6 +39,7 @@ const CONTENT_MIN: f32 = 260.;
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     sidebar: Entity<SidebarView>,
+    channel: Entity<ChannelView>,
     focus: FocusHandle,
     /// The channel the sidebar selected; the channel view follows it in M1.
     selected_channel: Option<gpui_kit::SharedString>,
@@ -75,18 +76,34 @@ impl MainWindow {
         } else {
             SidebarModel::loading()
         };
+        let selected_channel = model.selected.clone();
         let sidebar = cx.new(|_| SidebarView::new("Matty", model));
-        cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| {
-            let SidebarEvent::Select(id) = event;
-            this.selected_channel = Some(id.clone());
-            cx.notify();
-        })
+        let initial = selected_channel
+            .as_deref()
+            .filter(|_| crate::preview::enabled())
+            .and_then(crate::preview::channel);
+        let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
+        cx.subscribe_in(
+            &sidebar,
+            window,
+            |this, _, event: &SidebarEvent, window, cx| {
+                let SidebarEvent::Select(id) = event;
+                this.selected_channel = Some(id.clone());
+                if crate::preview::enabled() {
+                    let model = crate::preview::channel(id);
+                    this.channel
+                        .update(cx, |view, cx| view.set_model(model, window, cx));
+                }
+                cx.notify();
+            },
+        )
         .detach();
         Self {
             settings,
             sidebar,
+            channel,
             focus,
-            selected_channel: None,
+            selected_channel,
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
@@ -356,114 +373,6 @@ impl MainWindow {
                     ),
             )
     }
-
-    /// DESIGN.md §4: a 48px header over the channel's content. With nothing
-    /// open, the header names the state and the body is an empty state.
-    fn channel_view(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let header_action = |id: &'static str, label: &'static str, glyph: LucideIcon| {
-            Button::new(id)
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconSm)
-                .aria_label(label)
-                .disabled(true)
-                .child(
-                    lucide(glyph)
-                        .size(scaled(&theme, metrics::ICON))
-                        .text_color(theme.colors.muted_foreground),
-                )
-        };
-        let header = div()
-            .flex_shrink_0()
-            .h(scaled(&theme, metrics::HEADER_HEIGHT))
-            .px(scaled(&theme, metrics::GUTTER) - theme.space(2.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .border_b(style::hairline())
-            .border_color(theme.colors.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme.space(1.5))
-                    .px(theme.space(2.))
-                    .type_style(style::TITLE, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(
-                        lucide(LucideIcon::Hash)
-                            .size(scaled(&theme, metrics::ICON))
-                            .text_color(theme.colors.muted_foreground),
-                    )
-                    .child("No channel open"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme.space(0.5))
-                    .child(header_action("channel.star", "Favorite", LucideIcon::Star))
-                    .child(header_action(
-                        "channel.members",
-                        "Members",
-                        LucideIcon::Users,
-                    ))
-                    .child(header_action(
-                        "channel.pinned",
-                        "Pinned messages",
-                        LucideIcon::Pin,
-                    ))
-                    .child(header_action(
-                        "channel.info",
-                        "Channel info",
-                        LucideIcon::Info,
-                    )),
-            );
-        let media = div()
-            .size(theme.space(10.))
-            .rounded_full()
-            .bg(theme.colors.muted)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                lucide(LucideIcon::MessagesSquare)
-                    .size(scaled(&theme, metrics::ICON_LARGE))
-                    .text_color(theme.colors.muted_foreground),
-            );
-        div()
-            .size_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .bg(theme.colors.background)
-            .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(theme.space(6.))
-                    .child(
-                        Empty::new().header(
-                            EmptyHeader::new()
-                                .media(EmptyMedia::new().child(media))
-                                .title(
-                                    EmptyTitle::new()
-                                        .type_style(style::TITLE, &theme)
-                                        .child("Not connected yet"),
-                                )
-                                .description(
-                                    EmptyDescription::new()
-                                        .type_style(style::META, &theme)
-                                        .child("Your channels appear here once Matty is connected to a Mattermost server."),
-                                ),
-                        ),
-                    ),
-            )
-    }
 }
 
 impl Render for MainWindow {
@@ -474,7 +383,7 @@ impl Render for MainWindow {
         let frame = if self.sidebar_visible {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
                 .first(self.sidebar.clone())
-                .second(self.channel_view(cx))
+                .second(self.channel.clone())
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
                 .on_resize(move |width: &Pixels, _, cx| {
@@ -485,7 +394,7 @@ impl Render for MainWindow {
                 })
                 .into_any_element()
         } else {
-            self.channel_view(cx).into_any_element()
+            self.channel.clone().into_any_element()
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();

@@ -29,7 +29,9 @@ pub fn theme(mode: ThemeMode) -> UiTheme {
     }
 }
 
-/// Colors with a meaning shadcn's tokens do not cover (DESIGN.md §2).
+/// Colors with a meaning shadcn's tokens do not cover (DESIGN.md §2):
+/// presence. Mentions, the "New messages" line and links use gpuicn's own
+/// treatment of `primary` and `destructive`, so they need no token here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     /// Presence dot: online.
@@ -38,12 +40,6 @@ pub struct Palette {
     pub away: Rgba,
     /// Presence dot: do not disturb.
     pub dnd: Rgba,
-    /// Row background behind a post that mentions the user.
-    pub mention_highlight: Rgba,
-    /// The "New messages" divider.
-    pub unread_line: Rgba,
-    /// Links inside post bodies.
-    pub link: Rgba,
 }
 
 impl Global for Palette {}
@@ -56,17 +52,11 @@ impl Palette {
                 online: rgb(0x16a34a),
                 away: rgb(0xf59e0b),
                 dnd: rgb(0xdc2626),
-                mention_highlight: rgb(0xfff5cc),
-                unread_line: rgb(0x3056d3),
-                link: rgb(0x2b4fc7),
             },
             ThemeMode::Dark => Self {
                 online: rgb(0x3fb950),
                 away: rgb(0xf2b038),
                 dnd: rgb(0xf0564f),
-                mention_highlight: rgb(0x3a3417),
-                unread_line: rgb(0x4a6de8),
-                link: rgb(0x7c9bff),
             },
         }
     }
@@ -240,7 +230,6 @@ mod tests {
     fn text_meets_wcag_aa_on_its_surfaces() {
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
             let c = theme(mode).colors;
-            let palette = Palette::for_mode(mode);
             let pairs = [
                 ("foreground/background", c.foreground, c.background),
                 ("muted/background", c.muted_foreground, c.background),
@@ -253,12 +242,6 @@ mod tests {
                 ),
                 ("primary fg/primary", c.primary_foreground, c.primary),
                 ("popover fg/popover", c.popover_foreground, c.popover),
-                ("link/background", palette.link, c.background),
-                (
-                    "foreground/mention",
-                    c.foreground,
-                    palette.mention_highlight,
-                ),
             ];
             for (name, fg, bg) in pairs {
                 let ratio = contrast(fg, bg);

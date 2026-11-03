@@ -7,6 +7,7 @@
 #![allow(missing_docs)]
 
 pub mod actions;
+pub mod channel;
 pub mod logging;
 mod main_window;
 pub mod preview;
