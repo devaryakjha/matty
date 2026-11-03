@@ -12,10 +12,12 @@
 
 mod bridge;
 mod change;
+mod commands;
 mod engine;
 mod events;
 mod load;
 mod outbox;
+mod typing;
 
 pub use bridge::{SyncHandle, spawn};
 pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};

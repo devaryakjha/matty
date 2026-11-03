@@ -99,6 +99,12 @@ MATTY_TEST_SERVER=http://localhost:8065 MATTY_TEST_PASSWORD='Password1!' \
     cargo test -p matty-api -p matty-store -p matty-sync
 ```
 
+The sync engine's suite is `crates/matty-sync/tests/integration/`. Each test
+signs in as `admin` (`MATTY_TEST_ADMIN` to change it) and makes its own team,
+two users and a channel, so the tests run in parallel without seeing each
+other's posts or read state. Only the seeded-account test uses `tester`
+(`MATTY_TEST_LOGIN`), and nothing else changes that account.
+
 CI's `integration` job does the same on Ubuntu for each server version in its
 matrix, and uploads the server log when a test fails. Changes that only touch
 Markdown, `docs/` or the license skip its steps.

@@ -3,9 +3,10 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use matty_api::capabilities::CollapsedThreads;
-use matty_api::models::{PostChange, Preference};
+use matty_api::models::{Draft, PostChange, Preference, Reaction};
 use matty_api::ws::{ConnectionState, WsClient, WsEvent, WsSignal};
 use matty_api::{Client, ServerCapabilities};
 use matty_store::posts::{self, Window};
@@ -16,9 +17,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
+use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
 use crate::outbox;
+use crate::typing::TypingThrottle;
 use matty_store::outbox::{self as queue, Outgoing};
 
 /// Followed threads in a team's Threads list snapshot.
@@ -120,6 +123,55 @@ pub enum Command {
         /// The post.
         post_id: String,
     },
+    /// The user opened a channel, leaving `prev_channel_id` (or empty): both
+    /// read at once here, then on the server.
+    ViewChannel {
+        /// The channel now on screen.
+        channel_id: String,
+        /// The channel left, or empty.
+        prev_channel_id: String,
+    },
+    /// Marks the channel (or, with collapsed threads, the thread) unread
+    /// from this post.
+    MarkUnread {
+        /// The first post to show as unread.
+        post_id: String,
+    },
+    /// Adds the user's reaction, or removes it when they already reacted
+    /// with this emoji. Shown at once; undone if the server refuses.
+    ToggleReaction {
+        /// The post.
+        post_id: String,
+        /// Emoji name without colons, such as `+1`.
+        emoji_name: String,
+    },
+    /// Keeps what the user typed but has not sent. Always stored here; also
+    /// synced to the server when it allows synced drafts. An empty message
+    /// with no files deletes the draft.
+    SaveDraft {
+        /// Channel.
+        channel_id: String,
+        /// Thread root for a reply draft, or empty.
+        root_id: String,
+        /// Draft text.
+        message: String,
+        /// Uploaded file ids.
+        file_ids: Vec<String>,
+    },
+    /// The user is typing; sent at most once per five seconds per place.
+    Typing {
+        /// Channel.
+        channel_id: String,
+        /// Thread root when typing a reply, or empty.
+        parent_id: String,
+    },
+    /// Sets the user's status: `online`, `away`, `dnd` or `offline`.
+    SetStatus {
+        /// The status.
+        status: String,
+        /// For `dnd` with a duration: when it ends, in seconds since the epoch.
+        dnd_end_time: Option<i64>,
+    },
 }
 
 impl std::fmt::Debug for Command {
@@ -179,14 +231,49 @@ impl std::fmt::Debug for Command {
                 .debug_struct("DeletePost")
                 .field("post_id", post_id)
                 .finish(),
+            Self::ViewChannel {
+                channel_id,
+                prev_channel_id,
+            } => f
+                .debug_struct("ViewChannel")
+                .field("channel_id", channel_id)
+                .field("prev_channel_id", prev_channel_id)
+                .finish(),
+            Self::MarkUnread { post_id } => f
+                .debug_struct("MarkUnread")
+                .field("post_id", post_id)
+                .finish(),
+            Self::ToggleReaction {
+                post_id,
+                emoji_name,
+            } => f
+                .debug_struct("ToggleReaction")
+                .field("post_id", post_id)
+                .field("emoji_name", emoji_name)
+                .finish(),
+            Self::SaveDraft {
+                channel_id,
+                root_id,
+                ..
+            } => f
+                .debug_struct("SaveDraft")
+                .field("channel_id", channel_id)
+                .field("root_id", root_id)
+                .finish_non_exhaustive(),
+            Self::Typing {
+                channel_id,
+                parent_id,
+            } => f
+                .debug_struct("Typing")
+                .field("channel_id", channel_id)
+                .field("parent_id", parent_id)
+                .finish(),
+            Self::SetStatus { status, .. } => f
+                .debug_struct("SetStatus")
+                .field("status", status)
+                .finish_non_exhaustive(),
         }
     }
-}
-
-/// A server write a command asked for.
-enum Write {
-    Edit { post_id: String, message: String },
-    Delete { post_id: String },
 }
 
 pub(crate) enum Message {
@@ -229,7 +316,7 @@ struct Session {
     fetched: BTreeSet<String>,
     load: JoinHandle<()>,
     /// The WebSocket; dropping it closes the connection.
-    _socket: WsClient,
+    socket: WsClient,
     /// The socket has been connected before, so the next connect is a
     /// reconnect that needs a catch-up.
     was_connected: bool,
@@ -250,6 +337,7 @@ pub(crate) struct Engine {
     session: Option<Session>,
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
+    typing: TypingThrottle,
 }
 
 impl Engine {
@@ -267,6 +355,7 @@ impl Engine {
             session: None,
             loaded,
             loaded_inbox: Some(loaded_inbox),
+            typing: TypingThrottle::default(),
         }
     }
 
@@ -344,7 +433,7 @@ impl Engine {
                         collapsed_threads: cached_crt(&tx)?,
                         fetched: BTreeSet::new(),
                         load,
-                        _socket: socket,
+                        socket,
                         was_connected: false,
                         resyncing: false,
                         resync_again: false,
@@ -431,6 +520,105 @@ impl Engine {
                         writes.push(Write::Delete { post_id });
                     }
                 }
+                Message::Command(Command::ViewChannel {
+                    channel_id,
+                    prev_channel_id,
+                }) => {
+                    if let Some(me) = &self.me {
+                        let now = posts::now_ms();
+                        for viewed in [&channel_id, &prev_channel_id] {
+                            if !viewed.is_empty() {
+                                sidebar::mark_viewed(&tx, viewed, me, now)?;
+                                events::touch_channel(&tx, viewed, dirty)?;
+                            }
+                        }
+                    }
+                    writes.push(Write::View {
+                        channel_id,
+                        prev_channel_id,
+                    });
+                }
+                Message::Command(Command::MarkUnread { post_id }) => {
+                    let collapsed_threads = cached_crt(&tx)?;
+                    writes.push(Write::Unread {
+                        post_id,
+                        collapsed_threads,
+                    });
+                }
+                Message::Command(Command::ToggleReaction {
+                    post_id,
+                    emoji_name,
+                }) => {
+                    let Some(me) = self.me.clone() else {
+                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
+                        continue;
+                    };
+                    let add = !posts::reactions(&tx, &post_id)?
+                        .iter()
+                        .any(|r| r.user_id == me && r.emoji_name == emoji_name);
+                    let reaction = Reaction {
+                        user_id: me,
+                        post_id,
+                        emoji_name,
+                        create_at: posts::now_ms(),
+                    };
+                    react_locally(&tx, &reaction, add, dirty)?;
+                    writes.push(Write::React { reaction, add });
+                }
+                Message::Command(Command::SaveDraft {
+                    channel_id,
+                    root_id,
+                    message,
+                    file_ids,
+                }) => {
+                    let now = posts::now_ms();
+                    let draft = Draft {
+                        create_at: now,
+                        update_at: now,
+                        user_id: self.me.clone().unwrap_or_default(),
+                        channel_id,
+                        root_id,
+                        message,
+                        file_ids,
+                        ..Draft::default()
+                    };
+                    posts::upsert_draft(&tx, &draft)?;
+                    let stored = posts::draft(&tx, &draft.channel_id, &draft.root_id)?;
+                    dirty.direct.push(ChangeSet::Draft {
+                        channel_id: draft.channel_id.clone(),
+                        root_id: draft.root_id.clone(),
+                        draft: stored.map(Arc::new),
+                    });
+                    let synced = self
+                        .capabilities
+                        .as_ref()
+                        .is_some_and(|capabilities| capabilities.synced_drafts);
+                    writes.extend(commands::draft_write(synced, draft));
+                }
+                Message::Command(Command::Typing {
+                    channel_id,
+                    parent_id,
+                }) => {
+                    let connection = self.session.as_ref().and_then(|s| s.socket.connection());
+                    if let Some(connection) = connection
+                        && self.typing.allow(&channel_id, &parent_id, Instant::now())
+                    {
+                        tokio::spawn(async move {
+                            if let Err(error) =
+                                connection.user_typing(&channel_id, &parent_id).await
+                            {
+                                tracing::debug!(%error, "a typing notice was not sent");
+                            }
+                        });
+                    }
+                }
+                Message::Command(Command::SetStatus {
+                    status,
+                    dnd_end_time,
+                }) => writes.push(Write::Status {
+                    status,
+                    dnd_end_time,
+                }),
             }
         }
         tx.commit()?;
@@ -469,42 +657,19 @@ impl Engine {
         Ok(())
     }
 
-    /// Calls the server for an edit or delete; the result comes back as a
+    /// Calls the server for a command; the result comes back as a
     /// [`Loaded`] and is applied like the matching event.
     fn write(&self, write: Write, dirty: &mut Dirty) {
-        let Some(session) = &self.session else {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
             dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
             return;
         };
-        let client = session.client.clone();
-        let results = self.loaded.clone();
-        tokio::spawn(async move {
-            let message = match write {
-                Write::Edit { post_id, message } => {
-                    let patch = matty_api::PostPatch {
-                        message: Some(message),
-                        ..matty_api::PostPatch::default()
-                    };
-                    match client.patch_post(&post_id, &patch).await {
-                        Ok(post) => Loaded::Edited(Box::new(post)),
-                        Err(error) => Loaded::WriteFailed {
-                            action: "edit",
-                            target: post_id,
-                            error: error.to_string(),
-                        },
-                    }
-                }
-                Write::Delete { post_id } => match client.delete_post(&post_id).await {
-                    Ok(()) => Loaded::Deleted { post_id },
-                    Err(error) => Loaded::WriteFailed {
-                        action: "delete",
-                        target: post_id,
-                        error: error.to_string(),
-                    },
-                },
-            };
-            let _ = results.send(message);
-        });
+        tokio::spawn(commands::run(
+            session.client.clone(),
+            session.user_id.clone(),
+            write,
+            self.loaded.clone(),
+        ));
     }
 
     /// Fetches an open channel's posts once per session, after the account
@@ -885,6 +1050,35 @@ impl Engine {
                     )?;
                 }
             }
+            Loaded::Unread(unread) => {
+                let state = sidebar::ReadState {
+                    last_viewed_at: unread.last_viewed_at,
+                    msg_count: unread.msg_count,
+                    msg_count_root: unread.msg_count_root,
+                    mention_count: unread.mention_count,
+                    mention_count_root: unread.mention_count_root,
+                    urgent_mention_count: unread.urgent_mention_count,
+                };
+                let conn = self.store.conn();
+                sidebar::set_read_state(conn, &unread.channel_id, &unread.user_id, &state)?;
+                events::touch_channel(conn, &unread.channel_id, dirty)?;
+            }
+            Loaded::ReactFailed {
+                reaction,
+                added,
+                error,
+            } => {
+                react_locally(self.store.conn(), &reaction, !added, dirty)?;
+                dirty.direct.push(ChangeSet::Failed(CommandError::Server {
+                    action: if added {
+                        "add reaction"
+                    } else {
+                        "remove reaction"
+                    },
+                    target: reaction.post_id.clone(),
+                    error,
+                }));
+            }
             Loaded::WriteFailed {
                 action,
                 target,
@@ -1052,6 +1246,25 @@ fn all_preferences(conn: &Db) -> Result<Vec<Preference>, StoreError> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(preferences)
+}
+
+/// Shows or hides the user's reaction in the store.
+fn react_locally(
+    conn: &Db,
+    reaction: &Reaction,
+    add: bool,
+    dirty: &mut Dirty,
+) -> Result<(), StoreError> {
+    let Some(post) = posts::post(conn, &reaction.post_id)? else {
+        return Ok(());
+    };
+    if add {
+        posts::add_reaction(conn, reaction)?;
+    } else {
+        posts::remove_reaction(conn, reaction)?;
+    }
+    events::touch_posts(&post, dirty);
+    Ok(())
 }
 
 fn cached_crt(conn: &Db) -> Result<bool, StoreError> {
