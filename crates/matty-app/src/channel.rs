@@ -14,7 +14,7 @@ use gpui_kit::{
 };
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
-use crate::attachments::{AttachmentStatus, Upload, UploadSource};
+use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
@@ -28,6 +28,7 @@ use crate::ui::{
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+    lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{
@@ -89,6 +90,8 @@ pub struct Post {
     /// The thread under this post, when it has one, for the reply footer
     /// (Collapsed Reply Threads, PLAN §4.4).
     pub replies: Option<ReplySummary>,
+    /// Files on the post (PLAN §4.6).
+    pub files: Vec<PostFile>,
 }
 
 /// What the channel shows about a post's thread without loading it.
@@ -195,6 +198,8 @@ pub enum ChannelEvent {
     CancelUpload(SharedString),
     /// The user asked to upload a failed file again.
     RetryUpload(SharedString),
+    /// The user clicked a file on a post; sync opens or downloads it.
+    OpenFile(SharedString),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
     /// The user asked for the channel's pinned messages.
@@ -258,6 +263,11 @@ pub struct ChannelView {
     /// Files waiting in the composer tray.
     uploads: Vec<Upload>,
     upload_seq: usize,
+    /// The image viewer over the clicked post's images.
+    lightbox: Entity<LightboxState>,
+    lightbox_handle: DialogHandle,
+    /// File ids behind the lightbox's images, for its Open button.
+    lightbox_files: Vec<SharedString>,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -383,6 +393,9 @@ impl ChannelView {
             directory: Vec::new(),
             uploads: Vec::new(),
             upload_seq: 0,
+            lightbox: cx.new(|_| LightboxState::new([])),
+            lightbox_handle: DialogHandle::new(false),
+            lightbox_files: Vec::new(),
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -509,6 +522,76 @@ impl ChannelView {
         cx.emit(ChannelEvent::RetryUpload(id.clone()));
     }
 
+    /// Opens the lightbox over the images of `post`, at image `index`.
+    fn open_lightbox(
+        &mut self,
+        post: SharedString,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(post) = self
+            .model
+            .as_ref()
+            .and_then(|model| model.posts.iter().find(|p| p.id == post))
+        else {
+            return;
+        };
+        let caption: SharedString = format!(
+            "{} · {}",
+            post.author,
+            ClockFormat::current(cx).format(post.time)
+        )
+        .into();
+        let mut ids = Vec::new();
+        let images: Vec<LightboxImage> = post
+            .files
+            .iter()
+            .filter_map(|file| {
+                let image = file.image()?;
+                ids.push(file.id.clone());
+                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
+            })
+            .collect();
+        if images.is_empty() {
+            return;
+        }
+        self.lightbox_files = ids;
+        self.lightbox
+            .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
+        self.lightbox_handle.open(window, cx);
+        cx.notify();
+    }
+
+    /// The lightbox with an Open button for the showing file.
+    fn lightbox(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let open = Button::new("channel.lightbox.open")
+            .size(ButtonSize::Icon)
+            .variant(ButtonVariant::Ghost)
+            .aria_label("Open file")
+            .child(
+                lucide(LucideIcon::Download)
+                    .size(theme.space(4.5))
+                    .text_color(gpui_kit::white()),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                let index = this.lightbox.read(cx).index();
+                if let Some(id) = this.lightbox_files.get(index) {
+                    cx.emit(ChannelEvent::OpenFile(id.clone()));
+                }
+            }))
+            .into_any_element();
+        lightbox(
+            "channel.lightbox",
+            &self.lightbox_handle,
+            &self.lightbox,
+            [open],
+            window,
+            cx,
+        )
+    }
+
     /// A tray chip: a thumbnail for images, a card for anything else.
     fn upload_chip(&self, upload: &Upload, cx: &mut Context<Self>) -> Attachment {
         let id = upload.id.clone();
@@ -541,7 +624,8 @@ impl ChannelView {
         {
             return;
         }
-        let files: Vec<SharedString> = self.uploads.drain(..).map(|upload| upload.id).collect();
+        let files: Vec<PostFile> = self.uploads.drain(..).map(PostFile::from_upload).collect();
+        let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
         let Some(mut model) = self.model.clone() else {
             return;
         };
@@ -563,13 +647,17 @@ impl ChannelView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            files,
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
-        cx.emit(ChannelEvent::Send { text: body, files });
+        cx.emit(ChannelEvent::Send {
+            text: body,
+            files: file_ids,
+        });
     }
 
     fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
@@ -1293,6 +1381,26 @@ impl ChannelView {
                     .ok();
             });
         }
+        if !post.files.is_empty() {
+            let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
+            let file_view = image_view.clone();
+            row = row.child(post_files(
+                &format!("post.{id}"),
+                &post.files,
+                move |index, window, cx| {
+                    let post = image_post.clone();
+                    image_view
+                        .update(cx, |this, cx| this.open_lightbox(post, index, window, cx))
+                        .ok();
+                },
+                move |file, _, cx| {
+                    file_view
+                        .update(cx, |_, cx| cx.emit(ChannelEvent::OpenFile(file)))
+                        .ok();
+                },
+                cx,
+            ));
+        }
         if let Some(summary) = &post.replies {
             row = row.child(Self::reply_footer(&id, summary, cx));
         }
@@ -1815,6 +1923,7 @@ impl Render for ChannelView {
             // Zero-size host for the shared post menu; it opens at the pointer.
             .child(Menu::new(&self.menu, "Message actions").context_area(div()))
             .child(self.delete_dialog(window, cx))
+            .child(self.lightbox(window, cx))
     }
 }
 
@@ -1852,6 +1961,7 @@ mod tests {
             pinned: false,
             status: PostStatus::Sent,
             replies: None,
+            files: vec![],
         }
     }
 

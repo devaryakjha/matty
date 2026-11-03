@@ -3,12 +3,20 @@
 //! Files).
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_icons::LucideIcon;
-use gpui_kit::{Image, ImageFormat, ImageSource, SharedString};
+use gpui_kit::{
+    App, ElementId, Image, ImageFormat, ImageSource, ParentElement as _, SharedString, Styled as _,
+    Window, div,
+};
 
 pub use crate::ui::attachment::AttachmentStatus;
+use crate::ui::{
+    attachment::{Attachment, attachment_group},
+    theme::UiTheme,
+};
 
 /// The name a pasted image gets; Mattermost uses the same.
 pub const PASTED_IMAGE: &str = "Pasted image.png";
@@ -77,13 +85,7 @@ impl Upload {
 
     /// The image to show as a thumbnail, when the file is one.
     pub fn image(&self) -> Option<ImageSource> {
-        match &self.source {
-            UploadSource::Image(image) => Some(ImageSource::Image(image.clone())),
-            UploadSource::Path(path) if is_image(&self.name) => {
-                Some(ImageSource::from(path.clone()))
-            }
-            UploadSource::Path(_) => None,
-        }
+        thumbnail(&self.name, &self.source)
     }
 
     /// The chip's second line: "PDF · 2.4 MB".
@@ -99,6 +101,108 @@ impl Upload {
     /// Whether the file is on the server and the post can go.
     pub fn is_ready(&self) -> bool {
         self.status == AttachmentStatus::Ready
+    }
+}
+
+/// A file on a posted message (PLAN §4.6 Files).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostFile {
+    pub id: SharedString,
+    pub name: SharedString,
+    pub size: u64,
+    /// Where the bytes are when the file is an image, for its thumbnail
+    /// and the lightbox; sync fills it as thumbnails arrive.
+    pub preview: Option<UploadSource>,
+}
+
+impl PostFile {
+    /// The posted form of a tray upload.
+    pub fn from_upload(upload: Upload) -> Self {
+        let preview = is_image(&upload.name).then_some(upload.source);
+        Self {
+            id: upload.id,
+            name: upload.name,
+            size: upload.size,
+            preview,
+        }
+    }
+
+    /// The image to show, when the file is one with bytes at hand.
+    pub fn image(&self) -> Option<ImageSource> {
+        self.preview
+            .as_ref()
+            .and_then(|source| thumbnail(&self.name, source))
+    }
+
+    /// "PDF · 2.4 MB".
+    pub fn meta(&self) -> SharedString {
+        format!("{} · {}", kind(&self.name), format_size(self.size)).into()
+    }
+}
+
+type ImageHandler = dyn Fn(usize, &mut Window, &mut App);
+type FileHandler = dyn Fn(SharedString, &mut Window, &mut App);
+
+/// A post's files under its text: image thumbnails first, then cards.
+/// `on_image` gets the index among the images, for a lightbox; `on_file`
+/// gets a card's file id, to open or download it.
+pub fn post_files(
+    prefix: &str,
+    files: &[PostFile],
+    on_image: impl Fn(usize, &mut Window, &mut App) + 'static,
+    on_file: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> gpui_kit::Div {
+    let on_image: Rc<ImageHandler> = Rc::new(on_image);
+    let on_file: Rc<FileHandler> = Rc::new(on_file);
+    let mut images = Vec::new();
+    let mut cards = Vec::new();
+    for file in files {
+        let id = ElementId::Name(format!("{prefix}.file.{}", file.id).into());
+        match file.image() {
+            Some(image) => {
+                let index = images.len();
+                let open = on_image.clone();
+                images.push(
+                    Attachment::new(id, file.name.clone())
+                        .image(image)
+                        .on_click(move |_, window, cx| open(index, window, cx)),
+                );
+            }
+            None => {
+                let file_id = file.id.clone();
+                let open = on_file.clone();
+                cards.push(
+                    Attachment::new(id, file.name.clone())
+                        .meta(file.meta())
+                        .icon(icon_for(&file.name))
+                        .on_click(move |_, window, cx| open(file_id.clone(), window, cx)),
+                );
+            }
+        }
+    }
+    let theme = UiTheme::read(cx);
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme.space(2.))
+        .children((!images.is_empty()).then(|| {
+            attachment_group(
+                ElementId::Name(format!("{prefix}.images").into()),
+                images,
+                cx,
+            )
+        }))
+        .children((!cards.is_empty()).then(|| {
+            attachment_group(ElementId::Name(format!("{prefix}.cards").into()), cards, cx)
+        }))
+}
+
+fn thumbnail(name: &str, source: &UploadSource) -> Option<ImageSource> {
+    match source {
+        UploadSource::Image(image) => Some(ImageSource::Image(image.clone())),
+        UploadSource::Path(path) if is_image(name) => Some(ImageSource::from(path.clone())),
+        UploadSource::Path(_) => None,
     }
 }
 
@@ -191,6 +295,15 @@ mod tests {
         assert_eq!(icon_for("report.xlsx"), LucideIcon::FileSpreadsheet);
         assert_eq!(icon_for("main.rs"), LucideIcon::FileCode);
         assert_eq!(icon_for("thing"), LucideIcon::File);
+    }
+
+    #[test]
+    fn posted_files_keep_image_bytes_only_for_images() {
+        let image = PostFile::from_upload(Upload::from_image("u1", png(b"png")));
+        assert!(image.image().is_some());
+        let doc = PostFile::from_upload(Upload::from_path("u2", "notes.pdf".into()));
+        assert!(doc.preview.is_none());
+        assert_eq!(doc.meta().as_ref(), "PDF · 0 B");
     }
 
     #[test]

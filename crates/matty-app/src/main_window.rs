@@ -240,6 +240,7 @@ impl MainWindow {
                 | ChannelEvent::Upload { .. }
                 | ChannelEvent::CancelUpload(_)
                 | ChannelEvent::RetryUpload(_)
+                | ChannelEvent::OpenFile(_)
                 | ChannelEvent::ToggleReaction { .. }
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)

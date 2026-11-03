@@ -104,7 +104,7 @@ pub fn sidebar() -> SidebarModel {
 }
 
 use crate::account::Account;
-use crate::attachments::{self, AttachmentStatus, Upload, UploadSource};
+use crate::attachments::{self, AttachmentStatus, PostFile, Upload, UploadSource};
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
@@ -136,6 +136,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        files: vec![],
     };
     let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
         emoji: emoji.into(),
@@ -247,6 +248,39 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         ),
     ];
     let mut posts = posts;
+    posts.push(Post {
+        files: vec![
+            PostFile {
+                id: "f-mockup".into(),
+                name: "sidebar-mockup.png".into(),
+                size: 48_312,
+                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
+                    "../assets/preview/mockup.png"
+                )))),
+            },
+            PostFile {
+                id: "f-mockup-dark".into(),
+                name: "sidebar-mockup-dark.png".into(),
+                size: 51_904,
+                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
+                    "../assets/preview/mockup-dark.png"
+                )))),
+            },
+            PostFile {
+                id: "f-notes".into(),
+                name: "review-notes.pdf".into(),
+                size: 2_516_582,
+                preview: None,
+            },
+        ],
+        ..post(
+            "p8b",
+            "Lena Fischer",
+            "08:33",
+            "Today",
+            "Sidebar mockups for the review, light and dark, and my notes.",
+        )
+    });
     posts.push(Post {
         mine: true,
         status: PostStatus::Failed,
@@ -610,6 +644,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        files: vec![],
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),

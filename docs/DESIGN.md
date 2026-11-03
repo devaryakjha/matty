@@ -251,6 +251,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `destructive`, says "Upload failed" and gets Retry. Each has a remove
   button. Send stays disabled while any file is uploading or failed, and
   a post may be files alone; the tray clears on send.
+- **Files on posts and the lightbox** (PLAN §4.6 Files, gpuicn G8) put a
+  post's files under its text as the same `Attachment` chips: image
+  thumbnails in one row, then cards with the type icon, name and
+  "PDF · 2.4 MB" (`design-24`). Clicking a card asks sync to open the
+  file; clicking a thumbnail opens gpuicn's `lightbox` over the window
+  with that post's images only, "1 of 2", the file name and "Author ·
+  time" as the caption, zoom, arrows and ←/→, an Open (download) action
+  before Close, and Escape returning focus. The thread pane and the Saved,
+  Pinned, Mentions and Search listings show the same chips and lightbox.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a
