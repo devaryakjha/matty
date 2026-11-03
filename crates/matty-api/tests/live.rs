@@ -6,8 +6,11 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::sync::{Arc, Mutex};
+
 use matty_api::{
-    ApiError, Client, Credentials, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery,
+    ApiError, Client, Credentials, Fetched, NewPost, PostPatch, PostsQuery, ThreadQuery,
+    ThreadsQuery, Upload,
     models::PostChange,
     ws::{ConnectionState, WsClient, WsConnection, WsMessage, WsSignal},
 };
@@ -187,6 +190,76 @@ async fn post_thread_and_read_state_round_trip() {
         })
         .collect();
     assert!(deleted.contains(&root.id.as_str()) && deleted.contains(&reply.id.as_str()));
+}
+
+#[tokio::test]
+async fn upload_an_image_and_fetch_its_thumbnail_and_preview() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "matty-live-test-files".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let team = client.my_teams().await.unwrap().remove(0);
+    let channel = client
+        .my_channels(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "O")
+        .expect("a public channel");
+    // The server's own PNG of the user's avatar is a real image to upload.
+    let Fetched::Fresh { bytes: png, .. } = client.avatar(&me.id, None).await.unwrap() else {
+        panic!("no avatar")
+    };
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let log = reports.clone();
+    let uploaded = client
+        .upload_file(
+            Upload {
+                channel_id: channel.id.clone(),
+                client_id: "live-upload".into(),
+                file_name: "avatar.png".into(),
+                bytes: png.clone(),
+            },
+            Arc::new(move |sent, total| log.lock().unwrap().push((sent, total))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.client_ids, ["live-upload"]);
+    let info = &uploaded.file_infos[0];
+    assert_eq!(info.name, "avatar.png");
+    assert_eq!(info.size, i64::try_from(png.len()).unwrap());
+    assert!(info.width > 0 && info.has_preview_image);
+    let total = png.len() as u64;
+    assert_eq!(reports.lock().unwrap().last(), Some(&(total, total)));
+
+    for fetched in [
+        client.file_thumbnail(&info.id, None).await.unwrap(),
+        client.file_preview(&info.id, None).await.unwrap(),
+    ] {
+        let Fetched::Fresh {
+            bytes,
+            content_type,
+            ..
+        } = fetched
+        else {
+            panic!("not modified")
+        };
+        assert!(!bytes.is_empty());
+        assert!(content_type.unwrap().starts_with("image/"));
+    }
+    let Fetched::Fresh { bytes, .. } = client.file(&info.id, None).await.unwrap() else {
+        panic!("not modified")
+    };
+    assert_eq!(bytes, png);
+    assert_eq!(client.file_info(&info.id).await.unwrap().id, info.id);
 }
 
 #[tokio::test]

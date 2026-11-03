@@ -36,6 +36,14 @@ pub enum ApiError {
     /// The response was not the JSON Matty expected.
     #[error("unexpected response from the server: {0}")]
     Decode(String),
+    /// The server redirected to another host, which Matty never follows, so
+    /// a session token or a request never leaves the server it was meant for.
+    /// The image proxy answers this way when the server's proxy is off.
+    #[error("the server redirected to another host: {location}")]
+    Redirected {
+        /// The `Location` the server named.
+        location: String,
+    },
     /// The URL Matty was given is not usable.
     #[error("invalid server URL: {0}")]
     InvalidUrl(String),
