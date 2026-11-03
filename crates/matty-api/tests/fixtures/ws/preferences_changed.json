@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "preferences": "[{\"user_id\":\"rm9qb436airnmmjzxy7soiff9c\",\"category\":\"display_settings\",\"name\":\"use_military_time\",\"value\":\"true\"}]"
+  },
+  "event": "preferences_changed",
+  "seq": 41
+}

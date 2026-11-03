@@ -1,0 +1,16 @@
+{
+  "event": "group_added",
+  "data": {
+    "teammate_ids": "[\"rm9qb436airnmmjzxy7soiff9c\", \"bkr5t3gqiigy5yn34xjb6rwmna\"]"
+  },
+  "broadcast": {
+    "omit_users": null,
+    "user_id": "",
+    "channel_id": "gmw6egqkajd8byosc158i4famw",
+    "team_id": "",
+    "connection_id": "",
+    "omit_connection_id": ""
+  },
+  "seq": 104,
+  "_source": "hand-written from mattermost/server model/websocket_message.go and app publishers; this dev server does not send it"
+}

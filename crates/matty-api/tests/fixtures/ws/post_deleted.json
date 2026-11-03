@@ -1,0 +1,16 @@
+{
+  "broadcast": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "connection_id": "",
+    "contains_sanitized_data": true,
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "post": "{\"id\":\"81ngobc9ktdbtqqiei41rm1wic\",\"create_at\":1793728919306,\"update_at\":1793728919306,\"edit_at\":0,\"delete_at\":0,\"is_pinned\":false,\"user_id\":\"bkr5t3gqiigy5yn34xjb6rwmna\",\"channel_id\":\"r7w6egqkajd8byosc158i4famw\",\"root_id\":\"\",\"original_id\":\"\",\"message\":\"to delete\",\"type\":\"\",\"props\":{},\"hashtags\":\"\",\"file_ids\":[],\"pending_post_id\":\"\",\"remote_id\":\"\",\"reply_count\":0,\"last_reply_at\":0,\"participants\":null}"
+  },
+  "event": "post_deleted",
+  "seq": 17
+}

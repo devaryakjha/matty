@@ -1,0 +1,18 @@
+{
+  "broadcast": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": {
+      "bkr5t3gqiigy5yn34xjb6rwmna": true
+    },
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "parent_id": "",
+    "user_id": "bkr5t3gqiigy5yn34xjb6rwmna"
+  },
+  "event": "typing",
+  "seq": 18
+}

@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "jat5n1bidtrcfke4sots5xz74w",
+    "user_id": ""
+  },
+  "data": {
+    "team": "{\"id\":\"jat5n1bidtrcfke4sots5xz74w\",\"create_at\":1793728922062,\"update_at\":1793728922850,\"delete_at\":1793728922849,\"display_name\":\"WS temp\",\"name\":\"ws-919634\",\"description\":\"\",\"email\":\"\",\"type\":\"O\",\"company_name\":\"\",\"allowed_domains\":\"\",\"invite_id\":\"\",\"allow_open_invite\":false,\"scheme_id\":null,\"group_constrained\":null,\"policy_id\":null,\"cloud_limits_archived\":false}"
+  },
+  "event": "delete_team",
+  "seq": 56
+}

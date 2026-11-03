@@ -1,0 +1,16 @@
+{
+  "broadcast": {
+    "channel_id": "y91e3wfettratkx61jcc6cfz7y",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "channel_id": "y91e3wfettratkx61jcc6cfz7y",
+    "delete_at": 1793728920675
+  },
+  "event": "channel_deleted",
+  "seq": 33
+}

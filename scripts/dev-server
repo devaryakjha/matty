@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Runs Matty's development Mattermost server (docker/compose.yml).
+#
+#   scripts/dev-server up       start and wait until /api/v4/system/ping is OK
+#   scripts/dev-server down     stop, keeping data
+#   scripts/dev-server reset    stop and delete all data, then start fresh
+#   scripts/dev-server logs     follow the server log
+#   scripts/dev-server mmctl …  run mmctl in local mode inside the server
+#   scripts/dev-server exec …   run a command inside the server container
+#
+# Environment: MATTY_MM_IMAGE (default mattermost/mattermost-enterprise-edition),
+# MATTY_MM_VERSION (image tag, default 10.5), MATTY_MM_PORT
+# (default 8065), MATTY_CRT (collapsed threads mode, default default_on).
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+compose=(docker compose -f "$root/docker/compose.yml")
+port="${MATTY_MM_PORT:-8065}"
+
+wait_for_ping() {
+    local deadline=$((SECONDS + 180))
+    printf 'waiting for http://localhost:%s ' "$port"
+    until curl -sf "http://localhost:$port/api/v4/system/ping" >/dev/null; do
+        if ((SECONDS > deadline)); then
+            echo
+            echo "error: the server did not answer within 3 minutes; see scripts/dev-server logs" >&2
+            exit 1
+        fi
+        printf '.'
+        sleep 2
+    done
+    echo " ok"
+}
+
+case "${1:-}" in
+    up)
+        "${compose[@]}" up -d
+        wait_for_ping
+        ;;
+    down)
+        "${compose[@]}" down
+        ;;
+    reset)
+        "${compose[@]}" down --volumes
+        "${compose[@]}" up -d
+        wait_for_ping
+        ;;
+    logs)
+        "${compose[@]}" logs -f mattermost
+        ;;
+    mmctl)
+        shift
+        "${compose[@]}" exec -T mattermost mmctl --local "$@"
+        ;;
+    exec)
+        shift
+        "${compose[@]}" exec -T mattermost "$@"
+        ;;
+    *)
+        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

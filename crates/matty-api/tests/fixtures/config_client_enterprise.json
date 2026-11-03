@@ -1,0 +1,23 @@
+{
+  "AllowSyncedDrafts": "true",
+  "BuildEnterpriseReady": "true",
+  "BuildNumber": "13456",
+  "CollapsedThreads": "always_on",
+  "EnableCustomEmoji": "true",
+  "EnableLdap": "true",
+  "EnableLinkPreviews": "true",
+  "EnableSaml": "true",
+  "EnableSignInWithEmail": "true",
+  "EnableSignInWithUsername": "false",
+  "EnableSignUpWithGitLab": "false",
+  "EnableSignUpWithGoogle": "false",
+  "EnableSignUpWithOffice365": "true",
+  "EnableSignUpWithOpenId": "true",
+  "HasImageProxy": "true",
+  "LdapLoginFieldName": "AD/LDAP",
+  "MaxFileSize": "104857600",
+  "MaxPostSize": "16383",
+  "PostPriority": "true",
+  "SiteName": "Acme Chat",
+  "Version": "10.11.2"
+}

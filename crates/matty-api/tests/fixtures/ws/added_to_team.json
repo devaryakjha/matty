@@ -1,0 +1,16 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "team_id": "jat5n1bidtrcfke4sots5xz74w",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "event": "added_to_team",
+  "seq": 49
+}

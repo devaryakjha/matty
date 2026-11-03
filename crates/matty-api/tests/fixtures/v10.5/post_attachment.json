@@ -1,0 +1,61 @@
+{
+  "id": "33a4mo5kqfg3zkii3qade4u69a",
+  "create_at": 1793728236771,
+  "update_at": 1793728236771,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "rm9qb436airnmmjzxy7soiff9c",
+  "channel_id": "r7w6egqkajd8byosc158i4famw",
+  "root_id": "",
+  "original_id": "",
+  "message": "",
+  "type": "",
+  "props": {
+    "attachments": [
+      {
+        "id": 0,
+        "fallback": "Build 42 passed",
+        "color": "#2eb67d",
+        "pretext": "CI finished",
+        "author_name": "ci-bot",
+        "author_link": "",
+        "author_icon": "",
+        "title": "Build 42",
+        "title_link": "https://example.com/builds/42",
+        "text": "All **312** tests passed.",
+        "fields": [
+          {
+            "title": "Branch",
+            "value": "master",
+            "short": true
+          },
+          {
+            "title": "Duration",
+            "value": 95,
+            "short": true
+          }
+        ],
+        "image_url": "",
+        "thumb_url": "",
+        "footer": "ci",
+        "footer_icon": "",
+        "ts": null
+      }
+    ]
+  },
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [
+      {
+        "type": "message_attachment"
+      }
+    ]
+  }
+}

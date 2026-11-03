@@ -1,0 +1,20 @@
+{
+  "event": "license_changed",
+  "data": {
+    "license": {
+      "IsLicensed": "true",
+      "SkuShortName": "enterprise",
+      "IsTrial": "true"
+    }
+  },
+  "broadcast": {
+    "omit_users": null,
+    "user_id": "",
+    "channel_id": "",
+    "team_id": "",
+    "connection_id": "",
+    "omit_connection_id": ""
+  },
+  "seq": 102,
+  "_source": "hand-written from mattermost/server model/websocket_message.go and app publishers; this dev server does not send it"
+}

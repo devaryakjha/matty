@@ -1,0 +1,16 @@
+{
+  "event": "channel_viewed",
+  "data": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw"
+  },
+  "broadcast": {
+    "omit_users": null,
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "channel_id": "",
+    "team_id": "",
+    "connection_id": "",
+    "omit_connection_id": ""
+  },
+  "seq": 100,
+  "_source": "hand-written from mattermost/server model/websocket_message.go and app publishers; this dev server does not send it"
+}

@@ -1,0 +1,6 @@
+{
+  "IsLicensed": "true",
+  "LDAP": "true",
+  "SAML": "true",
+  "SkuShortName": "enterprise"
+}

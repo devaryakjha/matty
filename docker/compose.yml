@@ -1,0 +1,65 @@
+# Matty's development and integration-test Mattermost server.
+# Use scripts/dev-server rather than calling compose directly; see
+# docs/dev-server.md.
+
+name: matty-dev
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mmuser_password
+      POSTGRES_DB: mattermost
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mattermost:
+    # Unlicensed Enterprise Edition runs with Team Edition features; a trial
+    # license turns on licensed paths. MATTY_MM_IMAGE swaps the image.
+    image: ${MATTY_MM_IMAGE:-mattermost/mattermost-enterprise-edition}:${MATTY_MM_VERSION:-10.5}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${MATTY_MM_PORT:-8065}:8065"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@db:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTY_MM_PORT:-8065}
+      # mmctl --local inside the container, for seeding and admin tasks.
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLEDEVELOPER: "true"
+      MM_SERVICESETTINGS_ALLOWSYNCEDDRAFTS: "true"
+      MM_SERVICESETTINGS_ENABLECUSTOMEMOJI: "true"
+      MM_SERVICESETTINGS_ENABLELINKPREVIEWS: "true"
+      # Lets link previews fetch pages the server serves itself, which
+      # scripts/record-fixtures.py uses to record embeds offline.
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "localhost 127.0.0.1"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      # disabled, default_off, default_on or always_on.
+      MM_SERVICESETTINGS_COLLAPSEDTHREADS: ${MATTY_CRT:-default_on}
+      MM_SERVICESETTINGS_ENABLEPOSTPRIORITY: "true"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION: "false"
+      MM_LOGSETTINGS_CONSOLELEVEL: WARN
+      # Integration tests send bursts of requests.
+      MM_RATELIMITSETTINGS_ENABLE: "false"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+    volumes:
+      - data:/mattermost/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8065/api/v4/system/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+volumes:
+  db:
+  data:

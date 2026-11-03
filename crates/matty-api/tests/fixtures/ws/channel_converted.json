@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": ""
+  },
+  "data": {
+    "channel_id": "y91e3wfettratkx61jcc6cfz7y"
+  },
+  "event": "channel_converted",
+  "seq": 28
+}

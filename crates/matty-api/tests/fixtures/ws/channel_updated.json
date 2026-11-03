@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "y91e3wfettratkx61jcc6cfz7y",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "channel": "{\"id\":\"y91e3wfettratkx61jcc6cfz7y\",\"create_at\":1793728919639,\"update_at\":1793728919999,\"delete_at\":0,\"team_id\":\"twi9esnyqidym8upn6muio4x9h\",\"type\":\"O\",\"display_name\":\"WS fixture\",\"name\":\"ws-fixture-919634\",\"header\":\"new header\",\"purpose\":\"\",\"last_post_at\":1793728919693,\"total_msg_count\":0,\"extra_update_at\":0,\"creator_id\":\"bkr5t3gqiigy5yn34xjb6rwmna\",\"scheme_id\":null,\"props\":null,\"group_constrained\":null,\"shared\":null,\"total_msg_count_root\":0,\"policy_id\":null,\"last_root_post_at\":1793728919693}"
+  },
+  "event": "channel_updated",
+  "seq": 23
+}

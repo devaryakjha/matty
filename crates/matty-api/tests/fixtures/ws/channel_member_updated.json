@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "channelMember": "{\"channel_id\":\"y91e3wfettratkx61jcc6cfz7y\",\"user_id\":\"rm9qb436airnmmjzxy7soiff9c\",\"roles\":\"channel_user\",\"last_viewed_at\":0,\"msg_count\":0,\"mention_count\":1,\"mention_count_root\":1,\"urgent_mention_count\":0,\"msg_count_root\":0,\"notify_props\":{\"channel_auto_follow_threads\":\"off\",\"desktop\":\"default\",\"email\":\"default\",\"ignore_channel_mentions\":\"default\",\"mark_unread\":\"mention\",\"push\":\"default\"},\"last_update_at\":1793728920009,\"scheme_guest\":false,\"scheme_user\":true,\"scheme_admin\":false,\"explicit_roles\":\"\"}"
+  },
+  "event": "channel_member_updated",
+  "seq": 25
+}

@@ -1,0 +1,17 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "reply_count": 2,
+    "state": false,
+    "thread_id": "kopk7q94u3ybmkrzrwbo1npoqo"
+  },
+  "event": "thread_follow_changed",
+  "seq": 11
+}

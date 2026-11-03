@@ -1,0 +1,22 @@
+{
+  "id": "eritgb9fh7868prwsi7oxf46ie",
+  "create_at": 1793728236810,
+  "update_at": 1793728236821,
+  "edit_at": 1793728236820,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "rm9qb436airnmmjzxy7soiff9c",
+  "channel_id": "r7w6egqkajd8byosc158i4famw",
+  "root_id": "",
+  "original_id": "",
+  "message": "Edited by the recorder",
+  "type": "",
+  "props": {},
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {}
+}
