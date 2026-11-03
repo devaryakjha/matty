@@ -353,7 +353,7 @@ fn new_post(
 }
 
 /// The post's channel window and, for a reply or a root, its thread.
-fn touch_posts(post: &Post, dirty: &mut Dirty) {
+pub(crate) fn touch_posts(post: &Post, dirty: &mut Dirty) {
     dirty.channels.insert(post.channel_id.clone());
     let root = if post.root_id.is_empty() {
         &post.id
@@ -365,7 +365,11 @@ fn touch_posts(post: &Post, dirty: &mut Dirty) {
 
 /// The sidebar the channel is in and the team rail. Direct and group
 /// messages show in every team's sidebar.
-fn touch_channel(conn: &Connection, channel_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
+pub(crate) fn touch_channel(
+    conn: &Connection,
+    channel_id: &str,
+    dirty: &mut Dirty,
+) -> Result<(), StoreError> {
     dirty.unreads = true;
     match sidebar::channel(conn, channel_id)? {
         Some(channel) if !channel.team_id.is_empty() => {

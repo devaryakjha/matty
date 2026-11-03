@@ -91,7 +91,15 @@ pub(crate) enum Loaded {
     Edited(Box<matty_api::models::Post>),
     /// A delete the user made went through.
     Deleted { post_id: String },
-    /// An edit or delete failed.
+    /// The read state after marking a post unread.
+    Unread(Box<matty_api::models::ChannelUnreadAt>),
+    /// A reaction the store already shows did not reach the server.
+    ReactFailed {
+        reaction: Box<matty_api::models::Reaction>,
+        added: bool,
+        error: String,
+    },
+    /// A command's server call failed.
     WriteFailed {
         action: &'static str,
         target: String,

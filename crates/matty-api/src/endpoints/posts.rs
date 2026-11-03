@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 
 use crate::{
     ApiError, Client,
-    models::{ChannelUnreadAt, ChannelViewed, Post, PostList, UserThread, UserThreads},
+    models::{
+        ChannelUnreadAt, ChannelViewed, Draft, Post, PostList, Reaction, UserThread, UserThreads,
+    },
 };
 
 /// Which page of `channels/{id}/posts` to fetch.
@@ -427,5 +429,62 @@ impl Client {
             &json!({ "collapsed_threads_supported": collapsed_threads_supported }),
         )
         .await
+    }
+
+    /// `POST reactions`: adds `emoji_name` from `user_id` to `post_id`.
+    pub async fn add_reaction(
+        &self,
+        user_id: &str,
+        post_id: &str,
+        emoji_name: &str,
+    ) -> Result<Reaction, ApiError> {
+        self.post(
+            "reactions",
+            &json!({ "user_id": user_id, "post_id": post_id, "emoji_name": emoji_name }),
+        )
+        .await
+    }
+
+    /// `DELETE users/{user_id}/posts/{post_id}/reactions/{emoji_name}`.
+    pub async fn remove_reaction(
+        &self,
+        user_id: &str,
+        post_id: &str,
+        emoji_name: &str,
+    ) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!(
+            "users/{user_id}/posts/{post_id}/reactions/{emoji_name}"
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// `POST drafts`: creates or replaces the draft for its channel and root.
+    /// Only when the server allows synced drafts.
+    pub async fn save_draft(&self, draft: &Draft) -> Result<Draft, ApiError> {
+        self.post("drafts", draft).await
+    }
+
+    /// `GET users/{user_id}/teams/{team_id}/drafts`. The server answers
+    /// `null` for none.
+    pub async fn drafts(&self, user_id: &str, team_id: &str) -> Result<Vec<Draft>, ApiError> {
+        self.get::<Option<Vec<Draft>>>(&format!("users/{user_id}/teams/{team_id}/drafts"))
+            .await
+            .map(Option::unwrap_or_default)
+    }
+
+    /// `DELETE users/{user_id}/channels/{channel_id}/drafts[/{root_id}]`.
+    pub async fn delete_draft(
+        &self,
+        user_id: &str,
+        channel_id: &str,
+        root_id: &str,
+    ) -> Result<(), ApiError> {
+        let mut path = format!("users/{user_id}/channels/{channel_id}/drafts");
+        if !root_id.is_empty() {
+            path.push('/');
+            path.push_str(root_id);
+        }
+        self.delete::<Value>(&path).await.map(|_| ())
     }
 }

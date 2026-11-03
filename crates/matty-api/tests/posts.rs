@@ -7,7 +7,7 @@
 use matty_api::{
     Client, Direction, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery,
     models::{
-        ChannelUnreadAt, ChannelViewed, EmbedKind, Post, PostChange, PostList, UserThread,
+        ChannelUnreadAt, ChannelViewed, Draft, EmbedKind, Post, PostChange, PostList, UserThread,
         UserThreads,
     },
 };
@@ -377,4 +377,69 @@ async fn writes_send_the_expected_bodies() {
         .mark_thread_read("u1", "t1", "r1", 1_700_000_000_000)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn reactions_and_drafts_send_the_expected_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/reactions"))
+        .and(body_json(
+            json!({"user_id": "u1", "post_id": "p1", "emoji_name": "+1"}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "user_id": "u1", "post_id": "p1", "emoji_name": "+1", "create_at": 5,
+            "update_at": 5, "delete_at": 0, "remote_id": "", "channel_id": "c1",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/users/u1/posts/p1/reactions/+1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture::<Value>("status_ok")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/drafts"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "create_at": 1, "update_at": 2, "delete_at": 0, "user_id": "u1",
+            "channel_id": "c1", "root_id": "", "message": "draft", "props": {},
+            "metadata": {},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/u1/teams/t1/drafts"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("null"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for at in [
+        "/api/v4/users/u1/channels/c1/drafts",
+        "/api/v4/users/u1/channels/c1/drafts/r1",
+    ] {
+        Mock::given(method("DELETE"))
+            .and(path(at))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture::<Value>("status_ok")))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let reaction = client.add_reaction("u1", "p1", "+1").await.unwrap();
+    assert_eq!(reaction.create_at, 5);
+    client.remove_reaction("u1", "p1", "+1").await.unwrap();
+    let draft = Draft {
+        user_id: "u1".into(),
+        channel_id: "c1".into(),
+        message: "draft".into(),
+        ..Default::default()
+    };
+    assert_eq!(client.save_draft(&draft).await.unwrap().update_at, 2);
+    assert!(client.drafts("u1", "t1").await.unwrap().is_empty());
+    client.delete_draft("u1", "c1", "").await.unwrap();
+    client.delete_draft("u1", "c1", "r1").await.unwrap();
 }
