@@ -11,6 +11,7 @@ use gpui_kit::{
 };
 
 use crate::actions::{self, CloseRightPane};
+use crate::attachments::post_files;
 use crate::channel::{ChannelModel, Post, PostStatus};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -18,8 +19,10 @@ use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
+    dialog::DialogHandle,
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     input::{Input, InputEvent, InputState},
+    lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
     message::{Message, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
@@ -98,6 +101,8 @@ pub enum RightPaneEvent {
         channel: SharedString,
         post: SharedString,
     },
+    /// The user clicked a file on a post; sync opens or downloads it.
+    OpenFile(SharedString),
 }
 
 pub struct RightPaneView {
@@ -111,6 +116,10 @@ pub struct RightPaneView {
     pending_seq: usize,
     /// The search field at the top of the Search listing.
     search: Entity<InputState>,
+    /// The image viewer over a post's images.
+    lightbox: Entity<LightboxState>,
+    lightbox_handle: DialogHandle,
+    lightbox_files: Vec<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -164,8 +173,73 @@ impl RightPaneView {
             draft_len: 0,
             pending_seq: 0,
             search,
+            lightbox: cx.new(|_| LightboxState::new([])),
+            lightbox_handle: DialogHandle::new(false),
+            lightbox_files: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Opens the lightbox over `post`'s images at image `index`.
+    fn open_lightbox(
+        &mut self,
+        post: &Post,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let caption: SharedString = format!(
+            "{} · {}",
+            post.author,
+            ClockFormat::current(cx).format(post.time)
+        )
+        .into();
+        let mut ids = Vec::new();
+        let images: Vec<LightboxImage> = post
+            .files
+            .iter()
+            .filter_map(|file| {
+                let image = file.image()?;
+                ids.push(file.id.clone());
+                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
+            })
+            .collect();
+        if images.is_empty() {
+            return;
+        }
+        self.lightbox_files = ids;
+        self.lightbox
+            .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
+        self.lightbox_handle.open(window, cx);
+        cx.notify();
+    }
+
+    fn lightbox(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let open = Button::new("right-pane.lightbox.open")
+            .size(ButtonSize::Icon)
+            .variant(ButtonVariant::Ghost)
+            .aria_label("Open file")
+            .child(
+                lucide(LucideIcon::Download)
+                    .size(theme.space(4.5))
+                    .text_color(gpui_kit::white()),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                let index = this.lightbox.read(cx).index();
+                if let Some(id) = this.lightbox_files.get(index) {
+                    cx.emit(RightPaneEvent::OpenFile(id.clone()));
+                }
+            }))
+            .into_any_element();
+        lightbox(
+            "right-pane.lightbox",
+            &self.lightbox_handle,
+            &self.lightbox,
+            [open],
+            window,
+            cx,
+        )
     }
 
     fn thread_mut(&mut self) -> Option<&mut ThreadModel> {
@@ -205,6 +279,7 @@ impl RightPaneView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            files: vec![],
         };
         thread.replies.push(reply);
         let content = self.content.clone();
@@ -459,6 +534,26 @@ impl RightPaneView {
                 post.body.clone(),
                 cx,
             ))
+            .children((!post.files.is_empty()).then(|| {
+                let (image_view, image_post) = (view.clone(), post.clone());
+                let file_view = view.clone();
+                post_files(
+                    &format!("thread.{id}"),
+                    &post.files,
+                    move |index, window, cx| {
+                        let post = image_post.clone();
+                        image_view
+                            .update(cx, |this, cx| this.open_lightbox(&post, index, window, cx))
+                            .ok();
+                    },
+                    move |file, _, cx| {
+                        file_view
+                            .update(cx, |_, cx| cx.emit(RightPaneEvent::OpenFile(file)))
+                            .ok();
+                    },
+                    cx,
+                )
+            }))
     }
 
     fn replies_divider(
@@ -831,9 +926,10 @@ impl RightPaneView {
 }
 
 impl Render for RightPaneView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let root = div()
+            .child(self.lightbox(window, cx))
             .key_context(actions::RIGHT_PANE)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseRightPane, _, cx| cx.emit(RightPaneEvent::Close)))

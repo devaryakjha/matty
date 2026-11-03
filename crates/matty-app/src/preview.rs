@@ -104,6 +104,7 @@ pub fn sidebar() -> SidebarModel {
 }
 
 use crate::account::Account;
+use crate::attachments::{self, AttachmentStatus, PostFile, Upload, UploadSource};
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
@@ -135,6 +136,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        files: vec![],
     };
     let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
         emoji: emoji.into(),
@@ -247,6 +249,39 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
     ];
     let mut posts = posts;
     posts.push(Post {
+        files: vec![
+            PostFile {
+                id: "f-mockup".into(),
+                name: "sidebar-mockup.png".into(),
+                size: 48_312,
+                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
+                    "../assets/preview/mockup.png"
+                )))),
+            },
+            PostFile {
+                id: "f-mockup-dark".into(),
+                name: "sidebar-mockup-dark.png".into(),
+                size: 51_904,
+                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
+                    "../assets/preview/mockup-dark.png"
+                )))),
+            },
+            PostFile {
+                id: "f-notes".into(),
+                name: "review-notes.pdf".into(),
+                size: 2_516_582,
+                preview: None,
+            },
+        ],
+        ..post(
+            "p8b",
+            "Lena Fischer",
+            "08:33",
+            "Today",
+            "Sidebar mockups for the review, light and dark, and my notes.",
+        )
+    });
+    posts.push(Post {
         mine: true,
         status: PostStatus::Failed,
         ..post(
@@ -286,6 +321,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             DEFAULT_MAX_POST_SIZE
         },
         profiles: profiles(),
+        typing: match id {
+            "general" => vec!["Priya Nair".into()],
+            "design" => vec!["Sam Okafor".into(), "Lena Fischer".into()],
+            _ => vec![],
+        },
     })
 }
 
@@ -410,6 +450,34 @@ fn hm(time: &str) -> u16 {
 }
 
 /// The signed-in user, for the account menu.
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed.
+pub fn uploads() -> Vec<Upload> {
+    let mut mockup = Upload::from_image(
+        "u-mockup",
+        attachments::png(include_bytes!("../assets/preview/mockup.png")),
+    )
+    .ready(48_312);
+    mockup.name = "sidebar-mockup.png".into();
+    vec![
+        mockup,
+        Upload {
+            id: "u-notes".into(),
+            name: "release-notes.pdf".into(),
+            size: 2_516_582,
+            source: UploadSource::Path("release-notes.pdf".into()),
+            status: AttachmentStatus::Uploading(0.6),
+        },
+        Upload {
+            id: "u-log".into(),
+            name: "matty-2026-11-03.log".into(),
+            size: 918_000,
+            source: UploadSource::Path("matty-2026-11-03.log".into()),
+            status: AttachmentStatus::Failed,
+        },
+    ]
+}
+
 pub fn account() -> Account {
     Account {
         display_name: "Arya".into(),
@@ -576,6 +644,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        files: vec![],
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),
@@ -619,6 +688,7 @@ mod tests {
             .flat_map(|category| category.rows.iter().map(|row| row.id.clone()))
             .collect();
         assert!(!ids.is_empty());
+        assert_eq!(uploads().len(), 3);
         for id in &ids {
             if let Some(channel) = channel(id) {
                 pinned(&channel);
