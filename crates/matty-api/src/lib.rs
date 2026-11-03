@@ -3,3 +3,12 @@
 //! Owns HTTP, authentication headers, error mapping, rate limits and the
 //! WebSocket event stream. Plain Rust: this crate must never depend on GPUI
 //! (PLAN §6.1), which CI checks with `scripts/check-no-gpui.sh`.
+//!
+//! The client is async and runs on tokio (spike S2, option A): Matty drives it
+//! from one background runtime and hands results to the UI through channels.
+
+mod client;
+mod error;
+
+pub use client::{Client, ClientBuilder, RateLimit, Sleeper, TokioSleeper};
+pub use error::ApiError;

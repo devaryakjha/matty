@@ -1,0 +1,168 @@
+//! The HTTP core against a mock server and a self-signed TLS listener.
+
+#![allow(clippy::unwrap_used)]
+
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use matty_api::{ApiError, Client, Sleeper};
+use serde_json::{Value, json};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{header, method, path},
+};
+
+/// Records requested waits and returns at once.
+#[derive(Clone, Default)]
+struct FakeClock(Arc<Mutex<Vec<Duration>>>);
+
+impl Sleeper for FakeClock {
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        self.0.lock().unwrap().push(duration);
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test]
+async fn decodes_server_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "id": "api.context.session_expired.app_error",
+            "message": "Invalid or expired session, please login again.",
+            "request_id": "r-42",
+            "status_code": 401
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let error = client.get::<Value>("users/me").await.unwrap_err();
+    assert_eq!(error.id(), Some("api.context.session_expired.app_error"));
+    let ApiError::Server {
+        status,
+        message,
+        request_id,
+        ..
+    } = error
+    else {
+        panic!("expected a server error");
+    };
+    assert_eq!(status, 401);
+    assert_eq!(message, "Invalid or expired session, please login again.");
+    assert_eq!(request_id.as_deref(), Some("r-42"));
+}
+
+#[tokio::test]
+async fn sends_the_token_and_user_agent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me"))
+        .and(header("authorization", "Bearer tok"))
+        .and(header(
+            "user-agent",
+            concat!("Matty/", env!("CARGO_PKG_VERSION")),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-RateLimit-Limit", "10")
+                .insert_header("X-RateLimit-Remaining", "9")
+                .insert_header("X-RateLimit-Reset", "1")
+                .set_body_json(json!({"id": "u1"})),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("tok");
+    let me: Value = client.get("users/me").await.unwrap();
+    assert_eq!(me["id"], "u1");
+    assert_eq!(client.rate_limit().remaining, Some(9));
+}
+
+#[tokio::test]
+async fn retries_once_after_a_429() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("X-RateLimit-Remaining", "0")
+                .insert_header("X-RateLimit-Reset", "2"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    let clock = FakeClock::default();
+    let client = Client::builder(server.uri())
+        .sleeper(clock.clone())
+        .build()
+        .unwrap();
+    let ping: Value = client.get("system/ping").await.unwrap();
+    assert_eq!(ping["status"], "OK");
+    assert_eq!(*clock.0.lock().unwrap(), vec![Duration::from_secs(2)]);
+}
+
+#[tokio::test]
+async fn gives_up_after_three_429s() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let clock = FakeClock::default();
+    let client = Client::builder(server.uri())
+        .sleeper(clock.clone())
+        .build()
+        .unwrap();
+    let error = client.get::<Value>("system/ping").await.unwrap_err();
+    assert_eq!(error, ApiError::RateLimited);
+    assert_eq!(
+        *clock.0.lock().unwrap(),
+        vec![Duration::from_secs(1), Duration::from_secs(2)]
+    );
+}
+
+#[tokio::test]
+async fn a_self_signed_certificate_is_a_tls_error() {
+    use tokio::io::AsyncWriteExt;
+    use tokio_rustls::rustls::{self, pki_types::PrivateKeyDer};
+
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.cert.der().clone()],
+            PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            if let Ok(mut tls) = acceptor.accept(stream).await {
+                let _ = tls
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+                    .await;
+            }
+        }
+    });
+
+    let client = Client::new(format!("https://localhost:{port}")).unwrap();
+    let error = client.get::<Value>("system/ping").await.unwrap_err();
+    let ApiError::Tls(message) = &error else {
+        panic!("expected a TLS error, got {error:?}");
+    };
+    assert!(message.contains("certificate"), "{message}");
+}

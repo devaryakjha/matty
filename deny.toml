@@ -25,6 +25,8 @@ allow = [
     "Unicode-3.0",
     "BSL-1.0",
     "CC0-1.0",
+    # Mozilla's root certificate list, bundled by webpki-root-certs.
+    "CDLA-Permissive-2.0",
     # File-level copyleft, used by GPUI's font stack (zed-font-kit and friends).
     # Allowed for linking; modified MPL files would have to stay MPL.
     "MPL-2.0",
