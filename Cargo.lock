@@ -4457,6 +4457,15 @@ dependencies = [
 [[package]]
 name = "matty-sync"
 version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "matty-api",
+ "matty-store",
+ "rusqlite",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "maybe-rayon"

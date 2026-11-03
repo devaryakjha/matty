@@ -40,6 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry", "ansi"] }
 tracing-appender = "0.2"
 regex = "1"
+async-channel = "2"
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }

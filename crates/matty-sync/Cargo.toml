@@ -12,3 +12,16 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+async-channel.workspace = true
+matty-api.workspace = true
+matty-store.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bench]]
+name = "bridge"
+harness = false
