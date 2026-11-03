@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"~town-square and ~off-topic~ stay text\")"
+---
+~town-square and ~off-topic~ stay text
+----
+<p>~town-square and ~off-topic~ stay text</p>

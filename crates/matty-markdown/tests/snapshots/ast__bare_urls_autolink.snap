@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"go to https://example.com/path?q=1. or www.example.org, mail ana@example.com\")"
+---
+go to https://example.com/path?q=1. or www.example.org, mail ana@example.com
+----
+<p>go to <a href="https://example.com/path?q=1">https://example.com/path?q=1</a>. or <a href="http://www.example.org">www.example.org</a>, mail <a href="mailto:ana@example.com">ana@example.com</a></p>

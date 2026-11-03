@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"use `cargo test` and ``a ` b``\")"
+---
+use `cargo test` and ``a ` b``
+----
+<p>use <code>cargo test</code> and <code>a ` b</code></p>

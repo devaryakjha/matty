@@ -1,0 +1,23 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"- one\\n  - two\\n    - three\\n- four\")"
+---
+- one
+  - two
+    - three
+- four
+----
+<ul>
+<li>
+<p>one</p>
+<ul>
+<li>
+<p>two</p>
+<ul>
+<li>three</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>four</li>
+</ul>

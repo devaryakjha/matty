@@ -1,0 +1,16 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"one\\ntwo  \\nthree\\\\\\nfour\\n\\nnext paragraph\")"
+---
+one
+two  
+three\
+four
+
+next paragraph
+----
+<p>one
+two<br>
+three<br>
+four</p>
+<p>next paragraph</p>

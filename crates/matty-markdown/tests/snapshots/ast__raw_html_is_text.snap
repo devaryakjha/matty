@@ -1,0 +1,14 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"<b>bold?</b> & <script>alert(1)</script>\\n\\n<div>\\nblock\\n</div>\")"
+---
+<b>bold?</b> & <script>alert(1)</script>
+
+<div>
+block
+</div>
+----
+<p>&lt;b&gt;bold?&lt;/b&gt; &amp; &lt;script&gt;alert(1)&lt;/script&gt;</p>
+<p>&lt;div&gt;
+block
+&lt;/div&gt;</p>
