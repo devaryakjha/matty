@@ -1,0 +1,71 @@
+/* Matty theme, shadcn CSS variable format (docs/DESIGN.md §2).
+   Light reads :root, dark reads :root then .dark, as gpuicn's
+   UiTheme::from_shadcn_css does. Paste into tweakcn to tune. */
+:root {
+  --radius: 0.5rem;
+  --background: #ffffff;
+  --foreground: #1b1f2a;
+  --card: #ffffff;
+  --card-foreground: #1b1f2a;
+  --popover: #ffffff;
+  --popover-foreground: #1b1f2a;
+  --primary: #3056d3;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f4;
+  --secondary-foreground: #1b1f2a;
+  --muted: #e9ebf0;
+  --muted-foreground: #5f6775;
+  --accent: #eef0f4;
+  --accent-foreground: #1b1f2a;
+  --destructive: #dc2626;
+  --border: #e6e8ec;
+  --input: #dfe2e8;
+  --ring: #3056d3;
+  --chart-1: #3056d3;
+  --chart-2: #16a34a;
+  --chart-3: #f59e0b;
+  --chart-4: #dc2626;
+  --chart-5: #8b5cf6;
+  --sidebar: #f4f5f7;
+  --sidebar-foreground: #1b1f2a;
+  --sidebar-primary: #3056d3;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e6e8ed;
+  --sidebar-accent-foreground: #1b1f2a;
+  --sidebar-border: #e3e5ea;
+  --sidebar-ring: #3056d3;
+}
+
+.dark {
+  --background: #15171c;
+  --foreground: #e8eaef;
+  --card: #1c1f26;
+  --card-foreground: #e8eaef;
+  --popover: #1c1f26;
+  --popover-foreground: #e8eaef;
+  --primary: #4a6de8;
+  --primary-foreground: #ffffff;
+  --secondary: #242830;
+  --secondary-foreground: #e8eaef;
+  --muted: #1d2027;
+  --muted-foreground: #8b93a5;
+  --accent: #242830;
+  --accent-foreground: #e8eaef;
+  --destructive: #f0564f;
+  --border: #2a2e37;
+  --input: #30353f;
+  --ring: #4a6de8;
+  --chart-1: #4a6de8;
+  --chart-2: #3fb950;
+  --chart-3: #f2b038;
+  --chart-4: #f0564f;
+  --chart-5: #a78bfa;
+  --sidebar: #0f1114;
+  --sidebar-foreground: #d6dae3;
+  --sidebar-primary: #4a6de8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1d2129;
+  --sidebar-accent-foreground: #e8eaef;
+  --sidebar-border: #262a33;
+  --sidebar-ring: #4a6de8;
+}

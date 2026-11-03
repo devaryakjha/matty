@@ -1,28 +1,36 @@
-//! The main window frame from PLAN §4.1: team rail, sidebar, channel view and
-//! right pane. In M0 the rail and right pane are placeholders that stay hidden
+//! The main window frame from PLAN §4.1 and DESIGN.md §4: a title bar that
+//! holds navigation and the quick switcher, then the team rail, sidebar,
+//! channel view and right pane. In M0 the rail and right pane stay hidden
 //! (the rail appears with a second team, the right pane with threads and
-//! search), and the channel view shows an empty state until sync lands.
+//! search), the sidebar shows its loading rows and the channel view shows an
+//! empty state until sync lands.
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    Render, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    Action, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::actions::{
-    self, OpenPreferences, Platform, ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
+    self, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher, RecentMentions,
+    ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::settings::{
     SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
+use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
+    avatar::{Avatar, AvatarSize},
+    button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
-    kbd::Kbd,
+    kbd::{Kbd, format_shortcut},
     resizable::{PaneLimits, Resizable},
-    separator::Separator,
-    sidebar::Sidebar,
+    sidebar::{Sidebar, sidebar_group_label, sidebar_menu_skeleton},
     theme::UiTheme,
+    title_bar::TitleBar,
+    tooltip::text_tooltip,
 };
 
 /// The channel view's minimum width beside the sidebar.
@@ -99,6 +107,162 @@ impl MainWindow {
         });
     }
 
+    /// The keystroke bound to the action with this label in the shortcut
+    /// sheet, formatted for the current platform.
+    fn shortcut_for(label: &str) -> Option<String> {
+        let platform = Platform::current();
+        actions::bindings()
+            .into_iter()
+            .find(|row| row.label == label)
+            .map(|row| {
+                let os = match platform {
+                    Platform::MacOs => gpui_kit::OperatingSystem::Mac,
+                    Platform::Other => gpui_kit::OperatingSystem::Linux,
+                };
+                format_shortcut(row.keys(platform), os).to_string()
+            })
+    }
+
+    /// A ghost icon button that dispatches `action`, with a tooltip naming
+    /// it and its shortcut when the keymap has one.
+    fn icon_button(
+        id: &'static str,
+        label: &'static str,
+        glyph: LucideIcon,
+        action: Box<dyn Action>,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = UiTheme::read(cx);
+        let tip: SharedString = match Self::shortcut_for(label) {
+            Some(keys) => format!("{label}  {keys}").into(),
+            None => label.into(),
+        };
+        let button = Button::new(id)
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::IconSm)
+            .aria_label(label)
+            .disabled(!enabled)
+            .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            .child(
+                lucide(glyph)
+                    .size(scaled(theme, metrics::ICON))
+                    .text_color(theme.colors.muted_foreground),
+            );
+        div()
+            .id(SharedString::from(format!("{id}.tooltip")))
+            .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
+            .child(button)
+    }
+
+    /// DESIGN.md §4: navigation on the left, the quick switcher as a search
+    /// pill in the middle, mentions, saved, help and the user on the right.
+    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let palette = Palette::read(cx);
+        let platform = Platform::current();
+        let switcher_keys = Self::shortcut_for("Quick switcher").unwrap_or_default();
+        let switcher = Button::new("titlebar.switcher")
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            .aria_label(format!("Search Matty, {switcher_keys}"))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(QuickSwitcher), cx))
+            .flex_1()
+            .max_w(scaled(&theme, metrics::SWITCHER_MAX_WIDTH))
+            .justify_start()
+            .bg(theme.colors.background)
+            .text_color(theme.colors.muted_foreground)
+            .font_weight(gpui_kit::FontWeight::NORMAL)
+            .child(
+                lucide(LucideIcon::Search)
+                    .size(scaled(&theme, 14.))
+                    .text_color(theme.colors.muted_foreground),
+            )
+            .child(div().flex_1().text_left().child("Search Matty"))
+            .child(Kbd::shortcut(match platform {
+                Platform::MacOs => "cmd-k",
+                Platform::Other => "ctrl-k",
+            }));
+        let me = div()
+            .relative()
+            .flex_shrink_0()
+            .child(
+                Avatar::new("titlebar.me")
+                    .size(AvatarSize::Sm)
+                    .fallback("M")
+                    .aria_label("You, online"),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .bottom(px(-1.))
+                    .right(px(-1.))
+                    .size(scaled(&theme, 10.))
+                    .rounded_full()
+                    .bg(palette.online)
+                    .border_2()
+                    .border_color(theme.colors.sidebar),
+            );
+        TitleBar::new()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(0.5))
+                    .flex_shrink_0()
+                    .child(Self::icon_button(
+                        "titlebar.back",
+                        "Back",
+                        LucideIcon::ChevronLeft,
+                        Box::new(HistoryBack),
+                        false,
+                        cx,
+                    ))
+                    .child(Self::icon_button(
+                        "titlebar.forward",
+                        "Forward",
+                        LucideIcon::ChevronRight,
+                        Box::new(HistoryForward),
+                        false,
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .justify_center()
+                    .px(theme.space(2.))
+                    .child(switcher),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(0.5))
+                    .pr(theme.space(2.))
+                    .flex_shrink_0()
+                    .child(Self::icon_button(
+                        "titlebar.mentions",
+                        "Recent mentions",
+                        LucideIcon::AtSign,
+                        Box::new(RecentMentions),
+                        false,
+                        cx,
+                    ))
+                    .child(Self::icon_button(
+                        "titlebar.help",
+                        "Keyboard shortcuts",
+                        LucideIcon::CircleQuestionMark,
+                        Box::new(ShowShortcuts),
+                        true,
+                        cx,
+                    ))
+                    .child(div().pl(theme.space(1.)).child(me)),
+            )
+    }
+
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let platform = Platform::current();
@@ -107,13 +271,18 @@ impl MainWindow {
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(theme.space(4.))
-                .py(theme.space(1.))
+                .gap(theme.space(6.))
+                .h(scaled(&theme, metrics::ROW_HEIGHT))
+                .type_style(style::UI, &theme)
                 .child(row.label)
                 .child(Kbd::shortcut(row.keys(platform)))
         });
         let popup = dialog_popup("shortcuts.popup", "Keyboard shortcuts", cx)
             .child(dialog_title("shortcuts.title", cx).child("Keyboard shortcuts"))
+            .child(
+                dialog_description("shortcuts.description", cx)
+                    .child("Every shortcut works anywhere in the window unless it names a view."),
+            )
             .child(div().flex().flex_col().children(rows))
             .child(dialog_close("shortcuts.close", cx).label("Close"));
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
@@ -130,40 +299,183 @@ impl MainWindow {
         dialog("preferences", &self.preferences, popup, window, cx)
     }
 
-    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx);
-        Sidebar::new("sidebar", "Channels").header(
-            div()
-                .flex()
-                .items_center()
-                .h(theme.space(8.))
-                .px(theme.space(2.))
-                .text_size(theme.text(15.))
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .child("Matty"),
-        )
+    /// DESIGN.md §4: 56px rail of 32px team squares, the current one
+    /// outlined in `primary`. Hidden until the user has a second team.
+    fn team_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let square = |id: &'static str, label: &'static str, current: bool| {
+            Button::new(id)
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Icon)
+                .aria_label(label)
+                .rounded(theme.radius.lg)
+                .bg(theme.colors.sidebar_accent)
+                .type_style(style::UI_STRONG, &theme)
+                .when(current, |b| b.border_2().border_color(theme.colors.primary))
+                .child(label.chars().next().unwrap_or('?').to_string())
+        };
+        div()
+            .w(scaled(&theme, metrics::RAIL_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(theme.space(2.))
+            .py(theme.space(2.))
+            .bg(theme.colors.sidebar)
+            .border_r(style::hairline())
+            .border_color(theme.colors.sidebar_border)
+            .child(square("rail.team.current", "Matty", true))
+            .child(
+                Button::new("rail.add")
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Icon)
+                    .aria_label("Join another team")
+                    .child(
+                        lucide(LucideIcon::Plus)
+                            .size(scaled(&theme, metrics::ICON))
+                            .text_color(theme.colors.muted_foreground),
+                    ),
+            )
     }
 
+    /// DESIGN.md §4: a 48px header with the team as a menu button and a
+    /// compose button, then the category list. Until sync lands the list
+    /// shows its loading rows.
+    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let header_inner = scaled(&theme, metrics::HEADER_HEIGHT) - theme.space(4.);
+        let team = Button::new("sidebar.team")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .aria_label("Team menu")
+            .px(theme.space(2.))
+            .type_style(style::TITLE, &theme)
+            .text_color(theme.colors.sidebar_foreground)
+            .child("Matty")
+            .child(
+                lucide(LucideIcon::ChevronDown)
+                    .size(scaled(&theme, 14.))
+                    .text_color(theme.colors.muted_foreground),
+            );
+        let compose = Button::new("sidebar.compose")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::IconSm)
+            .aria_label("New message")
+            .disabled(true)
+            .child(
+                lucide(LucideIcon::SquarePen)
+                    .size(scaled(&theme, metrics::ICON))
+                    .text_color(theme.colors.muted_foreground),
+            );
+        let mut sidebar = Sidebar::new("sidebar", "Channels").header(
+            div()
+                .h(header_inner)
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(team)
+                .child(compose),
+        );
+        for (label, rows) in [("Favorites", 2), ("Channels", 4), ("Direct messages", 3)] {
+            sidebar = sidebar.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .pb(theme.space(2.))
+                    .child(
+                        sidebar_group_label(label.to_uppercase(), cx)
+                            .type_style(style::LABEL, &theme)
+                            .h(theme.space(6.)),
+                    )
+                    .children((0..rows).map(|row| sidebar_menu_skeleton(row % 2 == 0, cx))),
+            );
+        }
+        sidebar
+    }
+
+    /// DESIGN.md §4: a 48px header over the channel's content. With nothing
+    /// open, the header names the state and the body is an empty state.
     fn channel_view(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx);
+        let theme = UiTheme::read(cx).clone();
+        let header_action = |id: &'static str, label: &'static str, glyph: LucideIcon| {
+            Button::new(id)
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::IconSm)
+                .aria_label(label)
+                .disabled(true)
+                .child(
+                    lucide(glyph)
+                        .size(scaled(&theme, metrics::ICON))
+                        .text_color(theme.colors.muted_foreground),
+                )
+        };
+        let header = div()
+            .flex_shrink_0()
+            .h(scaled(&theme, metrics::HEADER_HEIGHT))
+            .px(scaled(&theme, metrics::GUTTER) - theme.space(2.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_b(style::hairline())
+            .border_color(theme.colors.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .px(theme.space(2.))
+                    .type_style(style::TITLE, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(
+                        lucide(LucideIcon::Hash)
+                            .size(scaled(&theme, metrics::ICON))
+                            .text_color(theme.colors.muted_foreground),
+                    )
+                    .child("No channel open"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(0.5))
+                    .child(header_action("channel.star", "Favorite", LucideIcon::Star))
+                    .child(header_action(
+                        "channel.members",
+                        "Members",
+                        LucideIcon::Users,
+                    ))
+                    .child(header_action(
+                        "channel.pinned",
+                        "Pinned messages",
+                        LucideIcon::Pin,
+                    ))
+                    .child(header_action(
+                        "channel.info",
+                        "Channel info",
+                        LucideIcon::Info,
+                    )),
+            );
+        let media = div()
+            .size(theme.space(10.))
+            .rounded_full()
+            .bg(theme.colors.muted)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                lucide(LucideIcon::MessagesSquare)
+                    .size(scaled(&theme, metrics::ICON_LARGE))
+                    .text_color(theme.colors.muted_foreground),
+            );
         div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
             .bg(theme.colors.background)
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .h(theme.space(12.))
-                    .px(theme.space(4.))
-                    .flex()
-                    .items_center()
-                    .text_size(theme.text(13.))
-                    .text_color(theme.colors.muted_foreground)
-                    .child("No channel open"),
-            )
-            .child(Separator::new("channel.header-separator").horizontal())
+            .child(header)
             .child(
                 div()
                     .flex_1()
@@ -175,17 +487,17 @@ impl MainWindow {
                     .child(
                         Empty::new().header(
                             EmptyHeader::new()
-                                .media(
-                                    EmptyMedia::new().child(
-                                        lucide(LucideIcon::MessagesSquare)
-                                            .size(theme.space(6.))
-                                            .text_color(theme.colors.foreground),
-                                    ),
+                                .media(EmptyMedia::new().child(media))
+                                .title(
+                                    EmptyTitle::new()
+                                        .type_style(style::TITLE, &theme)
+                                        .child("Not connected yet"),
                                 )
-                                .title(EmptyTitle::new().child("Not connected yet"))
-                                .description(EmptyDescription::new().child(
-                                    "Matty will show your channels here once it is connected to a Mattermost server.",
-                                )),
+                                .description(
+                                    EmptyDescription::new()
+                                        .type_style(style::META, &theme)
+                                        .child("Your channels appear here once Matty is connected to a Mattermost server."),
+                                ),
                         ),
                     ),
             )
@@ -215,6 +527,7 @@ impl Render for MainWindow {
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();
+        let right_pane_width = px(self.settings.read(cx).get().right_pane_width);
         div()
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
@@ -229,17 +542,30 @@ impl Render for MainWindow {
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .size_full()
             .flex()
+            .flex_col()
             .bg(theme.colors.background)
             .text_color(theme.colors.foreground)
             .font_family(theme.fonts.body.clone())
-            .text_size(theme.text(13.))
-            .when(self.rail_visible, |root| {
-                root.child(div().w(px(64.)).h_full().bg(theme.colors.sidebar))
-            })
-            .child(div().flex_1().min_w_0().h_full().child(frame))
-            .when(self.right_pane_open, |root| {
-                root.child(div().w(px(400.)).h_full())
-            })
+            .type_style(style::UI, &theme)
+            .child(self.title_bar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
+                    .child(div().flex_1().min_w_0().h_full().child(frame))
+                    .when(self.right_pane_open, |row| {
+                        row.child(
+                            div()
+                                .w(right_pane_width)
+                                .h_full()
+                                .border_l(style::hairline())
+                                .border_color(theme.colors.border),
+                        )
+                    }),
+            )
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences_stub(window, cx))
     }
