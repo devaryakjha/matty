@@ -96,7 +96,7 @@ async fn post_thread_and_read_state_round_trip() {
         .find(|c| c.kind == "O")
         .expect("a public channel");
 
-    let pending = format!("{}:{}", me.id, web_time_millis());
+    let pending = pending_id(&me.id);
     let root = client
         .create_post(&NewPost::new(&channel.id, "live test root", &pending))
         .await
@@ -214,7 +214,7 @@ async fn search_pin_save_and_direct_messages() {
 
     // Search finds a post by a word only it has.
     let word = format!("needle{}", web_time_millis());
-    let pending = format!("{}:{}", me.id, web_time_millis());
+    let pending = pending_id(&me.id);
     let post = client
         .create_post(&NewPost::new(
             &channel.id,
@@ -379,7 +379,7 @@ async fn websocket_hello_events_and_replies() {
     let statuses = connection.get_statuses_by_ids(&[&me.id]).await.unwrap();
     assert!(statuses.data.unwrap().get(&me.id).is_some());
 
-    let pending = format!("{}:{}", me.id, web_time_millis());
+    let pending = pending_id(&me.id);
     let post = client
         .create_post(&NewPost::new(&channel.id, "live websocket test", &pending))
         .await
@@ -438,7 +438,7 @@ async fn websocket_resumes_after_reconnect() {
     };
     let connection_id = connection_id.clone();
 
-    let pending = format!("{}:{}", me.id, web_time_millis());
+    let pending = pending_id(&me.id);
     let one = client
         .create_post(&NewPost::new(&channel.id, "resume test one", &pending))
         .await
@@ -580,6 +580,15 @@ async fn wait_for(
     .await
     .expect("signal within 15s");
     seen
+}
+
+/// A pending post id no other test uses: the tests post as the same user
+/// at once, and the server refuses a second post with a pending id it is
+/// still creating.
+fn pending_id(user_id: &str) -> String {
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{user_id}:{}{n:03}", web_time_millis())
 }
 
 fn web_time_millis() -> u128 {
