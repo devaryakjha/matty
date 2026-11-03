@@ -15,5 +15,6 @@ pub mod models;
 
 pub use capabilities::{ServerCapabilities, UnsupportedVersion, Version};
 pub use client::{Client, ClientBuilder, Fetched, RateLimit, Sleeper, TokioSleeper};
+pub use endpoints::posts::{Direction, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery};
 pub use endpoints::users::{Credentials, MFA_REQUIRED_ID, SignedIn};
 pub use error::ApiError;

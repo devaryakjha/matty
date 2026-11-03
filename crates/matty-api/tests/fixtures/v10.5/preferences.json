@@ -1,20 +1,80 @@
 [
   {
-    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
     "category": "recommended_next_steps",
     "name": "hide",
     "value": "false"
   },
   {
-    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "tutorial_step",
+    "name": "rm9qb436airnmmjzxy7soiff9c",
+    "value": "0"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
     "category": "system_notice",
     "name": "GMasDM",
     "value": "true"
   },
   {
-    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
-    "category": "tutorial_step",
-    "name": "3dip7ntf3jy7ugfb8yrzwbxihw",
-    "value": "0"
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "1wp1j9cnefbszj9gunzp4x7she",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "goddmm31yjfzdpepafz4nzjwec",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "uxmzxp3hjfdwpdg5bx9377fiey",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "drogzappapfq9x18p981xqbkjo",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "owpaksm4xinwm8u55r5oemxnjw",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "ek8pkxoffpbcz8fqgg9x33z4ma",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "pyzt3mps8t8x9p4ppisdbsmy8w",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "u1wkho7rufrqmqwxebjfs37uke",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "ghpxcdxpmf8iix5xgw4ii3huuh",
+    "value": "true"
+  },
+  {
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "category": "flagged_post",
+    "name": "w4yurqd7mjr7mj5q39rpgym6nh",
+    "value": "true"
   }
 ]

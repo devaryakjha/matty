@@ -1,7 +1,17 @@
 [
   {
-    "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
-    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "roles": "team_user",
+    "delete_at": 0,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  },
+  {
+    "team_id": "rs4tz7c8ybrr5bjtjt8c7qfoxh",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
     "roles": "team_user",
     "delete_at": 0,
     "scheme_guest": false,

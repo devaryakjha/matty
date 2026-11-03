@@ -268,3 +268,16 @@ pub struct ChannelStats {
     /// Files.
     pub files_count: i64,
 }
+
+mod posts;
+pub use posts::*;
+
+/// Decodes `null` as the type's default, for lists and maps the server sends
+/// as `null` when empty.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}

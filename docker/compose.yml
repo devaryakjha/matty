@@ -38,6 +38,9 @@ services:
       MM_SERVICESETTINGS_ALLOWSYNCEDDRAFTS: "true"
       MM_SERVICESETTINGS_ENABLECUSTOMEMOJI: "true"
       MM_SERVICESETTINGS_ENABLELINKPREVIEWS: "true"
+      # Lets link previews fetch pages the server serves itself, which
+      # scripts/record-fixtures.py uses to record embeds offline.
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "localhost 127.0.0.1"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       # disabled, default_off, default_on or always_on.
       MM_SERVICESETTINGS_COLLAPSEDTHREADS: ${MATTY_CRT:-default_on}

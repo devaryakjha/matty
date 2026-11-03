@@ -1,5 +1,5 @@
 //! Initial-load models decode the responses recorded from Mattermost 10.5
-//! (`scripts/record-fixtures.sh`), and the paged and conditional helpers work.
+//! (`scripts/record-fixtures.py` against the seeded dev server), and the paged and conditional helpers work.
 
 #![allow(clippy::unwrap_used)]
 
@@ -30,9 +30,9 @@ fn fixture<T: DeserializeOwned>(name: &str) -> T {
 #[test]
 fn recorded_responses_decode() {
     let me: User = fixture("users_me");
-    assert_eq!(me.username, "arya");
+    assert_eq!(me.username, "tester");
     let teams: Vec<Team> = fixture("my_teams");
-    assert_eq!(teams[0].name, "matty");
+    assert_eq!(teams[0].name, "dev");
     let members: Vec<TeamMember> = fixture("my_team_members");
     assert_eq!(members[0].user_id, me.id);
     let unreads: Vec<TeamUnread> = fixture("team_unreads");
@@ -49,9 +49,9 @@ fn recorded_responses_decode() {
     assert_eq!(categories.order.len(), categories.categories.len());
     let _: Vec<Preference> = fixture("preferences");
     let emoji: Vec<Emoji> = fixture("emoji_page");
-    assert_eq!(emoji[0].name, "partyparrot");
+    assert_eq!(emoji[0].name, "matty");
     let users: Vec<User> = fixture("users_page");
-    assert!(users.iter().any(|u| u.username == "sam"));
+    assert!(users.iter().any(|u| u.username == "ada.lovelace"));
     let by_id: Vec<User> = fixture("users_by_ids");
     assert_eq!(by_id[0].id, me.id);
     let statuses: Vec<Status> = fixture("statuses");

@@ -22,7 +22,7 @@ scripts/dev-server reset     # deletes all data and starts fresh
 image instead, which has no license code at all.
 `MATTY_MM_VERSION` picks another tag, for example to test the oldest
 supported release (PLAN §6.3) or to record fixtures per version with
-`scripts/record-fixtures.sh`.
+`scripts/record-fixtures.py`.
 
 ## Configuration
 
@@ -33,7 +33,7 @@ Set in `docker/compose.yml` through `MM_*` environment variables:
 | Local mode | on | `mmctl --local` works inside the container without a token. |
 | Synced drafts | on | |
 | Custom emoji | on | |
-| Link previews | on | |
+| Link previews | on | Internal connections to `localhost` are allowed, so the server can preview pages it serves itself (fixture recording). |
 | Personal access tokens | on | For the token sign-in path. |
 | Collapsed Reply Threads | `default_on` | `MATTY_CRT=always_on` (or `disabled`, `default_off`) changes it; run `reset` or restart after changing. |
 | Post priority | on | Licensed feature; inert without a license. |
@@ -75,3 +75,15 @@ Running it again creates nothing new: everything is looked up before it is
 created, and posts resume from the last seeded post in each channel, so a run
 that failed partway can be rerun. After changing `--posts` or `--users`, run
 `scripts/dev-server reset` first.
+
+## Recording API fixtures
+
+```sh
+scripts/dev-server reset && scripts/seed.py && scripts/record-fixtures.py
+```
+
+`scripts/record-fixtures.py` signs in as `tester` and writes the server's
+responses to `crates/matty-api/tests/fixtures/v<major>.<minor>/`. It adds a
+few posts to `dev/random` to record embeds, reactions, edits, deletes and
+thread reads, so run it against a fresh server and expect the fixtures to
+contain that server's ids.

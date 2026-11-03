@@ -1,10 +1,20 @@
 [
   {
-    "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
-    "msg_count": 3,
-    "mention_count": 1,
-    "mention_count_root": 1,
-    "msg_count_root": 3,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "msg_count": 178,
+    "mention_count": 3,
+    "mention_count_root": 2,
+    "msg_count_root": 147,
+    "thread_count": 0,
+    "thread_mention_count": 0,
+    "thread_urgent_mention_count": 0
+  },
+  {
+    "team_id": "rs4tz7c8ybrr5bjtjt8c7qfoxh",
+    "msg_count": 197,
+    "mention_count": 4,
+    "mention_count_root": 4,
+    "msg_count_root": 161,
     "thread_count": 0,
     "thread_mention_count": 0,
     "thread_urgent_mention_count": 0
