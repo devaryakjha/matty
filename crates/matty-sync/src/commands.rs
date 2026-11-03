@@ -40,6 +40,16 @@ pub(crate) enum Write {
         status: String,
         dnd_end_time: Option<i64>,
     },
+    /// A direct message with one user, or a group message with several.
+    OpenDirect {
+        user_ids: Vec<String>,
+    },
+    Join {
+        channel_id: String,
+    },
+    Leave {
+        channel_id: String,
+    },
 }
 
 impl Write {
@@ -55,6 +65,9 @@ impl Write {
             Self::SaveDraft(_) => "save draft",
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
+            Self::OpenDirect { .. } => "open direct message",
+            Self::Join { .. } => "join channel",
+            Self::Leave { .. } => "leave channel",
         }
     }
 
@@ -70,6 +83,8 @@ impl Write {
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
             Self::Status { .. } => user_id.to_owned(),
+            Self::OpenDirect { user_ids } => user_ids.join(","),
+            Self::Join { channel_id } | Self::Leave { channel_id } => channel_id.clone(),
         }
     }
 }
@@ -168,6 +183,33 @@ pub(crate) async fn run(
             } => {
                 let status = client.set_status(&user_id, &status, dnd_end_time).await?;
                 Some(Loaded::Statuses(vec![status]))
+            }
+            Write::OpenDirect { user_ids } => {
+                let channel = match user_ids.as_slice() {
+                    [other] => client.direct_channel(&user_id, other).await?,
+                    others => {
+                        let mut everyone = vec![user_id.clone()];
+                        everyone.extend(others.iter().filter(|id| **id != user_id).cloned());
+                        client.group_channel(&everyone).await?
+                    }
+                };
+                let member = client.my_channel_member(&channel.id).await?;
+                Some(Loaded::Ready {
+                    channel: Box::new(channel),
+                    member: Box::new(member),
+                })
+            }
+            Write::Join { channel_id } => {
+                let member = client.add_channel_member(&channel_id, &user_id).await?;
+                let channel = client.channel(&channel_id).await?;
+                Some(Loaded::Ready {
+                    channel: Box::new(channel),
+                    member: Box::new(member),
+                })
+            }
+            Write::Leave { channel_id } => {
+                client.remove_channel_member(&channel_id, &user_id).await?;
+                Some(Loaded::Left { channel_id })
             }
         })
     }

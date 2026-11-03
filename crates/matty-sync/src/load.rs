@@ -38,6 +38,13 @@ pub(crate) enum Loaded {
     },
     /// A team could not load; the others carry on.
     TeamFailed { team_id: String, error: String },
+    /// A channel the user opened or joined, to store and switch to.
+    Ready {
+        channel: Box<Channel>,
+        member: Box<ChannelMember>,
+    },
+    /// The user left a channel.
+    Left { channel_id: String },
     /// The account itself could not load.
     Failed(String),
     /// Custom emoji.
