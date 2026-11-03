@@ -5,7 +5,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
@@ -75,6 +76,22 @@ pub struct Post {
     pub saved: bool,
     pub pinned: bool,
     pub status: PostStatus,
+    /// The thread under this post, when it has one, for the reply footer
+    /// (Collapsed Reply Threads, PLAN §4.4).
+    pub replies: Option<ReplySummary>,
+}
+
+/// What the channel shows about a post's thread without loading it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplySummary {
+    pub count: usize,
+    /// `HH:MM` of the newest reply.
+    pub last_time: SharedString,
+    /// Display names of the people who replied, newest first, at most three.
+    pub participants: Vec<SharedString>,
+    pub following: bool,
+    /// Replies the user has not read yet.
+    pub unread: bool,
 }
 
 /// A channel with the posts loaded for it.
@@ -149,6 +166,8 @@ pub enum ChannelEvent {
     Delete(SharedString),
     /// Retry a failed send; the view shows it pending again.
     Retry(SharedString),
+    /// The user toggled following the thread under `post`.
+    ToggleFollow { post: SharedString, following: bool },
 }
 
 /// What a More-menu item does to the view.
@@ -288,12 +307,13 @@ impl ChannelView {
             reactions: vec![],
             mentions_me: false,
             edited: false,
-            continues: last
-                .is_some_and(|post| post.author == self.me && post.status != PostStatus::Failed),
+            // Never a continuation: the row's own "Sending…" must show.
+            continues: false,
             mine: true,
             saved: false,
             pinned: false,
             status: PostStatus::Pending,
+            replies: None,
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
@@ -833,7 +853,120 @@ impl ChannelView {
             // the hover toolbar, so the transcript stays quiet.
             row = row.on_add_reaction(|_, _, _| {});
         }
+        if let Some(summary) = &post.replies {
+            row = row.child(Self::reply_footer(&id, summary, cx));
+        }
         row
+    }
+
+    /// The thread line under a post with replies: who replied, how many,
+    /// when last, and Follow. Clicking it opens the thread.
+    fn reply_footer(
+        id: &SharedString,
+        summary: &ReplySummary,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let label = match summary.count {
+            1 => "1 reply".to_string(),
+            n => format!("{n} replies"),
+        };
+        let open_id = id.clone();
+        let follow_id = id.clone();
+        div()
+            .id(gpui_kit::ElementId::Name(
+                format!("post.{id}.thread").into(),
+            ))
+            .mt(theme.space(1.))
+            .ml(px(-6.))
+            .px(theme.space(1.5))
+            .py(theme.space(1.))
+            .rounded(theme.radius.md)
+            .w_auto()
+            .flex()
+            .items_center()
+            .gap(theme.space(2.))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.colors.accent))
+            .on_click(
+                cx.listener(move |_, _, _, cx| cx.emit(ChannelEvent::OpenThread(open_id.clone()))),
+            )
+            .child(
+                div().flex().items_center().children(
+                    summary
+                        .participants
+                        .iter()
+                        .take(3)
+                        .enumerate()
+                        .map(|(index, name)| {
+                            let initial: String = name.chars().take(1).collect();
+                            div().when(index > 0, |this| this.ml(px(-4.))).child(
+                                Avatar::new(gpui_kit::ElementId::Name(
+                                    format!("post.{id}.thread.{index}").into(),
+                                ))
+                                .size(AvatarSize::Sm)
+                                .fallback(initial)
+                                .aria_label(name.clone()),
+                            )
+                        }),
+                ),
+            )
+            .child(
+                div()
+                    .type_style(style::UI_STRONG, &theme)
+                    .text_color(theme.colors.primary)
+                    .child(label),
+            )
+            .when(summary.unread, |this| {
+                this.child(
+                    div()
+                        .size(theme.space(2.))
+                        .rounded_full()
+                        .bg(theme.colors.primary),
+                )
+            })
+            .child(
+                div()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(format!("Last reply {}", summary.last_time)),
+            )
+            .child(
+                Button::new(gpui_kit::ElementId::Name(
+                    format!("post.{id}.thread.follow").into(),
+                ))
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Xs)
+                .child(if summary.following {
+                    "Following"
+                } else {
+                    "Follow"
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_follow(follow_id.clone(), cx);
+                    cx.stop_propagation();
+                })),
+            )
+    }
+
+    fn toggle_follow(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let mut following = None;
+        self.mutate_post(
+            &id,
+            |post| {
+                if let Some(summary) = post.replies.as_mut() {
+                    summary.following = !summary.following;
+                    following = Some(summary.following);
+                }
+            },
+            cx,
+        );
+        if let Some(following) = following {
+            cx.emit(ChannelEvent::ToggleFollow {
+                post: id,
+                following,
+            });
+        }
     }
 
     fn transcript(
@@ -1244,6 +1377,7 @@ mod tests {
             saved: false,
             pinned: false,
             status: PostStatus::Sent,
+            replies: None,
         }
     }
 

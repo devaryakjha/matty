@@ -103,7 +103,9 @@ pub fn sidebar() -> SidebarModel {
     }
 }
 
-use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
+use crate::channel::{
+    ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
+};
 use crate::right_pane::ThreadModel;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
@@ -128,6 +130,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         saved: false,
         pinned: false,
         status: PostStatus::Sent,
+        replies: None,
     };
     let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
         emoji: emoji.into(),
@@ -144,6 +147,13 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         ),
         Post {
             reactions: vec![reaction("👍", 4, true), reaction("🚀", 2, false)],
+            replies: Some(ReplySummary {
+                count: 1,
+                last_time: "10:02".into(),
+                participants: vec!["Lena Fischer".into()],
+                following: false,
+                unread: true,
+            }),
             ..post(
                 "p2",
                 "Sam Okafor",
@@ -173,13 +183,22 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "Reviewed the sidebar PR. Two small comments on **unread** weights, otherwise good to merge.",
             )
         },
-        post(
-            "p5",
-            "Jonas Weber",
-            "08:02",
-            "Today",
-            "Does anyone have the link to the design doc? I only find the plan.",
-        ),
+        Post {
+            replies: Some(ReplySummary {
+                count: 3,
+                last_time: "08:13".into(),
+                participants: vec!["Arya".into(), "Jonas Weber".into()],
+                following: true,
+                unread: false,
+            }),
+            ..post(
+                "p5",
+                "Jonas Weber",
+                "08:02",
+                "Today",
+                "Does anyone have the link to the design doc? I only find the plan.",
+            )
+        },
         Post {
             mine: true,
             saved: true,
@@ -286,6 +305,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         saved: false,
         pinned: false,
         status: PostStatus::Sent,
+        replies: None,
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),

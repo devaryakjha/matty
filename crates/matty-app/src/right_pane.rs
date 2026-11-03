@@ -11,16 +11,15 @@ use gpui_kit::{
 };
 
 use crate::actions::{self, CloseRightPane};
-use crate::channel::{ChannelModel, Post};
+use crate::channel::{ChannelModel, Post, PostStatus};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
-    badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
-    message::{Message, Reaction},
+    message::{Message, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
     theme::UiTheme,
 };
@@ -45,6 +44,23 @@ pub enum RightPaneContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// The user replied under `root`; the pane already shows the reply
+    /// pending (PLAN §4.3).
+    Reply {
+        root: SharedString,
+        text: SharedString,
+    },
+    /// Retry a reply that failed; the pane shows it pending again.
+    Retry(SharedString),
+    /// The user toggled following the thread under `root`.
+    ToggleFollow {
+        root: SharedString,
+        following: bool,
+    },
+    ToggleReaction {
+        post: SharedString,
+        emoji: SharedString,
+    },
 }
 
 pub struct RightPaneView {
@@ -52,6 +68,11 @@ pub struct RightPaneView {
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
     focus: FocusHandle,
+    /// The current user's display name, for optimistic rows.
+    me: SharedString,
+    draft_len: usize,
+    pending_seq: usize,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<RightPaneEvent> for RightPaneView {}
@@ -63,19 +84,165 @@ impl Focusable for RightPaneView {
 }
 
 impl RightPaneView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(me: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let list = cx.new(|cx| MessageListState::new(0, cx));
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
             state
         });
+        let subscriptions = vec![cx.subscribe_in(
+            &composer,
+            window,
+            |this, composer, event: &ComposerEvent, window, cx| match event {
+                ComposerEvent::Change => {
+                    this.draft_len = composer.read(cx).value(cx).chars().count();
+                    cx.notify();
+                }
+                ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                _ => {}
+            },
+        )];
         Self {
             content: None,
             list,
             composer,
             focus: cx.focus_handle(),
+            me: me.into(),
+            draft_len: 0,
+            pending_seq: 0,
+            _subscriptions: subscriptions,
         }
+    }
+
+    fn thread_mut(&mut self) -> Option<&mut ThreadModel> {
+        match self.content.as_mut()? {
+            RightPaneContent::Thread(thread) => Some(thread),
+            RightPaneContent::ChannelInfo(_) => None,
+        }
+    }
+
+    /// Appends the text as a pending reply by the current user, clears the
+    /// composer and tells sync. Blank text stays in the composer.
+    fn reply(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let body: SharedString = text.trim().to_string().into();
+        if body.is_empty() {
+            return;
+        }
+        self.pending_seq += 1;
+        let (me, seq) = (self.me.clone(), self.pending_seq);
+        let Some(thread) = self.thread_mut() else {
+            return;
+        };
+        let root = thread.root.id.clone();
+        let last = thread.replies.last().unwrap_or(&thread.root);
+        let reply = Post {
+            id: format!("{root}-pending-{seq}").into(),
+            author: me.clone(),
+            time: "Sending…".into(),
+            day: last.day.clone(),
+            body: body.clone(),
+            reactions: vec![],
+            mentions_me: false,
+            edited: false,
+            // Never a continuation: the row's own "Sending…" must show.
+            continues: false,
+            mine: true,
+            saved: false,
+            pinned: false,
+            status: PostStatus::Pending,
+            replies: None,
+        };
+        thread.replies.push(reply);
+        let content = self.content.clone();
+        self.set_content(content, cx);
+        self.composer
+            .update(cx, |composer, cx| composer.set_value("", window, cx));
+        self.draft_len = 0;
+        cx.emit(RightPaneEvent::Reply { root, text: body });
+    }
+
+    /// Applies `change` to the reply with `id`, if it is loaded, and redraws.
+    fn mutate_reply(
+        &mut self,
+        id: &SharedString,
+        change: impl FnOnce(&mut Post),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(thread) = self.thread_mut() else {
+            return false;
+        };
+        let Some(post) = std::iter::once(&mut thread.root)
+            .chain(thread.replies.iter_mut())
+            .find(|post| &post.id == id)
+        else {
+            return false;
+        };
+        change(post);
+        cx.notify();
+        true
+    }
+
+    fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let changed = self.mutate_reply(
+            &id,
+            |post| {
+                post.status = PostStatus::Pending;
+                post.time = "Sending…".into();
+            },
+            cx,
+        );
+        if changed {
+            cx.emit(RightPaneEvent::Retry(id));
+        }
+    }
+
+    /// Removes a reply that never reached the server.
+    fn discard(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let Some(thread) = self.thread_mut() else {
+            return;
+        };
+        thread.replies.retain(|post| post.id != id);
+        let content = self.content.clone();
+        self.set_content(content, cx);
+    }
+
+    fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
+        let changed = self.mutate_reply(
+            &id,
+            |post| {
+                if let Some(at) = post.reactions.iter().position(|r| r.emoji == emoji) {
+                    let reaction = &mut post.reactions[at];
+                    if reaction.mine {
+                        reaction.count -= 1;
+                        reaction.mine = false;
+                        if reaction.count == 0 {
+                            post.reactions.remove(at);
+                        }
+                    } else {
+                        reaction.count += 1;
+                        reaction.mine = true;
+                    }
+                }
+            },
+            cx,
+        );
+        if changed {
+            cx.emit(RightPaneEvent::ToggleReaction { post: id, emoji });
+        }
+    }
+
+    fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = self.thread_mut() else {
+            return;
+        };
+        thread.following = !thread.following;
+        let event = RightPaneEvent::ToggleFollow {
+            root: thread.root.id.clone(),
+            following: thread.following,
+        };
+        cx.notify();
+        cx.emit(event);
     }
 
     pub fn content(&self) -> Option<&RightPaneContent> {
@@ -159,11 +326,38 @@ impl RightPaneView {
             )
     }
 
-    fn post_row(post: &Post, root: bool, cx: &mut App) -> impl IntoElement + use<> {
+    fn post_row(
+        view: &gpui_kit::WeakEntity<Self>,
+        post: &Post,
+        root: bool,
+        cx: &mut App,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
+        let (retry_view, retry_id) = (view.clone(), id.clone());
+        let (delete_view, delete_id) = (view.clone(), id.clone());
+        let (react_view, react_id) = (view.clone(), id.clone());
         Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
+            .status(match post.status {
+                PostStatus::Sent => MessageStatus::Sent,
+                PostStatus::Pending => MessageStatus::Pending,
+                PostStatus::Failed => MessageStatus::Failed,
+            })
+            .on_retry(move |_, _, cx| {
+                let id = retry_id.clone();
+                retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
+            })
+            .on_delete(move |_, _, cx| {
+                let id = delete_id.clone();
+                delete_view.update(cx, |this, cx| this.discard(id, cx)).ok();
+            })
+            .on_reaction(move |emoji, _, cx| {
+                let (id, emoji) = (react_id.clone(), emoji.clone());
+                react_view
+                    .update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                    .ok();
+            })
             .author(post.author.clone())
             .timestamp(post.time.clone())
             .gutter_time(post.time.clone())
@@ -187,8 +381,13 @@ impl RightPaneView {
             ))
     }
 
-    fn replies_divider(thread: &ThreadModel, cx: &App) -> impl IntoElement + use<> {
+    fn replies_divider(
+        view: &gpui_kit::WeakEntity<Self>,
+        thread: &ThreadModel,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        let view = view.clone();
         let count = thread.replies.len();
         let label = match count {
             1 => "1 reply".to_string(),
@@ -208,31 +407,37 @@ impl RightPaneView {
             )
             .child(div().flex_1().h(style::hairline()).bg(theme.colors.border))
             .child(
-                Badge::new(if thread.following {
-                    "Following"
-                } else {
-                    "Follow"
-                })
-                .variant(if thread.following {
-                    BadgeVariant::Secondary
-                } else {
-                    BadgeVariant::Outline
-                }),
+                Button::new("right-pane.follow")
+                    .variant(if thread.following {
+                        ButtonVariant::Secondary
+                    } else {
+                        ButtonVariant::Outline
+                    })
+                    .size(ButtonSize::Xs)
+                    .child(if thread.following {
+                        "Following"
+                    } else {
+                        "Follow"
+                    })
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| this.toggle_follow(cx)).ok();
+                    }),
             )
     }
 
     fn thread(&self, thread: &ThreadModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let model = thread.clone();
+        let view = cx.entity().downgrade();
         let transcript =
             MessageList::new(
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&model.root, true, cx).into_any_element(),
-                    1 => Self::replies_divider(&model, cx).into_any_element(),
+                    0 => Self::post_row(&view, &model.root, true, cx).into_any_element(),
+                    1 => Self::replies_divider(&view, &model, cx).into_any_element(),
                     index => match model.replies.get(index - 2) {
-                        Some(reply) => Self::post_row(reply, false, cx).into_any_element(),
+                        Some(reply) => Self::post_row(&view, reply, false, cx).into_any_element(),
                         None => div().into_any_element(),
                     },
                 },
@@ -243,6 +448,11 @@ impl RightPaneView {
             .variant(ButtonVariant::Default)
             .size(ButtonSize::IconSm)
             .aria_label("Reply")
+            .disabled(self.draft_len == 0)
+            .on_click(cx.listener(|this, _, window, cx| {
+                let text = this.composer.read(cx).value(cx);
+                this.reply(text, window, cx)
+            }))
             .child(
                 lucide(LucideIcon::SendHorizontal)
                     .size(scaled(&theme, metrics::ICON))
@@ -274,11 +484,15 @@ impl RightPaneView {
                         Composer::new(&self.composer)
                             .rounded(theme.radius.lg)
                             .child(tool("right-pane.attach", "Attach files", LucideIcon::Plus))
-                            .child(tool(
-                                "right-pane.emoji",
-                                "Emoji",
-                                LucideIcon::FaceSlightlySmiling,
-                            ))
+                            .child(
+                                tool("right-pane.emoji", "Emoji", LucideIcon::FaceSlightlySmiling)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.composer.update(cx, |composer, cx| {
+                                            composer.insert(":", window, cx);
+                                            composer.focus(window, cx);
+                                        })
+                                    })),
+                            )
                             .child(div().flex_1())
                             .child(send),
                     ),
