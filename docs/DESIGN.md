@@ -300,6 +300,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   show a `Default` "Join", which closes the dialog, adds the row to the
   Channels category and opens the channel at its empty state. Rows are
   clickable too.
+- **New message and Create channel** (PLAN §3 M1): "New message" is a
+  dialog with a people search over the team's profiles; each row has the
+  presence avatar, name, `@handle` and position, and picking one opens
+  the existing conversation or starts a new one under Direct messages
+  (`design-29`). "Create channel" is a short form: a required Name whose
+  description shows the address it will get ("~design-reviews", by
+  Mattermost's handle rules), an optional Purpose, and a Public/Private
+  radio group with one line each on what it means; Create stays disabled
+  until the handle is two characters long, and the new channel opens at
+  its empty state with the purpose as its line. Sync owns both on the
+  server (PLAN §4.3).
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

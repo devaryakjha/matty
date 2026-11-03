@@ -20,7 +20,7 @@ use crate::actions::{
     ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
-use crate::directory::{BrowseView, DirectoryEvent};
+use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::live::Live;
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
@@ -104,6 +104,8 @@ pub struct MainWindow {
     preferences: DialogHandle,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
+    new_message: Entity<NewMessageView>,
+    create_channel: Entity<CreateChannelView>,
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
@@ -190,15 +192,19 @@ impl MainWindow {
                 browse.set_channels(crate::preview::directory(), cx)
             });
         }
-        cx.subscribe_in(
-            &browse,
-            window,
-            |this, _, event: &DirectoryEvent, window, cx| match event {
-                DirectoryEvent::Join(id) => this.join_channel(id.clone(), window, cx),
-                DirectoryEvent::Open(id) => this.open_channel(id.clone(), window, cx),
-            },
-        )
-        .detach();
+        let new_message = cx.new(|cx| NewMessageView::new(window, cx));
+        if crate::preview::enabled() {
+            new_message.update(cx, |view, cx| {
+                view.set_profiles(crate::preview::profiles(), cx)
+            });
+        }
+        let create_channel = cx.new(|cx| CreateChannelView::new(window, cx));
+        cx.subscribe_in(&browse, window, Self::on_directory_event)
+            .detach();
+        cx.subscribe_in(&new_message, window, Self::on_directory_event)
+            .detach();
+        cx.subscribe_in(&create_channel, window, Self::on_directory_event)
+            .detach();
         cx.subscribe_in(
             &account,
             window,
@@ -348,7 +354,16 @@ impl MainWindow {
                     SidebarEvent::OpenThreads => return this.show_threads(cx),
                     SidebarEvent::OpenDrafts => return this.show_drafts(cx),
                     SidebarEvent::BrowseChannels => return this.browse_channels(window, cx),
-                    SidebarEvent::NewMessage | SidebarEvent::CreateChannel => return,
+                    SidebarEvent::NewMessage => {
+                        return this
+                            .new_message
+                            .update(cx, |view, cx| view.open(window, cx));
+                    }
+                    SidebarEvent::CreateChannel => {
+                        return this
+                            .create_channel
+                            .update(cx, |view, cx| view.open(window, cx));
+                    }
                 };
                 this.open_channel(id, window, cx);
             },
@@ -369,6 +384,8 @@ impl MainWindow {
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
             browse,
+            new_message,
+            create_channel,
             joined: Vec::new(),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
@@ -707,6 +724,114 @@ impl MainWindow {
         cx.notify();
     }
 
+    fn on_directory_event<V>(
+        &mut self,
+        _: &Entity<V>,
+        event: &DirectoryEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DirectoryEvent::Join(id) => self.join_channel(id.clone(), window, cx),
+            DirectoryEvent::Open(id) => self.open_channel(id.clone(), window, cx),
+            DirectoryEvent::Message(profile) => self.message(profile, window, cx),
+            DirectoryEvent::Create {
+                name,
+                purpose,
+                private,
+            } => self.create_channel(name.clone(), purpose.clone(), *private, window, cx),
+        }
+    }
+
+    /// Opens the direct message with `profile`, starting one when there is
+    /// none yet. Sync owns creating the channel (PLAN §4.3); in preview the
+    /// row appears under Direct messages with an empty transcript.
+    fn message(
+        &mut self,
+        profile: &crate::profile::UserProfile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| {
+                matches!(row.kind, crate::sidebar::ChannelKind::Direct { .. })
+                    && row.name == profile.display_name
+            })
+            .map(|row| row.id.clone());
+        if let Some(id) = existing {
+            return self.open_channel(id, window, cx);
+        }
+        if crate::preview::enabled() {
+            let kind = crate::sidebar::ChannelKind::Direct {
+                presence: profile.presence,
+            };
+            let row = crate::sidebar::ChannelRow::new(
+                profile.user_id.clone(),
+                profile.display_name.clone(),
+                kind.clone(),
+            );
+            self.add_row("direct", row, cx);
+            self.joined.push(crate::preview::empty_channel(
+                profile.user_id.clone(),
+                profile.display_name.clone(),
+                kind,
+                None,
+            ));
+            self.open_channel(profile.user_id.clone(), window, cx);
+        }
+    }
+
+    /// Creates a channel from the dialog. Sync owns the server side; in
+    /// preview the row appears under Channels and opens empty.
+    fn create_channel(
+        &mut self,
+        name: SharedString,
+        purpose: Option<SharedString>,
+        private: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !crate::preview::enabled() {
+            return;
+        }
+        let id: SharedString = crate::directory::channel_handle(&name).into();
+        let kind = if private {
+            crate::sidebar::ChannelKind::Private
+        } else {
+            crate::sidebar::ChannelKind::Public
+        };
+        let row = crate::sidebar::ChannelRow::new(id.clone(), id.clone(), kind.clone());
+        self.add_row("channels", row, cx);
+        self.joined.push(crate::preview::empty_channel(
+            id.clone(),
+            id.clone(),
+            kind,
+            purpose,
+        ));
+        self.open_channel(id, window, cx);
+    }
+
+    /// Appends `row` to the sidebar category `category_id`.
+    fn add_row(
+        &mut self,
+        category_id: &str,
+        row: crate::sidebar::ChannelRow,
+        cx: &mut Context<Self>,
+    ) {
+        let mut model = self.sidebar.read(cx).model().clone();
+        if let Some(category) = model.categories.iter_mut().find(|c| c.id == category_id) {
+            category.rows.push(row);
+        }
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+    }
+
     /// Opens the Browse channels dialog (PLAN §3 M1).
     fn browse_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.browse.update(cx, |browse, cx| browse.open(window, cx));
@@ -724,16 +849,12 @@ impl MainWindow {
         if crate::preview::enabled() {
             let directory = crate::preview::directory();
             if let Some(channel) = directory.iter().find(|c| c.id == id) {
-                let mut model = self.sidebar.read(cx).model().clone();
-                if let Some(category) = model.categories.iter_mut().find(|c| c.id == "channels") {
-                    category.rows.push(crate::sidebar::ChannelRow::new(
-                        channel.id.clone(),
-                        channel.name.clone(),
-                        crate::sidebar::ChannelKind::Public,
-                    ));
-                }
-                self.sidebar
-                    .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+                let row = crate::sidebar::ChannelRow::new(
+                    channel.id.clone(),
+                    channel.name.clone(),
+                    crate::sidebar::ChannelKind::Public,
+                );
+                self.add_row("channels", row, cx);
                 self.joined.push(crate::preview::joined_channel(channel));
             }
         }
@@ -1477,6 +1598,30 @@ impl MainWindow {
         dialog("browse", &handle, popup, window, cx)
     }
 
+    fn directory_dialogs(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let message = self.new_message.read(cx).handle().clone();
+        let create = self.create_channel.read(cx).handle().clone();
+        div()
+            .child(dialog(
+                "new-message",
+                &message,
+                dialog_popup("new-message.popup", "New message", cx)
+                    .child(self.new_message.clone()),
+                window,
+                cx,
+            ))
+            .child(dialog(
+                "create-channel",
+                &create,
+                // Taller than gpuicn's default so the form never scrolls.
+                dialog_popup("create-channel.popup", "Create channel", cx)
+                    .max_h(UiTheme::read(cx).space(140.))
+                    .child(self.create_channel.clone()),
+                window,
+                cx,
+            ))
+    }
+
     /// DESIGN.md §4: 56px rail of 32px team squares, the current one
     /// outlined in `primary`. Hidden until the user has a second team.
     fn team_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1688,6 +1833,7 @@ impl Render for MainWindow {
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
             .child(self.browse(window, cx))
+            .child(self.directory_dialogs(window, cx))
             .child(switcher_element)
     }
 }

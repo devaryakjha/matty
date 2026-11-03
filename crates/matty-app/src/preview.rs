@@ -113,6 +113,7 @@ use crate::drafts::{Draft, DraftsModel};
 use crate::profile::UserProfile;
 use crate::right_pane::{ListedPost, ThreadModel};
 use crate::threads::{ThreadRow, ThreadsModel};
+use gpui_kit::SharedString;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
@@ -490,7 +491,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
 /// uploading and one that failed.
 /// The team's public channels for Browse: the sidebar's plus five more.
 pub fn directory() -> Vec<DirectoryChannel> {
-    let joined: Vec<gpui_kit::SharedString> = sidebar()
+    let joined: Vec<SharedString> = sidebar()
         .categories
         .into_iter()
         .flat_map(|category| category.rows)
@@ -561,16 +562,38 @@ pub fn directory() -> Vec<DirectoryChannel> {
 
 /// An empty channel for one just joined from Browse.
 pub fn joined_channel(channel: &DirectoryChannel) -> ChannelModel {
+    let mut model = empty_channel(
+        channel.id.clone(),
+        channel.name.clone(),
+        ChannelKind::Public,
+        channel.purpose.clone(),
+    );
+    model.members = channel.members;
+    model
+}
+
+/// A channel with nothing in it yet: just created, or a new direct message.
+pub fn empty_channel(
+    id: SharedString,
+    name: SharedString,
+    kind: ChannelKind,
+    purpose: Option<SharedString>,
+) -> ChannelModel {
+    let members = match kind {
+        ChannelKind::Direct { .. } => 2,
+        ChannelKind::Group { members } => members,
+        _ => 1,
+    };
     ChannelModel {
-        id: channel.id.clone(),
-        name: channel.name.clone(),
-        kind: ChannelKind::Public,
+        id,
+        name,
+        kind,
         header: None,
-        members: channel.members,
+        members,
         pinned: 0,
         favorite: false,
         muted: false,
-        purpose: channel.purpose.clone(),
+        purpose,
         loading: false,
         posts: vec![],
         first_unread: None,
