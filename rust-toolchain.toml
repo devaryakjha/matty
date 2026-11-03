@@ -1,0 +1,5 @@
+[toolchain]
+# Matches gpuicn v0.8.0's release pin (release-pins.toml). See docs/PINS.md.
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
