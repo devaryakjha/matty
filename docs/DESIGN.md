@@ -280,6 +280,16 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   presence dot, the name and `@handle`; a row opens the same profile card
   as avatars in the transcript, and "Show all 42 members" asks sync for
   the rest. The header star and the pane's Favorite chip stay in step.
+- **Live transcript** (PLAN §3 M1 reading: jump to unread, jump to
+  latest; §4.5 unread correctness): a channel opens at its "New messages"
+  line when it has one, so nothing unread scrolls past, and the list's
+  own pill reads "Jump to latest" from there (`design-27`). Posts the
+  server sends are appended through `ChannelView::append_posts`, which
+  keeps the scroll position: at the end they simply appear, and while the
+  reader is scrolled up the pill turns `primary` and counts them ("2 new
+  messages"), clearing once the list is back at the end. `update_post`
+  and `remove_post` apply server edits and deletes in place. In preview
+  two posts land in #general twelve seconds after it opens.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

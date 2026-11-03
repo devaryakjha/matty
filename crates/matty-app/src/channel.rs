@@ -288,6 +288,9 @@ pub struct ChannelView {
     lightbox_files: Vec<SharedString>,
     /// The post whose body is a composer right now (PLAN §4.3 edit).
     editing: Option<Editing>,
+    /// Posts that arrived while the reader was scrolled up; the jump pill
+    /// counts them until the list is back at the end.
+    unseen: usize,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -440,6 +443,7 @@ impl ChannelView {
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
             editing: None,
+            unseen: 0,
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -465,6 +469,18 @@ impl ChannelView {
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let count = self.rows.len();
         self.list = cx.new(|cx| MessageListState::new(count, cx));
+        self.unseen = 0;
+        self.editing = None;
+        // Open at the "New messages" line when there is one, as Mattermost
+        // does, so nothing unread scrolls past; the pill leads to the end.
+        if let Some(divider) = self.rows.iter().position(|row| *row == Row::NewMessages) {
+            self.list.update(cx, |list, cx| {
+                list.scroll_to_item(divider, cx);
+            });
+        }
+        if crate::preview::enabled() {
+            self.schedule_preview_arrivals(model.as_ref(), cx);
+        }
         let placeholder: SharedString = match &model {
             Some(channel) => match channel.kind {
                 ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
@@ -479,6 +495,77 @@ impl ChannelView {
         });
         self.model = model;
         cx.notify();
+    }
+
+    /// Adds posts that arrived from the server to the end of the transcript
+    /// without disturbing the scroll position. While the reader is scrolled
+    /// up, the jump pill counts them as "N new messages".
+    pub fn append_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
+        if posts.is_empty() {
+            return;
+        }
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let arrived = posts.iter().filter(|post| !post.mine).count();
+        model.posts.extend(posts);
+        let rows = model.rows();
+        let added = rows.len().saturating_sub(self.rows.len());
+        self.rows = rows;
+        let scrolled_up = self.list.read(cx).is_scrolled_up();
+        self.list.update(cx, |list, cx| {
+            list.append(added, cx);
+        });
+        if scrolled_up {
+            self.unseen += arrived;
+        }
+        cx.notify();
+    }
+
+    /// Replaces a post the server changed (edit, reaction, pin) in place.
+    pub fn update_post(&mut self, post: Post, cx: &mut Context<Self>) {
+        let id = post.id.clone();
+        self.mutate_post(&id, |current| *current = post, cx);
+    }
+
+    /// Removes a post the server deleted; the rows above keep their place.
+    pub fn remove_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
+            return;
+        };
+        model.posts.remove(at);
+        model.first_unread = model.first_unread.and_then(|first| {
+            let first = if at < first { first - 1 } else { first };
+            (first < model.posts.len()).then_some(first)
+        });
+        self.set_model(Some(model), window, cx);
+    }
+
+    /// In preview, a couple of posts land in #general a while after it
+    /// opens, so the live path and the pill can be seen without a server.
+    fn schedule_preview_arrivals(&self, model: Option<&ChannelModel>, cx: &mut Context<Self>) {
+        let Some(id) = model.map(|model| model.id.clone()) else {
+            return;
+        };
+        let incoming = crate::preview::incoming(&id);
+        if incoming.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(12))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.model.as_ref().is_some_and(|model| model.id == id) {
+                    this.append_posts(incoming, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Sync or the info pane changed the star; the header follows.
@@ -1805,6 +1892,7 @@ impl ChannelView {
                 None => div().into_any_element(),
             },
         )
+        .unseen(self.unseen)
         .size_full()
         .pt(theme.space(2.))
         .pb(theme.space(1.))
@@ -2159,6 +2247,10 @@ impl Render for ChannelView {
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };
+        // Back at the end, everything has been seen.
+        if self.unseen > 0 && !self.list.read(cx).is_scrolled_up() {
+            self.unseen = 0;
+        }
         let body = if channel.loading && channel.posts.is_empty() {
             Self::loading(cx).into_any_element()
         } else if channel.posts.is_empty() {
