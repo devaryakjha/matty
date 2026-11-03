@@ -1,0 +1,26 @@
+[package]
+name = "matty-app"
+description = "The Matty GPUI app: windows, views, actions, keymap and settings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpuicn.workspace = true
+gpui-kit.workspace = true
+gpui_platform.workspace = true
+gpui-icons.workspace = true
+web-time.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[features]
+# Compiles Metal shaders at runtime so macOS builds need no Xcode Metal toolchain.
+runtime_shaders = ["gpui_platform/runtime_shaders"]
