@@ -44,7 +44,7 @@ impl Store {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         // WAL lets readers proceed while the sync engine writes. In-memory
         // databases answer "memory", which is fine.
-        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        retry_busy(|| conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(())))?;
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA synchronous = NORMAL;",
@@ -61,6 +61,25 @@ impl Store {
     /// The underlying connection, for transactions.
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+}
+
+/// Runs `step` until it stops reporting SQLITE_BUSY, for at most
+/// [`BUSY_TIMEOUT`]. Switching to WAL needs an exclusive lock and SQLite
+/// answers it with BUSY at once, without calling the busy handler, when
+/// another connection is opening or migrating the same new file.
+fn retry_busy<T>(mut step: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match step() {
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
     }
 }
 
