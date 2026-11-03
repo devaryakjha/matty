@@ -25,6 +25,10 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 regex.workspace = true
 emojis.workspace = true
+matty-api.workspace = true
+matty-sync.workspace = true
+async-channel.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

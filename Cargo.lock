@@ -4456,12 +4456,15 @@ dependencies = [
 name = "matty-app"
 version = "0.0.1"
 dependencies = [
+ "async-channel",
  "dirs 6.0.0",
  "emojis",
  "gpui-icons",
  "gpui-kit",
  "gpui-pre-platform",
  "gpuicn",
+ "matty-api",
+ "matty-sync",
  "regex",
  "serde",
  "serde_json",
@@ -4469,6 +4472,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
  "web-time",
 ]
 

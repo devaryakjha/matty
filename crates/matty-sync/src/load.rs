@@ -20,6 +20,8 @@ pub(crate) const OPEN_LIMIT: u32 = 60;
 /// A result of the load, for the engine to write.
 #[derive(Debug)]
 pub(crate) enum Loaded {
+    /// The server has ended the session, or could not be told.
+    SignedOut,
     /// Who the user is and what the server offers.
     Account {
         me: Box<User>,

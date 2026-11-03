@@ -1,6 +1,7 @@
 //! The thread, runtime and channels between the engine and the app.
 
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use matty_store::Store;
@@ -41,6 +42,24 @@ impl SyncHandle {
 
 /// Starts the engine on its own thread, owning `store`.
 pub fn spawn(store: Store) -> io::Result<SyncHandle> {
+    start(move || store)
+}
+
+/// [`spawn`] over the database at `path`, opened on the sync thread so the
+/// caller's thread never touches the disk. A database that will not open
+/// is logged and replaced by an empty one in memory, so the app still runs
+/// against the server, only without a cache.
+pub fn spawn_at(path: PathBuf) -> io::Result<SyncHandle> {
+    start(move || match Store::open(&path) {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(path = %path.display(), %error, "could not open the cache; using memory");
+            Store::open_in_memory().expect("an in-memory database opens")
+        }
+    })
+}
+
+fn start(open: impl FnOnce() -> Store + Send + 'static) -> io::Result<SyncHandle> {
     let (messages, inbox) = mpsc::unbounded_channel();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -49,7 +68,7 @@ pub fn spawn(store: Store) -> io::Result<SyncHandle> {
     std::thread::Builder::new()
         .name("matty-sync".into())
         .spawn(move || {
-            runtime.block_on(Engine::new(store).run(inbox));
+            runtime.block_on(Engine::new(open()).run(inbox));
             runtime.shutdown_timeout(SHUTDOWN_GRACE);
             tracing::debug!("sync engine stopped");
         })?;

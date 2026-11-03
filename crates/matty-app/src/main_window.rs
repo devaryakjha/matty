@@ -12,7 +12,7 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::account::{AccountEvent, AccountView};
+use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
     self, ChannelInfo, FocusSearch, HistoryBack, HistoryForward, MarkAllRead, NextChannel,
     NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
@@ -21,6 +21,7 @@ use crate::actions::{
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
+use crate::live::Live;
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
@@ -53,6 +54,20 @@ pub enum ConnectionState {
     Reconnecting { attempt: u32 },
     /// Gave up until asked; cached content stays usable.
     Offline,
+}
+
+/// `chat.example.com` from `https://chat.example.com`.
+fn host(url: &str) -> String {
+    url.split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .to_string()
+}
+
+fn event_url(event: &LoginEvent) -> String {
+    match event {
+        LoginEvent::CheckServer(url) => url.clone(),
+        _ => String::new(),
+    }
 }
 
 /// The channel view's minimum width beside the sidebar.
@@ -101,6 +116,12 @@ pub struct MainWindow {
     /// one shown now.
     history: Vec<SharedString>,
     history_at: usize,
+    /// The sync engine, once there is an account to show.
+    live: Option<Live>,
+    _live_task: Option<gpui_kit::Task<()>>,
+    /// The server the sign-in card checked, for its next step.
+    login_server: Option<String>,
+    sidebar_shown: bool,
 }
 
 impl MainWindow {
@@ -160,12 +181,19 @@ impl MainWindow {
         cx.subscribe_in(
             &account,
             window,
-            |this, _, event: &AccountEvent, window, cx| {
-                // Presence and status reach sync through the same event; the
-                // menu already shows them.
-                if let AccountEvent::SignOut = event {
-                    this.sign_out(window, cx);
+            |this, _, event: &AccountEvent, window, cx| match event {
+                // The menu already shows the change.
+                AccountEvent::SetPresence(presence) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::SetStatus {
+                            status: crate::live::status(*presence).into(),
+                            dnd_end_time: None,
+                        });
+                    }
                 }
+                // Custom status text has no sync command yet (#136).
+                AccountEvent::SetStatus(_) => {}
+                AccountEvent::SignOut => this.sign_out(window, cx),
             },
         )
         .detach();
@@ -283,7 +311,7 @@ impl MainWindow {
         )
         .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
-        Self {
+        let mut this = Self {
             settings,
             login,
             sidebar,
@@ -305,14 +333,238 @@ impl MainWindow {
             connection: crate::preview::connection(),
             history,
             history_at: 0,
+            live: None,
+            _live_task: None,
+            login_server: None,
+            sidebar_shown: false,
+        };
+        // `matty --offline` opens the last account's cache without a session.
+        let saved = this.settings.read(cx).get().account.clone();
+        if crate::offline()
+            && !crate::preview::enabled()
+            && let Some(account) = saved
+        {
+            this.login = None;
+            this.connection = ConnectionState::Offline;
+            this.start_live(&account, window, cx);
+            if let Some(live) = &this.live {
+                live.send(matty_sync::Command::ShowCache);
+            }
         }
+        this
     }
 
-    /// Until sync lands, the card can only validate locally: a good URL
-    /// moves to the methods step with the preview's methods, and signing in
-    /// says plainly that it is not wired yet.
+    /// Starts sync over `account`'s database and applies what it publishes.
+    fn start_live(
+        &mut self,
+        account: &crate::settings::SavedAccount,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = crate::live::database_path(account);
+        let (live, changes) = match Live::start(path) {
+            Ok(started) => started,
+            Err(error) => {
+                tracing::error!(%error, "could not start sync");
+                return;
+            }
+        };
+        self.live = Some(live);
+        self.account.update(cx, |view, cx| {
+            view.set_account(
+                Account {
+                    display_name: account.display_name.clone().into(),
+                    username: account.username.clone().into(),
+                    presence: if crate::offline() {
+                        crate::sidebar::Presence::Offline
+                    } else {
+                        crate::sidebar::Presence::Online
+                    },
+                    status_text: None,
+                },
+                cx,
+            )
+        });
+        self._live_task = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(change) = changes.recv().await {
+                let applied =
+                    this.update_in(cx, |this, window, cx| this.apply(&change, window, cx));
+                if applied.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn apply(
+        &mut self,
+        change: &matty_sync::ChangeSet,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let update = live.apply(change);
+        if let Some(name) = update.team_name {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_team_name(name, cx));
+        }
+        if let Some(categories) = update.categories {
+            if !self.sidebar_shown {
+                // Launch-to-sidebar time, read against "matty starting" (#54).
+                tracing::info!("first sidebar from sync shown");
+                self.sidebar_shown = true;
+            }
+            let selected = self.selected_channel.clone();
+            let model = self.sidebar.update(cx, |sidebar, cx| {
+                let mut model = sidebar.model().clone();
+                model.loading = false;
+                model.categories = categories;
+                model.selected = selected;
+                sidebar.set_model(model, cx);
+                sidebar.model().clone()
+            });
+            self.switcher
+                .update(cx, |switcher, cx| switcher.set_model(&model, cx));
+        }
+        if let Some(state) = update.connection {
+            self.set_connection(state, cx);
+        }
+        if update.signed_out {
+            self.live = None;
+            self._live_task = None;
+        }
+        let _ = window;
+    }
+
+    /// The sign-in card's requests. The preview answers locally; otherwise
+    /// the server is checked and signed in to on sync's I/O thread, and a
+    /// session starts sync over that account's cache.
     fn on_login_event(
         this: &mut Self,
+        view: &Entity<LoginView>,
+        event: &LoginEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::preview::enabled() {
+            return Self::on_preview_login_event(view, event, window, cx);
+        }
+        let mut model = view.read(cx).model().clone();
+        model.error = None;
+        match event {
+            LoginEvent::CheckServer(url) => {
+                model.busy = true;
+                let url = url.clone();
+                let view = view.downgrade();
+                cx.spawn_in(window, async move |_, cx| {
+                    let checked = crate::live::check_server(url.clone()).await;
+                    let _ = view.update_in(cx, |view, window, cx| {
+                        let mut model = view.model().clone();
+                        model.busy = false;
+                        match checked {
+                            Ok(capabilities) => {
+                                model.step = LoginStep::Methods {
+                                    server_name: capabilities
+                                        .site_name
+                                        .clone()
+                                        .unwrap_or_else(|| host(&url))
+                                        .into(),
+                                    methods: crate::live::methods(&capabilities),
+                                };
+                                model.error = None;
+                            }
+                            Err(error) => model.error = Some(error.into()),
+                        }
+                        view.set_model(model, window, cx);
+                    });
+                })
+                .detach();
+                this.login_server = Some(event_url(event));
+            }
+            LoginEvent::ChangeServer => {
+                model.step = LoginStep::Server;
+                this.login_server = None;
+            }
+            LoginEvent::SignIn { login_id, password } => {
+                let Some(server) = this.login_server.clone() else {
+                    model.step = LoginStep::Server;
+                    return view.update(cx, |view, cx| view.set_model(model, window, cx));
+                };
+                model.busy = true;
+                let signing_in =
+                    crate::live::sign_in(server.clone(), login_id.clone(), password.clone());
+                this.finish_sign_in(server, signing_in, view, window, cx);
+            }
+            LoginEvent::Token(token) => {
+                let Some(server) = this.login_server.clone() else {
+                    model.step = LoginStep::Server;
+                    return view.update(cx, |view, cx| view.set_model(model, window, cx));
+                };
+                model.busy = true;
+                let signing_in = crate::live::sign_in_with_token(server.clone(), token.clone());
+                this.finish_sign_in(server, signing_in, view, window, cx);
+            }
+            LoginEvent::Sso(provider) => {
+                // The browser flow is #75.
+                model.error = Some(
+                    format!(
+                        "{} sign-in is not in Matty yet. Use a password or a personal access token.",
+                        provider.label()
+                    )
+                    .into(),
+                );
+            }
+        }
+        view.update(cx, |view, cx| view.set_model(model, window, cx));
+    }
+
+    /// Waits for `signing_in`, then either starts sync and leaves the card
+    /// or shows the card's error.
+    fn finish_sign_in(
+        &mut self,
+        server: String,
+        signing_in: impl std::future::Future<Output = Result<crate::live::Session, String>> + 'static,
+        view: &Entity<LoginView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = view.downgrade();
+        cx.spawn_in(window, async move |this, cx| {
+            let signed_in = signing_in.await;
+            let _ = this.update_in(cx, |this, window, cx| match signed_in {
+                Ok(session) => {
+                    let account = crate::live::saved_account(&server, &session.user);
+                    this.settings.update(cx, |settings, cx| {
+                        settings.update(cx, |s| s.account = Some(account.clone()))
+                    });
+                    this.start_live(&account, window, cx);
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Connect {
+                            client: session.client,
+                        });
+                    }
+                    this.login = None;
+                    this.login_server = None;
+                    cx.notify();
+                }
+                Err(error) => {
+                    let _ = view.update(cx, |view, cx| {
+                        let mut model = view.model().clone();
+                        model.busy = false;
+                        model.error = Some(error.into());
+                        view.set_model(model, window, cx);
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The preview's card validates locally: a good URL moves to the
+    /// methods step with fixed methods, and signing in says it is a preview.
+    fn on_preview_login_event(
         view: &Entity<LoginView>,
         event: &LoginEvent,
         window: &mut Window,
@@ -321,12 +573,8 @@ impl MainWindow {
         let mut model = view.read(cx).model().clone();
         match event {
             LoginEvent::CheckServer(url) => {
-                let server_name = url
-                    .split_once("://")
-                    .map_or(url.as_str(), |(_, rest)| rest)
-                    .to_string();
                 model.step = LoginStep::Methods {
-                    server_name: server_name.into(),
+                    server_name: host(url).into(),
                     methods: SignInMethods {
                         password: true,
                         ldap: false,
@@ -339,22 +587,11 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 model.error = None;
             }
-            LoginEvent::SignIn { .. } | LoginEvent::Token(_) => {
-                model.error =
-                    Some("Signing in is not connected yet; it arrives with sync in M1.".into());
-            }
-            LoginEvent::Sso(provider) => {
-                model.error = Some(
-                    format!(
-                        "{} sign-in opens your browser once sync lands in M1.",
-                        provider.label()
-                    )
-                    .into(),
-                );
+            LoginEvent::SignIn { .. } | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
+                model.error = Some("The preview does not sign in to a server.".into());
             }
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
-        let _ = this;
     }
 
     /// Shows `id` in the channel view and marks it in the sidebar. Until
@@ -404,7 +641,15 @@ impl MainWindow {
     ) {
         self.threads_open = false;
         self.drafts_open = false;
-        self.selected_channel = Some(id.clone());
+        let previous = self.selected_channel.replace(id.clone());
+        if let Some(live) = &self.live
+            && previous.as_ref() != Some(&id)
+        {
+            live.send(matty_sync::Command::ViewChannel {
+                channel_id: id.to_string(),
+                prev_channel_id: previous.map(|p| p.to_string()).unwrap_or_default(),
+            });
+        }
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
         if crate::preview::enabled() {
@@ -792,12 +1037,22 @@ impl MainWindow {
             .into_any_element()
     }
 
-    /// Sign out returns to the sign-in card; sync clears the session when it
-    /// handles `AccountEvent::SignOut` itself.
+    /// Sign out returns to the sign-in card at once; sync ends the session
+    /// on the server and then stops. The cache stays on disk until #160.
     fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.login.is_some() {
             return;
         }
+        match &self.live {
+            Some(live) => live.send(matty_sync::Command::SignOut),
+            None => self._live_task = None,
+        }
+        self.settings
+            .update(cx, |settings, cx| settings.update(cx, |s| s.account = None));
+        self.selected_channel = None;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_model(SidebarModel::loading(), cx)
+        });
         let view = cx.new(|cx| LoginView::new(LoginModel::default(), window, cx));
         cx.subscribe_in(&view, window, Self::on_login_event)
             .detach();

@@ -101,3 +101,25 @@ async fn opening_a_channel_starts_at_the_first_unread() {
         channel_id: world.channel.id.clone(),
     });
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signing_out_revokes_the_session() {
+    let Some(world) = World::new().await else {
+        return;
+    };
+    let engine = Engine::start(&world.me).await;
+    engine.send(Command::SignOut);
+    engine
+        .wait("the sign-out", |change| {
+            matches!(
+                change,
+                matty_sync::ChangeSet::Connection(matty_sync::Connection::SignedOut)
+            )
+        })
+        .await;
+    let error = world.me.client.me().await.unwrap_err();
+    assert!(
+        matches!(error, matty_api::ApiError::Server { status: 401, .. }),
+        "{error}"
+    );
+}

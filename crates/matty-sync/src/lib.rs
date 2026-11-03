@@ -15,11 +15,16 @@ mod change;
 mod commands;
 mod engine;
 mod events;
+pub mod io;
 mod load;
 mod outbox;
 mod typing;
 
-pub use bridge::{SyncHandle, spawn};
+pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
 pub use engine::Command;
+/// Where an account's database lives.
+pub use matty_store::default_path as database_path;
 pub use matty_store::outbox::Outgoing;
+/// The snapshot types change sets carry, so the app needs no store crate.
+pub use matty_store::sidebar::{SidebarChannel, SidebarSection, TeamWithUnreads, Unreads};
