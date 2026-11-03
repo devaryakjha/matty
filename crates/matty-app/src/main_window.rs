@@ -13,33 +13,51 @@ use gpui_kit::{
 };
 
 use crate::actions::{
-    self, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher, RecentMentions,
-    ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
+    self, ChannelInfo, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher,
+    RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
-use crate::channel::ChannelView;
+use crate::channel::{ChannelEvent, ChannelView};
+use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
-    SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
+    RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
+    ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::switcher::{Switcher, SwitcherEvent};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     kbd::{Kbd, format_shortcut},
     resizable::{PaneLimits, Resizable},
+    switch::Switch,
     theme::UiTheme,
     title_bar::TitleBar,
+    toggle_group::{ToggleGroup, ToggleGroupItem},
     tooltip::text_tooltip,
 };
 
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
+/// The width of gpuicn's Resizable handle, counted when turning the
+/// persisted right-pane width into the channel width the split wants.
+const SPLIT_HANDLE: f32 = 8.;
+/// The text size presets the preferences dialog offers, within the
+/// 0.8–1.5 range settings accept.
+const TEXT_SIZES: &[(&str, f32)] = &[
+    ("small", 0.9),
+    ("default", 1.),
+    ("large", 1.15),
+    ("larger", 1.3),
+];
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     sidebar: Entity<SidebarView>,
     channel: Entity<ChannelView>,
+    switcher: Entity<Switcher>,
+    right_pane: Entity<RightPaneView>,
     focus: FocusHandle,
     /// The channel the sidebar selected; the channel view follows it in M1.
     selected_channel: Option<gpui_kit::SharedString>,
@@ -77,17 +95,43 @@ impl MainWindow {
             SidebarModel::loading()
         };
         let selected_channel = model.selected.clone();
+        let switcher = cx.new(|cx| Switcher::new(&model, window, cx));
+        cx.subscribe_in(
+            &switcher,
+            window,
+            |this, _, event: &SwitcherEvent, window, cx| {
+                let SwitcherEvent::Open(id) = event;
+                this.open_channel(id.clone(), window, cx);
+            },
+        )
+        .detach();
         let sidebar = cx.new(|_| SidebarView::new("Matty", model));
         let initial = selected_channel
             .as_deref()
             .filter(|_| crate::preview::enabled())
             .and_then(crate::preview::channel);
         let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
+        let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
+        cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
+            ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+            ChannelEvent::Send(_) => {}
+        })
+        .detach();
+        cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
+            let RightPaneEvent::Close = event;
+            this.right_pane_open = false;
+            cx.notify();
+        })
+        .detach();
         cx.subscribe_in(
             &sidebar,
             window,
             |this, _, event: &SidebarEvent, window, cx| {
-                let SidebarEvent::Select(id) = event;
+                let id = match event {
+                    SidebarEvent::Select(id) => id,
+                    // Threads and Drafts views land in M1 with sync.
+                    SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts => return,
+                };
                 this.selected_channel = Some(id.clone());
                 if crate::preview::enabled() {
                     let model = crate::preview::channel(id);
@@ -102,14 +146,97 @@ impl MainWindow {
             settings,
             sidebar,
             channel,
+            switcher,
+            right_pane,
             focus,
             selected_channel,
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
-            rail_visible: false,
+            rail_visible: crate::preview::enabled(),
             right_pane_open: false,
         }
+    }
+
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
+    fn open_channel(
+        &mut self,
+        id: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_channel = Some(id.clone());
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
+        if crate::preview::enabled() {
+            let model = crate::preview::channel(&id);
+            self.channel
+                .update(cx, |view, cx| view.set_model(model, window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Opens the thread under `post_id` in the right pane. Until sync lands
+    /// only the preview fixtures have threads.
+    fn open_thread(&mut self, post_id: gpui_kit::SharedString, cx: &mut Context<Self>) {
+        let Some(channel_id) = self.selected_channel.clone() else {
+            return;
+        };
+        let thread = crate::preview::enabled()
+            .then(|| crate::preview::thread(&channel_id, &post_id))
+            .flatten();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+        });
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    /// Shows the current channel's info in the right pane.
+    fn show_channel_info(&mut self, cx: &mut Context<Self>) {
+        let info = self.channel.read(cx).model().cloned();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_content(info.map(RightPaneContent::ChannelInfo), cx)
+        });
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    /// The channel view, with the right pane beside it when open. gpuicn's
+    /// Resizable sizes its first pane, so the persisted right-pane width is
+    /// turned into a channel width from the space the split has.
+    fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if !self.right_pane_open {
+            return self.channel.clone().into_any_element();
+        }
+        let settings = self.settings.read(cx).get().clone();
+        let theme = UiTheme::read(cx);
+        let rail = if self.rail_visible {
+            f32::from(scaled(theme, metrics::RAIL_WIDTH))
+        } else {
+            0.
+        };
+        let sidebar = if self.sidebar_visible {
+            settings.sidebar_width + SPLIT_HANDLE
+        } else {
+            0.
+        };
+        let extent = f32::from(window.viewport_size().width) - rail - sidebar - SPLIT_HANDLE;
+        let channel_width = (extent - settings.right_pane_width).max(CONTENT_MIN);
+        let store = self.settings.clone();
+        Resizable::new("main.right-split", "Resize right pane", px(channel_width))
+            .first(self.channel.clone())
+            .second(self.right_pane.clone())
+            .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
+            .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
+            .on_resize(move |width: &Pixels, _, cx| {
+                let right = (extent - f32::from(*width)).clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
+                store.update(cx, |store, cx| {
+                    store.update(cx, |s| s.right_pane_width = right)
+                });
+            })
+            .into_any_element()
     }
 
     fn remember_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -322,14 +449,191 @@ impl MainWindow {
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
     }
 
-    fn preferences_stub(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Preferences (DESIGN.md §5): appearance first, with every control a
+    /// gpuicn one and every change written to settings straight away so
+    /// the window re-themes behind the dialog.
+    fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let settings = self.settings.read(cx).get().clone();
+        let store = self.settings.clone();
+        let label = |text: &'static str| {
+            div()
+                .type_style(style::LABEL, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child(text.to_uppercase())
+        };
+        let section = |title: &'static str, control: gpui_kit::AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme.space(2.))
+                .child(label(title))
+                .child(control)
+        };
+        let theme_value: SharedString = match settings.theme {
+            ThemeChoice::System => "system",
+            ThemeChoice::Light => "light",
+            ThemeChoice::Dark => "dark",
+        }
+        .into();
+        let theme_item = |id: &'static str, value: &'static str, glyph: LucideIcon, text: &str| {
+            ToggleGroupItem::new(id, value)
+                .aria_label(text.to_string())
+                .flex_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.space(1.5))
+                        .child(lucide(glyph).size(scaled(&theme, 14.)))
+                        .child(text.to_string()),
+                )
+        };
+        let theme_store = store.clone();
+        let theme_group = ToggleGroup::new("preferences.theme")
+            .aria_label("Theme")
+            .joined(true)
+            .w_full()
+            .value([theme_value])
+            .item(theme_item(
+                "preferences.theme.system",
+                "system",
+                LucideIcon::Monitor,
+                "System",
+            ))
+            .item(theme_item(
+                "preferences.theme.light",
+                "light",
+                LucideIcon::Sun,
+                "Light",
+            ))
+            .item(theme_item(
+                "preferences.theme.dark",
+                "dark",
+                LucideIcon::Moon,
+                "Dark",
+            ))
+            .on_change(move |next, _, cx| {
+                let choice = match next.first().map(|v| v.as_ref()) {
+                    Some("light") => ThemeChoice::Light,
+                    Some("dark") => ThemeChoice::Dark,
+                    _ => ThemeChoice::System,
+                };
+                theme_store.update(cx, |store, cx| store.update(cx, |s| s.theme = choice));
+            });
+        let size_value: SharedString = TEXT_SIZES
+            .iter()
+            .min_by(|a, b| {
+                (a.1 - settings.text_scale)
+                    .abs()
+                    .total_cmp(&(b.1 - settings.text_scale).abs())
+            })
+            .map(|(name, _)| *name)
+            .unwrap_or("default")
+            .into();
+        let size_store = store.clone();
+        let mut size_group = ToggleGroup::new("preferences.text-size")
+            .aria_label("Text size")
+            .joined(true)
+            .w_full()
+            .value([size_value]);
+        for (name, scale) in TEXT_SIZES {
+            let text = format!("{}%", (scale * 100.).round());
+            size_group = size_group.item(
+                ToggleGroupItem::new(
+                    gpui_kit::ElementId::Name(format!("preferences.text-size.{name}").into()),
+                    *name,
+                )
+                .aria_label(format!("Text size {text}"))
+                .flex_1()
+                .child(text),
+            );
+        }
+        let size_group = size_group.on_change(move |next, _, cx| {
+            let scale = TEXT_SIZES
+                .iter()
+                .find(|(name, _)| next.first().map(|v| v.as_ref()) == Some(*name))
+                .map(|(_, scale)| *scale)
+                .unwrap_or(1.);
+            size_store.update(cx, |store, cx| store.update(cx, |s| s.text_scale = scale));
+        });
+        let switch_row =
+            |id: &'static str,
+             title: &'static str,
+             detail: &'static str,
+             checked: bool,
+             write: fn(&mut crate::settings::Settings, bool)| {
+                let store = store.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(theme.space(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(theme.space(0.5))
+                            .child(
+                                div()
+                                    .type_style(style::UI, &theme)
+                                    .text_color(theme.colors.foreground)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .type_style(style::META, &theme)
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(detail),
+                            ),
+                    )
+                    .child(
+                        Switch::new(id)
+                            .checked(checked)
+                            .aria_label(title)
+                            .on_change(move |next, _, _, cx| {
+                                store.update(cx, |store, cx| store.update(cx, |s| write(s, next)))
+                            }),
+                    )
+            };
         let popup = dialog_popup("preferences.popup", "Preferences", cx)
             .child(dialog_title("preferences.title", cx).child("Preferences"))
             .child(
                 dialog_description("preferences.description", cx)
-                    .child("Theme, message display and notification settings arrive with M1."),
+                    .child("Changes apply right away and are saved for next time."),
             )
-            .child(dialog_close("preferences.close", cx).label("Close"));
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(5.))
+                    .pt(theme.space(1.))
+                    .child(section("Theme", theme_group.into_any_element()))
+                    .child(section("Text size", size_group.into_any_element()))
+                    .child(section(
+                        "Window",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(theme.space(3.))
+                            .child(switch_row(
+                                "preferences.close-to-tray",
+                                "Keep running when closed",
+                                "Closing the window leaves Matty in the tray.",
+                                settings.close_to_tray,
+                                |s, v| s.close_to_tray = v,
+                            ))
+                            .child(switch_row(
+                                "preferences.launch-at-login",
+                                "Open at login",
+                                "Start Matty when you sign in.",
+                                settings.launch_at_login,
+                                |s, v| s.launch_at_login = v,
+                            ))
+                            .into_any_element(),
+                    )),
+            )
+            .child(dialog_close("preferences.close", cx).label("Done"));
         dialog("preferences", &self.preferences, popup, window, cx)
     }
 
@@ -337,17 +641,67 @@ impl MainWindow {
     /// outlined in `primary`. Hidden until the user has a second team.
     fn team_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let square = |id: &'static str, label: &'static str, current: bool| {
-            Button::new(id)
+        let teams = if crate::preview::enabled() {
+            crate::preview::teams()
+        } else {
+            vec![("Matty", true)]
+        };
+        let squares = teams
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, current))| {
+                let initials: String = name
+                    .split_whitespace()
+                    .filter_map(|word| word.chars().next())
+                    .take(2)
+                    .collect();
+                let square = Button::new(gpui_kit::ElementId::Name(
+                    format!("rail.team.{index}").into(),
+                ))
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Icon)
-                .aria_label(label)
+                .aria_label(name)
                 .rounded(theme.radius.lg)
-                .bg(theme.colors.sidebar_accent)
+                .bg(if current {
+                    theme.colors.primary
+                } else {
+                    theme.colors.sidebar_accent
+                })
+                .text_color(if current {
+                    theme.colors.primary_foreground
+                } else {
+                    theme.colors.sidebar_foreground
+                })
                 .type_style(style::UI_STRONG, &theme)
-                .when(current, |b| b.border_2().border_color(theme.colors.primary))
-                .child(label.chars().next().unwrap_or('?').to_string())
-        };
+                .child(initials);
+                // The current team carries a 2px marker in `primary` on the rail's
+                // edge, so the square itself stays a plain tile.
+                div()
+                    .relative()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id(gpui_kit::ElementId::Name(
+                                format!("rail.team.{index}.tip").into(),
+                            ))
+                            .tooltip(move |_, cx| text_tooltip(name.into(), cx))
+                            .child(square),
+                    )
+                    .when(current, |cell| {
+                        cell.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(theme.space(1.))
+                                .bottom(theme.space(1.))
+                                .w(px(2.))
+                                .rounded_r(px(2.))
+                                .bg(theme.colors.primary),
+                        )
+                    })
+            });
         div()
             .w(scaled(&theme, metrics::RAIL_WIDTH))
             .h_full()
@@ -360,16 +714,25 @@ impl MainWindow {
             .bg(theme.colors.sidebar)
             .border_r(style::hairline())
             .border_color(theme.colors.sidebar_border)
-            .child(square("rail.team.current", "Matty", true))
+            .children(squares)
             .child(
-                Button::new("rail.add")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::Icon)
-                    .aria_label("Join another team")
+                div()
+                    .id("rail.add.tip")
+                    .tooltip(move |_, cx| text_tooltip("Join another team".into(), cx))
                     .child(
-                        lucide(LucideIcon::Plus)
-                            .size(scaled(&theme, metrics::ICON))
-                            .text_color(theme.colors.muted_foreground),
+                        Button::new("rail.add")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Icon)
+                            .aria_label("Join another team")
+                            .rounded(theme.radius.lg)
+                            .border_1()
+                            .border_dashed()
+                            .border_color(theme.colors.border)
+                            .child(
+                                lucide(LucideIcon::Plus)
+                                    .size(scaled(&theme, metrics::ICON))
+                                    .text_color(theme.colors.muted_foreground),
+                            ),
                     ),
             )
     }
@@ -380,10 +743,11 @@ impl Render for MainWindow {
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
+        let content = self.content(window, cx);
         let frame = if self.sidebar_visible {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
                 .first(self.sidebar.clone())
-                .second(self.channel.clone())
+                .second(content)
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
                 .on_resize(move |width: &Pixels, _, cx| {
@@ -394,11 +758,14 @@ impl Render for MainWindow {
                 })
                 .into_any_element()
         } else {
-            self.channel.clone().into_any_element()
+            content
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();
-        let right_pane_width = px(self.settings.read(cx).get().right_pane_width);
+        let switcher = self.switcher.clone();
+        let switcher_element = self.switcher.update(cx, |switcher, cx| {
+            switcher.element(window, cx).into_any_element()
+        });
         div()
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
@@ -411,6 +778,14 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
             .on_action(move |_: &ShowShortcuts, window, cx| shortcuts.open(window, cx))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
+            .on_action(move |_: &QuickSwitcher, window, cx| {
+                switcher.update(cx, |switcher, cx| switcher.open(window, cx))
+            })
+            .on_action(cx.listener(|this, _: &ToggleRightPane, _, cx| {
+                this.right_pane_open = !this.right_pane_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
             .size_full()
             .flex()
             .flex_col()
@@ -426,18 +801,10 @@ impl Render for MainWindow {
                     .w_full()
                     .flex()
                     .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
-                    .child(div().flex_1().min_w_0().h_full().child(frame))
-                    .when(self.right_pane_open, |row| {
-                        row.child(
-                            div()
-                                .w(right_pane_width)
-                                .h_full()
-                                .border_l(style::hairline())
-                                .border_color(theme.colors.border),
-                        )
-                    }),
+                    .child(div().flex_1().min_w_0().h_full().child(frame)),
             )
             .child(self.shortcut_sheet(window, cx))
-            .child(self.preferences_stub(window, cx))
+            .child(self.preferences(window, cx))
+            .child(switcher_element)
     }
 }

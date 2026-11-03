@@ -101,11 +101,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   search pill, max 560px wide, that opens Cmd/Ctrl+K. Right: recent
   mentions, saved, help, and the user's avatar with a presence dot.
 - **Team rail** (56px) appears only with more than one team. Teams are 32px
-  rounded squares with initials or icons; the current one is outlined in
-  `primary`; unread teams get a dot, mentions a count.
+  rounded squares with initials or icons; the current one is filled with
+  `primary` and marked with a 2px `primary` bar on the rail's edge; unread
+  teams get a dot, mentions a count. A dashed square at the end joins a team.
 - **Sidebar** (default 260px, 200 to 400) is the `sidebar` surface with no
   right border on the content side beyond the hairline. Header is 48px with
-  the team name as a menu button. Categories are collapsible 11px labels;
+  the team name as a menu button. Threads and Drafts sit above the
+  categories as plain rows with a `secondary` count badge when there is
+  something to read or finish. Categories are collapsible 11px labels;
   rows are 28px, 8px padding, 6px radius, icon 16px. Unread rows use
   `ui_strong` in `sidebar-foreground`; read rows use `muted-foreground`;
   muted channels are 60% opacity; the selected row is `sidebar-accent`.
@@ -120,6 +123,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   separates from the channel with a hairline.
 - **Empty and loading states** center a 40px icon in a tinted circle, a
   `title` line and one `meta` sentence; never more.
+
+- **Preferences** is a dialog, not a window: sections under `label`
+  headings, a joined toggle group for theme (System, Light, Dark) and text
+  size (90 to 130 percent), switches with a one-line `meta` explanation.
+  Every change applies behind the dialog as it is made; the only button is
+  Done.
 
 ## 5. Components
 

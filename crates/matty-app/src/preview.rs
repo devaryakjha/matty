@@ -13,6 +13,15 @@ pub fn enabled() -> bool {
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
+/// The teams in the rail: name and whether it is the current one.
+pub fn teams() -> Vec<(&'static str, bool)> {
+    vec![
+        ("Matty", true),
+        ("Design Guild", false),
+        ("Open Source", false),
+    ]
+}
+
 pub fn sidebar() -> SidebarModel {
     let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
     let dm = |id: &str, name: &str, presence| {
@@ -21,6 +30,8 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
+        unread_threads: 3,
+        drafts: 1,
         categories: vec![
             Category::new(
                 "favorites",
@@ -59,6 +70,7 @@ pub fn sidebar() -> SidebarModel {
 }
 
 use crate::channel::{ChannelModel, Post, PostReaction};
+use crate::right_pane::ThreadModel;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
@@ -169,5 +181,52 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         favorite: id == "design",
         posts,
         first_unread: Some(5),
+    })
+}
+
+/// The thread under `post_id` in `channel_id`: the post as root plus three
+/// replies, the last two from the same person.
+pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
+    let channel = channel(channel_id)?;
+    let root = channel
+        .posts
+        .iter()
+        .find(|post| post.id.as_ref() == post_id)?
+        .clone();
+    let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
+        id: format!("{}-{id}", root.id).into(),
+        author: author.into(),
+        time: time.into(),
+        day: root.day.clone(),
+        body: body.into(),
+        reactions: vec![],
+        mentions_me: false,
+        edited: false,
+        continues,
+    };
+    Some(ThreadModel {
+        channel_name: channel.name.clone(),
+        replies: vec![
+            reply(
+                "r1",
+                "Jonas Weber",
+                "08:09",
+                "Reproduced on Windows 11 at 480px. The switcher pill keeps its minimum width and pushes the controls.",
+                false,
+            ),
+            reply(
+                "r2",
+                "Arya",
+                "08:12",
+                "Thanks. The pill should give way first; I'll cap it at the remaining width and let it shrink to the icon.",
+                false,
+            ),
+            reply("r3", "Arya", "08:13", "Tracking it in #79.", true),
+        ],
+        root: Post {
+            continues: false,
+            ..root
+        },
+        following: true,
     })
 }
