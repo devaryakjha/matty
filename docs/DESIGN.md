@@ -190,6 +190,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   caption "#channel · Today" with a Jump link on the right, drawn as an
   ordinary message (author, time, body, reactions, no hover toolbar), and
   a hairline separates entries. Empty listings say how a post gets there.
+- **Drafts view** replaces the channel when the sidebar's Drafts row is
+  chosen: a header with the unsent count, then one `card` per draft at
+  most 760px wide: where it goes ("#design" or "Reply in #general" with
+  the matching icon) and when it was last edited, the text rendered as it
+  will read, and a row with Delete in `destructive` on the left and
+  Open (outline) and Send (primary) on the right. Deleting or sending
+  removes the card at once and the sidebar count follows.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

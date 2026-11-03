@@ -8,6 +8,7 @@
 
 pub mod actions;
 pub mod channel;
+pub mod drafts;
 pub mod logging;
 pub mod login;
 mod main_window;

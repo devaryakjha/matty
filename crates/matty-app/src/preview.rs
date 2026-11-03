@@ -65,7 +65,7 @@ pub fn sidebar() -> SidebarModel {
         loading: false,
         selected: Some("general".into()),
         unread_threads: 2,
-        drafts: 1,
+        drafts: 2,
         categories: vec![
             Category::new(
                 "favorites",
@@ -106,6 +106,7 @@ pub fn sidebar() -> SidebarModel {
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
+use crate::drafts::{Draft, DraftsModel};
 use crate::right_pane::{ListedPost, ThreadModel};
 use crate::threads::{ThreadRow, ThreadsModel};
 
@@ -336,6 +337,28 @@ pub fn mentions() -> Vec<ListedPost> {
         .into_iter()
         .flatten()
         .collect()
+}
+
+/// The user's unsent messages, for the Drafts view.
+pub fn drafts() -> DraftsModel {
+    DraftsModel {
+        drafts: vec![
+            Draft {
+                channel_id: "design".into(),
+                channel_name: "design".into(),
+                thread_root: None,
+                body: "Proposal for the empty states: one icon in a tinted circle, a `title` line and **one** sentence, never a paragraph. Screens in the PR.".into(),
+                updated: "Today 10:12".into(),
+            },
+            Draft {
+                channel_id: "general".into(),
+                channel_name: "general".into(),
+                thread_root: Some("p5".into()),
+                body: "Also added it to the README so nobody has to ask again.".into(),
+                updated: "Yesterday 17:03".into(),
+            },
+        ],
+    }
 }
 
 /// The threads the user follows, for the Threads view.

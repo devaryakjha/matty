@@ -19,6 +19,7 @@ use crate::actions::{
     ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
+use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
@@ -91,6 +92,8 @@ pub struct MainWindow {
     /// Threads row is chosen.
     threads: Entity<ThreadsView>,
     threads_open: bool,
+    drafts: Entity<DraftsView>,
+    drafts_open: bool,
     connection: ConnectionState,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
@@ -151,6 +154,32 @@ impl MainWindow {
             ThreadsModel::default()
         };
         let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
+        let drafts_model = if crate::preview::enabled() {
+            crate::preview::drafts()
+        } else {
+            DraftsModel::default()
+        };
+        let drafts = cx.new(|_| DraftsView::new(drafts_model));
+        cx.subscribe_in(
+            &drafts,
+            window,
+            |this, drafts, event: &DraftsEvent, window, cx| {
+                // Sync sends or discards the draft; the sidebar count follows.
+                let count = drafts.read(cx).model().drafts.len();
+                this.sidebar.update(cx, |sidebar, cx| {
+                    let mut model = sidebar.model().clone();
+                    model.drafts = count;
+                    sidebar.set_model(model, cx);
+                });
+                if let DraftsEvent::Open(draft) = event {
+                    this.open_channel(draft.channel_id.clone(), window, cx);
+                    if let Some(root) = draft.thread_root.clone() {
+                        this.open_thread(root, cx);
+                    }
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&threads, |this, _, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
             if let ThreadsEvent::MarkAllRead = event {
@@ -214,8 +243,7 @@ impl MainWindow {
                 let id = match event {
                     SidebarEvent::Select(id) => id.clone(),
                     SidebarEvent::OpenThreads => return this.show_threads(cx),
-                    // The Drafts view lands with draft sync.
-                    SidebarEvent::OpenDrafts => return,
+                    SidebarEvent::OpenDrafts => return this.show_drafts(cx),
                 };
                 this.open_channel(id, window, cx);
             },
@@ -238,6 +266,8 @@ impl MainWindow {
             right_pane_open: false,
             threads,
             threads_open: false,
+            drafts,
+            drafts_open: false,
             connection: crate::preview::connection(),
             history,
             history_at: 0,
@@ -310,9 +340,21 @@ impl MainWindow {
     }
 
     /// Shows `id` without touching the history: Back and Forward use it.
+    /// Shows the unsent messages in place of the channel.
+    fn show_drafts(&mut self, cx: &mut Context<Self>) {
+        self.drafts_open = true;
+        self.threads_open = false;
+        self.right_pane_open = false;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.select(Some(crate::sidebar::DRAFTS_ID.into()), cx)
+        });
+        cx.notify();
+    }
+
     /// Shows the followed threads in place of the channel.
     fn show_threads(&mut self, cx: &mut Context<Self>) {
         self.threads_open = true;
+        self.drafts_open = false;
         self.right_pane_open = false;
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.select(Some(crate::sidebar::THREADS_ID.into()), cx)
@@ -327,6 +369,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         self.threads_open = false;
+        self.drafts_open = false;
         self.selected_channel = Some(id.clone());
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
@@ -381,6 +424,7 @@ impl MainWindow {
 
     fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
         self.threads_open = false;
+        self.drafts_open = false;
         self.right_pane
             .update(cx, |pane, cx| pane.set_content(Some(content), cx));
         self.right_pane_open = true;
@@ -439,6 +483,9 @@ impl MainWindow {
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.threads_open {
             return self.threads.clone().into_any_element();
+        }
+        if self.drafts_open {
+            return self.drafts.clone().into_any_element();
         }
         if !self.right_pane_open {
             return self.channel.clone().into_any_element();

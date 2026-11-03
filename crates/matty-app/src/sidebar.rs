@@ -202,6 +202,8 @@ fn element_id(prefix: &str, id: &SharedString) -> gpui_kit::ElementId {
 /// What the sidebar asks the window to do.
 /// The `selected` id that marks the Threads row, which is not a channel.
 pub const THREADS_ID: &str = "~threads";
+/// The `selected` id that marks the Drafts row.
+pub const DRAFTS_ID: &str = "~drafts";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarEvent {
@@ -496,7 +498,7 @@ impl SidebarView {
                 cx,
             ))
             .child(entry(
-                "sidebar.drafts",
+                DRAFTS_ID,
                 "Drafts",
                 LucideIcon::FilePenLine,
                 self.model.drafts,
