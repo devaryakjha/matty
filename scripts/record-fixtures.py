@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -22,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = ROOT / "docker" / "seed-output.json"
-PREVIEW_DIR = "/mattermost/client/matty-preview"
+PREVIEW_PARENT = "/mattermost/client/"
 # Pages the server serves itself under /static/, so link previews work
 # without internet access (compose allows internal connections to localhost).
 PREVIEW_PAGES = {
@@ -125,10 +126,13 @@ def main() -> None:
     get("post_with_files", f"posts/{image_post}")
 
     # Embeds, from pages the server itself serves.
-    for name, html in PREVIEW_PAGES.items():
-        subprocess.run([str(ROOT / "scripts" / "dev-server"), "exec", "sh", "-c",
-                        f"mkdir -p {PREVIEW_DIR} && cat > {PREVIEW_DIR}/{name}"],
-                       input=html.encode(), check=True)
+    # Copied in rather than written with a shell: newer images have no `sh`.
+    with tempfile.TemporaryDirectory() as pages:
+        site = Path(pages) / "matty-preview"
+        site.mkdir()
+        for name, html in PREVIEW_PAGES.items():
+            (site / name).write_text(html)
+        subprocess.run([str(ROOT / "scripts" / "dev-server"), "cp", str(site), PREVIEW_PARENT], check=True)
     static = f"{server}/static"
     embeds = {
         "post_opengraph": f"Preview {static}/matty-preview/page.html",

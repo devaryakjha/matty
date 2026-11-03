@@ -7,6 +7,7 @@
 #   scripts/dev-server logs     follow the server log
 #   scripts/dev-server mmctl …  run mmctl in local mode inside the server
 #   scripts/dev-server exec …   run a command inside the server container
+#   scripts/dev-server cp SRC DEST  copy a local file or folder into the server
 #
 # Environment: MATTY_MM_IMAGE (default mattermost/mattermost-enterprise-edition),
 # MATTY_MM_VERSION (image tag, default 10.5), MATTY_MM_PORT
@@ -56,8 +57,11 @@ case "${1:-}" in
         shift
         "${compose[@]}" exec -T mattermost "$@"
         ;;
+    cp)
+        "${compose[@]}" cp "$2" "mattermost:$3"
+        ;;
     *)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac
