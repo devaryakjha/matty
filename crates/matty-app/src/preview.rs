@@ -140,10 +140,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         replies: None,
         files: vec![],
     };
-    let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
+    let reaction = |emoji: &str, count: usize, mine: bool, users: &[&str]| PostReaction {
         emoji: emoji.into(),
         count,
         mine,
+        users: users.iter().map(|user| user.to_string().into()).collect(),
     };
     let posts = vec![
         post(
@@ -154,7 +155,15 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "Morning all. The release branch is cut, so anything that is not a fix waits for next week.",
         ),
         Post {
-            reactions: vec![reaction("👍", 4, true), reaction("🚀", 2, false)],
+            reactions: vec![
+                reaction(
+                    "👍",
+                    4,
+                    true,
+                    &["Sam Okafor", "Lena Fischer", "Jonas Weber"],
+                ),
+                reaction("🚀", 2, false, &["Sam Okafor", "Priya Nair"]),
+            ],
             replies: Some(ReplySummary {
                 count: 1,
                 last_time: hm("10:02"),
@@ -222,7 +231,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         Post {
             mentions_me: true,
-            reactions: vec![reaction("🙏", 1, false)],
+            reactions: vec![reaction("🙏", 1, false, &["Priya Nair"])],
             ..post(
                 "p6",
                 "Priya Nair",

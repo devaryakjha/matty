@@ -26,8 +26,8 @@ use crate::live::Live;
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
-    SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
+    ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SendKey,
+    SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -1511,6 +1511,49 @@ impl MainWindow {
                 };
                 clock_store.update(cx, |store, cx| store.update(cx, |s| s.clock = clock));
             });
+        let send_value: SharedString = match settings.send_on {
+            SendKey::Enter => "enter",
+            SendKey::ModEnter => "mod-enter",
+        }
+        .into();
+        let mod_enter_label = match Platform::current() {
+            Platform::MacOs => "Cmd+Enter",
+            Platform::Other => "Ctrl+Enter",
+        };
+        let send_store = store.clone();
+        let send_group = ToggleGroup::new("preferences.send")
+            .aria_label("Send message with")
+            .joined(true)
+            .w_full()
+            .value([send_value])
+            .item(clock_item("preferences.send.enter", "enter", "Enter"))
+            .item(clock_item(
+                "preferences.send.mod-enter",
+                "mod-enter",
+                mod_enter_label,
+            ))
+            .on_change(move |next, _, cx| {
+                let send_on = match next.first().map(|v| v.as_ref()) {
+                    Some("mod-enter") => SendKey::ModEnter,
+                    _ => SendKey::Enter,
+                };
+                send_store.update(cx, |store, cx| store.update(cx, |s| s.send_on = send_on));
+            });
+        let send_hint = match settings.send_on {
+            SendKey::Enter => "Shift+Enter starts a new line.",
+            SendKey::ModEnter => "Enter starts a new line.",
+        };
+        let send_section = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .child(send_group)
+            .child(
+                div()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(send_hint),
+            );
         let switch_row =
             |id: &'static str,
              title: &'static str,
@@ -1550,7 +1593,9 @@ impl MainWindow {
                             }),
                     )
             };
+        // Taller than gpuicn's default so every section shows at once.
         let popup = dialog_popup("preferences.popup", "Preferences", cx)
+            .max_h(theme.space(170.))
             .child(dialog_title("preferences.title", cx).child("Preferences"))
             .child(
                 dialog_description("preferences.description", cx)
@@ -1565,6 +1610,10 @@ impl MainWindow {
                     .child(section("Theme", theme_group.into_any_element()))
                     .child(section("Text size", size_group.into_any_element()))
                     .child(section("Clock", clock_group.into_any_element()))
+                    .child(section(
+                        "Send message with",
+                        send_section.into_any_element(),
+                    ))
                     .child(section(
                         "Window",
                         div()

@@ -319,8 +319,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   (`design-18`); 24-hour is the default. A compact message density waits
   on gpuicn's `Message` growing one; Matty does not fake it with
   continuation rows.
+  "Send message with" picks Enter (default; Shift+Enter for a new line) or
+  Ctrl+Enter, Cmd+Enter on macOS (Enter then starts a new line); the
+  modifier combination always sends, whichever is chosen, in the channel
+  composer and in thread replies (`design-30`).
   Every change applies behind the dialog as it is made; the only button is
   Done.
+- **Who reacted**: hovering a reaction chip shows gpuicn's tooltip with
+  the names, "You, Sam Okafor and 2 others reacted with 👍", built from
+  `PostReaction::summary` (`design-30`). "You" comes first, three names at
+  most, and while sync still has only the count the text falls back to
+  "3 others reacted".
 
 ## 5. Components
 
