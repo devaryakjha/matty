@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use matty_api::ServerCapabilities;
-use matty_api::models::{Draft, Post, Status};
+use matty_api::models::{Draft, Post, Status, User};
 use matty_api::ws::ConnectionState;
 use matty_store::outbox::Outgoing;
 use matty_store::posts::ThreadSummary;
@@ -73,6 +73,9 @@ pub enum ChangeSet {
         /// Every team the user is on.
         teams: Arc<[TeamWithUnreads]>,
     },
+    /// People whose posts are on screen, each once per subscriber as they
+    /// become known: from the cache at once, from the server when missing.
+    Users(Arc<[User]>),
     /// These users' statuses changed.
     Presence(Arc<[Status]>),
     /// A channel the user asked to open ([`Command::OpenDirect`] or

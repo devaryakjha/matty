@@ -9,7 +9,7 @@
 use matty_api::models::{
     Channel, ChannelMember, Emoji, Preference, SidebarCategories, SidebarCategory, Team, User,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension as _, params};
 
 use crate::Result;
 
@@ -213,6 +213,20 @@ pub fn delete_category(conn: &Connection, category_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The stored users among `ids`, in no particular order; unknown ids are
+/// left out.
+pub fn users(conn: &Connection, ids: &[String]) -> Result<Vec<User>> {
+    let mut statement = conn.prepare_cached("SELECT data FROM users WHERE id = ?1")?;
+    let mut users = Vec::new();
+    for id in ids {
+        let data: Option<String> = statement.query_row([id], |row| row.get(0)).optional()?;
+        if let Some(user) = data.and_then(|data| serde_json::from_str(&data).ok()) {
+            users.push(user);
+        }
+    }
+    Ok(users)
+}
+
 /// Inserts or replaces users.
 pub fn upsert_users(conn: &Connection, users: &[User]) -> Result<()> {
     let mut statement = conn.prepare_cached(
@@ -269,7 +283,6 @@ pub fn delete_preferences(conn: &Connection, preferences: &[Preference]) -> Resu
 
 /// One preference's value, if set.
 pub fn preference(conn: &Connection, category: &str, name: &str) -> Result<Option<String>> {
-    use rusqlite::OptionalExtension as _;
     Ok(conn
         .query_row(
             "SELECT value FROM preferences WHERE category = ?1 AND name = ?2",
@@ -565,7 +578,6 @@ pub fn teams_with_unreads(
 /// A cached channel: what the server last sent, with the counts and dates
 /// events have moved since.
 pub fn channel(conn: &Connection, channel_id: &str) -> Result<Option<Channel>> {
-    use rusqlite::OptionalExtension as _;
     let channel = conn
         .prepare_cached(
             "SELECT data, team_id, last_post_at, last_root_post_at, total_msg_count,
@@ -594,7 +606,6 @@ pub fn channel_member(
     channel_id: &str,
     user_id: &str,
 ) -> Result<Option<ChannelMember>> {
-    use rusqlite::OptionalExtension as _;
     let member = conn
         .prepare_cached(
             "SELECT roles, last_viewed_at, msg_count, mention_count, msg_count_root,
@@ -755,7 +766,6 @@ pub fn set_channel_deleted(conn: &Connection, channel_id: &str, delete_at: i64) 
 
 /// A category's place in its team's order, if cached.
 pub fn category_sort_order(conn: &Connection, category_id: &str) -> Result<Option<i64>> {
-    use rusqlite::OptionalExtension as _;
     Ok(conn
         .prepare_cached("SELECT sort_order FROM categories WHERE id = ?1")?
         .query_row([category_id], |row| row.get(0))

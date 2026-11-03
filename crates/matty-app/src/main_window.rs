@@ -262,18 +262,41 @@ impl MainWindow {
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
-                // Sync picks these up once it owns the channel model; the view
-                // already shows the change.
-                ChannelEvent::Send { .. }
-                | ChannelEvent::Upload { .. }
+                ChannelEvent::Send { text, files } => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SendPost {
+                            pending_post_id: String::new(),
+                            channel_id: channel.to_string(),
+                            root_id: String::new(),
+                            message: text.to_string(),
+                            file_ids: files.iter().map(ToString::to_string).collect(),
+                        });
+                    }
+                }
+                ChannelEvent::ToggleReaction { post, emoji } => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::ToggleReaction {
+                            post_id: post.to_string(),
+                            emoji_name: crate::transcript::emoji_name(emoji),
+                        });
+                    }
+                }
+                ChannelEvent::Delete(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::DeletePost {
+                            post_id: post.to_string(),
+                        });
+                    }
+                }
+                // Sync picks these up in later changes; the view already
+                // shows the change.
+                ChannelEvent::Upload { .. }
                 | ChannelEvent::CancelUpload(_)
                 | ChannelEvent::RetryUpload(_)
                 | ChannelEvent::OpenFile(_)
-                | ChannelEvent::ToggleReaction { .. }
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
                 | ChannelEvent::Edit(_)
-                | ChannelEvent::Delete(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
             },
@@ -362,7 +385,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = crate::live::database_path(account);
-        let (live, changes) = match Live::start(path) {
+        let (live, changes) = match Live::start(path, account) {
             Ok(started) => started,
             Err(error) => {
                 tracing::error!(%error, "could not start sync");
@@ -428,6 +451,10 @@ impl MainWindow {
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
         }
+        if let Some(model) = update.channel {
+            self.channel
+                .update(cx, |view, cx| view.set_model(Some(model), window, cx));
+        }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
         }
@@ -435,7 +462,6 @@ impl MainWindow {
             self.live = None;
             self._live_task = None;
         }
-        let _ = window;
     }
 
     /// The sign-in card's requests. The preview answers locally; otherwise
@@ -656,6 +682,12 @@ impl MainWindow {
             let model = crate::preview::channel(&id);
             self.channel
                 .update(cx, |view, cx| view.set_model(model, window, cx));
+        } else if let Some(live) = self.live.as_mut()
+            && let Some(row) = live.row(&id)
+        {
+            let model = live.open(row);
+            self.channel
+                .update(cx, |view, cx| view.set_model(Some(model), window, cx));
         }
         cx.notify();
     }

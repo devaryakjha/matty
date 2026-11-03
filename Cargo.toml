@@ -36,6 +36,7 @@ rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 dirs = "6"
+jiff = "0.2"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry", "ansi"] }
