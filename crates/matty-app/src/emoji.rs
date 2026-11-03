@@ -41,6 +41,37 @@ pub fn categories() -> Vec<EmojiCategory> {
         .collect()
 }
 
+/// Shortcodes for the composer's `:` autocomplete: those starting with
+/// `query` first, then those containing it, as `(name, glyph)` pairs.
+pub fn suggest(query: &str, limit: usize) -> Vec<(SharedString, SharedString)> {
+    let query = query.to_lowercase();
+    if query.len() < 2 {
+        return Vec::new();
+    }
+    let mut starts = Vec::new();
+    let mut contains = Vec::new();
+    for emoji in emojis::iter() {
+        let Some(name) = emoji.shortcodes().find(|code| code.contains(&query)) else {
+            continue;
+        };
+        let pair = (
+            SharedString::from(name.to_string()),
+            SharedString::from(emoji.as_str()),
+        );
+        if name.starts_with(&query) {
+            starts.push(pair);
+        } else {
+            contains.push(pair);
+        }
+        if starts.len() >= limit {
+            break;
+        }
+    }
+    starts.extend(contains);
+    starts.truncate(limit);
+    starts
+}
+
 /// The glyph behind a shortcode, for reactions and the composer.
 pub fn glyph(name: &str) -> Option<SharedString> {
     emojis::get_by_shortcode(name).map(|emoji| emoji.as_str().into())
@@ -82,6 +113,12 @@ mod tests {
             assert!(names.iter().any(|n| n == name), "missing {name}");
         }
         assert_eq!(glyph("tada").as_deref(), Some("🎉"));
+        let names: Vec<_> = suggest("tad", 8).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names.first().map(|n| n.as_ref()), Some("tada"));
+        assert!(
+            suggest("t", 8).is_empty(),
+            "one letter is too little to go on"
+        );
         assert_eq!(glyph("not-an-emoji"), None);
     }
 }
