@@ -334,6 +334,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   "67 / 1024" count that turns into the field error past Mattermost's
   limit, Enter saves. Leave uses the same alert dialog as the info pane
   and lands on the first remaining public channel.
+- **Notification preferences** per channel (PLAN §3 M1): the first entry
+  of the channel menu opens a dialog with a Mute switch, "Desktop
+  notifications" and "Mobile notifications" radio groups (Use my default,
+  All new messages, Mentions and direct messages, Nothing), and switches
+  for ignoring @channel mentions and marking unread for mentions only
+  (`design-32`). Changes apply on Save as one
+  `ChannelEvent::SetNotifications`, since Mattermost stores them on the
+  membership in one call; the Mute switch and the info pane's Mute chip
+  stay in step through `ChannelModel.muted`.
 - **Who reacted**: hovering a reaction chip shows gpuicn's tooltip with
   the names, "You, Sam Okafor and 2 others reacted with 👍", built from
   `PostReaction::summary` (`design-30`). "You" comes first, three names at

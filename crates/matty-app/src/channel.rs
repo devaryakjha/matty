@@ -15,7 +15,9 @@ use gpui_kit::{
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
-use crate::channel_settings::{ChannelEditEvent, ChannelEditView, ChannelField};
+use crate::channel_settings::{
+    ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
+};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
@@ -192,6 +194,60 @@ pub struct ChannelModel {
     /// Display names of the people typing right now, for the line under
     /// the transcript.
     pub typing: Vec<SharedString>,
+    /// The user's notification settings for this channel.
+    pub notifications: ChannelNotifications,
+}
+
+/// When a channel notifies, per surface; `Default` follows the account
+/// setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotifyLevel {
+    #[default]
+    Default,
+    All,
+    Mentions,
+    None,
+}
+
+impl NotifyLevel {
+    pub const ALL: [NotifyLevel; 4] = [Self::Default, Self::All, Self::Mentions, Self::None];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::All => "all",
+            Self::Mentions => "mentions",
+            Self::None => "none",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|level| level.id() == id)
+            .unwrap_or_default()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Use my default",
+            Self::All => "All new messages",
+            Self::Mentions => "Mentions and direct messages",
+            Self::None => "Nothing",
+        }
+    }
+}
+
+/// A channel's notification preferences, as Mattermost stores them on
+/// the membership.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChannelNotifications {
+    pub desktop: NotifyLevel,
+    pub mobile: NotifyLevel,
+    /// Skip @channel, @here and @all in this channel.
+    pub ignore_channel_mentions: bool,
+    /// Only mentions make the channel bold in the sidebar.
+    pub mark_unread_mentions_only: bool,
 }
 
 /// A row in the transcript: posts interleaved with dividers.
@@ -301,6 +357,12 @@ pub enum ChannelEvent {
     SetPurpose(SharedString),
     /// The user confirmed leaving the channel from its header menu.
     Leave,
+    /// The user saved the channel's notification preferences; `muted`
+    /// is the mute switch from the same dialog.
+    SetNotifications {
+        muted: bool,
+        notifications: ChannelNotifications,
+    },
 }
 
 /// A post being edited in place: its own composer sits where the body was.
@@ -334,6 +396,7 @@ pub struct ChannelView {
     /// The channel name's menu: rename, header, purpose, leave.
     header_menu: Entity<MenuState>,
     edit: Entity<ChannelEditView>,
+    notifications: Entity<NotificationsView>,
     leave: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
@@ -487,11 +550,27 @@ impl ChannelView {
         let menu = cx.new(|cx| MenuState::new([], cx));
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
+        let notifications = cx.new(|_| NotificationsView::new());
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let subscriptions = vec![
             cx.subscribe(&edit, |this, _, event: &ChannelEditEvent, cx| {
                 let ChannelEditEvent::Save { field, value } = event;
                 this.apply_edit(*field, value.clone(), cx);
+            }),
+            cx.subscribe(&notifications, |this, _, event: &NotificationsEvent, cx| {
+                let NotificationsEvent::Save {
+                    muted,
+                    notifications,
+                } = *event;
+                if let Some(model) = this.model.as_mut() {
+                    model.muted = muted;
+                    model.notifications = notifications;
+                }
+                cx.notify();
+                cx.emit(ChannelEvent::SetNotifications {
+                    muted,
+                    notifications,
+                });
             }),
             cx.subscribe_in(
                 &composer,
@@ -531,6 +610,7 @@ impl ChannelView {
             menu,
             header_menu,
             edit,
+            notifications,
             leave: DialogHandle::new(false),
             picker,
             picker_open: false,
@@ -1527,11 +1607,18 @@ impl ChannelView {
         };
         let is_channel =
             model.is_some_and(|m| matches!(m.kind, ChannelKind::Public | ChannelKind::Private));
-        let mut items = vec![edit(
-            "channel.menu.header",
-            "Edit header…",
-            ChannelField::Header,
-        )];
+        let notify_view = view.clone();
+        let mut items = vec![
+            MenuItem::new("channel.menu.notifications", "Notification preferences…").on_click(
+                move |_, window, cx| {
+                    notify_view
+                        .update(cx, |this, cx| this.open_notifications(window, cx))
+                        .ok();
+                },
+            ),
+            MenuItem::separator(),
+            edit("channel.menu.header", "Edit header…", ChannelField::Header),
+        ];
         if is_channel {
             items.push(edit(
                 "channel.menu.purpose",
@@ -1565,6 +1652,31 @@ impl ChannelView {
         };
         self.edit
             .update(cx, |edit, cx| edit.open(field, &current, window, cx));
+    }
+
+    fn open_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let (name, muted, prefs) = (model.name.clone(), model.muted, model.notifications);
+        self.notifications
+            .update(cx, |view, cx| view.open(name, muted, prefs, window, cx));
+    }
+
+    fn notifications_dialog(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let handle = self.notifications.read(cx).handle().clone();
+        let popup = dialog_popup(
+            "channel.notifications.popup",
+            "Notification preferences",
+            cx,
+        )
+        .max_h(UiTheme::read(cx).space(170.))
+        .child(self.notifications.clone());
+        dialog("channel.notifications", &handle, popup, window, cx)
     }
 
     /// Applies a saved edit to the model and tells sync.
@@ -2559,6 +2671,7 @@ impl Render for ChannelView {
             .child(Menu::new(&self.menu, "Message actions").context_area(div()))
             .child(self.delete_dialog(window, cx))
             .child(self.edit_dialog(window, cx))
+            .child(self.notifications_dialog(window, cx))
             .child(self.leave_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
@@ -2637,6 +2750,7 @@ mod tests {
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
             typing: vec![],
+            notifications: ChannelNotifications::default(),
             id: "c".into(),
             name: "c".into(),
             kind: ChannelKind::Public,

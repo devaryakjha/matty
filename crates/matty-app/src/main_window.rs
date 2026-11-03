@@ -342,9 +342,9 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
-                ChannelEvent::SetHeader(_) | ChannelEvent::SetPurpose(_) => {
-                    this.refresh_channel_info(cx)
-                }
+                ChannelEvent::SetHeader(_)
+                | ChannelEvent::SetPurpose(_)
+                | ChannelEvent::SetNotifications { .. } => this.refresh_channel_info(cx),
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
