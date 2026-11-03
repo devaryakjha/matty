@@ -17,6 +17,8 @@ use crate::ui::{
 /// What the card knows about a user; sync fills it from the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserProfile {
+    /// The server's user id, which sync needs to open a direct message.
+    pub user_id: SharedString,
     pub username: SharedString,
     pub display_name: SharedString,
     /// Job title or role, when the user set one.

@@ -22,11 +22,18 @@ use crate::ui::{
 pub enum SwitcherEvent {
     /// The user picked a channel by id.
     Open(SharedString),
+    /// The user chose "Search messages for …" with this query.
+    Search(SharedString),
 }
+
+/// The value of the search row; the query follows it.
+const SEARCH_PREFIX: &str = "~search:";
 
 pub struct Switcher {
     handle: DialogHandle,
     command: Entity<CommandState>,
+    /// The channel rows; the search row is added behind them per query.
+    items: Vec<CommandItem>,
     _subscription: Subscription,
 }
 
@@ -49,26 +56,50 @@ impl Switcher {
                 move |this, _, event, window, cx| match event {
                     CommandEvent::Confirm(value) => {
                         close.close(window, cx);
-                        cx.emit(SwitcherEvent::Open(value.clone()));
+                        match value.strip_prefix(SEARCH_PREFIX) {
+                            Some(query) => cx.emit(SwitcherEvent::Search(query.into())),
+                            None => cx.emit(SwitcherEvent::Open(value.clone())),
+                        }
                         this.reset(window, cx);
                     }
                     CommandEvent::Cancel => {
                         close.close(window, cx);
                         this.reset(window, cx);
                     }
-                    CommandEvent::Query(_) => {}
+                    CommandEvent::Query(query) => this.offer_search(query.clone(), cx),
                 },
             );
         Self {
             handle,
             command,
+            items: Self::items(model),
             _subscription: subscription,
         }
     }
 
+    /// Any typed query also offers a message search, last in the list.
+    fn offer_search(&mut self, query: SharedString, cx: &mut Context<Self>) {
+        let query = query.trim().to_string();
+        let mut items = self.items.clone();
+        if !query.is_empty() {
+            items.push(
+                CommandItem::new(
+                    format!("{SEARCH_PREFIX}{query}"),
+                    format!("Search messages for \u{201c}{query}\u{201d}"),
+                )
+                .group("Messages")
+                .icon(LucideIcon::Search)
+                .keywords([query]),
+            );
+        }
+        self.command
+            .update(cx, |state, cx| state.set_items(items, cx));
+    }
+
     /// Rebuilds the rows from a new sidebar snapshot.
     pub fn set_model(&mut self, model: &SidebarModel, cx: &mut Context<Self>) {
-        let items = Self::items(model);
+        self.items = Self::items(model);
+        let items = self.items.clone();
         self.command
             .update(cx, |state, cx| state.set_items(items, cx));
         Self::install_slots(&self.command, model, cx);

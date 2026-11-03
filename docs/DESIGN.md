@@ -206,6 +206,30 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Message (primary) opens the direct message, Mention (outline) inserts
   `@username ` into the composer and focuses it. Nothing else lives on the
   card; everything about a person beyond this belongs in the right pane.
+- **Search** (PLAN §3 M1 "Search, saved and pinned") starts from the quick
+  switcher: any typed query adds a last row, "Search messages for …", and
+  Cmd+Shift+F opens the pane with an empty field (`design-21`). The right
+  pane shows the query in an `input` with a one-line hint for `from:`,
+  `in:` and quoted phrases under it, then "N results for …" and the same
+  listing as Saved and Mentions (channel and day caption, Jump). While the
+  server answers it says "Searching for …"; no match shows an `Empty`
+  with the hint again. Cmd+F returns to the field without losing the
+  results.
+- **Emoji picker** (PLAN §3 M1 reactions, gpuicn G7) is gpuicn's
+  `EmojiPicker` in a popover on the composer's emoji button, borderless on
+  a `popover`-colored surface (`design-20`). The catalog is the standard
+  set under Mattermost shortcodes, nine category tabs, search from two
+  characters, skin tones, and a Recent row from this session's picks. A
+  pick inserts the glyph into the composer. The hover toolbar and the
+  chips' add button keep the six quick reactions in a `menu`, with "More
+  emoji…" at the end opening the same picker for that post.
+- **Account menu** (PLAN §3 M1 presence; §4.5 sign out) hangs off the
+  title bar avatar, which carries the presence dot (`design-19`). A `menu`
+  with a `label` row ("Arya · @arya"), the four presences as radio items,
+  "Set a status…" (or "Status: …" once set) opening a small dialog with one
+  field and Clear, Cancel, Done, then Preferences and "Sign out…". Signing
+  out confirms in an `alert_dialog` with the destructive button named for
+  the action, and returns to the sign-in card.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

@@ -20,6 +20,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
+    emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
@@ -175,6 +176,7 @@ pub enum ChannelEvent {
     OpenPinned,
     /// The user chose Message on someone's profile card.
     OpenDirect {
+        user_id: SharedString,
         username: SharedString,
         display_name: SharedString,
     },
@@ -218,6 +220,14 @@ pub struct ChannelView {
     composer: Entity<ComposerState>,
     /// One menu for every post: its items are set when it opens.
     menu: Entity<MenuState>,
+    /// The full emoji picker, in a popover on the composer's emoji button.
+    picker: Entity<EmojiPickerState>,
+    picker_open: bool,
+    /// The post a pick reacts to; `None` inserts into the composer.
+    picker_target: Option<SharedString>,
+    /// Shortcodes picked this session, newest first, for the picker's
+    /// Recent row; sync persists them later.
+    recent_emoji: Vec<SharedString>,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -248,24 +258,40 @@ impl ChannelView {
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let composer = cx.new(|cx| ComposerState::new(8, window, cx));
         let menu = cx.new(|cx| MenuState::new([], cx));
-        let subscriptions = vec![cx.subscribe_in(
-            &composer,
-            window,
-            |this, composer, event: &ComposerEvent, window, cx| match event {
-                ComposerEvent::Change => {
-                    this.draft_len = composer.read(cx).value(cx).chars().count();
-                    cx.notify();
-                }
-                ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
-                _ => {}
-            },
-        )];
+        let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, composer, event: &ComposerEvent, window, cx| match event {
+                    ComposerEvent::Change => {
+                        this.draft_len = composer.read(cx).value(cx).chars().count();
+                        cx.notify();
+                    }
+                    ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &picker,
+                window,
+                |this, _, event: &EmojiPickerEvent, window, cx| match event {
+                    EmojiPickerEvent::Pick(name) => this.pick_emoji(name.clone(), window, cx),
+                    EmojiPickerEvent::Cancel => this.close_picker(window, cx),
+                    EmojiPickerEvent::SkinTone(_) => {}
+                },
+            ),
+        ];
         let mut this = Self {
             model: None,
             rows,
             list,
             composer,
             menu,
+            picker,
+            picker_open: false,
+            picker_target: None,
+            recent_emoji: Vec::new(),
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -398,6 +424,40 @@ impl ChannelView {
 
     /// Flips the user's reaction locally and tells sync. A chip that drops
     /// to zero disappears, as on the server.
+    /// Opens the picker for `target` (a post to react to, or the composer).
+    fn open_picker(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
+        self.picker_target = target;
+        self.picker_open = true;
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open {
+            self.picker_open = false;
+            self.picker_target = None;
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    fn pick_emoji(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.recent_emoji.retain(|recent| recent != &name);
+        self.recent_emoji.insert(0, name.clone());
+        self.recent_emoji.truncate(crate::emoji::RECENT_LIMIT);
+        let recents = self.recent_emoji.clone();
+        self.picker
+            .update(cx, |picker, cx| picker.set_recents(recents, cx));
+        let glyph = crate::emoji::glyph(&name).unwrap_or_else(|| format!(":{name}:").into());
+        match self.picker_target.take() {
+            Some(post) => self.toggle_reaction(post, glyph, cx),
+            None => self.composer.update(cx, |composer, cx| {
+                composer.insert(format!("{glyph} "), window, cx);
+            }),
+        }
+        self.close_picker(window, cx);
+    }
+
     fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
         let changed = self.mutate_post(
             &id,
@@ -496,6 +556,14 @@ impl ChannelView {
     fn reaction_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
+        let more_view = view.clone();
+        let more_id = id.clone();
+        let more = MenuItem::new("react.more", "More emoji…").on_click(move |_, _, cx| {
+            let id = more_id.clone();
+            more_view
+                .update(cx, |this, cx| this.open_picker(Some(id), cx))
+                .ok();
+        });
         QUICK_REACTIONS
             .iter()
             .map(|(emoji, name)| {
@@ -514,6 +582,7 @@ impl ChannelView {
                         .ok();
                 })
             })
+            .chain([MenuItem::separator(), more])
             .collect()
     }
 
@@ -795,6 +864,7 @@ impl ChannelView {
                     on_message: Box::new(move |window, cx| {
                         close_message.update(cx, |state, cx| state.dismiss(window, cx));
                         let event = ChannelEvent::OpenDirect {
+                            user_id: message_profile.user_id.clone(),
                             username: message_profile.username.clone(),
                             display_name: message_profile.display_name.clone(),
                         };
@@ -829,6 +899,7 @@ impl ChannelView {
         let avatar = Self::avatar(id.clone(), post, profile, cx);
         let thread_id = id.clone();
         let react_items = Self::reaction_items_for(post, cx);
+        let add_items = react_items.clone();
         let more_items = Self::more_items_for(post, cx);
         let save_id = id.clone();
         let actions = message_actions(cx)
@@ -884,6 +955,7 @@ impl ChannelView {
             );
         let reaction_post = id.clone();
         let view = cx.entity().downgrade();
+        let add_view = view.clone();
         let retry_view = view.clone();
         let retry_id = id.clone();
         let time: SharedString = match post.status {
@@ -948,7 +1020,14 @@ impl ChannelView {
         if !post.reactions.is_empty() {
             // The chip row gets an add button; posts without reactions use
             // the hover toolbar, so the transcript stays quiet.
-            row = row.on_add_reaction(|_, _, _| {});
+            row = row.on_add_reaction(move |event, window, cx| {
+                let items = add_items.clone();
+                add_view
+                    .update(cx, |this, cx| {
+                        this.open_menu(items, event.position(), window, cx)
+                    })
+                    .ok();
+            });
         }
         if let Some(summary) = &post.replies {
             row = row.child(Self::reply_footer(&id, summary, cx));
@@ -1135,27 +1214,24 @@ impl ChannelView {
                 })
                 .child(format!("{} / {}", self.draft_len, max))
         });
-        let emoji_items: Vec<MenuItem> = QUICK_REACTIONS
-            .iter()
-            .map(|(emoji, name)| {
-                let view = cx.entity().downgrade();
-                let glyph: SharedString = (*emoji).into();
-                MenuItem::new(
-                    gpui_kit::ElementId::Name(format!("composer.emoji.{name}").into()),
-                    format!("{emoji}  {name}"),
-                )
-                .on_click(move |_, window, cx| {
-                    let glyph = glyph.clone();
-                    view.update(cx, |this, cx| {
-                        this.composer.update(cx, |composer, cx| {
-                            composer.insert(format!("{glyph} "), window, cx);
-                            composer.focus(window, cx);
-                        })
-                    })
-                    .ok();
-                })
-            })
-            .collect();
+        let picker = self.picker.clone();
+        let picker_open = self.picker_open;
+        let emoji_tool = tool("composer.emoji", "Emoji", LucideIcon::FaceSlightlySmiling);
+        let emoji_popover = popover("composer.emoji.popover")
+            .open(picker_open)
+            .offset(px(6.))
+            .trigger_with(move |_, _, _| emoji_tool.into_any_element())
+            .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                if *open {
+                    this.open_picker(None, cx);
+                } else {
+                    this.close_picker(window, cx);
+                }
+            }))
+            .content(move |_, window, cx| {
+                picker.update(cx, |picker, cx| picker.open(window, cx));
+                emoji_popup(EmojiPicker::new(&picker).bordered(false), cx)
+            });
         let mut key = gpui_kit::KeyContext::new_with_defaults(cx.platform_info().os);
         key.add("Composer");
         if self.draft_len == 0 {
@@ -1196,13 +1272,7 @@ impl ChannelView {
                     .child(tool("composer.code", "Code", LucideIcon::Code).on_click(
                         cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
                     ))
-                    .child(
-                        tool("composer.emoji", "Emoji", LucideIcon::FaceSlightlySmiling).on_click(
-                            cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                this.open_menu(emoji_items.clone(), event.position(), window, cx)
-                            }),
-                        ),
-                    )
+                    .child(emoji_popover)
                     .child(
                         tool("composer.mention", "Mention someone", LucideIcon::AtSign).on_click(
                             cx.listener(|this, _, window, cx| {
@@ -1462,6 +1532,20 @@ impl Render for ChannelView {
             .child(Menu::new(&self.menu, "Message actions").context_area(div()))
             .child(self.delete_dialog(window, cx))
     }
+}
+
+/// The picker's popover surface: gpuicn's popover colors and shadow around
+/// the borderless picker.
+fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
+    let theme = UiTheme::read(cx);
+    div()
+        .rounded(theme.radius.xl)
+        .border_1()
+        .border_color(theme.colors.foreground.opacity(0.1))
+        .bg(theme.colors.popover)
+        .shadow(theme.shadows.md.clone())
+        .overflow_hidden()
+        .child(picker)
 }
 
 #[cfg(test)]

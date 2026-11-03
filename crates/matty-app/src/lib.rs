@@ -6,9 +6,11 @@
 
 #![allow(missing_docs)]
 
+pub mod account;
 pub mod actions;
 pub mod channel;
 pub mod drafts;
+pub mod emoji;
 pub mod logging;
 pub mod login;
 mod main_window;
