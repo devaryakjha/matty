@@ -27,10 +27,19 @@ pub fn get(route: &str, body: Value) -> Mock {
 }
 
 pub async fn server() -> MockServer {
+    server_with_config(json!({})).await
+}
+
+/// [`server`], with `overrides` laid over the recorded client config.
+pub async fn server_with_config(overrides: Value) -> MockServer {
+    let mut config = fixture("config_client");
+    for (key, value) in overrides.as_object().unwrap() {
+        config[key] = value.clone();
+    }
     let server = MockServer::start().await;
     for mock in [
         get("users/me", json!({"id": ME, "username": "me"})),
-        get("config/client", fixture("config_client")),
+        get("config/client", config),
         get("license/client", fixture("license_client")),
         get("users/me/preferences", json!([])),
         get(
@@ -82,6 +91,12 @@ pub async fn connected(server: &MockServer) -> (SyncHandle, async_channel::Recei
     })
     .await;
     (sync, changes)
+}
+
+/// The paths of the requests `server` has had, such as `/api/v4/emoji`.
+pub async fn requested(server: &MockServer) -> Vec<String> {
+    let requests = server.received_requests().await.unwrap_or_default();
+    requests.iter().map(|r| r.url.path().to_owned()).collect()
 }
 
 pub async fn next(

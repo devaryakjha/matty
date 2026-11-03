@@ -8,6 +8,7 @@
 
 pub mod account;
 pub mod actions;
+pub mod attachments;
 pub mod channel;
 pub mod drafts;
 pub mod emoji;
