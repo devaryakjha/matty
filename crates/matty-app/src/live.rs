@@ -44,6 +44,9 @@ pub struct Live {
     stats: Option<Arc<ChannelStats>>,
     /// Who is typing in the open channel, and since when.
     typing: Vec<(String, Instant)>,
+    /// A channel sync made ready (joined, created, a new direct message)
+    /// that the sidebar has yet to show.
+    ready: Option<String>,
 }
 
 /// How long a typing notice lasts without another.
@@ -75,6 +78,15 @@ pub struct Update {
     pub typing: Option<Vec<SharedString>>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
+    /// The shown team's public channels, for Browse channels.
+    pub directory: Option<Vec<crate::directory::DirectoryChannel>>,
+    /// The shown team's people, for a new direct message.
+    pub people: Option<Vec<UserProfile>>,
+    /// A channel to switch to: the one the user joined, created or
+    /// started, now in the sidebar.
+    pub ready: Option<SharedString>,
+    /// A join the server refused, for Browse to show as not joined again.
+    pub join_failed: Option<SharedString>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -155,6 +167,7 @@ impl Live {
                 channel: None,
                 stats: None,
                 typing: Vec::new(),
+                ready: None,
             },
             changes,
         ))
@@ -265,19 +278,7 @@ impl Live {
             .flat_map(|posts| posts.iter())
             .filter(|post| seen.insert(post.user_id.as_str()))
             .filter_map(|post| self.users.get(&post.user_id))
-            .map(|user| UserProfile {
-                user_id: user.id.clone().into(),
-                username: user.username.clone().into(),
-                display_name: crate::transcript::display_name(user).into(),
-                position: None,
-                presence: self
-                    .presence
-                    .get(&user.id)
-                    .copied()
-                    .unwrap_or(Presence::Offline),
-                status_text: None,
-                local_time: None,
-            })
+            .map(|user| self.profile(user))
             .collect()
     }
 
@@ -288,6 +289,34 @@ impl Live {
         self.typing
             .retain(|(_, since)| now.saturating_duration_since(*since) < TYPING_FOR);
         (self.typing.len() != before).then(|| self.typing_names())
+    }
+
+    /// The team on screen.
+    pub fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
+
+    fn profile(&self, user: &User) -> UserProfile {
+        UserProfile {
+            user_id: user.id.clone().into(),
+            username: user.username.clone().into(),
+            display_name: crate::transcript::display_name(user).into(),
+            position: None,
+            presence: self
+                .presence
+                .get(&user.id)
+                .copied()
+                .unwrap_or(Presence::Offline),
+            status_text: None,
+            local_time: None,
+        }
+    }
+
+    /// The ready channel's id once its row is in the shown sidebar.
+    fn take_ready(&mut self) -> Option<SharedString> {
+        let id = self.ready.as_deref()?;
+        self.row(id)?;
+        self.ready.take().map(Into::into)
     }
 
     pub fn is_typing(&self) -> bool {
@@ -317,6 +346,7 @@ impl Live {
                 self.sections.insert(team_id.clone(), sections.clone());
                 if self.team.as_ref() == Some(team_id) {
                     update.categories = Some(self.categories(sections));
+                    update.ready = self.take_ready();
                 }
             }
             ChangeSet::Unreads { teams } => {
@@ -343,6 +373,47 @@ impl Live {
                     update.profiles = Some(self.profiles());
                 }
             }
+            ChangeSet::ChannelReady { channel_id } => {
+                self.ready = Some(channel_id.clone());
+                update.ready = self.take_ready();
+            }
+            ChangeSet::Directory {
+                team_id,
+                channels,
+                members,
+            } if self.team.as_ref() == Some(team_id) => {
+                let mut rows: Vec<_> = channels
+                    .iter()
+                    .filter(|channel| channel.delete_at == 0)
+                    .map(|channel| crate::directory::DirectoryChannel {
+                        id: channel.id.clone().into(),
+                        name: channel.display_name.clone().into(),
+                        purpose: (!channel.purpose.trim().is_empty())
+                            .then(|| channel.purpose.clone().into()),
+                        members: members
+                            .get(&channel.id)
+                            .and_then(|count| usize::try_from(*count).ok())
+                            .unwrap_or(0),
+                        joined: self.row(&channel.id).is_some(),
+                    })
+                    .collect();
+                rows.sort_by_key(|row| row.name.to_lowercase());
+                update.directory = Some(rows);
+            }
+            ChangeSet::People { team_id, users } if self.team.as_ref() == Some(team_id) => {
+                let mut people: Vec<_> = users
+                    .iter()
+                    .filter(|user| user.id != self.me.0 && user.delete_at == 0 && !user.is_bot)
+                    .map(|user| self.profile(user))
+                    .collect();
+                people.sort_by_key(|person| person.display_name.to_lowercase());
+                update.people = Some(people);
+            }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "join channel",
+                target,
+                ..
+            }) => update.join_failed = Some(target.clone().into()),
             ChangeSet::Channel(channel) if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 update.details = self.shown_details();
@@ -900,5 +971,84 @@ mod tests {
             Some(Vec::new())
         );
         assert!(!live.is_typing());
+    }
+
+    #[test]
+    fn browse_marks_joined_channels_and_a_join_opens_once_in_the_sidebar() {
+        let mut live = live();
+        let sidebar = |channels| ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", channels)]),
+        };
+        live.apply(&sidebar(vec![channel("town", "O", 0, 0)]));
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let public = |id: &str, name: &str| Channel {
+            id: id.into(),
+            display_name: name.into(),
+            ..Channel::default()
+        };
+        let update = live.apply(&ChangeSet::Directory {
+            team_id: "t1".into(),
+            channels: Arc::from(vec![
+                public("town", "Town Square"),
+                public("design", "Design"),
+            ]),
+            members: Arc::new(HashMap::from([("design".to_string(), 9)])),
+        });
+        let rows = update.directory.unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.name.as_ref(), row.members, row.joined))
+                .collect::<Vec<_>>(),
+            [("Design", 9, false), ("Town Square", 0, true)]
+        );
+
+        // Ready comes ahead of the sidebar that shows the channel.
+        let update = live.apply(&ChangeSet::ChannelReady {
+            channel_id: "design".into(),
+        });
+        assert_eq!(update.ready, None);
+        let update = live.apply(&sidebar(vec![
+            channel("town", "O", 0, 0),
+            channel("design", "O", 0, 0),
+        ]));
+        assert_eq!(update.ready.as_deref(), Some("design"));
+        assert_eq!(
+            live.apply(&sidebar(vec![channel("design", "O", 0, 0)]))
+                .ready,
+            None
+        );
+    }
+
+    #[test]
+    fn people_leave_out_the_user_and_bots() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let person = |id: &str, bot: bool| User {
+            id: id.into(),
+            username: id.into(),
+            is_bot: bot,
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::People {
+            team_id: "t1".into(),
+            users: Arc::from(vec![
+                person("me", false),
+                person("zed", false),
+                person("bot", true),
+                person("ada", false),
+            ]),
+        });
+        let names: Vec<_> = update
+            .people
+            .unwrap()
+            .iter()
+            .map(|p| p.username.to_string())
+            .collect();
+        assert_eq!(names, ["ada", "zed"]);
     }
 }

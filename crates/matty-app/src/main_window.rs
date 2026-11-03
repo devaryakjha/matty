@@ -395,6 +395,13 @@ impl MainWindow {
                     SidebarEvent::OpenDrafts => return this.show_drafts(cx),
                     SidebarEvent::BrowseChannels => return this.browse_channels(window, cx),
                     SidebarEvent::NewMessage => {
+                        if let Some(live) = &this.live
+                            && let Some(team_id) = live.team()
+                        {
+                            live.send(matty_sync::Command::FindPeople {
+                                team_id: team_id.to_string(),
+                            });
+                        }
                         return this
                             .new_message
                             .update(cx, |view, cx| view.open(window, cx));
@@ -536,8 +543,22 @@ impl MainWindow {
         };
         let update = live.apply(change);
         if let Some(name) = update.team_name {
+            self.browse
+                .update(cx, |browse, cx| browse.set_team_name(name.clone(), cx));
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_team_name(name, cx));
+        }
+        if let Some(channels) = update.directory {
+            self.browse
+                .update(cx, |browse, cx| browse.set_channels(channels, cx));
+        }
+        if let Some(people) = update.people {
+            self.new_message
+                .update(cx, |view, cx| view.set_profiles(people, cx));
+        }
+        if let Some(id) = update.join_failed {
+            self.browse
+                .update(cx, |browse, cx| browse.set_joined(&id, false, cx));
         }
         if let Some(categories) = update.categories {
             if !self.sidebar_shown {
@@ -610,6 +631,9 @@ impl MainWindow {
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
+        }
+        if let Some(id) = update.ready {
+            self.open_channel(id, window, cx);
         }
         if update.signed_out {
             self.live = None;
@@ -889,6 +913,12 @@ impl MainWindow {
         if let Some(id) = existing {
             return self.open_channel(id, window, cx);
         }
+        // Sync finds or creates it, and it opens once in the sidebar.
+        if let Some(live) = &self.live {
+            return live.send(matty_sync::Command::OpenDirect {
+                user_ids: vec![profile.user_id.to_string()],
+            });
+        }
         if crate::preview::enabled() {
             let kind = crate::sidebar::ChannelKind::Direct {
                 presence: profile.presence,
@@ -919,6 +949,18 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(live) = &self.live {
+            if let Some(team_id) = live.team() {
+                live.send(matty_sync::Command::CreateChannel {
+                    team_id: team_id.to_string(),
+                    name: crate::directory::channel_handle(&name),
+                    display_name: name.to_string(),
+                    purpose: purpose.map(|p| p.to_string()).unwrap_or_default(),
+                    private,
+                });
+            }
+            return;
+        }
         if !crate::preview::enabled() {
             return;
         }
@@ -956,6 +998,13 @@ impl MainWindow {
 
     /// Opens the Browse channels dialog (PLAN §3 M1).
     fn browse_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live
+            && let Some(team_id) = live.team()
+        {
+            live.send(matty_sync::Command::Browse {
+                team_id: team_id.to_string(),
+            });
+        }
         self.browse.update(cx, |browse, cx| browse.open(window, cx));
     }
 
@@ -968,6 +1017,12 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Sync joins, and the channel opens once it is in the sidebar.
+        if let Some(live) = &self.live {
+            return live.send(matty_sync::Command::JoinChannel {
+                channel_id: id.to_string(),
+            });
+        }
         if crate::preview::enabled() {
             let directory = crate::preview::directory();
             if let Some(channel) = directory.iter().find(|c| c.id == id) {

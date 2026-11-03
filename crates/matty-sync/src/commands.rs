@@ -2,10 +2,17 @@
 //! answers with a [`Loaded`] that the engine writes like any other result.
 
 use matty_api::models::{Draft, Reaction};
-use matty_api::{ApiError, Client, PostPatch};
+use matty_api::{ApiError, Client, NewChannel, PostPatch};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::load::Loaded;
+
+/// Page size for the browse and people lists.
+const PAGE: u32 = 200;
+/// Browse lists at most this many pages of channels, people this many of
+/// users; search covers the rest.
+const BROWSE_PAGES: u32 = 5;
+const PEOPLE_PAGES: u32 = 5;
 
 /// A server write a command asked for.
 #[derive(Debug)]
@@ -50,6 +57,15 @@ pub(crate) enum Write {
     Leave {
         channel_id: String,
     },
+    /// Reads, not writes, but likewise asked for by a view and answered
+    /// once.
+    Browse {
+        team_id: String,
+    },
+    People {
+        team_id: String,
+    },
+    Create(Box<NewChannel>),
 }
 
 impl Write {
@@ -68,6 +84,9 @@ impl Write {
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
+            Self::Browse { .. } => "browse channels",
+            Self::People { .. } => "find people",
+            Self::Create(_) => "create channel",
         }
     }
 
@@ -85,6 +104,8 @@ impl Write {
             Self::Status { .. } => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id } | Self::Leave { channel_id } => channel_id.clone(),
+            Self::Browse { team_id } | Self::People { team_id } => team_id.clone(),
+            Self::Create(channel) => channel.name.clone(),
         }
     }
 }
@@ -210,6 +231,48 @@ pub(crate) async fn run(
             Write::Leave { channel_id } => {
                 client.remove_channel_member(&channel_id, &user_id).await?;
                 Some(Loaded::Left { channel_id })
+            }
+            Write::Browse { team_id } => {
+                let mut channels = Vec::new();
+                for page in 0..BROWSE_PAGES {
+                    let batch = client.public_channels(&team_id, page, PAGE).await?;
+                    let last = batch.len() < PAGE as usize;
+                    channels.extend(batch);
+                    if last {
+                        break;
+                    }
+                }
+                let ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
+                let members = if ids.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    client.channel_member_counts(&ids).await?
+                };
+                Some(Loaded::Directory {
+                    team_id,
+                    channels,
+                    members,
+                })
+            }
+            Write::People { team_id } => {
+                let mut users = Vec::new();
+                for page in 0..PEOPLE_PAGES {
+                    let batch = client.team_users(&team_id, page, PAGE).await?;
+                    let last = batch.len() < PAGE as usize;
+                    users.extend(batch);
+                    if last {
+                        break;
+                    }
+                }
+                Some(Loaded::People { team_id, users })
+            }
+            Write::Create(new) => {
+                let channel = client.create_channel(&new).await?;
+                let member = client.my_channel_member(&channel.id).await?;
+                Some(Loaded::Ready {
+                    channel: Box::new(channel),
+                    member: Box::new(member),
+                })
             }
         })
     }

@@ -219,3 +219,60 @@ async fn requests_use_the_expected_paths_and_bodies() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn browsing_creating_and_team_people_use_the_expected_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/channels/stats/member_count"))
+        .and(body_json(json!(["c1", "c2"])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"c1": 3, "c2": 12})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/channels"))
+        .and(body_json(json!({
+            "team_id": "t1", "name": "ship-it", "display_name": "Ship it",
+            "purpose": "", "type": "P"
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "c9", "team_id": "t1", "type": "P", "name": "ship-it", "display_name": "Ship it"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .and(query_param("in_team", "t1"))
+        .and(query_param("active", "true"))
+        .and(query_param("page", "0"))
+        .and(query_param("per_page", "200"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([{"id": "u2", "username": "ada"}])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let counts = client
+        .channel_member_counts(&["c1".into(), "c2".into()])
+        .await
+        .unwrap();
+    assert_eq!(counts["c2"], 12);
+    let created = client
+        .create_channel(&matty_api::NewChannel {
+            team_id: "t1".into(),
+            name: "ship-it".into(),
+            display_name: "Ship it".into(),
+            purpose: String::new(),
+            kind: "P".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.id, "c9");
+    assert_eq!(
+        client.team_users("t1", 0, 200).await.unwrap()[0].username,
+        "ada"
+    );
+}
