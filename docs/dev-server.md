@@ -87,3 +87,18 @@ responses to `crates/matty-api/tests/fixtures/v<major>.<minor>/`. It adds a
 few posts to `dev/random` to record embeds, reactions, edits, deletes and
 thread reads, so run it against a fresh server and expect the fixtures to
 contain that server's ids.
+
+## Integration tests
+
+The live suites of `matty-api` and `matty-sync` run against this server when
+`MATTY_TEST_SERVER` is set, and return at once otherwise:
+
+```sh
+scripts/dev-server up && scripts/seed.py
+MATTY_TEST_SERVER=http://localhost:8065 MATTY_TEST_PASSWORD='Password1!' \
+    cargo test -p matty-api -p matty-store -p matty-sync
+```
+
+CI's `integration` job does the same on Ubuntu for each server version in its
+matrix, and uploads the server log when a test fails. Changes that only touch
+Markdown, `docs/` or the license skip its steps.

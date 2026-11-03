@@ -49,8 +49,60 @@ jobs:
           command: check advisories bans licenses sources
 
   integration:
-    # Runs the Docker Mattermost suite once #48 lands; skipped until then.
-    if: false
+    # The live suites of the plain-Rust crates against the seeded Docker
+    # Mattermost server (docs/dev-server.md). Docs-only changes skip the
+    # steps but still report, so the job can be required.
+    name: integration (Mattermost ${{ matrix.server }})
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        # The ESRs join this list with #199.
+        server: ["10.5"]
+    env:
+      MATTY_MM_VERSION: ${{ matrix.server }}
+      MATTY_TEST_SERVER: http://localhost:8065
+      MATTY_TEST_PASSWORD: Password1!
     steps:
       - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+          predicate-quantifier: every
+      - if: steps.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - if: steps.changes.outputs.code == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Start the server in the background
+        if: steps.changes.outputs.code == 'true'
+        run: docker compose -f docker/compose.yml up -d
+      - name: Build the tests while it starts
+        if: steps.changes.outputs.code == 'true'
+        run: cargo test --locked -p matty-api -p matty-store -p matty-sync --no-run
+      - name: Wait for the server
+        if: steps.changes.outputs.code == 'true'
+        run: scripts/dev-server up
+      - name: Seed
+        if: steps.changes.outputs.code == 'true'
+        run: python3 scripts/seed.py
+      - name: Test against the server
+        if: steps.changes.outputs.code == 'true'
+        run: cargo test --locked -p matty-api -p matty-store -p matty-sync
+      - name: Collect the server logs
+        if: failure() && steps.changes.outputs.code == 'true'
+        run: docker compose -f docker/compose.yml logs --no-color > mattermost.log
+      - if: failure() && steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mattermost-${{ matrix.server }}-logs
+          path: mattermost.log
