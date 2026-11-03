@@ -11,6 +11,7 @@ pub mod channel;
 pub mod logging;
 mod main_window;
 pub mod preview;
+pub mod right_pane;
 pub mod settings;
 pub mod sidebar;
 pub mod style;

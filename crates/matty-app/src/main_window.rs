@@ -13,12 +13,14 @@ use gpui_kit::{
 };
 
 use crate::actions::{
-    self, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher, RecentMentions,
-    ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
+    self, ChannelInfo, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher,
+    RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
-use crate::channel::ChannelView;
+use crate::channel::{ChannelEvent, ChannelView};
+use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
-    SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
+    RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
+    WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -36,12 +38,16 @@ use crate::ui::{
 
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
+/// The width of gpuicn's Resizable handle, counted when turning the
+/// persisted right-pane width into the channel width the split wants.
+const SPLIT_HANDLE: f32 = 8.;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     sidebar: Entity<SidebarView>,
     channel: Entity<ChannelView>,
     switcher: Entity<Switcher>,
+    right_pane: Entity<RightPaneView>,
     focus: FocusHandle,
     /// The channel the sidebar selected; the channel view follows it in M1.
     selected_channel: Option<gpui_kit::SharedString>,
@@ -95,6 +101,18 @@ impl MainWindow {
             .filter(|_| crate::preview::enabled())
             .and_then(crate::preview::channel);
         let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
+        let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
+        cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
+            ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+            ChannelEvent::Send(_) => {}
+        })
+        .detach();
+        cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
+            let RightPaneEvent::Close = event;
+            this.right_pane_open = false;
+            cx.notify();
+        })
+        .detach();
         cx.subscribe_in(
             &sidebar,
             window,
@@ -115,6 +133,7 @@ impl MainWindow {
             sidebar,
             channel,
             switcher,
+            right_pane,
             focus,
             selected_channel,
             sidebar_visible: true,
@@ -142,6 +161,68 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_model(model, window, cx));
         }
         cx.notify();
+    }
+
+    /// Opens the thread under `post_id` in the right pane. Until sync lands
+    /// only the preview fixtures have threads.
+    fn open_thread(&mut self, post_id: gpui_kit::SharedString, cx: &mut Context<Self>) {
+        let Some(channel_id) = self.selected_channel.clone() else {
+            return;
+        };
+        let thread = crate::preview::enabled()
+            .then(|| crate::preview::thread(&channel_id, &post_id))
+            .flatten();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+        });
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    /// Shows the current channel's info in the right pane.
+    fn show_channel_info(&mut self, cx: &mut Context<Self>) {
+        let info = self.channel.read(cx).model().cloned();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_content(info.map(RightPaneContent::ChannelInfo), cx)
+        });
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    /// The channel view, with the right pane beside it when open. gpuicn's
+    /// Resizable sizes its first pane, so the persisted right-pane width is
+    /// turned into a channel width from the space the split has.
+    fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if !self.right_pane_open {
+            return self.channel.clone().into_any_element();
+        }
+        let settings = self.settings.read(cx).get().clone();
+        let theme = UiTheme::read(cx);
+        let rail = if self.rail_visible {
+            f32::from(scaled(theme, metrics::RAIL_WIDTH))
+        } else {
+            0.
+        };
+        let sidebar = if self.sidebar_visible {
+            settings.sidebar_width + SPLIT_HANDLE
+        } else {
+            0.
+        };
+        let extent = f32::from(window.viewport_size().width) - rail - sidebar - SPLIT_HANDLE;
+        let channel_width = (extent - settings.right_pane_width).max(CONTENT_MIN);
+        let store = self.settings.clone();
+        Resizable::new("main.right-split", "Resize right pane", px(channel_width))
+            .first(self.channel.clone())
+            .second(self.right_pane.clone())
+            .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
+            .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
+            .on_resize(move |width: &Pixels, _, cx| {
+                let right = (extent - f32::from(*width)).clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
+                store.update(cx, |store, cx| {
+                    store.update(cx, |s| s.right_pane_width = right)
+                });
+            })
+            .into_any_element()
     }
 
     fn remember_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -412,10 +493,11 @@ impl Render for MainWindow {
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
+        let content = self.content(window, cx);
         let frame = if self.sidebar_visible {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
                 .first(self.sidebar.clone())
-                .second(self.channel.clone())
+                .second(content)
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
                 .on_resize(move |width: &Pixels, _, cx| {
@@ -426,7 +508,7 @@ impl Render for MainWindow {
                 })
                 .into_any_element()
         } else {
-            self.channel.clone().into_any_element()
+            content
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();
@@ -434,7 +516,6 @@ impl Render for MainWindow {
         let switcher_element = self.switcher.update(cx, |switcher, cx| {
             switcher.element(window, cx).into_any_element()
         });
-        let right_pane_width = px(self.settings.read(cx).get().right_pane_width);
         div()
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
@@ -450,6 +531,11 @@ impl Render for MainWindow {
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
             })
+            .on_action(cx.listener(|this, _: &ToggleRightPane, _, cx| {
+                this.right_pane_open = !this.right_pane_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
             .size_full()
             .flex()
             .flex_col()
@@ -465,16 +551,7 @@ impl Render for MainWindow {
                     .w_full()
                     .flex()
                     .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
-                    .child(div().flex_1().min_w_0().h_full().child(frame))
-                    .when(self.right_pane_open, |row| {
-                        row.child(
-                            div()
-                                .w(right_pane_width)
-                                .h_full()
-                                .border_l(style::hairline())
-                                .border_color(theme.colors.border),
-                        )
-                    }),
+                    .child(div().flex_1().min_w_0().h_full().child(frame)),
             )
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences_stub(window, cx))

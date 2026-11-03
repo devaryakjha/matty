@@ -101,6 +101,8 @@ impl ChannelModel {
 pub enum ChannelEvent {
     /// The user submitted the composer with this text.
     Send(SharedString),
+    /// The user asked to reply to this post in a thread.
+    OpenThread(SharedString),
 }
 
 pub struct ChannelView {
@@ -272,10 +274,11 @@ impl ChannelView {
             )
     }
 
-    fn post_row(post: &Post, cx: &mut App) -> impl IntoElement + use<> {
+    fn post_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
+        let thread_id = id.clone();
         let actions = message_actions(cx)
             .child(message_action(
                 gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
@@ -283,12 +286,17 @@ impl ChannelView {
                 "Add reaction",
                 cx,
             ))
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
-                LucideIcon::MessageSquareReply,
-                "Reply in thread",
-                cx,
-            ))
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
+                    LucideIcon::MessageSquareReply,
+                    "Reply in thread",
+                    cx,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
+                })),
+            )
             .child(message_action(
                 gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
                 LucideIcon::Bookmark,
@@ -353,6 +361,7 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let rows = self.rows.clone();
         let posts = channel.posts.clone();
+        let view = cx.entity();
         MessageList::new(
             "channel.transcript",
             &self.list,
@@ -366,7 +375,10 @@ impl ChannelView {
                 Some(Row::NewMessages) => {
                     new_messages_divider("new-messages", "New messages", cx).into_any_element()
                 }
-                Some(Row::Post(post)) => Self::post_row(&posts[*post], cx).into_any_element(),
+                Some(Row::Post(post)) => {
+                    let post = posts[*post].clone();
+                    view.update(cx, |_, cx| Self::post_row(&post, cx).into_any_element())
+                }
                 None => div().into_any_element(),
             },
         )
