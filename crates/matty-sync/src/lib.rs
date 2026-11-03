@@ -13,7 +13,8 @@
 mod bridge;
 mod change;
 mod engine;
+mod load;
 
 pub use bridge::{SyncHandle, spawn};
-pub use change::{ChangeSet, POSTS_WINDOW};
+pub use change::{ChangeSet, Connection, POSTS_WINDOW};
 pub use engine::Command;

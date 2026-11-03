@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use matty_api::models::Post;
+use matty_api::ServerCapabilities;
+use matty_api::models::{Post, Status};
 use matty_api::ws::ConnectionState;
-use matty_store::sidebar::SidebarSection;
+use matty_store::sidebar::{SidebarSection, TeamWithUnreads};
 
 /// Posts kept in an open channel's snapshot.
 pub const POSTS_WINDOW: usize = 200;
@@ -34,10 +35,14 @@ pub enum ChangeSet {
         /// The root, then its replies.
         posts: Arc<[Post]>,
     },
-    /// Unread or mention counts changed somewhere; team badges included.
-    Unreads,
+    /// Unread or mention counts changed somewhere: the team rail with its
+    /// badges, in rail order.
+    Unreads {
+        /// Every team the user is on.
+        teams: Arc<[TeamWithUnreads]>,
+    },
     /// These users' statuses changed.
-    Presence(Arc<[String]>),
+    Presence(Arc<[Status]>),
     /// Someone started typing.
     Typing {
         /// Who.
@@ -47,10 +52,40 @@ pub enum ChangeSet {
         /// The thread root when typing a reply, else empty.
         parent_id: String,
     },
-    /// The connection to the server changed.
-    Connection(ConnectionState),
+    /// The connection to the server, or the load over it, changed.
+    Connection(Connection),
     /// The user's preferences changed.
     Preferences,
-    /// The server's config or license changed.
-    Config,
+    /// The server's config or license was read.
+    Config(Arc<ServerCapabilities>),
+}
+
+/// Where syncing with the server stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    /// The WebSocket's state.
+    Socket(ConnectionState),
+    /// The initial load started; the views show what the cache had.
+    Loading,
+    /// Every team has loaded, or failed to.
+    Loaded,
+    /// One team could not load; the others did.
+    TeamFailed {
+        /// The team.
+        team_id: String,
+        /// What went wrong, for the log and a retry banner.
+        error: String,
+    },
+    /// The account could not load at all.
+    Failed {
+        /// What went wrong.
+        error: String,
+    },
+    /// An opened channel's posts could not load; the cached ones stay.
+    ChannelFailed {
+        /// The channel.
+        channel_id: String,
+        /// What went wrong.
+        error: String,
+    },
 }

@@ -4462,9 +4462,11 @@ dependencies = [
  "matty-api",
  "matty-store",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
