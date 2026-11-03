@@ -4,4 +4,4 @@ expression: "render(\"~town-square and ~off-topic~ stay text\")"
 ---
 ~town-square and ~off-topic~ stay text
 ----
-<p>~town-square and ~off-topic~ stay text</p>
+<p><a href="matty://channel/town-square">~town-square</a> and <a href="matty://channel/off-topic">~off-topic</a>~ stay text</p>

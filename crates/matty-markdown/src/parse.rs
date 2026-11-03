@@ -11,8 +11,16 @@ use crate::{Alignment, Block, Document, Inline, ListItem};
 /// parent, so hostile input cannot build a tree too deep to walk or drop.
 pub const MAX_DEPTH: usize = 32;
 
-/// Parses a message.
+/// Parses a message, with mentions, channels and hashtags as `matty://`
+/// links; no shortcode counts as an emoji. See [`parse_with`].
 pub fn parse(text: &str) -> Document {
+    parse_with(text, &|_| false)
+}
+
+/// Parses a message, with entities as `matty://` links
+/// ([`link_entities`](crate::link_entities)). `is_emoji` says whether a
+/// shortcode names a system or custom emoji.
+pub fn parse_with(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> Document {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -22,7 +30,9 @@ pub fn parse(text: &str) -> Document {
     for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
         builder.event(event, &text[range]);
     }
-    builder.finish()
+    let mut document = builder.finish();
+    crate::link_entities(&mut document, is_emoji);
+    document
 }
 
 #[derive(Debug)]
