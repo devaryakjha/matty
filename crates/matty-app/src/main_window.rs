@@ -138,7 +138,7 @@ impl MainWindow {
             "You"
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
-        let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
+        let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
         // No session store yet: the sign-in card shows unless the preview
         // fixtures stand in for a signed-in workspace.
         let login_model = match crate::preview::login() {
@@ -166,7 +166,10 @@ impl MainWindow {
         })
         .detach();
         cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
-            let RightPaneEvent::Close = event;
+            // Sync owns the rest (PLAN §4.3); the pane already shows them.
+            let RightPaneEvent::Close = event else {
+                return;
+            };
             this.right_pane_open = false;
             cx.notify();
         })

@@ -161,6 +161,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `destructive` over it. The B, I and code buttons wrap the selection in
   Markdown and leave focus in the composer; Up in an empty composer edits
   the user's last post, Shift+Up replies to the newest one.
+- **Thread pane replies** behave like the channel composer: Enter or the
+  send button adds the reply as a "Sending…" row at 60% under the thread,
+  the replies count follows, a failed reply offers Retry and Delete in
+  place, and Send is disabled while empty. Follow/Following is a small
+  outline or secondary button on the replies rule, never a toggle switch;
+  it flips at once.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

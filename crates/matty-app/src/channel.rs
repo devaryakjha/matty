@@ -288,8 +288,8 @@ impl ChannelView {
             reactions: vec![],
             mentions_me: false,
             edited: false,
-            continues: last
-                .is_some_and(|post| post.author == self.me && post.status != PostStatus::Failed),
+            // Never a continuation: the row's own "Sending…" must show.
+            continues: false,
             mine: true,
             saved: false,
             pinned: false,
