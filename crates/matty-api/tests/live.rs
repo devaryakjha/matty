@@ -31,7 +31,10 @@ async fn login_load_and_logout() {
         ..Default::default()
     };
     let error = client.login(&wrong).await.unwrap_err();
-    assert_eq!(error.id(), Some("api.user.login.invalid_credentials_email_username"));
+    assert_eq!(
+        error.id(),
+        Some("api.user.login.invalid_credentials_email_username")
+    );
 
     let credentials = Credentials {
         login_id: login.clone(),
@@ -45,7 +48,10 @@ async fn login_load_and_logout() {
     let teams = session.my_teams().await.unwrap();
     let team = &teams.first().expect("the test user is in a team").id;
     let channels = session.my_channels(team).await.unwrap();
-    let members = session.my_channel_members(&signed_in.user.id, team).await.unwrap();
+    let members = session
+        .my_channel_members(&signed_in.user.id, team)
+        .await
+        .unwrap();
     assert_eq!(channels.len(), members.len());
     session.sidebar_categories(team).await.unwrap();
     session.preferences().await.unwrap();
@@ -54,5 +60,8 @@ async fn login_load_and_logout() {
 
     session.logout().await.unwrap();
     let after = session.me().await.unwrap_err();
-    assert!(matches!(after, ApiError::Server { status: 401, .. }), "{after:?}");
+    assert!(
+        matches!(after, ApiError::Server { status: 401, .. }),
+        "{after:?}"
+    );
 }
