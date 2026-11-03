@@ -176,6 +176,43 @@ fn server_post_arriving_first_drops_the_optimistic_row() {
 }
 
 #[test]
+fn a_fetched_post_takes_the_place_of_its_optimistic_row() {
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    // Two sends of the same text, and one of other text.
+    for (id, at, text) in [("p-1", 20, "ok"), ("p-2", 21, "ok"), ("p-3", 22, "other")] {
+        let mut optimistic = post(id, "c", at);
+        optimistic.pending_post_id = id.into();
+        optimistic.message = text.into();
+        posts::insert_posts(conn, &[optimistic]).unwrap();
+    }
+
+    // A channel fetch returns the first send without its pending id.
+    let mut fetched = post("real-1", "c", 23);
+    fetched.message = "ok".into();
+    posts::insert_posts(conn, &[fetched.clone()]).unwrap();
+    let window = posts::posts_window(conn, "c", Window::Latest, 10, false).unwrap();
+    assert_eq!(ids(&window), ["p-2", "p-3", "real-1"]);
+    assert_eq!(window[2].pending_post_id, "p-1");
+
+    // Fetching it again, then the REST response, change nothing.
+    posts::insert_posts(conn, &[fetched]).unwrap();
+    let mut response = post("real-1", "c", 23);
+    response.message = "ok".into();
+    posts::replace_pending(conn, "p-1", &response).unwrap();
+    let window = posts::posts_window(conn, "c", Window::Latest, 10, false).unwrap();
+    assert_eq!(ids(&window), ["p-2", "p-3", "real-1"]);
+
+    // Another author's identical text is not ours.
+    let mut theirs = post("real-9", "c", 24);
+    theirs.user_id = "u2".into();
+    theirs.message = "ok".into();
+    posts::insert_posts(conn, &[theirs]).unwrap();
+    let window = posts::posts_window(conn, "c", Window::Latest, 10, false).unwrap();
+    assert_eq!(ids(&window), ["p-2", "p-3", "real-1", "real-9"]);
+}
+
+#[test]
 fn deleted_posts_leave_the_window_but_stay_stored() {
     let store = Store::open_in_memory().unwrap();
     let conn = store.conn();

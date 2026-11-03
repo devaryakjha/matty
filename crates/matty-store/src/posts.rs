@@ -39,7 +39,10 @@ fn from_json<T: serde::de::DeserializeOwned + Default>(text: &str) -> T {
 ///
 /// A post that carries a `pending_post_id` replaces the optimistic row with
 /// that id (see [`replace_pending`]), whichever of the REST response or the
-/// WebSocket `posted` event arrives first, so a send never shows twice.
+/// WebSocket `posted` event arrives first, so a send never shows twice. A
+/// server post without one, as a channel fetch returns it, takes the place of
+/// the oldest optimistic row it matches: same channel, author, thread and
+/// text.
 /// Reactions and files are taken from `metadata` and replace what was stored
 /// for the post. Each channel's `since` cursor moves to the newest server
 /// time seen. Call inside a transaction for batches.
@@ -64,7 +67,31 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
     let now = now_ms();
     let mut clear_reactions = conn.prepare_cached("DELETE FROM reactions WHERE post_id = ?1")?;
     let mut clear_files = conn.prepare_cached("DELETE FROM files WHERE post_id = ?1")?;
+    let mut known = conn.prepare_cached("SELECT EXISTS (SELECT 1 FROM posts WHERE id = ?1)")?;
+    let mut optimistic = conn.prepare_cached(
+        "SELECT id FROM posts
+         WHERE id = pending_post_id AND channel_id = ?1 AND user_id = ?2 AND root_id = ?3
+             AND message = ?4
+         ORDER BY create_at, rowid LIMIT 1",
+    )?;
     for post in posts {
+        let mut matched = None;
+        if post.pending_post_id.is_empty()
+            && post.delete_at == 0
+            && !known.query_row([&post.id], |row| row.get::<_, bool>(0))?
+        {
+            matched = optimistic
+                .query_row(
+                    params![post.channel_id, post.user_id, post.root_id, post.message],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|pending_post_id| Post {
+                    pending_post_id,
+                    ..post.clone()
+                });
+        }
+        let post = matched.as_ref().unwrap_or(post);
         if !post.pending_post_id.is_empty() {
             // The optimistic row's id is the pending id itself.
             drop_pending.execute(params![post.pending_post_id, post.id])?;
