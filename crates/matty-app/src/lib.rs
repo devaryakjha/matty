@@ -7,9 +7,13 @@
 #![allow(missing_docs)]
 
 pub mod actions;
+pub mod channel;
 pub mod logging;
 mod main_window;
+pub mod preview;
 pub mod settings;
+pub mod sidebar;
+pub mod style;
 mod ui;
 
 use std::borrow::Cow;
@@ -21,6 +25,7 @@ use gpui_kit::{
 };
 use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
+use ui::title_bar::title_bar_window_options;
 
 /// The smallest window PLAN §4.1 supports.
 pub const MIN_WINDOW: (f32, f32) = (480., 400.);
@@ -36,6 +41,7 @@ pub fn run() {
             let logs = logging::init(logging::default_dir().as_deref(), Default::default());
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
             ui::theme::init(cx);
+            style::install(ThemeMode::Light, cx);
             load_fonts(cx);
             let settings = SettingsStore::init(settings::default_path(), cx);
             if let Some(logs) = logs {
@@ -93,7 +99,7 @@ fn window_options(cx: &App) -> WindowOptions {
         window_bounds: Some(bounds),
         window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
         app_id: Some("app.matty.Matty".into()),
-        ..Default::default()
+        ..title_bar_window_options()
     }
 }
 
@@ -118,9 +124,6 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
             WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
         },
     };
-    if UiTheme::read(cx).mode != mode {
-        UiTheme::switch(cx, mode);
-    }
     let text_scale = settings.text_scale * settings.zoom;
     let unit = px(4. * settings.zoom);
     let theme = UiTheme::read(cx);
@@ -130,4 +133,5 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
         theme.spacing.unit = unit;
         UiTheme::set(cx, theme);
     }
+    style::install(mode, cx);
 }
