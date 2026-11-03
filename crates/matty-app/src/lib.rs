@@ -24,6 +24,7 @@ pub mod sidebar;
 pub mod style;
 pub mod switcher;
 pub mod threads;
+pub mod transcript;
 mod ui;
 
 use std::borrow::Cow;

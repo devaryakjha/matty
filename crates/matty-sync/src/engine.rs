@@ -372,6 +372,10 @@ pub(crate) struct Engine {
     open_threads: BTreeSet<String>,
     open_thread_lists: BTreeSet<String>,
     subscribers: Vec<async_channel::Sender<ChangeSet>>,
+    /// Authors already sent in [`ChangeSet::Users`], and those asked of
+    /// the server, so neither repeats.
+    sent_users: BTreeSet<String>,
+    asked_users: BTreeSet<String>,
     session: Option<Session>,
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
@@ -390,6 +394,8 @@ impl Engine {
             open_threads: BTreeSet::new(),
             open_thread_lists: BTreeSet::new(),
             subscribers: Vec::new(),
+            sent_users: BTreeSet::new(),
+            asked_users: BTreeSet::new(),
             session: None,
             loaded,
             loaded_inbox: Some(loaded_inbox),
@@ -442,7 +448,11 @@ impl Engine {
         let tx = self.store.conn_mut().transaction()?;
         for message in messages {
             match message {
-                Message::Subscribe(sender) => self.subscribers.push(sender),
+                Message::Subscribe(sender) => {
+                    self.subscribers.push(sender);
+                    // The new subscriber has seen no one yet.
+                    self.sent_users.clear();
+                }
                 Message::Command(Command::Connect { client }) => {
                     if let Some(old) = self.session.take() {
                         old.load.abort();
@@ -959,6 +969,13 @@ impl Engine {
                     .push(ChangeSet::Connection(Connection::Failed { error }));
             }
             Loaded::Emoji(emoji) => sidebar::upsert_emoji(self.store.conn(), &emoji)?,
+            Loaded::Users(users) => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                self.sent_users.extend(users.iter().map(|u| u.id.clone()));
+                if !users.is_empty() {
+                    dirty.direct.push(ChangeSet::Users(Arc::from(users)));
+                }
+            }
             Loaded::Statuses(statuses) => {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
@@ -1294,10 +1311,57 @@ impl Engine {
                 Err(error) => tracing::error!(%error, "could not read a posts snapshot"),
             }
         }
+        if let Some(users) = self.authors(&changes) {
+            // Ahead of the posts, so names are there when they draw.
+            changes.insert(0, users);
+        }
         for change in changes {
             self.subscribers
                 .retain(|subscriber| subscriber.try_send(change.clone()).is_ok());
         }
+    }
+
+    /// The not yet sent authors of the posts in `changes`: those the cache
+    /// has as a change set, and the rest asked of the server once.
+    fn authors(&mut self, changes: &[ChangeSet]) -> Option<ChangeSet> {
+        let ids: BTreeSet<String> = changes
+            .iter()
+            .flat_map(|change| match change {
+                ChangeSet::Posts { posts, .. } | ChangeSet::Thread { posts, .. } => &posts[..],
+                _ => &[],
+            })
+            .map(|post| post.user_id.clone())
+            .filter(|id| !id.is_empty() && !self.sent_users.contains(id))
+            .collect();
+        if ids.is_empty() {
+            return None;
+        }
+        let ids: Vec<String> = ids.into_iter().collect();
+        let found = sidebar::users(self.store.conn(), &ids).unwrap_or_else(|error| {
+            tracing::error!(%error, "could not read users");
+            Vec::new()
+        });
+        self.sent_users.extend(found.iter().map(|u| u.id.clone()));
+        let missing: Vec<String> = ids
+            .into_iter()
+            .filter(|id| !self.sent_users.contains(id) && !self.asked_users.contains(id))
+            .collect();
+        if let Some(session) = self.session.as_ref()
+            && !missing.is_empty()
+        {
+            self.asked_users.extend(missing.iter().cloned());
+            let client = session.client.clone();
+            let loaded = self.loaded.clone();
+            tokio::spawn(async move {
+                match client.users_by_ids(&missing).await {
+                    Ok(users) => {
+                        let _ = loaded.send(Loaded::Users(users));
+                    }
+                    Err(error) => tracing::warn!(%error, "could not fetch post authors"),
+                }
+            });
+        }
+        (!found.is_empty()).then(|| ChangeSet::Users(Arc::from(found)))
     }
 }
 

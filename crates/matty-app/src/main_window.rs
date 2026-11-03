@@ -21,7 +21,7 @@ use crate::actions::{
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
-use crate::live::Live;
+use crate::live::{ChannelUpdate, Live};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
@@ -263,19 +263,49 @@ impl MainWindow {
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
+                ChannelEvent::Send { text, files } => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SendPost {
+                            pending_post_id: String::new(),
+                            channel_id: channel.to_string(),
+                            root_id: String::new(),
+                            message: text.to_string(),
+                            file_ids: files.iter().map(ToString::to_string).collect(),
+                        });
+                    }
+                }
+                ChannelEvent::ToggleReaction { post, emoji } => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::ToggleReaction {
+                            post_id: post.to_string(),
+                            emoji_name: crate::transcript::emoji_name(emoji),
+                        });
+                    }
+                }
+                ChannelEvent::Delete(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::DeletePost {
+                            post_id: post.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::SaveEdit { post, text } => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::EditPost {
+                            post_id: post.to_string(),
+                            message: text.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::ToggleFavorite(_) => this.refresh_channel_info(cx),
-                // Sync picks these up once it owns the channel model; the view
-                // already shows the change.
-                ChannelEvent::Send { .. }
-                | ChannelEvent::Upload { .. }
+                // Sync picks these up in later changes; the view already
+                // shows the change.
+                ChannelEvent::Upload { .. }
                 | ChannelEvent::CancelUpload(_)
                 | ChannelEvent::RetryUpload(_)
                 | ChannelEvent::OpenFile(_)
-                | ChannelEvent::ToggleReaction { .. }
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
-                | ChannelEvent::SaveEdit { .. }
-                | ChannelEvent::Delete(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
             },
@@ -383,7 +413,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = crate::live::database_path(account);
-        let (live, changes) = match Live::start(path) {
+        let (live, changes) = match Live::start(path, account) {
             Ok(started) => started,
             Err(error) => {
                 tracing::error!(%error, "could not start sync");
@@ -449,6 +479,34 @@ impl MainWindow {
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
         }
+        match update.channel {
+            Some(ChannelUpdate::Replace(model)) => self
+                .channel
+                .update(cx, |view, cx| view.set_model(Some(model), window, cx)),
+            Some(ChannelUpdate::Patch {
+                removed,
+                updated,
+                appended,
+            }) => self.channel.update(cx, |view, cx| {
+                // The composer's own "Sending…" rows give way to sync's copy
+                // of the same send, which this patch carries.
+                let local: Vec<SharedString> = view
+                    .model()
+                    .into_iter()
+                    .flat_map(|model| &model.posts)
+                    .filter(|post| post.id.starts_with("pending-"))
+                    .map(|post| post.id.clone())
+                    .collect();
+                for id in local.iter().chain(&removed) {
+                    view.remove_post(id, window, cx);
+                }
+                for post in updated {
+                    view.update_post(post, cx);
+                }
+                view.append_posts(appended, cx);
+            }),
+            None => {}
+        }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
         }
@@ -456,7 +514,6 @@ impl MainWindow {
             self.live = None;
             self._live_task = None;
         }
-        let _ = window;
     }
 
     /// The sign-in card's requests. The preview answers locally; otherwise
@@ -677,6 +734,12 @@ impl MainWindow {
             let model = crate::preview::channel(&id);
             self.channel
                 .update(cx, |view, cx| view.set_model(model, window, cx));
+        } else if let Some(live) = self.live.as_mut()
+            && let Some(row) = live.row(&id)
+        {
+            let model = live.open(row);
+            self.channel
+                .update(cx, |view, cx| view.set_model(Some(model), window, cx));
         }
         cx.notify();
     }
