@@ -225,12 +225,19 @@ async fn server_pings_are_answered_and_closes_reported() {
             .send(Message::Ping(b"are you there".to_vec().into()))
             .await
             .unwrap();
-        match socket.next().await.unwrap().unwrap() {
-            Message::Pong(payload) => assert_eq!(&payload[..], b"are you there"),
-            other => panic!("expected a pong, got {other:?}"),
+        // The pong and the client's request can arrive in either order.
+        let (mut ponged, mut requested) = (false, false);
+        while !(ponged && requested) {
+            match socket.next().await.unwrap().unwrap() {
+                Message::Pong(payload) => {
+                    assert_eq!(&payload[..], b"are you there");
+                    ponged = true;
+                }
+                Message::Text(_) => requested = true,
+                other => panic!("unexpected {other:?}"),
+            }
         }
-        // Take a request, then close without answering it.
-        recv_json(&mut socket).await;
+        // Close without answering the request.
         socket
             .close(Some(CloseFrame {
                 code: CloseCode::Away,
