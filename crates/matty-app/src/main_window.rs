@@ -15,9 +15,11 @@ use gpui_kit::{
 use crate::actions::{
     self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
     OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
-    RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
+    RecentMentions, ResetZoom, SavedMessages, ShowShortcuts, ToggleRightPane, ToggleSidebar,
+    ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
+use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
@@ -27,6 +29,7 @@ use crate::settings::{
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::switcher::{Switcher, SwitcherEvent};
+use crate::threads::{ThreadsEvent, ThreadsModel, ThreadsView};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
@@ -85,6 +88,12 @@ pub struct MainWindow {
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
+    /// The Threads view stands in for the channel while the sidebar's
+    /// Threads row is chosen.
+    threads: Entity<ThreadsView>,
+    threads_open: bool,
+    drafts: Entity<DraftsView>,
+    drafts_open: bool,
     connection: ConnectionState,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
@@ -139,6 +148,49 @@ impl MainWindow {
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        let threads_model = if crate::preview::enabled() {
+            crate::preview::threads()
+        } else {
+            ThreadsModel::default()
+        };
+        let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
+        let drafts_model = if crate::preview::enabled() {
+            crate::preview::drafts()
+        } else {
+            DraftsModel::default()
+        };
+        let drafts = cx.new(|_| DraftsView::new(drafts_model));
+        cx.subscribe_in(
+            &drafts,
+            window,
+            |this, drafts, event: &DraftsEvent, window, cx| {
+                // Sync sends or discards the draft; the sidebar count follows.
+                let count = drafts.read(cx).model().drafts.len();
+                this.sidebar.update(cx, |sidebar, cx| {
+                    let mut model = sidebar.model().clone();
+                    model.drafts = count;
+                    sidebar.set_model(model, cx);
+                });
+                if let DraftsEvent::Open(draft) = event {
+                    this.open_channel(draft.channel_id.clone(), window, cx);
+                    if let Some(root) = draft.thread_root.clone() {
+                        this.open_thread(root, cx);
+                    }
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(&threads, |this, _, event: &ThreadsEvent, cx| {
+            // Sync owns the server side; the sidebar count follows at once.
+            if let ThreadsEvent::MarkAllRead = event {
+                this.sidebar.update(cx, |sidebar, cx| {
+                    let mut model = sidebar.model().clone();
+                    model.unread_threads = 0;
+                    sidebar.set_model(model, cx);
+                });
+            }
+        })
+        .detach();
         // No session store yet: the sign-in card shows unless the preview
         // fixtures stand in for a signed-in workspace.
         let login_model = match crate::preview::login() {
@@ -154,6 +206,7 @@ impl MainWindow {
         });
         cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
             ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+            ChannelEvent::OpenPinned => this.show_pinned(cx),
             // Sync picks these up once it owns the channel model; the view
             // already shows the change.
             ChannelEvent::Send(_)
@@ -166,14 +219,22 @@ impl MainWindow {
             | ChannelEvent::ToggleFollow { .. } => {}
         })
         .detach();
-        cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
-            // Sync owns the rest (PLAN §4.3); the pane already shows them.
-            let RightPaneEvent::Close = event else {
-                return;
-            };
-            this.right_pane_open = false;
-            cx.notify();
-        })
+        cx.subscribe_in(
+            &right_pane,
+            window,
+            |this, _, event: &RightPaneEvent, window, cx| match event {
+                RightPaneEvent::Close => {
+                    this.right_pane_open = false;
+                    cx.notify();
+                }
+                // The post itself scrolls into view once sync can page to it.
+                RightPaneEvent::Jump { channel, .. } => {
+                    this.open_channel(channel.clone(), window, cx)
+                }
+                // Sync owns the rest (PLAN §4.3); the pane already shows them.
+                _ => {}
+            },
+        )
         .detach();
         cx.subscribe_in(
             &sidebar,
@@ -181,8 +242,8 @@ impl MainWindow {
             |this, _, event: &SidebarEvent, window, cx| {
                 let id = match event {
                     SidebarEvent::Select(id) => id.clone(),
-                    // Threads and Drafts views land in M1 with sync.
-                    SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts => return,
+                    SidebarEvent::OpenThreads => return this.show_threads(cx),
+                    SidebarEvent::OpenDrafts => return this.show_drafts(cx),
                 };
                 this.open_channel(id, window, cx);
             },
@@ -203,6 +264,10 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
+            threads,
+            threads_open: false,
+            drafts,
+            drafts_open: false,
             connection: crate::preview::connection(),
             history,
             history_at: 0,
@@ -275,12 +340,36 @@ impl MainWindow {
     }
 
     /// Shows `id` without touching the history: Back and Forward use it.
+    /// Shows the unsent messages in place of the channel.
+    fn show_drafts(&mut self, cx: &mut Context<Self>) {
+        self.drafts_open = true;
+        self.threads_open = false;
+        self.right_pane_open = false;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.select(Some(crate::sidebar::DRAFTS_ID.into()), cx)
+        });
+        cx.notify();
+    }
+
+    /// Shows the followed threads in place of the channel.
+    fn show_threads(&mut self, cx: &mut Context<Self>) {
+        self.threads_open = true;
+        self.drafts_open = false;
+        self.right_pane_open = false;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.select(Some(crate::sidebar::THREADS_ID.into()), cx)
+        });
+        cx.notify();
+    }
+
     fn show_channel(
         &mut self,
         id: gpui_kit::SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.threads_open = false;
+        self.drafts_open = false;
         self.selected_channel = Some(id.clone());
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
@@ -333,6 +422,51 @@ impl MainWindow {
         cx.notify();
     }
 
+    fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
+        self.threads_open = false;
+        self.drafts_open = false;
+        self.right_pane
+            .update(cx, |pane, cx| pane.set_content(Some(content), cx));
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    fn show_pinned(&mut self, cx: &mut Context<Self>) {
+        let Some(channel) = self.channel.read(cx).model().cloned() else {
+            return;
+        };
+        let posts = if crate::preview::enabled() {
+            crate::preview::pinned(&channel)
+        } else {
+            vec![]
+        };
+        self.show_listing(
+            RightPaneContent::Pinned {
+                channel_name: channel.name.clone(),
+                posts,
+            },
+            cx,
+        );
+    }
+
+    fn show_saved(&mut self, cx: &mut Context<Self>) {
+        let posts = if crate::preview::enabled() {
+            crate::preview::saved()
+        } else {
+            vec![]
+        };
+        self.show_listing(RightPaneContent::Saved(posts), cx);
+    }
+
+    fn show_mentions(&mut self, cx: &mut Context<Self>) {
+        let posts = if crate::preview::enabled() {
+            crate::preview::mentions()
+        } else {
+            vec![]
+        };
+        self.show_listing(RightPaneContent::Mentions(posts), cx);
+    }
+
     /// Shows the current channel's info in the right pane.
     fn show_channel_info(&mut self, cx: &mut Context<Self>) {
         let info = self.channel.read(cx).model().cloned();
@@ -347,6 +481,12 @@ impl MainWindow {
     /// Resizable sizes its first pane, so the persisted right-pane width is
     /// turned into a channel width from the space the split has.
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if self.threads_open {
+            return self.threads.clone().into_any_element();
+        }
+        if self.drafts_open {
+            return self.drafts.clone().into_any_element();
+        }
         if !self.right_pane_open {
             return self.channel.clone().into_any_element();
         }
@@ -553,7 +693,15 @@ impl MainWindow {
                         "Recent mentions",
                         LucideIcon::AtSign,
                         Box::new(RecentMentions),
-                        false,
+                        true,
+                        cx,
+                    ))
+                    .child(Self::icon_button(
+                        "titlebar.saved",
+                        "Saved messages",
+                        LucideIcon::Bookmark,
+                        Box::new(SavedMessages),
+                        true,
                         cx,
                     ))
                     .child(Self::icon_button(
@@ -1032,6 +1180,8 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
+            .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
+            .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
             .size_full()
             .flex()
             .flex_col()

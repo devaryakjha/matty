@@ -174,6 +174,29 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `meta`, and a ghost Follow/Following button. The whole line is a hover
   target that opens the thread; replies never appear inline in the
   channel.
+- **Threads view** (PLAN §4.4) replaces the channel when the sidebar's
+  Threads row is chosen: a 360px list on the left and the selected thread
+  on the right, drawn by the same view as the right pane. The header holds
+  "Threads", a joined All / Unread toggle (Unread carries its count) and
+  Mark all as read when anything is unread. Rows are avatar, author,
+  "in #channel", time; a two-line plain-text snippet of the root in
+  `muted-foreground`; then the participants' small avatars and "2 new
+  replies" in `primary` or "3 replies" in `meta`, plus a `primary` dot at
+  the right while unread. Selecting a row reads it. The empty list says how
+  threads get there.
+- **Pinned, Saved and Recent mentions** are right-pane listings, opened
+  from the channel header's pin count, the title bar's bookmark and @
+  buttons, or Cmd/Ctrl+Shift+B and M. Each post sits under a `meta`
+  caption "#channel · Today" with a Jump link on the right, drawn as an
+  ordinary message (author, time, body, reactions, no hover toolbar), and
+  a hairline separates entries. Empty listings say how a post gets there.
+- **Drafts view** replaces the channel when the sidebar's Drafts row is
+  chosen: a header with the unsent count, then one `card` per draft at
+  most 760px wide: where it goes ("#design" or "Reply in #general" with
+  the matching icon) and when it was last edited, the text rendered as it
+  will read, and a row with Delete in `destructive` on the left and
+  Open (outline) and Send (primary) on the right. Deleting or sending
+  removes the card at once and the sidebar count follows.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

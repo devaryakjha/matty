@@ -40,6 +40,8 @@ gpui_kit::actions!(
         ExpandRightPane,
         /// Show recent mentions. (MM)
         RecentMentions,
+        /// Show saved messages. (Matty)
+        SavedMessages,
         /// Pick files to upload to the current channel. (MM)
         UploadFiles,
         /// Edit your last message, from an empty composer. (MM)
@@ -206,6 +208,13 @@ pub fn bindings() -> Vec<Binding> {
             "cmd-shift-m",
             "ctrl-shift-m"
         ),
+        row!(
+            "Saved messages",
+            SavedMessages,
+            main,
+            "cmd-shift-b",
+            "ctrl-shift-b"
+        ),
         row!("Upload files", UploadFiles, main, "cmd-u", "ctrl-u"),
         row!(
             "Edit last message",
@@ -323,6 +332,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 29);
+        assert_eq!(count, 30);
     }
 }

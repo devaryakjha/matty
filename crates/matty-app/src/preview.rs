@@ -64,8 +64,8 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
-        unread_threads: 3,
-        drafts: 1,
+        unread_threads: 2,
+        drafts: 2,
         categories: vec![
             Category::new(
                 "favorites",
@@ -106,7 +106,9 @@ pub fn sidebar() -> SidebarModel {
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
-use crate::right_pane::ThreadModel;
+use crate::drafts::{Draft, DraftsModel};
+use crate::right_pane::{ListedPost, ThreadModel};
+use crate::threads::{ThreadRow, ThreadsModel};
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
@@ -280,6 +282,129 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             DEFAULT_MAX_POST_SIZE
         },
     })
+}
+
+fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
+    let channel = channel(channel_id)?;
+    let post = channel
+        .posts
+        .iter()
+        .find(|post| post.id.as_ref() == post_id)?;
+    Some(ListedPost {
+        channel_id: channel.id.clone(),
+        channel_name: channel.name.clone(),
+        post: post.clone(),
+    })
+}
+
+/// The channel's pinned posts, newest first.
+pub fn pinned(channel: &ChannelModel) -> Vec<ListedPost> {
+    channel
+        .posts
+        .iter()
+        .rev()
+        .filter(|post| post.pinned)
+        .map(|post| ListedPost {
+            channel_id: channel.id.clone(),
+            channel_name: channel.name.clone(),
+            post: post.clone(),
+        })
+        .collect()
+}
+
+/// The user's saved posts across channels, newest first.
+pub fn saved() -> Vec<ListedPost> {
+    [listed("general", "p5b"), listed("design", "p4")]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Posts that mention the user, newest first.
+pub fn mentions() -> Vec<ListedPost> {
+    let mut lena = listed("design", "p4");
+    if let Some(item) = lena.as_mut() {
+        item.post.id = "p4m".into();
+        item.post.time = "09:48".into();
+        item.post.day = "Today".into();
+        item.post.edited = false;
+        item.post.pinned = false;
+        item.post.mentions_me = true;
+        item.post.body =
+            "@arya the icon set is in; can you check the dark variants before I close #72?".into();
+    }
+    [lena, listed("general", "p6")]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// The user's unsent messages, for the Drafts view.
+pub fn drafts() -> DraftsModel {
+    DraftsModel {
+        drafts: vec![
+            Draft {
+                channel_id: "design".into(),
+                channel_name: "design".into(),
+                thread_root: None,
+                body: "Proposal for the empty states: one icon in a tinted circle, a `title` line and **one** sentence, never a paragraph. Screens in the PR.".into(),
+                updated: "Today 10:12".into(),
+            },
+            Draft {
+                channel_id: "general".into(),
+                channel_name: "general".into(),
+                thread_root: Some("p5".into()),
+                body: "Also added it to the README so nobody has to ask again.".into(),
+                updated: "Yesterday 17:03".into(),
+            },
+        ],
+    }
+}
+
+/// The threads the user follows, for the Threads view.
+pub fn threads() -> ThreadsModel {
+    let row = |channel_id: &str, post_id: &str, summary: ReplySummary| {
+        thread(channel_id, post_id).map(|thread| ThreadRow {
+            channel_id: channel_id.into(),
+            thread,
+            summary,
+        })
+    };
+    let summary = |count, last_time: &str, participants: &[&str], unread| ReplySummary {
+        count,
+        last_time: last_time.into(),
+        participants: participants.iter().map(|name| (*name).into()).collect(),
+        following: true,
+        unread,
+    };
+    ThreadsModel {
+        threads: [
+            row(
+                "general",
+                "p2",
+                summary(1, "10:02", &["Lena Fischer"], true),
+            ),
+            row(
+                "design",
+                "p6",
+                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], true),
+            ),
+            row(
+                "general",
+                "p5",
+                summary(3, "08:13", &["Arya", "Jonas Weber"], false),
+            ),
+            row(
+                "help-desk",
+                "p8",
+                summary(3, "Yesterday", &["Arya", "Sam Okafor"], false),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        loading: false,
+    }
 }
 
 /// The thread under `post_id` in `channel_id`: the post as root plus three
