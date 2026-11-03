@@ -108,6 +108,7 @@ use crate::attachments::{self, AttachmentStatus, PostFile, Upload, UploadSource}
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
+use crate::directory::DirectoryChannel;
 use crate::drafts::{Draft, DraftsModel};
 use crate::profile::UserProfile;
 use crate::right_pane::{ListedPost, ThreadModel};
@@ -487,6 +488,98 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
 
 /// What the composer tray shows after Attach: a thumbnail, a file still
 /// uploading and one that failed.
+/// The team's public channels for Browse: the sidebar's plus five more.
+pub fn directory() -> Vec<DirectoryChannel> {
+    let joined: Vec<gpui_kit::SharedString> = sidebar()
+        .categories
+        .into_iter()
+        .flat_map(|category| category.rows)
+        .filter(|row| row.kind == ChannelKind::Public)
+        .map(|row| row.id)
+        .collect();
+    let entry = |id: &str, name: &str, purpose: Option<&str>, members: usize| DirectoryChannel {
+        id: id.into(),
+        name: name.into(),
+        purpose: purpose.map(Into::into),
+        members,
+        joined: joined.iter().any(|j| j.as_ref() == id),
+    };
+    vec![
+        entry(
+            "announcements",
+            "announcements",
+            Some("Company-wide news; read-only for most people."),
+            120,
+        ),
+        entry(
+            "design",
+            "design",
+            Some("Mockups, reviews and the design system."),
+            18,
+        ),
+        entry(
+            "dev-rust",
+            "dev-rust",
+            Some("Rust questions, crate picks and clippy fights."),
+            38,
+        ),
+        entry(
+            "general",
+            "general",
+            Some("Announcements and anything that does not fit elsewhere"),
+            42,
+        ),
+        entry("gpui", "gpui", None, 11),
+        entry(
+            "help-desk",
+            "help-desk",
+            Some("Ask IT about laptops, accounts and access."),
+            42,
+        ),
+        entry(
+            "hiring",
+            "hiring",
+            Some("Open roles and interview loops."),
+            12,
+        ),
+        entry(
+            "off-topic",
+            "off-topic",
+            Some("Pets, food, weekend plans."),
+            77,
+        ),
+        entry("random", "random", None, 40),
+        entry("town-square", "town-square", None, 42),
+        entry(
+            "ux-research",
+            "ux-research",
+            Some("Interview notes and study plans."),
+            9,
+        ),
+    ]
+}
+
+/// An empty channel for one just joined from Browse.
+pub fn joined_channel(channel: &DirectoryChannel) -> ChannelModel {
+    ChannelModel {
+        id: channel.id.clone(),
+        name: channel.name.clone(),
+        kind: ChannelKind::Public,
+        header: None,
+        members: channel.members,
+        pinned: 0,
+        favorite: false,
+        muted: false,
+        purpose: channel.purpose.clone(),
+        loading: false,
+        posts: vec![],
+        first_unread: None,
+        max_post_size: DEFAULT_MAX_POST_SIZE,
+        profiles: profiles(),
+        typing: vec![],
+    }
+}
+
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -724,6 +817,12 @@ mod tests {
             .collect();
         assert!(!ids.is_empty());
         assert_eq!(uploads().len(), 3);
+        let directory = directory();
+        assert_eq!(directory.iter().filter(|c| !c.joined).count(), 5);
+        for entry in directory.iter().filter(|c| c.joined) {
+            assert!(channel(&entry.id).is_some(), "{} has a fixture", entry.id);
+        }
+        joined_channel(&directory[0]);
         assert_eq!(incoming("general").len(), 2);
         assert!(incoming("design").is_empty());
         for id in &ids {

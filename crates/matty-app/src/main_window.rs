@@ -20,6 +20,7 @@ use crate::actions::{
     ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
+use crate::directory::{BrowseView, DirectoryEvent};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::live::Live;
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
@@ -101,6 +102,11 @@ pub struct MainWindow {
     sidebar_visible: bool,
     shortcuts: DialogHandle,
     preferences: DialogHandle,
+    /// The Browse channels dialog, opened from the sidebar's plus menu.
+    browse: Entity<BrowseView>,
+    /// Channels joined from Browse while in preview, so they open with an
+    /// empty transcript until sync owns joining.
+    joined: Vec<crate::channel::ChannelModel>,
     /// Shown when the user belongs to more than one team (M1).
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
@@ -163,7 +169,7 @@ impl MainWindow {
             .iter()
             .flat_map(|category| category.rows.iter().cloned())
             .collect();
-        let sidebar = cx.new(|_| SidebarView::new("Matty", model));
+        let sidebar = cx.new(|cx| SidebarView::new("Matty", model, cx));
         let initial = selected_channel
             .as_deref()
             .filter(|_| crate::preview::enabled())
@@ -178,6 +184,21 @@ impl MainWindow {
         channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
+        let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
+        if crate::preview::enabled() {
+            browse.update(cx, |browse, cx| {
+                browse.set_channels(crate::preview::directory(), cx)
+            });
+        }
+        cx.subscribe_in(
+            &browse,
+            window,
+            |this, _, event: &DirectoryEvent, window, cx| match event {
+                DirectoryEvent::Join(id) => this.join_channel(id.clone(), window, cx),
+                DirectoryEvent::Open(id) => this.open_channel(id.clone(), window, cx),
+            },
+        )
+        .detach();
         cx.subscribe_in(
             &account,
             window,
@@ -326,6 +347,8 @@ impl MainWindow {
                     SidebarEvent::Select(id) => id.clone(),
                     SidebarEvent::OpenThreads => return this.show_threads(cx),
                     SidebarEvent::OpenDrafts => return this.show_drafts(cx),
+                    SidebarEvent::BrowseChannels => return this.browse_channels(window, cx),
+                    SidebarEvent::NewMessage | SidebarEvent::CreateChannel => return,
                 };
                 this.open_channel(id, window, cx);
             },
@@ -345,6 +368,8 @@ impl MainWindow {
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
+            browse,
+            joined: Vec::new(),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
             threads,
@@ -674,11 +699,45 @@ impl MainWindow {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
         if crate::preview::enabled() {
-            let model = crate::preview::channel(&id);
+            let model = crate::preview::channel(&id)
+                .or_else(|| self.joined.iter().find(|c| c.id == id).cloned());
             self.channel
                 .update(cx, |view, cx| view.set_model(model, window, cx));
         }
         cx.notify();
+    }
+
+    /// Opens the Browse channels dialog (PLAN §3 M1).
+    fn browse_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.browse.update(cx, |browse, cx| browse.open(window, cx));
+    }
+
+    /// Joins `id` from Browse: the sidebar gains the row and the channel
+    /// opens. Sync owns the server side (PLAN §4.3); in preview the channel
+    /// starts empty.
+    fn join_channel(
+        &mut self,
+        id: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::preview::enabled() {
+            let directory = crate::preview::directory();
+            if let Some(channel) = directory.iter().find(|c| c.id == id) {
+                let mut model = self.sidebar.read(cx).model().clone();
+                if let Some(category) = model.categories.iter_mut().find(|c| c.id == "channels") {
+                    category.rows.push(crate::sidebar::ChannelRow::new(
+                        channel.id.clone(),
+                        channel.name.clone(),
+                        crate::sidebar::ChannelKind::Public,
+                    ));
+                }
+                self.sidebar
+                    .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+                self.joined.push(crate::preview::joined_channel(channel));
+            }
+        }
+        self.open_channel(id, window, cx);
     }
 
     fn go_history(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1412,6 +1471,12 @@ impl MainWindow {
         dialog("preferences", &self.preferences, popup, window, cx)
     }
 
+    fn browse(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.browse.read(cx).handle().clone();
+        let popup = dialog_popup("browse.popup", "Browse channels", cx).child(self.browse.clone());
+        dialog("browse", &handle, popup, window, cx)
+    }
+
     /// DESIGN.md §4: 56px rail of 32px team squares, the current one
     /// outlined in `primary`. Hidden until the user has a second team.
     fn team_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1622,6 +1687,7 @@ impl Render for MainWindow {
             })
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
+            .child(self.browse(window, cx))
             .child(switcher_element)
     }
 }

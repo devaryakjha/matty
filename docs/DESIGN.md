@@ -290,6 +290,16 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   messages"), clearing once the list is back at the end. `update_post`
   and `remove_post` apply server edits and deletes in place. In preview
   two posts land in #general twelve seconds after it opens.
+- **Browse channels** (PLAN §3 M1 "Finding people and channels"): the
+  sidebar's pencil is a gpuicn `Menu` with "New message", "Browse
+  channels" and "Create channel" (`design-28`). Browse is a dialog: title,
+  "11 public channels in Matty", a search field that filters on name and
+  purpose as you type, then one row per channel with `#`, the name, the
+  member count in `meta` and the purpose on a second line. Channels the
+  user is already in show an `Outline` "View" that opens them; the rest
+  show a `Default` "Join", which closes the dialog, adds the row to the
+  Channels category and opens the channel at its empty state. Rows are
+  clickable too.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

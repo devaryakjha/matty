@@ -4,16 +4,18 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, Context, EventEmitter, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::{Badge, BadgeVariant},
-    button::{Button, ButtonSize, ButtonVariant},
+    button::{Button, ButtonSize, ButtonVariant, style_button},
     collapsible::{collapsible, collapsible_trigger},
+    menu::{Menu, MenuItem, MenuState},
     sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_skeleton},
     theme::UiTheme,
 };
@@ -213,20 +215,63 @@ pub enum SidebarEvent {
     OpenDrafts,
     /// The user activated a channel row.
     Select(SharedString),
+    /// "New message" from the sidebar's plus menu.
+    NewMessage,
+    /// "Browse channels" from the sidebar's plus menu.
+    BrowseChannels,
+    /// "Create channel" from the sidebar's plus menu.
+    CreateChannel,
 }
 
 pub struct SidebarView {
     model: SidebarModel,
     team_name: SharedString,
+    /// The plus menu: new message, browse, create.
+    menu: Entity<MenuState>,
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
 
 impl SidebarView {
-    pub fn new(team_name: impl Into<SharedString>, model: SidebarModel) -> Self {
+    pub fn new(
+        team_name: impl Into<SharedString>,
+        model: SidebarModel,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let view = cx.weak_entity();
+        let item = |id: &'static str, label: &'static str, event: SidebarEvent| {
+            let view = view.clone();
+            MenuItem::new(id, label).on_click(move |_, _, cx| {
+                view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            })
+        };
+        let menu = cx.new(|cx| {
+            MenuState::new(
+                [
+                    item(
+                        "sidebar.new-message",
+                        "New message",
+                        SidebarEvent::NewMessage,
+                    ),
+                    MenuItem::separator(),
+                    item(
+                        "sidebar.browse-channels",
+                        "Browse channels",
+                        SidebarEvent::BrowseChannels,
+                    ),
+                    item(
+                        "sidebar.create-channel",
+                        "Create channel",
+                        SidebarEvent::CreateChannel,
+                    ),
+                ],
+                cx,
+            )
+        });
         Self {
             model,
             team_name: team_name.into(),
+            menu,
         }
     }
 
@@ -295,16 +340,23 @@ impl SidebarView {
                     .size(scaled(&theme, 14.))
                     .text_color(theme.colors.muted_foreground),
             );
-        let compose = Button::new("sidebar.compose")
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::IconSm)
-            .aria_label("New message")
-            .disabled(self.model.loading)
-            .child(
+        let loading = self.model.loading;
+        let button_theme = theme.clone();
+        let compose = Menu::new(&self.menu, "New")
+            .trigger(
                 lucide(LucideIcon::SquarePen)
                     .size(scaled(&theme, metrics::ICON))
                     .text_color(theme.colors.muted_foreground),
-            );
+            )
+            .trigger_style_with(move |button| {
+                style_button(
+                    button.aria_label("New…").disabled(loading),
+                    false,
+                    ButtonVariant::Ghost,
+                    ButtonSize::IconSm,
+                    &button_theme,
+                )
+            });
         div()
             .h(scaled(&theme, metrics::HEADER_HEIGHT) - theme.space(4.))
             .flex()
