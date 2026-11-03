@@ -8,7 +8,6 @@
 use std::fs;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension as _, params};
 
@@ -165,6 +164,16 @@ impl MediaCache {
         }
     }
 
+    /// Index entries oldest access first, as (key, size), for eviction.
+    pub(crate) fn least_recent(&self, conn: &Connection) -> Result<Vec<(String, i64)>> {
+        let mut statement =
+            conn.prepare_cached("SELECT key, size FROM media ORDER BY accessed_at, key")?;
+        let entries = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(entries)
+    }
+
     /// Bytes indexed in the cache.
     pub fn total_size(&self, conn: &Connection) -> Result<i64> {
         Ok(conn
@@ -176,11 +185,7 @@ impl MediaCache {
 /// The access stamp for now: the local clock in ms, but always after the
 /// latest stamp, so two accesses in the same millisecond still order.
 fn next_access(conn: &Connection) -> Result<i64> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-        });
+    let now = crate::posts::now_ms();
     let latest: i64 = conn
         .prepare_cached("SELECT COALESCE(MAX(accessed_at), 0) FROM media")?
         .query_row([], |row| row.get(0))?;

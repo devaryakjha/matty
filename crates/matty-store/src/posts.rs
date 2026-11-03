@@ -15,6 +15,22 @@ fn json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned())
 }
 
+/// The local clock in ms, for `touched_at`.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+/// Marks a channel's cached posts as just viewed, so eviction trims it last.
+pub fn touch_channel(conn: &Connection, channel_id: &str) -> Result<()> {
+    conn.prepare_cached("UPDATE posts SET touched_at = ?2 WHERE channel_id = ?1")?
+        .execute(params![channel_id, now_ms()])?;
+    Ok(())
+}
+
 fn from_json<T: serde::de::DeserializeOwned + Default>(text: &str) -> T {
     serde_json::from_str(text).unwrap_or_default()
 }
@@ -31,8 +47,9 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
         .prepare_cached("DELETE FROM posts WHERE (pending_post_id = ?1 OR id = ?1) AND id != ?2")?;
     let mut upsert = conn.prepare_cached(
         "INSERT INTO posts (id, channel_id, user_id, root_id, create_at, update_at, edit_at,
-             delete_at, kind, message, reply_count, is_pinned, pending_post_id, props, metadata)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             delete_at, kind, message, reply_count, is_pinned, pending_post_id, props, metadata,
+             touched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT (id) DO UPDATE SET
              channel_id = excluded.channel_id, user_id = excluded.user_id,
              root_id = excluded.root_id, create_at = excluded.create_at,
@@ -40,8 +57,10 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
              delete_at = excluded.delete_at, kind = excluded.kind,
              message = excluded.message, reply_count = excluded.reply_count,
              is_pinned = excluded.is_pinned, pending_post_id = excluded.pending_post_id,
-             props = excluded.props, metadata = excluded.metadata",
+             props = excluded.props, metadata = excluded.metadata,
+             touched_at = excluded.touched_at",
     )?;
+    let now = now_ms();
     let mut clear_reactions = conn.prepare_cached("DELETE FROM reactions WHERE post_id = ?1")?;
     let mut clear_files = conn.prepare_cached("DELETE FROM files WHERE post_id = ?1")?;
     for post in posts {
@@ -70,7 +89,8 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
             post.is_pinned,
             post.pending_post_id,
             json(&post.props),
-            json(&rest)
+            json(&rest),
+            now
         ])?;
         clear_reactions.execute([&post.id])?;
         clear_files.execute([&post.id])?;

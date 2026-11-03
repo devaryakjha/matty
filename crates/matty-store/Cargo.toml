@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "posts"
 harness = false
+
+[[bench]]
+name = "evict"
+harness = false
