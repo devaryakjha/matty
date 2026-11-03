@@ -64,7 +64,7 @@ pub fn channel_model(
             time,
             day,
             body: post.message.clone().into(),
-            reactions: reactions(post, viewer.user_id),
+            reactions: reactions(post, viewer.user_id, users),
             mentions_me: !viewer.username.is_empty() && mentions(&post.message, &mention),
             edited: post.edit_at != 0,
             continues,
@@ -134,9 +134,15 @@ fn mentions(message: &str, mention: &str) -> bool {
 }
 
 /// Reaction chips in the order each emoji was first used.
-fn reactions(post: &ApiPost, me: &str) -> Vec<PostReaction> {
+fn reactions(post: &ApiPost, me: &str, users: &HashMap<String, User>) -> Vec<PostReaction> {
     let mut chips: Vec<(String, PostReaction)> = Vec::new();
     for reaction in &post.metadata.reactions {
+        // Others by name for the tooltip; people not loaded yet are left
+        // out, as the field allows.
+        let name = (reaction.user_id != me)
+            .then(|| users.get(&reaction.user_id))
+            .flatten()
+            .map(|user| SharedString::from(display_name(user)));
         match chips
             .iter_mut()
             .find(|(name, _)| *name == reaction.emoji_name)
@@ -144,6 +150,7 @@ fn reactions(post: &ApiPost, me: &str) -> Vec<PostReaction> {
             Some((_, chip)) => {
                 chip.count += 1;
                 chip.mine |= reaction.user_id == me;
+                chip.users.extend(name);
             }
             None => chips.push((
                 reaction.emoji_name.clone(),
@@ -151,6 +158,7 @@ fn reactions(post: &ApiPost, me: &str) -> Vec<PostReaction> {
                     emoji: emoji(&reaction.emoji_name).into(),
                     count: 1,
                     mine: reaction.user_id == me,
+                    users: name.into_iter().collect(),
                 },
             )),
         }
@@ -280,12 +288,21 @@ mod tests {
                 ..Reaction::default()
             });
         }
-        let chips = reactions(&p, "me");
+        let users = HashMap::from([(
+            "ada".to_string(),
+            User {
+                id: "ada".into(),
+                username: "ada".into(),
+                ..User::default()
+            },
+        )]);
+        let chips = reactions(&p, "me", &users);
         assert_eq!(chips.len(), 2);
         assert_eq!(
             (chips[0].emoji.as_ref(), chips[0].count, chips[0].mine),
             ("👍", 2, true)
         );
+        assert_eq!(chips[0].users, ["ada"]);
         assert_eq!(chips[1].emoji.as_ref(), ":partyparrot:");
     }
 
