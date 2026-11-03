@@ -5,6 +5,7 @@
 //! or is reachable without the variable, and the screenshots in
 //! `docs/screenshots/design-*` are taken this way (DESIGN.md §6).
 
+use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
 
 /// Whether the preview fixtures are on for this process.
@@ -13,6 +14,29 @@ pub fn enabled() -> bool {
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
+/// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
+/// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
+pub fn login() -> Option<LoginModel> {
+    let value = std::env::var("MATTY_PREVIEW").ok()?;
+    let error = match value.as_str() {
+        "login" => None,
+        "login-error" => Some("That password is not right. Check it and try again.".into()),
+        _ => return None,
+    };
+    Some(LoginModel {
+        step: LoginStep::Methods {
+            server_name: "chat.example.com".into(),
+            methods: SignInMethods {
+                password: true,
+                ldap: false,
+                sso: vec![SsoProvider::GitLab, SsoProvider::Google],
+            },
+        },
+        busy: false,
+        error,
+    })
+}
+
 /// The teams in the rail: name and whether it is the current one.
 pub fn teams() -> Vec<(&'static str, bool)> {
     vec![

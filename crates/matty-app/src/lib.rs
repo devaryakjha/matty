@@ -9,6 +9,7 @@
 pub mod actions;
 pub mod channel;
 pub mod logging;
+pub mod login;
 mod main_window;
 pub mod preview;
 pub mod right_pane;

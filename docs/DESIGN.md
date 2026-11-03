@@ -124,6 +124,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - **Empty and loading states** center a 40px icon in a tinted circle, a
   `title` line and one `meta` sentence; never more.
 
+- **Sign in** (PLAN §4.5) is one 400px card on the `sidebar` surface under
+  the wordmark, never a wizard. Step one asks only for the server address
+  and assumes `https`. Step two shows the server as a muted chip with
+  Change, then the password form, an OR rule, outline buttons for each SSO
+  provider the server enables, and a personal access token behind a text
+  link. Errors are one `meta` sentence in `destructive` with an icon, placed
+  above the button they concern; a request in flight puts a spinner in the
+  primary button and never blocks the window.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

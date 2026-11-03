@@ -17,6 +17,7 @@ use crate::actions::{
     RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
+use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
     RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
@@ -54,6 +55,8 @@ const TEXT_SIZES: &[(&str, f32)] = &[
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
+    /// Shown until a session exists; sync replaces it with the workspace.
+    login: Option<Entity<LoginView>>,
     sidebar: Entity<SidebarView>,
     channel: Entity<ChannelView>,
     switcher: Entity<Switcher>,
@@ -112,6 +115,19 @@ impl MainWindow {
             .and_then(crate::preview::channel);
         let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
+        // No session store yet: the sign-in card shows unless the preview
+        // fixtures stand in for a signed-in workspace.
+        let login_model = match crate::preview::login() {
+            Some(model) => Some(model),
+            None if crate::preview::enabled() => None,
+            None => Some(LoginModel::default()),
+        };
+        let login = login_model.map(|model| {
+            let view = cx.new(|cx| LoginView::new(model, window, cx));
+            cx.subscribe_in(&view, window, Self::on_login_event)
+                .detach();
+            view
+        });
         cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
             ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
             ChannelEvent::Send(_) => {}
@@ -144,6 +160,7 @@ impl MainWindow {
         .detach();
         Self {
             settings,
+            login,
             sidebar,
             channel,
             switcher,
@@ -156,6 +173,55 @@ impl MainWindow {
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
         }
+    }
+
+    /// Until sync lands, the card can only validate locally: a good URL
+    /// moves to the methods step with the preview's methods, and signing in
+    /// says plainly that it is not wired yet.
+    fn on_login_event(
+        this: &mut Self,
+        view: &Entity<LoginView>,
+        event: &LoginEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut model = view.read(cx).model().clone();
+        match event {
+            LoginEvent::CheckServer(url) => {
+                let server_name = url
+                    .split_once("://")
+                    .map_or(url.as_str(), |(_, rest)| rest)
+                    .to_string();
+                model.step = LoginStep::Methods {
+                    server_name: server_name.into(),
+                    methods: SignInMethods {
+                        password: true,
+                        ldap: false,
+                        sso: vec![SsoProvider::GitLab],
+                    },
+                };
+                model.error = None;
+            }
+            LoginEvent::ChangeServer => {
+                model.step = LoginStep::Server;
+                model.error = None;
+            }
+            LoginEvent::SignIn { .. } | LoginEvent::Token(_) => {
+                model.error =
+                    Some("Signing in is not connected yet; it arrives with sync in M1.".into());
+            }
+            LoginEvent::Sso(provider) => {
+                model.error = Some(
+                    format!(
+                        "{} sign-in opens your browser once sync lands in M1.",
+                        provider.label()
+                    )
+                    .into(),
+                );
+            }
+        }
+        view.update(cx, |view, cx| view.set_model(model, window, cx));
+        let _ = this;
     }
 
     /// Shows `id` in the channel view and marks it in the sidebar. Until
@@ -319,6 +385,10 @@ impl MainWindow {
     /// DESIGN.md §4: navigation on the left, the quick switcher as a search
     /// pill in the middle, mentions, saved, help and the user on the right.
     fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Signed out there is nothing to navigate: window controls only.
+        if self.login.is_some() {
+            return TitleBar::new().into_any_element();
+        }
         let theme = UiTheme::read(cx).clone();
         let palette = Palette::read(cx);
         let platform = Platform::current();
@@ -422,6 +492,7 @@ impl MainWindow {
                     ))
                     .child(div().pl(theme.space(1.)).child(me)),
             )
+            .into_any_element()
     }
 
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -794,15 +865,22 @@ impl Render for MainWindow {
             .font_family(theme.fonts.body.clone())
             .type_style(style::UI, &theme)
             .child(self.title_bar(cx))
-            .child(
-                div()
+            .child(match &self.login {
+                Some(login) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(login.clone())
+                    .into_any_element(),
+                None => div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
                     .flex()
                     .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
-                    .child(div().flex_1().min_w_0().h_full().child(frame)),
-            )
+                    .child(div().flex_1().min_w_0().h_full().child(frame))
+                    .into_any_element(),
+            })
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
             .child(switcher_element)
