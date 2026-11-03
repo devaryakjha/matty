@@ -6,16 +6,23 @@
 
 #![allow(missing_docs)]
 
+mod main_window;
+pub mod settings;
 mod ui;
 
 use std::borrow::Cow;
 
 use gpui_icons::LucideAssetSource;
 use gpui_kit::{
-    App, AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled, Window,
-    WindowAppearance, WindowOptions, div, px,
+    App, AppContext as _, Bounds, Window, WindowAppearance, WindowBounds, WindowOptions, point, px,
+    size,
 };
+use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
+
+/// The smallest window PLAN §4.1 supports.
+pub const MIN_WINDOW: (f32, f32) = (480., 400.);
+const DEFAULT_WINDOW: (f32, f32) = (1200., 800.);
 
 /// Starts the GPUI application and opens the main window. Blocks until the
 /// app quits.
@@ -25,17 +32,8 @@ pub fn run() {
         .run(|cx: &mut App| {
             ui::theme::init(cx);
             load_fonts(cx);
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                follow_system_appearance(window, cx);
-                cx.new(|cx| {
-                    cx.observe_window_appearance(window, |_, window, cx| {
-                        follow_system_appearance(window, cx);
-                    })
-                    .detach();
-                    MainWindow
-                })
-            })
-            .expect("open the main window");
+            SettingsStore::init(settings::default_path(), cx);
+            open_main_window(cx);
             cx.activate(true);
         });
 }
@@ -50,31 +48,57 @@ fn load_fonts(cx: &mut App) {
         .expect("load bundled Geist fonts");
 }
 
-fn follow_system_appearance(window: &Window, cx: &mut App) {
-    let mode = match window.appearance() {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
-        WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
+fn window_options(cx: &App) -> WindowOptions {
+    let saved = SettingsStore::global(cx).read(cx).get().window;
+    let bounds = match saved {
+        Some(geometry) => {
+            let bounds = Bounds::new(
+                point(px(geometry.x), px(geometry.y)),
+                size(
+                    px(geometry.width.max(MIN_WINDOW.0)),
+                    px(geometry.height.max(MIN_WINDOW.1)),
+                ),
+            );
+            if geometry.maximized {
+                WindowBounds::Maximized(bounds)
+            } else {
+                WindowBounds::Windowed(bounds)
+            }
+        }
+        None => WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(DEFAULT_WINDOW.0), px(DEFAULT_WINDOW.1)),
+            cx,
+        )),
     };
-    if UiTheme::read(cx).mode != mode {
-        UiTheme::switch(cx, mode);
+    WindowOptions {
+        window_bounds: Some(bounds),
+        window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
+        app_id: Some("app.matty.Matty".into()),
+        ..Default::default()
     }
 }
 
-struct MainWindow;
+fn open_main_window(cx: &mut App) {
+    cx.open_window(window_options(cx), |window, cx| {
+        apply_theme(window, cx);
+        cx.new(|cx| main_window::MainWindow::new(window, cx))
+    })
+    .expect("open the main window");
+}
 
-impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = UiTheme::read(cx);
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme.colors.background)
-            .text_color(theme.colors.foreground)
-            .font_family(theme.fonts.body.clone())
-            .text_size(theme.text(13.))
-            .child("Matty")
-            .p(px(24.))
+/// Applies the theme choice from settings, following the OS when it is `System`.
+pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
+    let choice = SettingsStore::global(cx).read(cx).get().theme;
+    let mode = match choice {
+        ThemeChoice::Light => ThemeMode::Light,
+        ThemeChoice::Dark => ThemeMode::Dark,
+        ThemeChoice::System => match window.appearance() {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
+        },
+    };
+    if UiTheme::read(cx).mode != mode {
+        UiTheme::switch(cx, mode);
     }
 }
