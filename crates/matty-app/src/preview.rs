@@ -13,6 +13,15 @@ pub fn enabled() -> bool {
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
+/// The teams in the rail: name and whether it is the current one.
+pub fn teams() -> Vec<(&'static str, bool)> {
+    vec![
+        ("Matty", true),
+        ("Design Guild", false),
+        ("Open Source", false),
+    ]
+}
+
 pub fn sidebar() -> SidebarModel {
     let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
     let dm = |id: &str, name: &str, presence| {
@@ -21,6 +30,8 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
+        unread_threads: 3,
+        drafts: 1,
         categories: vec![
             Category::new(
                 "favorites",

@@ -11,7 +11,7 @@ use gpui_kit::{
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
-    badge::Badge,
+    badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant},
     collapsible::{collapsible, collapsible_trigger},
     sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_skeleton},
@@ -111,6 +111,10 @@ pub struct SidebarModel {
     /// True before the first snapshot; the view shows loading rows.
     pub loading: bool,
     pub selected: Option<SharedString>,
+    /// Followed threads with replies the user has not read.
+    pub unread_threads: usize,
+    /// Channels with an unsent draft.
+    pub drafts: usize,
     pub categories: Vec<Category>,
 }
 
@@ -132,6 +136,10 @@ fn element_id(prefix: &str, id: &SharedString) -> gpui_kit::ElementId {
 /// What the sidebar asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarEvent {
+    /// The user opened the Threads entry above the categories.
+    OpenThreads,
+    /// The user opened the Drafts entry above the categories.
+    OpenDrafts,
     /// The user activated a channel row.
     Select(SharedString),
 }
@@ -343,6 +351,72 @@ impl SidebarView {
         item
     }
 
+    /// DESIGN.md §4: the Threads and Drafts entries sit above the categories,
+    /// drawn like channel rows with a count badge where there is something
+    /// to read or finish.
+    fn fixed_entries(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let entry = |id: &'static str,
+                     label: &'static str,
+                     glyph: LucideIcon,
+                     count: usize,
+                     event: SidebarEvent,
+                     cx: &mut Context<Self>| {
+            let strong = count > 0;
+            let mut item = SidebarItem::new(id, label)
+                .size(SidebarItemSize::Small)
+                .icon(
+                    div()
+                        .size(scaled(&theme, 20.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            lucide(glyph)
+                                .size(scaled(&theme, metrics::ICON))
+                                .text_color(theme.colors.muted_foreground),
+                        ),
+                )
+                .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
+                .on_activate(cx.listener(move |_, _, _, cx| cx.emit(event.clone())));
+            if strong {
+                item = item.trailing(
+                    Badge::new(count.to_string())
+                        .variant(BadgeVariant::Secondary)
+                        .h(theme.space(4.5))
+                        .min_w(theme.space(4.5))
+                        .px(theme.space(1.5))
+                        .text_size(theme.text(11.))
+                        .line_height(theme.text(11.)),
+                );
+            } else {
+                item = item.text_color(theme.colors.muted_foreground);
+            }
+            item
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .pb(theme.space(3.))
+            .child(entry(
+                "sidebar.threads",
+                "Threads",
+                LucideIcon::MessageSquareText,
+                self.model.unread_threads,
+                SidebarEvent::OpenThreads,
+                cx,
+            ))
+            .child(entry(
+                "sidebar.drafts",
+                "Drafts",
+                LucideIcon::FilePenLine,
+                self.model.drafts,
+                SidebarEvent::OpenDrafts,
+                cx,
+            ))
+    }
+
     fn category(
         &self,
         category: &Category,
@@ -428,6 +502,7 @@ impl Render for SidebarView {
             }
             return sidebar;
         }
+        sidebar = sidebar.child(self.fixed_entries(cx));
         let categories: Vec<_> = self.model.categories.clone();
         for category in &categories {
             sidebar = sidebar.child(self.category(category, window, cx));
