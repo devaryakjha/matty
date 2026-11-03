@@ -26,3 +26,7 @@ tempfile.workspace = true
 [[bench]]
 name = "sidebar"
 harness = false
+
+[[bench]]
+name = "posts"
+harness = false

@@ -5,6 +5,7 @@
 
 mod migrations;
 mod open;
+pub mod posts;
 pub mod sidebar;
 
 pub use migrations::{LATEST_VERSION, schema_version};
