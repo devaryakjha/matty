@@ -22,6 +22,7 @@ use crate::settings::{
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::switcher::{Switcher, SwitcherEvent};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
@@ -40,6 +41,7 @@ pub struct MainWindow {
     settings: Entity<SettingsStore>,
     sidebar: Entity<SidebarView>,
     channel: Entity<ChannelView>,
+    switcher: Entity<Switcher>,
     focus: FocusHandle,
     /// The channel the sidebar selected; the channel view follows it in M1.
     selected_channel: Option<gpui_kit::SharedString>,
@@ -77,6 +79,16 @@ impl MainWindow {
             SidebarModel::loading()
         };
         let selected_channel = model.selected.clone();
+        let switcher = cx.new(|cx| Switcher::new(&model, window, cx));
+        cx.subscribe_in(
+            &switcher,
+            window,
+            |this, _, event: &SwitcherEvent, window, cx| {
+                let SwitcherEvent::Open(id) = event;
+                this.open_channel(id.clone(), window, cx);
+            },
+        )
+        .detach();
         let sidebar = cx.new(|_| SidebarView::new("Matty", model));
         let initial = selected_channel
             .as_deref()
@@ -102,6 +114,7 @@ impl MainWindow {
             settings,
             sidebar,
             channel,
+            switcher,
             focus,
             selected_channel,
             sidebar_visible: true,
@@ -110,6 +123,25 @@ impl MainWindow {
             rail_visible: false,
             right_pane_open: false,
         }
+    }
+
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
+    fn open_channel(
+        &mut self,
+        id: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_channel = Some(id.clone());
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.select(Some(id.clone()), cx));
+        if crate::preview::enabled() {
+            let model = crate::preview::channel(&id);
+            self.channel
+                .update(cx, |view, cx| view.set_model(model, window, cx));
+        }
+        cx.notify();
     }
 
     fn remember_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -398,6 +430,10 @@ impl Render for MainWindow {
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();
+        let switcher = self.switcher.clone();
+        let switcher_element = self.switcher.update(cx, |switcher, cx| {
+            switcher.element(window, cx).into_any_element()
+        });
         let right_pane_width = px(self.settings.read(cx).get().right_pane_width);
         div()
             .key_context(actions::MAIN_WINDOW)
@@ -411,6 +447,9 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
             .on_action(move |_: &ShowShortcuts, window, cx| shortcuts.open(window, cx))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
+            .on_action(move |_: &QuickSwitcher, window, cx| {
+                switcher.update(cx, |switcher, cx| switcher.open(window, cx))
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -439,5 +478,6 @@ impl Render for MainWindow {
             )
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences_stub(window, cx))
+            .child(switcher_element)
     }
 }

@@ -1,0 +1,156 @@
+//! The quick switcher (Cmd/Ctrl+K): a command palette over the sidebar's
+//! channels and people, DESIGN.md §4. Typing filters by name and keyword;
+//! Enter opens the highlighted row.
+
+use gpui_icons::LucideIcon;
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, SharedString, Styled as _,
+    Subscription, Window,
+};
+
+use crate::sidebar::{ChannelKind, SidebarModel};
+use crate::style::{self, TypeStyleExt as _};
+use crate::ui::{
+    badge::Badge,
+    command::{CommandEvent, CommandItem, CommandState, command_dialog_popup},
+    dialog::{DialogHandle, dialog},
+    theme::UiTheme,
+};
+
+/// What the switcher asks the window to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SwitcherEvent {
+    /// The user picked a channel by id.
+    Open(SharedString),
+}
+
+pub struct Switcher {
+    handle: DialogHandle,
+    command: Entity<CommandState>,
+    _subscription: Subscription,
+}
+
+impl EventEmitter<SwitcherEvent> for Switcher {}
+
+impl Switcher {
+    pub fn new(model: &SidebarModel, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let handle = DialogHandle::new(false);
+        let command = cx.new(|cx| {
+            let mut state = CommandState::new(Self::items(model), window, cx);
+            state.set_placeholder("Jump to a channel or person…", window, cx);
+            state
+        });
+        Self::install_slots(&command, model, cx);
+        let close = handle.clone();
+        let subscription =
+            cx.subscribe_in(
+                &command,
+                window,
+                move |this, _, event, window, cx| match event {
+                    CommandEvent::Confirm(value) => {
+                        close.close(window, cx);
+                        cx.emit(SwitcherEvent::Open(value.clone()));
+                        this.reset(window, cx);
+                    }
+                    CommandEvent::Cancel => {
+                        close.close(window, cx);
+                        this.reset(window, cx);
+                    }
+                    CommandEvent::Query(_) => {}
+                },
+            );
+        Self {
+            handle,
+            command,
+            _subscription: subscription,
+        }
+    }
+
+    /// Rebuilds the rows from a new sidebar snapshot.
+    pub fn set_model(&mut self, model: &SidebarModel, cx: &mut Context<Self>) {
+        let items = Self::items(model);
+        self.command
+            .update(cx, |state, cx| state.set_items(items, cx));
+        Self::install_slots(&self.command, model, cx);
+    }
+
+    pub fn open(&self, window: &mut Window, cx: &mut App) {
+        self.handle.open(window, cx);
+        // The dialog mounts on the next frame; focus the input once it exists.
+        let command = self.command.clone();
+        window.on_next_frame(move |window, cx| {
+            command.update(cx, |state, cx| state.focus(window, cx));
+        });
+    }
+
+    fn reset(&self, window: &mut Window, cx: &mut App) {
+        self.command
+            .update(cx, |state, cx| state.set_query("", window, cx));
+    }
+
+    /// One row per sidebar channel, grouped as the sidebar groups them.
+    fn items(model: &SidebarModel) -> Vec<CommandItem> {
+        model
+            .categories
+            .iter()
+            .flat_map(|category| {
+                category.rows.iter().map(move |row| {
+                    let icon = match row.kind {
+                        ChannelKind::Public => LucideIcon::Hash,
+                        ChannelKind::Private => LucideIcon::Lock,
+                        ChannelKind::Direct { .. } => LucideIcon::User,
+                        ChannelKind::Group { .. } => LucideIcon::Users,
+                    };
+                    let mut item = CommandItem::new(row.id.clone(), row.name.clone())
+                        .group(category.name.clone())
+                        .icon(icon);
+                    if row.unread {
+                        item = item.keywords(["unread"]);
+                    }
+                    item
+                })
+            })
+            .collect()
+    }
+
+    /// Mention counts at the trailing edge, as in the sidebar.
+    fn install_slots(command: &Entity<CommandState>, model: &SidebarModel, cx: &mut App) {
+        let mentions: Vec<(SharedString, usize)> = model
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .filter(|row| row.mentions > 0)
+            .map(|row| (row.id.clone(), row.mentions))
+            .collect();
+        command.update(cx, |state, cx| {
+            state.set_trailing(
+                move |item, _, cx| {
+                    let theme = UiTheme::read(cx);
+                    mentions
+                        .iter()
+                        .find(|(id, _)| *id == item.value)
+                        .map(|(_, count)| {
+                            Badge::count(*count, 99)
+                                .h(theme.space(4.5))
+                                .min_w(theme.space(4.5))
+                                .px(theme.space(1.5))
+                                .text_size(theme.text(11.))
+                                .line_height(theme.text(11.))
+                                .into_any_element()
+                        })
+                },
+                cx,
+            );
+        });
+    }
+
+    /// The dialog element; the window mounts it every frame so focus
+    /// returns to the right place when it closes.
+    pub fn element(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let popup = command_dialog_popup("switcher.popup", &self.command, cx)
+            .max_w(style::scaled(&theme, 560.))
+            .type_style(style::UI, &theme);
+        dialog("switcher", &self.handle, popup, window, cx)
+    }
+}

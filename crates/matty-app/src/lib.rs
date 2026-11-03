@@ -14,6 +14,7 @@ pub mod preview;
 pub mod settings;
 pub mod sidebar;
 pub mod style;
+pub mod switcher;
 mod ui;
 
 use std::borrow::Cow;
