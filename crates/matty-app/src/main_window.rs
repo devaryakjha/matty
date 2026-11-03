@@ -5,13 +5,20 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement as _, Pixels, Render, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    Render, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::settings::{SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry};
+use crate::actions::{
+    self, OpenPreferences, Platform, ResetZoom, ShowShortcuts, ToggleSidebar, ZoomIn, ZoomOut,
+};
+use crate::settings::{
+    SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
+};
 use crate::ui::{
+    dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+    kbd::Kbd,
     resizable::{PaneLimits, Resizable},
     separator::Separator,
     sidebar::Sidebar,
@@ -23,6 +30,11 @@ const CONTENT_MIN: f32 = 260.;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
+    focus: FocusHandle,
+    /// Cmd+Shift+D hides the sidebar for this session.
+    sidebar_visible: bool,
+    shortcuts: DialogHandle,
+    preferences: DialogHandle,
     /// Shown when the user belongs to more than one team (M1).
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
@@ -45,8 +57,14 @@ impl MainWindow {
         .detach();
         cx.observe_window_bounds(window, |this, window, cx| this.remember_bounds(window, cx))
             .detach();
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         Self {
             settings,
+            focus,
+            sidebar_visible: true,
+            shortcuts: DialogHandle::new(false),
+            preferences: DialogHandle::new(false),
             rail_visible: false,
             right_pane_open: false,
         }
@@ -68,6 +86,48 @@ impl MainWindow {
         self.settings.update(cx, |store, cx| {
             store.update(cx, |s| s.window = Some(geometry))
         });
+    }
+
+    fn zoom(&mut self, step: Option<f32>, cx: &mut Context<Self>) {
+        self.settings.update(cx, |store, cx| {
+            store.update(cx, |s| {
+                s.zoom = match step {
+                    Some(step) => ((s.zoom + step) * 10.).round() / 10.,
+                    None => 1.,
+                }
+            })
+        });
+    }
+
+    fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let platform = Platform::current();
+        let rows = actions::bindings().into_iter().map(|row| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(theme.space(4.))
+                .py(theme.space(1.))
+                .child(row.label)
+                .child(Kbd::shortcut(row.keys(platform)))
+        });
+        let popup = dialog_popup("shortcuts.popup", "Keyboard shortcuts", cx)
+            .child(dialog_title("shortcuts.title", cx).child("Keyboard shortcuts"))
+            .child(div().flex().flex_col().children(rows))
+            .child(dialog_close("shortcuts.close", cx).label("Close"));
+        dialog("shortcuts", &self.shortcuts, popup, window, cx)
+    }
+
+    fn preferences_stub(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let popup = dialog_popup("preferences.popup", "Preferences", cx)
+            .child(dialog_title("preferences.title", cx).child("Preferences"))
+            .child(
+                dialog_description("preferences.description", cx)
+                    .child("Theme, message display and notification settings arrive with M1."),
+            )
+            .child(dialog_close("preferences.close", cx).label("Close"));
+        dialog("preferences", &self.preferences, popup, window, cx)
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -137,19 +197,36 @@ impl Render for MainWindow {
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
-        let _ = window;
-        let frame = Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
-            .first(self.sidebar(cx))
-            .second(self.channel_view(cx))
-            .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
-            .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
-            .on_resize(move |width: &Pixels, _, cx| {
-                let width = f32::from(*width);
-                settings.update(cx, |store, cx| {
-                    store.update(cx, |s| s.sidebar_width = width)
-                });
-            });
+        let frame = if self.sidebar_visible {
+            Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
+                .first(self.sidebar(cx))
+                .second(self.channel_view(cx))
+                .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
+                .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
+                .on_resize(move |width: &Pixels, _, cx| {
+                    let width = f32::from(*width);
+                    settings.update(cx, |store, cx| {
+                        store.update(cx, |s| s.sidebar_width = width)
+                    });
+                })
+                .into_any_element()
+        } else {
+            self.channel_view(cx).into_any_element()
+        };
+        let shortcuts = self.shortcuts.clone();
+        let preferences = self.preferences.clone();
         div()
+            .key_context(actions::MAIN_WINDOW)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_visible = !this.sidebar_visible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(Some(ZOOM_STEP), cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(Some(-ZOOM_STEP), cx)))
+            .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
+            .on_action(move |_: &ShowShortcuts, window, cx| shortcuts.open(window, cx))
+            .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .size_full()
             .flex()
             .bg(theme.colors.background)
@@ -163,5 +240,7 @@ impl Render for MainWindow {
             .when(self.right_pane_open, |root| {
                 root.child(div().w(px(400.)).h_full())
             })
+            .child(self.shortcut_sheet(window, cx))
+            .child(self.preferences_stub(window, cx))
     }
 }

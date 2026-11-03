@@ -6,6 +6,7 @@
 
 #![allow(missing_docs)]
 
+pub mod actions;
 mod main_window;
 pub mod settings;
 mod ui;
@@ -33,6 +34,7 @@ pub fn run() {
             ui::theme::init(cx);
             load_fonts(cx);
             SettingsStore::init(settings::default_path(), cx);
+            actions::bind(cx);
             open_main_window(cx);
             cx.activate(true);
         });
@@ -87,9 +89,11 @@ fn open_main_window(cx: &mut App) {
     .expect("open the main window");
 }
 
-/// Applies the theme choice from settings, following the OS when it is `System`.
+/// Applies the theme choice from settings, following the OS when it is
+/// `System`, and the text scale and zoom.
 pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
-    let choice = SettingsStore::global(cx).read(cx).get().theme;
+    let settings = SettingsStore::global(cx).read(cx).get().clone();
+    let choice = settings.theme;
     let mode = match choice {
         ThemeChoice::Light => ThemeMode::Light,
         ThemeChoice::Dark => ThemeMode::Dark,
@@ -100,5 +104,14 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
     };
     if UiTheme::read(cx).mode != mode {
         UiTheme::switch(cx, mode);
+    }
+    let text_scale = settings.text_scale * settings.zoom;
+    let unit = px(4. * settings.zoom);
+    let theme = UiTheme::read(cx);
+    if theme.text_scale != text_scale || theme.spacing.unit != unit {
+        let mut theme = theme.clone();
+        theme.text_scale = text_scale;
+        theme.spacing.unit = unit;
+        UiTheme::set(cx, theme);
     }
 }
