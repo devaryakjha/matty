@@ -1,0 +1,9 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"text[^1]\\n\\n[^1]: note\")"
+---
+text[^1]
+
+[^1]: note
+----
+<p>text<a href="note">^1</a></p>

@@ -1,0 +1,1031 @@
+{
+  "source": "https://github.com/mattermost/mattermost",
+  "commit": "388cddcb2d6678b897732fac1363b0119ec4b765",
+  "license": "Apache-2.0 (webapp/); see NOTICE",
+  "cases": [
+    {
+      "id": "text_formatting_at_mentions.test:152",
+      "input": "@user1:org1 @user2:org2/@user3:org3/@user4:org4 (@user5:org5) @user6:org6",
+      "webapp": "<p><span data-mention=\"user1:org1\">@user1:org1</span> <span data-mention=\"user2:org2\">@user2:org2</span>/<span data-mention=\"user3:org3\">@user3:org3</span>/<span data-mention=\"user4:org4\">@user4:org4</span> (<span data-mention=\"user5:org5\">@user5:org5</span>) <span data-mention=\"user6:org6\">@user6:org6</span></p>",
+      "expected": "<p><a href=\"matty://user/user1:org1\">@user1:org1</a> <a href=\"matty://user/user2:org2\">@user2:org2</a>/<a href=\"matty://user/user3:org3\">@user3:org3</a>/<a href=\"matty://user/user4:org4\">@user4:org4</a> (<a href=\"matty://user/user5:org5\">@user5:org5</a>) <a href=\"matty://user/user6:org6\">@user6:org6</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_channel_links.test:11",
+      "input": "~123",
+      "webapp": "<p>~123</p>",
+      "expected": "<p>~123</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_channel_links.test:17",
+      "input": "~town-square",
+      "webapp": "<p>~town-square</p>",
+      "expected": "<p>~town-square</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:10",
+      "input": "email@domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:email@domain.com\" rel=\"noreferrer\" target=\"_blank\">email@domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:email@domain.com\">email@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:14",
+      "input": "firstname.lastname@domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:firstname.lastname@domain.com\" rel=\"noreferrer\" target=\"_blank\">firstname.lastname@domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:firstname.lastname@domain.com\">firstname.lastname@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:18",
+      "input": "email@subdomain.domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:email@subdomain.domain.com\" rel=\"noreferrer\" target=\"_blank\">email@subdomain.domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:email@subdomain.domain.com\">email@subdomain.domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:22",
+      "input": "firstname+lastname@domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:firstname+lastname@domain.com\" rel=\"noreferrer\" target=\"_blank\">firstname+lastname@domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:firstname+lastname@domain.com\">firstname+lastname@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:26",
+      "input": "1234567890@domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:1234567890@domain.com\" rel=\"noreferrer\" target=\"_blank\">1234567890@domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:1234567890@domain.com\">1234567890@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:30",
+      "input": "email@domain-one.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:email@domain-one.com\" rel=\"noreferrer\" target=\"_blank\">email@domain-one.com</a></p>",
+      "expected": "<p><a href=\"mailto:email@domain-one.com\">email@domain-one.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:34",
+      "input": "email@domain.name",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:email@domain.name\" rel=\"noreferrer\" target=\"_blank\">email@domain.name</a></p>",
+      "expected": "<p><a href=\"mailto:email@domain.name\">email@domain.name</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:38",
+      "input": "email@domain.co.jp",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:email@domain.co.jp\" rel=\"noreferrer\" target=\"_blank\">email@domain.co.jp</a></p>",
+      "expected": "<p><a href=\"mailto:email@domain.co.jp\">email@domain.co.jp</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:42",
+      "input": "firstname-lastname@domain.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:firstname-lastname@domain.com\" rel=\"noreferrer\" target=\"_blank\">firstname-lastname@domain.com</a></p>",
+      "expected": "<p><a href=\"mailto:firstname-lastname@domain.com\">firstname-lastname@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:48",
+      "input": "email@123.123.123.123",
+      "webapp": "<p>email@123.123.123.123</p>",
+      "expected": "<p>email@123.123.123.123</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:52",
+      "input": "email@[123.123.123.123]",
+      "webapp": "<p>email@[123.123.123.123]</p>",
+      "expected": "<p>email@[123.123.123.123]</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:56",
+      "input": "\"email\"@domain.com",
+      "webapp": "<p>&quot;email&quot;@domain.com</p>",
+      "expected": "<p>&quot;email&quot;@domain.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:62",
+      "input": "_______@domain.com",
+      "webapp": "<p><strong>___</strong>@domain.com</p>",
+      "expected": "<p><strong>___</strong>@domain.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:68",
+      "input": "plainaddress",
+      "webapp": "<p>plainaddress</p>",
+      "expected": "<p>plainaddress</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:72",
+      "input": "#@%^%#$@#$@#.com",
+      "webapp": "<p>#@%^%#$@#$@#.com</p>",
+      "expected": "<p>#@%^%#$@#$@#.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:76",
+      "input": "@domain.com",
+      "webapp": "<p>@domain.com</p>",
+      "expected": "<p>@domain.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:80",
+      "input": "Joe Smith <email@domain.com>",
+      "webapp": "<p>Joe Smith <a class=\"theme markdown__link\" href=\"mailto:email@domain.com\" rel=\"noreferrer\" target=\"_blank\">email@domain.com</a></p>",
+      "expected": "<p>Joe Smith <a href=\"mailto:email@domain.com\">email@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:84",
+      "input": "email.domain.com",
+      "webapp": "<p>email.domain.com</p>",
+      "expected": "<p>email.domain.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:88",
+      "input": "email.@domain.com",
+      "webapp": "<p>email.@domain.com</p>",
+      "expected": "<p>email.@domain.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:94",
+      "input": "email@domain@domain.com",
+      "webapp": "<p>email@<a class=\"theme\" href=\"mailto:domain@domain.com\" rel=\"noreferrer\" target=\"_blank\">domain@domain.com</a></p>",
+      "expected": "<p>email@<a href=\"mailto:domain@domain.com\">domain@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_email.test:100",
+      "input": "email@domain@domain.com",
+      "webapp": "<p>email@<a class=\"theme\" href=\"mailto:domain@domain.com\" rel=\"noreferrer\" target=\"_blank\">domain@domain.com</a></p>",
+      "expected": "<p>email@<a href=\"mailto:domain@domain.com\">domain@domain.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:11",
+      "input": "# hashtag",
+      "webapp": "<h1 class=\"markdown__heading\">hashtag</h1>",
+      "expected": "<h1>hashtag</h1>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:15",
+      "input": "#ab",
+      "webapp": "<p>#ab</p>",
+      "expected": "<p>#ab</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:19",
+      "input": "#123test",
+      "webapp": "<p>#123test</p>",
+      "expected": "<p>#123test</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:25",
+      "input": "#test",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test'>#test</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test\">#test</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:29",
+      "input": "#test123",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test123'>#test123</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test123\">#test123</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:33",
+      "input": "#test-test",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test-test'>#test-test</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test-test\">#test-test</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:37",
+      "input": "#test_test",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test_test'>#test_test</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test_test\">#test_test</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:41",
+      "input": "#test.test",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test.test'>#test.test</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test.test\">#test.test</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:45",
+      "input": "#test1/#test2",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test1'>#test1</a>/<a class='mention-link' href='#' data-hashtag='#test2'>#test2</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test1\">#test1</a>/<a href=\"matty://hashtag/test2\">#test2</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:49",
+      "input": "(#test)",
+      "webapp": "<p>(<a class='mention-link' href='#' data-hashtag='#test'>#test</a>)</p>",
+      "expected": "<p>(<a href=\"matty://hashtag/test\">#test</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:53",
+      "input": "#test-",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test'>#test</a>-</p>",
+      "expected": "<p><a href=\"matty://hashtag/test\">#test</a>-</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:57",
+      "input": "#test.",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test'>#test</a>.</p>",
+      "expected": "<p><a href=\"matty://hashtag/test\">#test</a>.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:61",
+      "input": "This is a sentence #test containing a hashtag",
+      "webapp": "<p>This is a sentence <a class='mention-link' href='#' data-hashtag='#test'>#test</a> containing a hashtag</p>",
+      "expected": "<p>This is a sentence <a href=\"matty://hashtag/test\">#test</a> containing a hashtag</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:67",
+      "input": "*#test*",
+      "webapp": "<p><em><a class='mention-link' href='#' data-hashtag='#test'>#test</a></em></p>",
+      "expected": "<p><em><a href=\"matty://hashtag/test\">#test</a></em></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:71",
+      "input": "_#test_",
+      "webapp": "<p><em><a class='mention-link' href='#' data-hashtag='#test'>#test</a></em></p>",
+      "expected": "<p><em><a href=\"matty://hashtag/test\">#test</a></em></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:75",
+      "input": "**#test**",
+      "webapp": "<p><strong><a class='mention-link' href='#' data-hashtag='#test'>#test</a></strong></p>",
+      "expected": "<p><strong><a href=\"matty://hashtag/test\">#test</a></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:79",
+      "input": "__#test__",
+      "webapp": "<p><strong><a class='mention-link' href='#' data-hashtag='#test'>#test</a></strong></p>",
+      "expected": "<p><strong><a href=\"matty://hashtag/test\">#test</a></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:83",
+      "input": "~~#test~~",
+      "webapp": "<p><del><a class='mention-link' href='#' data-hashtag='#test'>#test</a></del></p>",
+      "expected": "<p><del><a href=\"matty://hashtag/test\">#test</a></del></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:87",
+      "input": "`#test`",
+      "webapp": "<p><span class=\"codespan__pre-wrap\"><code>#test</code></span></p>",
+      "expected": "<p><code>#test</code></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:97",
+      "input": "[this is a link #test](example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">this is a link #test</a></p>",
+      "expected": "<p><a href=\"http://example.com\">this is a link #test</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:125",
+      "input": "#@test",
+      "webapp": "<p>#@test</p>",
+      "expected": "<p>#@test</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:136",
+      "input": "#~test",
+      "webapp": "<p>#~test</p>",
+      "expected": "<p>#~test</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_hashtags.test:150",
+      "input": "#:mattermost:",
+      "webapp": "<p>#<span data-emoticon=\"mattermost\">:mattermost:</span></p>",
+      "expected": "<p>#<a href=\"matty://emoji/mattermost\">:mattermost:</a></p>",
+      "emoji": [
+        "mattermost"
+      ]
+    },
+    {
+      "id": "text_formatting_hashtags.test:154",
+      "input": "#test@example.com",
+      "webapp": "<p><a class='mention-link' href='#' data-hashtag='#test@example.com'>#test@example.com</a></p>",
+      "expected": "<p><a href=\"matty://hashtag/test@example.com\">#test@example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_imgs.test:12",
+      "input": "![Mattermost](/images/icon.png)",
+      "webapp": "<p><img src=\"/images/icon.png\" alt=\"Mattermost\" class=\"markdown-inline-img\"></p>",
+      "expected": "<p><img src=\"/images/icon.png\" alt=\"Mattermost\"></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_imgs.test:18",
+      "input": "![Mattermost](/images/icon.png \"Mattermost Icon\")",
+      "webapp": "<p><img src=\"/images/icon.png\" alt=\"Mattermost\" title=\"Mattermost Icon\" class=\"markdown-inline-img\"></p>",
+      "expected": "<p><img src=\"/images/icon.png\" alt=\"Mattermost\" title=\"Mattermost Icon\"></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_imgs.test:24",
+      "input": "[![Mattermost](../../images/icon-76x76.png)](https://github.com/mattermost/platform)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://github.com/mattermost/platform\" rel=\"noreferrer\" target=\"_blank\"><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\" class=\"markdown-inline-img\"></a></p>",
+      "expected": "<p><a href=\"https://github.com/mattermost/platform\"><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\"></a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_imgs.test:30",
+      "input": "![Mattermost](../../images/icon-76x76.png =50x76 \"Mattermost Icon\")",
+      "webapp": "<p><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\" title=\"Mattermost Icon\" width=\"50\" height=\"76\" class=\"markdown-inline-img\"></p>",
+      "expected": "<p><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\" title=\"Mattermost Icon\"></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_imgs.test:36",
+      "input": "![Mattermost](../../images/icon-76x76.png =50 \"Mattermost Icon\")",
+      "webapp": "<p><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\" title=\"Mattermost Icon\" width=\"50\" height=\"auto\" class=\"markdown-inline-img\"></p>",
+      "expected": "<p><img src=\"../../images/icon-76x76.png\" alt=\"Mattermost\" title=\"Mattermost Icon\"></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:15",
+      "input": "example.com",
+      "webapp": "<p>example.com</p>",
+      "expected": "<p>example.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:19",
+      "input": "readme.md",
+      "webapp": "<p>readme.md</p>",
+      "expected": "<p>readme.md</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:23",
+      "input": "@example.com",
+      "webapp": "<p>@example.com</p>",
+      "expected": "<p>@example.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:27",
+      "input": "./make-compiled-client.sh",
+      "webapp": "<p>./make-compiled-client.sh</p>",
+      "expected": "<p>./make-compiled-client.sh</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:31",
+      "input": "`https://example.com`",
+      "webapp": "<p><span class=\"codespan__pre-wrap\"><code>https://example.com</code></span></p>",
+      "expected": "<p><code>https://example.com</code></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:41",
+      "input": "[link](example.com",
+      "webapp": "<p>[link](example.com</p>",
+      "expected": "<p>[link](example.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:47",
+      "input": "http://example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a></p>",
+      "expected": "<p><a href=\"http://example.com\">http://example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:51",
+      "input": "https://example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></p>",
+      "expected": "<p><a href=\"https://example.com\">https://example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:55",
+      "input": "www.example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com\" rel=\"noreferrer\" target=\"_blank\">www.example.com</a></p>",
+      "expected": "<p><a href=\"http://www.example.com\">www.example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:59",
+      "input": "www.example.com/index",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index\">www.example.com/index</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:63",
+      "input": "www.example.com/index.html",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index.html\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index.html</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index.html\">www.example.com/index.html</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:67",
+      "input": "www.example.com/index/sub",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index/sub\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index/sub</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index/sub\">www.example.com/index/sub</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:71",
+      "input": "www1.example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www1.example.com\" rel=\"noreferrer\" target=\"_blank\">www1.example.com</a></p>",
+      "expected": "<p><a href=\"http://www1.example.com\">www1.example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:75",
+      "input": "example.com/index",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/index\" rel=\"noreferrer\" target=\"_blank\">example.com/index</a></p>",
+      "expected": "<p><a href=\"http://example.com/index\">example.com/index</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:81",
+      "input": "http://127.0.0.1",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://127.0.0.1\" rel=\"noreferrer\" target=\"_blank\">http://127.0.0.1</a></p>",
+      "expected": "<p><a href=\"http://127.0.0.1\">http://127.0.0.1</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:85",
+      "input": "http://192.168.1.1:4040",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://192.168.1.1:4040\" rel=\"noreferrer\" target=\"_blank\">http://192.168.1.1:4040</a></p>",
+      "expected": "<p><a href=\"http://192.168.1.1:4040\">http://192.168.1.1:4040</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:89",
+      "input": "http://[::1]:80",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://[::1]:80\" rel=\"noreferrer\" target=\"_blank\">http://[::1]:80</a></p>",
+      "expected": "<p><a href=\"http://[::1]:80\">http://[::1]:80</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:93",
+      "input": "http://[::1]:8065",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://[::1]:8065\" rel=\"noreferrer\" target=\"_blank\">http://[::1]:8065</a></p>",
+      "expected": "<p><a href=\"http://[::1]:8065\">http://[::1]:8065</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:97",
+      "input": "https://[::1]:80",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://[::1]:80\" rel=\"noreferrer\" target=\"_blank\">https://[::1]:80</a></p>",
+      "expected": "<p><a href=\"https://[::1]:80\">https://[::1]:80</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:101",
+      "input": "http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80\" rel=\"noreferrer\" target=\"_blank\">http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80</a></p>",
+      "expected": "<p><a href=\"http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80\">http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:105",
+      "input": "http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:8065",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:8065\" rel=\"noreferrer\" target=\"_blank\">http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:8065</a></p>",
+      "expected": "<p><a href=\"http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:8065\">http://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:8065</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:109",
+      "input": "https://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:443",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:443\" rel=\"noreferrer\" target=\"_blank\">https://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:443</a></p>",
+      "expected": "<p><a href=\"https://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:443\">https://[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:443</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:113",
+      "input": "http://username:password@127.0.0.1",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://username:password@127.0.0.1\" rel=\"noreferrer\" target=\"_blank\">http://username:password@127.0.0.1</a></p>",
+      "expected": "<p><a href=\"http://username:password@127.0.0.1\">http://username:password@127.0.0.1</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:117",
+      "input": "http://username:password@[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://username:password@[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80\" rel=\"noreferrer\" target=\"_blank\">http://username:password@[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80</a></p>",
+      "expected": "<p><a href=\"http://username:password@[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80\">http://username:password@[2001:0:5ef5:79fb:303a:62d5:3312:ff42]:80</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:123",
+      "input": "https://en.wikipedia.org/wiki/URLs#Syntax",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/URLs#Syntax\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/URLs#Syntax</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/URLs#Syntax\">https://en.wikipedia.org/wiki/URLs#Syntax</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:127",
+      "input": "https://groups.google.com/forum/#!msg",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://groups.google.com/forum/#!msg\" rel=\"noreferrer\" target=\"_blank\">https://groups.google.com/forum/#!msg</a></p>",
+      "expected": "<p><a href=\"https://groups.google.com/forum/#!msg\">https://groups.google.com/forum/#!msg</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:133",
+      "input": "www.example.com/index?params=1",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index?params=1\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index?params=1</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index?params=1\">www.example.com/index?params=1</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:137",
+      "input": "www.example.com/index?params=1&other=2",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index?params=1&amp;other=2\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index?params=1&amp;other=2</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index?params=1&amp;other=2\">www.example.com/index?params=1&amp;other=2</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:141",
+      "input": "www.example.com/index?params=1;other=2",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/index?params=1;other=2\" rel=\"noreferrer\" target=\"_blank\">www.example.com/index?params=1;other=2</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/index?params=1;other=2\">www.example.com/index?params=1;other=2</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:145",
+      "input": "http://example.com:8065",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com:8065\" rel=\"noreferrer\" target=\"_blank\">http://example.com:8065</a></p>",
+      "expected": "<p><a href=\"http://example.com:8065\">http://example.com:8065</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:149",
+      "input": "http://username:password@example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://username:password@example.com\" rel=\"noreferrer\" target=\"_blank\">http://username:password@example.com</a></p>",
+      "expected": "<p><a href=\"http://username:password@example.com\">http://username:password@example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:155",
+      "input": "http://www.example.com/_/page",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/_/page\" rel=\"noreferrer\" target=\"_blank\">http://www.example.com/_/page</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/_/page\">http://www.example.com/_/page</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:159",
+      "input": "www.example.com/_/page",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://www.example.com/_/page\" rel=\"noreferrer\" target=\"_blank\">www.example.com/_/page</a></p>",
+      "expected": "<p><a href=\"http://www.example.com/_/page\">www.example.com/_/page</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:163",
+      "input": "https://en.wikipedia.org/wiki/🐬",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/🐬\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/🐬</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/🐬\">https://en.wikipedia.org/wiki/🐬</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:167",
+      "input": "http://✪df.ws/1234",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://✪df.ws/1234\" rel=\"noreferrer\" target=\"_blank\">http://✪df.ws/1234</a></p>",
+      "expected": "<p><a href=\"http://✪df.ws/1234\">http://✪df.ws/1234</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:173",
+      "input": "https://en.wikipedia.org/wiki/Rendering_(computer_graphics)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:177",
+      "input": "http://example.com/more_(than)_one_(parens)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/more_(than)_one_(parens)\" rel=\"noreferrer\" target=\"_blank\">http://example.com/more_(than)_one_(parens)</a></p>",
+      "expected": "<p><a href=\"http://example.com/more_(than)_one_(parens)\">http://example.com/more_(than)_one_(parens)</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:181",
+      "input": "http://example.com/(something)?after=parens",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/(something)?after=parens\" rel=\"noreferrer\" target=\"_blank\">http://example.com/(something)?after=parens</a></p>",
+      "expected": "<p><a href=\"http://example.com/(something)?after=parens\">http://example.com/(something)?after=parens</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:185",
+      "input": "http://foo.com/unicode_(✪)_in_parens",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://foo.com/unicode_(✪)_in_parens\" rel=\"noreferrer\" target=\"_blank\">http://foo.com/unicode_(✪)_in_parens</a></p>",
+      "expected": "<p><a href=\"http://foo.com/unicode_(✪)_in_parens\">http://foo.com/unicode_(✪)_in_parens</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:191",
+      "input": "test@example.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">test@example.com</a></p>",
+      "expected": "<p><a href=\"mailto:test@example.com\">test@example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:194",
+      "input": "test_underscore@example.com",
+      "webapp": "<p><a class=\"theme\" href=\"mailto:test_underscore@example.com\" rel=\"noreferrer\" target=\"_blank\">test_underscore@example.com</a></p>",
+      "expected": "<p><a href=\"mailto:test_underscore@example.com\">test_underscore@example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:198",
+      "input": "mailto:test@example.com",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">mailto:test@example.com</a></p>",
+      "expected": "<p><a href=\"mailto:test@example.com\">mailto:test@example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:204",
+      "input": "*https://example.com*",
+      "webapp": "<p><em><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></em></p>",
+      "expected": "<p><em><a href=\"https://example.com\">https://example.com</a></em></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:208",
+      "input": "_https://example.com_",
+      "webapp": "<p><em><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></em></p>",
+      "expected": "<p><em><a href=\"https://example.com\">https://example.com</a></em></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:212",
+      "input": "**https://example.com**",
+      "webapp": "<p><strong><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></strong></p>",
+      "expected": "<p><strong><a href=\"https://example.com\">https://example.com</a></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:216",
+      "input": "__https://example.com__",
+      "webapp": "<p><strong><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></strong></p>",
+      "expected": "<p><strong><a href=\"https://example.com\">https://example.com</a></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:220",
+      "input": "***https://example.com***",
+      "webapp": "<p><strong><em><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></em></strong></p>",
+      "expected": "<p><strong><em><a href=\"https://example.com\">https://example.com</a></em></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:224",
+      "input": "___https://example.com___",
+      "webapp": "<p><strong><em><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></em></strong></p>",
+      "expected": "<p><strong><em><a href=\"https://example.com\">https://example.com</a></em></strong></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:228",
+      "input": "<https://example.com>",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">https://example.com</a></p>",
+      "expected": "<p><a href=\"https://example.com\">https://example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:232",
+      "input": "<https://en.wikipedia.org/wiki/Rendering_(computer_graphics)>",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:238",
+      "input": "[example link](example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">example link</a></p>",
+      "expected": "<p><a href=\"http://example.com\">example link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:242",
+      "input": "[example.com](example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">example.com</a></p>",
+      "expected": "<p><a href=\"http://example.com\">example.com</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:246",
+      "input": "[example.com/other](example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">example.com/other</a></p>",
+      "expected": "<p><a href=\"http://example.com\">example.com/other</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:250",
+      "input": "[example.com/other_link](example.com/example)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/example\" rel=\"noreferrer\" target=\"_blank\">example.com/other_link</a></p>",
+      "expected": "<p><a href=\"http://example.com/example\">example.com/other_link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:254",
+      "input": "[link with spaces](example.com/ spaces in the url)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/ spaces in the url\" rel=\"noreferrer\" target=\"_blank\">link with spaces</a></p>",
+      "expected": "<p><a href=\"http://example.com/ spaces in the url\">link with spaces</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:258",
+      "input": "[This whole #sentence should be a link](https://example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://example.com\" rel=\"noreferrer\" target=\"_blank\">This whole #sentence should be a link</a></p>",
+      "expected": "<p><a href=\"https://example.com\">This whole #sentence should be a link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:262",
+      "input": "[email link](mailto:test@example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">email link</a></p>",
+      "expected": "<p><a href=\"mailto:test@example.com\">email link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:266",
+      "input": "[other link](ts3server://example.com)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"ts3server://example.com\" rel=\"noreferrer\" target=\"_blank\">other link</a></p>",
+      "expected": "<p><a href=\"ts3server://example.com\">other link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:272",
+      "input": "[link](example.com \"catch phrase!\")",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\" title=\"catch phrase!\">link</a></p>",
+      "expected": "<p><a href=\"http://example.com\" title=\"catch phrase!\">link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:276",
+      "input": "[link](example.com \"title with \"quotes\"\")",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\" title=\"title with &quot;quotes&quot;\">link</a></p>",
+      "expected": "<p><a href=\"http://example.com\" title=\"title with &quot;quotes&quot;\">link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:279",
+      "input": "[link with spaces](example.com/ spaces in the url \"and a title\")",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"http://example.com/ spaces in the url\" rel=\"noreferrer\" target=\"_blank\" title=\"and a title\">link with spaces</a></p>",
+      "expected": "<p><a href=\"http://example.com/ spaces in the url\" title=\"and a title\">link with spaces</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:285",
+      "input": "This is a sentence with a http://example.com in it.",
+      "webapp": "<p>This is a sentence with a <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a> in it.</p>",
+      "expected": "<p>This is a sentence with a <a href=\"http://example.com\">http://example.com</a> in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:289",
+      "input": "This is a sentence with a http://example.com/_/underscore in it.",
+      "webapp": "<p>This is a sentence with a <a class=\"theme markdown__link\" href=\"http://example.com/_/underscore\" rel=\"noreferrer\" target=\"_blank\">http://example.com/_/underscore</a> in it.</p>",
+      "expected": "<p>This is a sentence with a <a href=\"http://example.com/_/underscore\">http://example.com/_/underscore</a> in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:293",
+      "input": "This is a sentence with a http://192.168.1.1:4040 in it.",
+      "webapp": "<p>This is a sentence with a <a class=\"theme markdown__link\" href=\"http://192.168.1.1:4040\" rel=\"noreferrer\" target=\"_blank\">http://192.168.1.1:4040</a> in it.</p>",
+      "expected": "<p>This is a sentence with a <a href=\"http://192.168.1.1:4040\">http://192.168.1.1:4040</a> in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:297",
+      "input": "This is a sentence with a https://[::1]:80 in it.",
+      "webapp": "<p>This is a sentence with a <a class=\"theme markdown__link\" href=\"https://[::1]:80\" rel=\"noreferrer\" target=\"_blank\">https://[::1]:80</a> in it.</p>",
+      "expected": "<p>This is a sentence with a <a href=\"https://[::1]:80\">https://[::1]:80</a> in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:303",
+      "input": "This is a link to http://example.com.",
+      "webapp": "<p>This is a link to <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a>.</p>",
+      "expected": "<p>This is a link to <a href=\"http://example.com\">http://example.com</a>.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:307",
+      "input": "This is a link containing http://example.com/something?with,commas,in,url, but not at the end",
+      "webapp": "<p>This is a link containing <a class=\"theme markdown__link\" href=\"http://example.com/something?with,commas,in,url\" rel=\"noreferrer\" target=\"_blank\">http://example.com/something?with,commas,in,url</a>, but not at the end</p>",
+      "expected": "<p>This is a link containing <a href=\"http://example.com/something?with,commas,in,url\">http://example.com/something?with,commas,in,url</a>, but not at the end</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:311",
+      "input": "This is a question about a link http://example.com?",
+      "webapp": "<p>This is a question about a link <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a>?</p>",
+      "expected": "<p>This is a question about a link <a href=\"http://example.com\">http://example.com</a>?</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:317",
+      "input": "(http://example.com)",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a>)</p>",
+      "expected": "<p>(<a href=\"http://example.com\">http://example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:321",
+      "input": "(see http://example.com)",
+      "webapp": "<p>(see <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a>)</p>",
+      "expected": "<p>(see <a href=\"http://example.com\">http://example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:325",
+      "input": "(http://example.com watch this)",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a> watch this)</p>",
+      "expected": "<p>(<a href=\"http://example.com\">http://example.com</a> watch this)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:329",
+      "input": "(www.example.com)",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://www.example.com\" rel=\"noreferrer\" target=\"_blank\">www.example.com</a>)</p>",
+      "expected": "<p>(<a href=\"http://www.example.com\">www.example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:333",
+      "input": "(see www.example.com)",
+      "webapp": "<p>(see <a class=\"theme markdown__link\" href=\"http://www.example.com\" rel=\"noreferrer\" target=\"_blank\">www.example.com</a>)</p>",
+      "expected": "<p>(see <a href=\"http://www.example.com\">www.example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:337",
+      "input": "(www.example.com watch this)",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://www.example.com\" rel=\"noreferrer\" target=\"_blank\">www.example.com</a> watch this)</p>",
+      "expected": "<p>(<a href=\"http://www.example.com\">www.example.com</a> watch this)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:340",
+      "input": "([link](http://example.com))",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">link</a>)</p>",
+      "expected": "<p>(<a href=\"http://example.com\">link</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:344",
+      "input": "(see [link](http://example.com))",
+      "webapp": "<p>(see <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">link</a>)</p>",
+      "expected": "<p>(see <a href=\"http://example.com\">link</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:348",
+      "input": "([link](http://example.com) watch this)",
+      "webapp": "<p>(<a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">link</a> watch this)</p>",
+      "expected": "<p>(<a href=\"http://example.com\">link</a> watch this)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:352",
+      "input": "(test@example.com)",
+      "webapp": "<p>(<a class=\"theme\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">test@example.com</a>)</p>",
+      "expected": "<p>(<a href=\"mailto:test@example.com\">test@example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:356",
+      "input": "(email test@example.com)",
+      "webapp": "<p>(email <a class=\"theme\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">test@example.com</a>)</p>",
+      "expected": "<p>(email <a href=\"mailto:test@example.com\">test@example.com</a>)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:360",
+      "input": "(test@example.com email)",
+      "webapp": "<p>(<a class=\"theme\" href=\"mailto:test@example.com\" rel=\"noreferrer\" target=\"_blank\">test@example.com</a> email)</p>",
+      "expected": "<p>(<a href=\"mailto:test@example.com\">test@example.com</a> email)</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:364",
+      "input": "This is a sentence with a [link](http://example.com) in it.",
+      "webapp": "<p>This is a sentence with a <a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">link</a> in it.</p>",
+      "expected": "<p>This is a sentence with a <a href=\"http://example.com\">link</a> in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:368",
+      "input": "This is a sentence with a link (http://example.com) in it.",
+      "webapp": "<p>This is a sentence with a link (<a class=\"theme markdown__link\" href=\"http://example.com\" rel=\"noreferrer\" target=\"_blank\">http://example.com</a>) in it.</p>",
+      "expected": "<p>This is a sentence with a link (<a href=\"http://example.com\">http://example.com</a>) in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:372",
+      "input": "This is a sentence with a (https://en.wikipedia.org/wiki/Rendering_(computer_graphics)) in it.",
+      "webapp": "<p>This is a sentence with a (<a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a>) in it.</p>",
+      "expected": "<p>This is a sentence with a (<a href=\"https://en.wikipedia.org/wiki/Rendering_(computer_graphics)\">https://en.wikipedia.org/wiki/Rendering_(computer_graphics)</a>) in it.</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:388",
+      "input": "https://en.wikipedia.org/wiki/%C3%89",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/%C3%89\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/%C3%89</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/%C3%89\">https://en.wikipedia.org/wiki/%C3%89</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:392",
+      "input": "https://en.wikipedia.org/wiki/%E9",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"https://en.wikipedia.org/wiki/%E9\" rel=\"noreferrer\" target=\"_blank\">https://en.wikipedia.org/wiki/%E9</a></p>",
+      "expected": "<p><a href=\"https://en.wikipedia.org/wiki/%E9\">https://en.wikipedia.org/wiki/%E9</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:420",
+      "input": "tel:+",
+      "webapp": "<p>tel:+</p>",
+      "expected": "<p>tel:+</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:422",
+      "input": "test:+34600517276",
+      "webapp": "<p>test:+34600517276</p>",
+      "expected": "<p>test:+34600517276</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:426",
+      "input": "[A Relative Link](/static/files/5b4a7904a3e041018526a00dba59ee48.png)",
+      "webapp": "<p><a class=\"theme markdown__link\" href=\"/static/files/5b4a7904a3e041018526a00dba59ee48.png\" rel=\"noreferrer\" target=\"_blank\">A Relative Link</a></p>",
+      "expected": "<p><a href=\"/static/files/5b4a7904a3e041018526a00dba59ee48.png\">A Relative Link</a></p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:457",
+      "input": "git://git.example.com",
+      "webapp": "<p>git://git.example.com</p>",
+      "expected": "<p>git://git.example.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:459",
+      "input": "test:test",
+      "webapp": "<p>test:test</p>",
+      "expected": "<p>test:test</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:461",
+      "input": "test.:test",
+      "webapp": "<p>test.:test</p>",
+      "expected": "<p>test.:test</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:463",
+      "input": "taco+what://example.com",
+      "webapp": "<p>taco+what://example.com</p>",
+      "expected": "<p>taco+what://example.com</p>",
+      "emoji": []
+    },
+    {
+      "id": "text_formatting_links.test:465",
+      "input": "taco.what://example.com",
+      "webapp": "<p>taco.what://example.com</p>",
+      "expected": "<p>taco.what://example.com</p>",
+      "emoji": []
+    }
+  ]
+}

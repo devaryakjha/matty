@@ -41,6 +41,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 tracing-appender = "0.2"
 regex = "1"
 async-channel = "2"
+pulldown-cmark = { version = "0.13", default-features = false }
+insta = "1"
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }

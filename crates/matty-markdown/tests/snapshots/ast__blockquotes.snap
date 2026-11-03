@@ -1,0 +1,20 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"> quoted\\n> > nested\\n\\n> again\\nlazy line\")"
+---
+> quoted
+> > nested
+
+> again
+lazy line
+----
+<blockquote>
+<p>quoted</p>
+<blockquote>
+<p>nested</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>again
+lazy line</p>
+</blockquote>

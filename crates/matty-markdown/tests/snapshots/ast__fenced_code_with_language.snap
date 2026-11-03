@@ -1,0 +1,16 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"```rust\\nfn main() {}\\n```\\n\\n```\\nplain <b>\\n```\")"
+---
+```rust
+fn main() {}
+```
+
+```
+plain <b>
+```
+----
+<pre lang="rust">fn main() {}
+</pre>
+<pre>plain &lt;b&gt;
+</pre>
