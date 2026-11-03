@@ -89,6 +89,8 @@ pub enum Connection {
     Loading,
     /// Every team has loaded, or failed to.
     Loaded,
+    /// A catch-up after missed events finished.
+    Resynced,
     /// One team could not load; the others did.
     TeamFailed {
         /// The team.

@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use matty_api::capabilities::CollapsedThreads;
-use matty_api::models::Preference;
-use matty_api::ws::WsEvent;
+use matty_api::models::{PostChange, Preference};
+use matty_api::ws::{ConnectionState, WsClient, WsEvent, WsSignal};
 use matty_api::{Client, ServerCapabilities};
 use matty_store::posts::{self, Window};
 use matty_store::sidebar::{self, UnreadMode};
@@ -21,6 +21,8 @@ use crate::load::{self, Loaded};
 
 /// Followed threads in a team's Threads list snapshot.
 const THREAD_LIST: usize = 200;
+/// A `since` response bigger than this reloads the channel instead (#37).
+const MAX_SINCE_BYTES: usize = 2 * 1024 * 1024;
 
 /// Most messages applied in one transaction, so a flood still publishes.
 const BATCH: usize = 512;
@@ -74,6 +76,9 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Catch up with the server now, as after a reconnect: memberships,
+    /// each cached channel since its cursor, and thread lists.
+    Resync,
 }
 
 impl std::fmt::Debug for Command {
@@ -105,6 +110,7 @@ impl std::fmt::Debug for Command {
                 .debug_struct("CloseThreadList")
                 .field("team_id", team_id)
                 .finish(),
+            Self::Resync => f.write_str("Resync"),
         }
     }
 }
@@ -146,6 +152,14 @@ struct Session {
     /// Open channels fetched over this session.
     fetched: BTreeSet<String>,
     load: JoinHandle<()>,
+    /// The WebSocket; dropping it closes the connection.
+    _socket: WsClient,
+    /// The socket has been connected before, so the next connect is a
+    /// reconnect that needs a catch-up.
+    was_connected: bool,
+    /// A resync is running; another request waits for it.
+    resyncing: bool,
+    resync_again: bool,
 }
 
 pub(crate) struct Engine {
@@ -201,10 +215,8 @@ impl Engine {
                 }
                 // The engine holds a sender, so this never closes.
                 _ = loaded_inbox.recv_many(&mut results, BATCH) => {
-                    for result in results.drain(..) {
-                        if let Err(error) = self.write_loaded(result, &mut dirty) {
-                            tracing::error!(%error, "could not store loaded data");
-                        }
+                    if let Err(error) = self.write_all(results.drain(..), &mut dirty) {
+                        tracing::error!(%error, "could not store loaded data");
                     }
                 }
             }
@@ -238,12 +250,26 @@ impl Engine {
                         .direct
                         .push(ChangeSet::Connection(Connection::Loading));
                     let load = tokio::spawn(load::run(client.clone(), self.loaded.clone()));
+                    // Events from now on queue behind the load's results.
+                    let (socket, mut signals) = WsClient::connect(client.clone());
+                    let forward = self.loaded.clone();
+                    tokio::spawn(async move {
+                        while let Some(signal) = signals.recv().await {
+                            if forward.send(Loaded::Ws(signal)).is_err() {
+                                break;
+                            }
+                        }
+                    });
                     self.session = Some(Session {
                         client,
                         user_id: String::new(),
                         collapsed_threads: cached_crt(&tx)?,
                         fetched: BTreeSet::new(),
                         load,
+                        _socket: socket,
+                        was_connected: false,
+                        resyncing: false,
+                        resync_again: false,
                     });
                 }
                 Message::Command(Command::OpenChannel { channel_id }) => {
@@ -271,6 +297,7 @@ impl Engine {
                 Message::Command(Command::Event(event)) => {
                     events::apply(&tx, *event, self.me.as_deref(), dirty, &mut fetches)?;
                 }
+                Message::Command(Command::Resync) => dirty.resync = true,
             }
         }
         tx.commit()?;
@@ -300,6 +327,105 @@ impl Engine {
             session.collapsed_threads,
             self.loaded.clone(),
         ));
+    }
+
+    /// Writes loaded results in order. Runs of WebSocket events share one
+    /// transaction, like a batch of commands.
+    fn write_all(
+        &mut self,
+        results: impl Iterator<Item = Loaded>,
+        dirty: &mut Dirty,
+    ) -> Result<(), StoreError> {
+        let mut events = Vec::new();
+        for result in results {
+            match result {
+                Loaded::Ws(WsSignal::Event(raw)) => events.push(WsEvent::decode(&raw)),
+                other => {
+                    self.apply_events(std::mem::take(&mut events), dirty)?;
+                    self.write_loaded(other, dirty)?;
+                }
+            }
+        }
+        self.apply_events(events, dirty)
+    }
+
+    fn apply_events(&mut self, events: Vec<WsEvent>, dirty: &mut Dirty) -> Result<(), StoreError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut fetches = Vec::new();
+        let tx = self.store.conn_mut().transaction()?;
+        for event in events {
+            events::apply(&tx, event, self.me.as_deref(), dirty, &mut fetches)?;
+        }
+        tx.commit()?;
+        fetches.dedup();
+        for what in fetches {
+            self.fetch(what);
+        }
+        Ok(())
+    }
+
+    /// Starts a catch-up, or queues one behind the running one. Needs the
+    /// account loaded: the plan names the user and their teams.
+    fn resync(&mut self) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if session.user_id.is_empty() {
+            return;
+        }
+        if session.resyncing {
+            session.resync_again = true;
+            return;
+        }
+        let conn = self.store.conn();
+        let plan = (|| -> Result<load::ResyncPlan, StoreError> {
+            let teams = cached_team_ids(conn)?;
+            // Open channels first, then the rest by their newest post.
+            let mut channels: Vec<String> = self.open_channels.iter().cloned().collect();
+            for channel_id in posts::cached_channels(conn)? {
+                if !self.open_channels.contains(&channel_id) {
+                    channels.push(channel_id);
+                }
+            }
+            let since = |key: String| -> Result<Option<i64>, StoreError> {
+                Ok(posts::cursor(conn, &key)?.and_then(|value| value.parse().ok()))
+            };
+            let channels = channels
+                .into_iter()
+                .map(|channel_id| {
+                    let cursor = since(posts::channel_since_key(&channel_id))?;
+                    Ok((channel_id, cursor))
+                })
+                .collect::<Result<_, StoreError>>()?;
+            let threads = if session.collapsed_threads {
+                teams
+                    .iter()
+                    .map(|team_id| Ok((team_id.clone(), since(posts::threads_since_key(team_id))?)))
+                    .collect::<Result<_, StoreError>>()?
+            } else {
+                Vec::new()
+            };
+            Ok(load::ResyncPlan {
+                user_id: session.user_id.clone(),
+                teams,
+                channels,
+                threads,
+                max_response_bytes: MAX_SINCE_BYTES,
+            })
+        })();
+        match plan {
+            Ok(plan) => {
+                session.resyncing = true;
+                tokio::spawn(load::resync(
+                    session.client.clone(),
+                    plan,
+                    self.loaded.clone(),
+                ));
+            }
+            Err(error) => tracing::error!(%error, "could not plan a resync"),
+        }
     }
 
     /// Runs a fetch an event asked for, when connected. Without a session
@@ -461,6 +587,82 @@ impl Engine {
                 dirty.unreads = true;
                 dirty.channels.extend(self.open_channels.iter().cloned());
             }
+            Loaded::Ws(signal) => match signal {
+                WsSignal::State(state) => {
+                    if let ConnectionState::Connected { .. } = state
+                        && let Some(session) = &mut self.session
+                    {
+                        // Even a resumed stream can miss channel events, so
+                        // every reconnect catches up (WsSignal docs).
+                        if session.was_connected {
+                            dirty.resync = true;
+                        }
+                        session.was_connected = true;
+                    }
+                    dirty
+                        .direct
+                        .push(ChangeSet::Connection(Connection::Socket(state)));
+                }
+                WsSignal::Gap { .. } | WsSignal::ResyncRequired => dirty.resync = true,
+                WsSignal::Event(raw) => self.apply_events(vec![WsEvent::decode(&raw)], dirty)?,
+            },
+            Loaded::Since {
+                channel_id,
+                posts: list,
+            } => {
+                let tx = self.store.conn_mut().transaction()?;
+                for change in list.changes() {
+                    match change {
+                        PostChange::Upsert(post) => {
+                            posts::insert_posts(&tx, std::slice::from_ref(post))?;
+                        }
+                        PostChange::Deleted { id, .. } => {
+                            let delete_at = list.posts.get(id).map_or(1, |p| p.delete_at);
+                            posts::mark_deleted(&tx, id, delete_at)?;
+                        }
+                    }
+                }
+                tx.commit()?;
+                dirty.channels.insert(channel_id);
+                dirty.threads.extend(self.open_threads.iter().cloned());
+            }
+            Loaded::Reset {
+                channel_id,
+                posts: list,
+            } => {
+                let tx = self.store.conn_mut().transaction()?;
+                posts::clear_channel(&tx, &channel_id)?;
+                let fresh: Vec<_> = list.posts.into_values().collect();
+                posts::insert_posts(&tx, &fresh)?;
+                tx.commit()?;
+                dirty.channels.insert(channel_id);
+                dirty.threads.extend(self.open_threads.iter().cloned());
+            }
+            Loaded::Threads { team_id, threads } => {
+                let tx = self.store.conn_mut().transaction()?;
+                posts::upsert_threads(&tx, &team_id, &threads)?;
+                let newest = threads
+                    .iter()
+                    .map(|t| t.last_reply_at.max(t.last_viewed_at))
+                    .max()
+                    .unwrap_or(0);
+                if newest > 0 {
+                    posts::advance_since(&tx, &posts::threads_since_key(&team_id), newest)?;
+                }
+                tx.commit()?;
+                dirty.thread_lists.insert(team_id);
+            }
+            Loaded::Resynced => {
+                dirty
+                    .direct
+                    .push(ChangeSet::Connection(Connection::Resynced));
+                if let Some(session) = &mut self.session {
+                    session.resyncing = false;
+                    if std::mem::take(&mut session.resync_again) {
+                        dirty.resync = true;
+                    }
+                }
+            }
             Loaded::PostsFailed { channel_id, error } => {
                 if let Some(session) = &mut self.session {
                     session.fetched.remove(&channel_id);
@@ -481,7 +683,7 @@ impl Engine {
             self.preferences_changed(&mut dirty);
         }
         if dirty.resync {
-            tracing::info!("an event asks for a resync");
+            self.resync();
         }
         let mut changes = dirty.direct;
         let conn = self.store.conn();

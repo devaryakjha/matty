@@ -5,9 +5,11 @@
 use std::collections::BTreeSet;
 
 use matty_api::models::{
-    Channel, ChannelMember, Emoji, Preference, SidebarCategories, Status, Team, User,
+    Channel, ChannelMember, Emoji, PostList, Preference, SidebarCategories, Status, Team, User,
+    UserThread,
 };
-use matty_api::{ApiError, Client, ServerCapabilities};
+use matty_api::ws::WsSignal;
+use matty_api::{ApiError, Client, Fetched, PostsQuery, ServerCapabilities, ThreadsQuery};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::events::Fetch;
@@ -45,10 +47,7 @@ pub(crate) enum Loaded {
     /// Every team has been tried.
     Done,
     /// An opened channel's posts around the first unread.
-    Posts {
-        channel_id: String,
-        posts: matty_api::models::PostList,
-    },
+    Posts { channel_id: String, posts: PostList },
     /// An opened channel's posts could not load.
     PostsFailed { channel_id: String, error: String },
     /// A channel an event named, with the user's membership when they have one.
@@ -65,6 +64,19 @@ pub(crate) enum Loaded {
     },
     /// The server's config or license changed.
     Capabilities(Box<ServerCapabilities>),
+    /// Something from the WebSocket.
+    Ws(WsSignal),
+    /// What changed in a channel since its cursor, deletes included.
+    Since { channel_id: String, posts: PostList },
+    /// A channel's latest page, replacing its cached posts after a long gap.
+    Reset { channel_id: String, posts: PostList },
+    /// Threads that changed in a team since its cursor.
+    Threads {
+        team_id: String,
+        threads: Vec<UserThread>,
+    },
+    /// A resync finished.
+    Resynced,
 }
 
 /// Runs a fetch an event asked for. Failures are logged: the next resync
@@ -258,4 +270,124 @@ pub(crate) async fn open_channel(
         },
     };
     let _ = results.send(message);
+}
+
+/// A `since` gap longer than this reloads the channel's latest page instead.
+pub(crate) const MAX_GAP_MS: i64 = 6 * 60 * 60 * 1000;
+/// Posts in the page that replaces a channel's cache after a long gap.
+pub(crate) const RESET_PAGE: u32 = 60;
+
+/// What a resync should catch up on.
+#[derive(Debug)]
+pub(crate) struct ResyncPlan {
+    pub(crate) user_id: String,
+    pub(crate) teams: Vec<String>,
+    /// Channels with cached posts, most important first, with their `since`.
+    pub(crate) channels: Vec<(String, Option<i64>)>,
+    /// Under Collapsed Reply Threads, each team's thread-list `since`.
+    pub(crate) threads: Vec<(String, Option<i64>)>,
+    /// A `since` response bigger than this reloads the channel instead.
+    pub(crate) max_response_bytes: usize,
+}
+
+/// Catches the cache up after missed events (#37): memberships and counts
+/// per team, then `since` for each cached channel, then thread lists.
+pub(crate) async fn resync(client: Client, plan: ResyncPlan, results: UnboundedSender<Loaded>) {
+    let mut last_post_at = std::collections::HashMap::new();
+    for team_id in &plan.teams {
+        match team(&client, &plan.user_id, team_id).await {
+            Ok(loaded) => {
+                if let Loaded::Team { channels, .. } = &loaded {
+                    for channel in channels {
+                        last_post_at.insert(channel.id.clone(), channel.last_post_at);
+                    }
+                }
+                let _ = results.send(loaded);
+            }
+            Err(error) => {
+                let _ = results.send(Loaded::TeamFailed {
+                    team_id: team_id.clone(),
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+
+    for (channel_id, since) in plan.channels {
+        let newest = last_post_at.get(&channel_id).copied().unwrap_or(0);
+        let message = match since {
+            Some(since) if newest - since <= MAX_GAP_MS => {
+                match since_page(&client, &channel_id, since, plan.max_response_bytes).await {
+                    Ok(Some(posts)) => Ok(Loaded::Since {
+                        channel_id: channel_id.clone(),
+                        posts,
+                    }),
+                    Ok(None) => reset(&client, &channel_id).await,
+                    Err(error) => Err(error),
+                }
+            }
+            // No cursor, or too far behind: start the channel over.
+            _ => reset(&client, &channel_id).await,
+        };
+        match message {
+            Ok(message) => {
+                let _ = results.send(message);
+            }
+            Err(error) => {
+                let _ = results.send(Loaded::PostsFailed {
+                    channel_id,
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+
+    for (team_id, since) in plan.threads {
+        let query = ThreadsQuery {
+            since,
+            deleted: true,
+            ..ThreadsQuery::default()
+        };
+        match client.user_threads(&plan.user_id, &team_id, &query).await {
+            Ok(threads) => {
+                let _ = results.send(Loaded::Threads {
+                    team_id,
+                    threads: threads.threads,
+                });
+            }
+            Err(error) => tracing::warn!(%team_id, %error, "could not catch up threads"),
+        }
+    }
+    let _ = results.send(Loaded::Resynced);
+}
+
+/// Every post changed in a channel since `since`, or `None` when the
+/// response is over `max_bytes` (too much to merge; reload instead).
+async fn since_page(
+    client: &Client,
+    channel_id: &str,
+    since: i64,
+    max_bytes: usize,
+) -> Result<Option<PostList>, ApiError> {
+    let path = format!("channels/{channel_id}/posts?since={since}");
+    let bytes = match client.get_bytes(&path, None).await? {
+        Fetched::Fresh { bytes, .. } => bytes,
+        Fetched::NotModified => return Ok(Some(PostList::default())),
+    };
+    if bytes.len() > max_bytes {
+        return Ok(None);
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| ApiError::Decode(error.to_string()))
+}
+
+async fn reset(client: &Client, channel_id: &str) -> Result<Loaded, ApiError> {
+    let posts = client
+        .channel_posts(channel_id, &PostsQuery::latest(RESET_PAGE))
+        .await?;
+    Ok(Loaded::Reset {
+        channel_id: channel_id.to_owned(),
+        posts,
+    })
 }
