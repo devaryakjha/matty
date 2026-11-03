@@ -47,7 +47,6 @@ async fn login_load_and_logout() {
     let credentials = Credentials {
         login_id: login.clone(),
         password,
-        device_id: "matty-live-test".into(),
         ..Default::default()
     };
     let signed_in = client.login(&credentials).await.unwrap();
@@ -84,7 +83,6 @@ async fn post_thread_and_read_state_round_trip() {
         login_id: login,
         password,
         // Signing in revokes other sessions with the same device id.
-        device_id: "matty-live-test-posts".into(),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -201,7 +199,6 @@ async fn search_pin_save_and_direct_messages() {
     let credentials = Credentials {
         login_id: login,
         password,
-        device_id: "matty-live-test-m1".into(),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -285,7 +282,6 @@ async fn upload_an_image_and_fetch_its_thumbnail_and_preview() {
     let credentials = Credentials {
         login_id: login,
         password,
-        device_id: "matty-live-test-files".into(),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -356,7 +352,6 @@ async fn websocket_hello_events_and_replies() {
         login_id: login,
         password,
         // Signing in revokes other sessions with the same device id.
-        device_id: "matty-live-test-ws".into(),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -420,7 +415,6 @@ async fn websocket_resumes_after_reconnect() {
     let credentials = Credentials {
         login_id: login,
         password,
-        device_id: "matty-live-test-ws-resume".into(),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -522,7 +516,6 @@ async fn websocket_connection_resumes() {
     let credentials = Credentials {
         login_id: login,
         password,
-        device_id: "matty-live-test-ws-resume-raw".into(),
         ..Default::default()
     };
     let client = Client::new(url)

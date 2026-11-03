@@ -582,8 +582,10 @@ the database.
   `GET posts/{id}` then `channels/{cid}`. This list is the M0 scope for
   `matty-api`.
 - **Login details:** `POST /users/login` with
-  `{login_id, password, token, device_id}`, plus `ldap_only: true` when the
-  user picked the LDAP method; an MFA requirement is detected by
+  `{login_id, password, token}`, plus `ldap_only: true` when the
+  user picked the LDAP method. `device_id` is only for a push-notification
+  device (`<platform>:<token>`), so the desktop app leaves it out: from 12.0
+  the server refuses a sign-in with any other value. An MFA requirement is detected by
   the error id `mfa.validate_token.authenticate.app_error`, not by the HTTP
   status.
 - **Rate limits:** respect `X-RateLimit-*` and back off on 429.

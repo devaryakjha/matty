@@ -105,9 +105,6 @@ jobs:
         run: |
           docker compose -f docker/compose.yml logs --no-color > mattermost.log
           tail -n 200 mattermost.log
-          for body in '{"login_id":"tester","password":"Password1!"}' '{"login_id":"tester","password":"Password1!","device_id":"matty-live-test"}'; do
-            echo "$body"; curl -s -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' -d "$body" "$MATTY_TEST_SERVER/api/v4/users/login"
-          done
       - if: failure() && steps.changes.outputs.code == 'true'
         uses: actions/upload-artifact@v4
         with:
