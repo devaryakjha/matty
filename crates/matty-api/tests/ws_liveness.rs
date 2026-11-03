@@ -58,7 +58,7 @@ where
         script(socket).await;
     });
     let client = Client::new("http://matty.test").unwrap().with_token("t");
-    WsConnection::connect_over(client_end, &client, config)
+    WsConnection::connect_over(client_end, &client, config, None)
         .await
         .unwrap()
 }
@@ -67,7 +67,7 @@ async fn disconnected(events: &mut mpsc::UnboundedReceiver<WsMessage>) -> Discon
     loop {
         match events.recv().await.unwrap() {
             WsMessage::Disconnected { reason } => return reason,
-            WsMessage::Event(_) => {}
+            WsMessage::Event(_) | WsMessage::Hello(_) => {}
         }
     }
 }

@@ -40,6 +40,11 @@ where
         let callback = |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                         response| {
             assert_eq!(request.uri().path(), "/api/v4/websocket");
+            assert_eq!(
+                request.headers()["Authorization"],
+                format!("Bearer {TOKEN}").as_str(),
+                "the upgrade is authenticated, which resuming needs"
+            );
             Ok(response)
         };
         let socket = tokio_tungstenite::accept_hdr_async(stream, callback)
@@ -225,12 +230,19 @@ async fn server_pings_are_answered_and_closes_reported() {
             .send(Message::Ping(b"are you there".to_vec().into()))
             .await
             .unwrap();
-        match socket.next().await.unwrap().unwrap() {
-            Message::Pong(payload) => assert_eq!(&payload[..], b"are you there"),
-            other => panic!("expected a pong, got {other:?}"),
+        // The pong and the client's request can arrive in either order.
+        let (mut ponged, mut requested) = (false, false);
+        while !(ponged && requested) {
+            match socket.next().await.unwrap().unwrap() {
+                Message::Pong(payload) => {
+                    assert_eq!(&payload[..], b"are you there");
+                    ponged = true;
+                }
+                Message::Text(_) => requested = true,
+                other => panic!("unexpected {other:?}"),
+            }
         }
-        // Take a request, then close without answering it.
-        recv_json(&mut socket).await;
+        // Close without answering the request.
         socket
             .close(Some(CloseFrame {
                 code: CloseCode::Away,

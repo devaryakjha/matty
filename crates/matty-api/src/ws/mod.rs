@@ -27,7 +27,20 @@ use tokio_tungstenite::{
 use crate::{ApiError, Client, models::null_as_default, tls};
 
 mod events;
+mod reconnect;
 pub use events::{Event, PostUnread, Posted, ThreadReadChanged, WsEvent};
+pub use reconnect::{
+    Backoff, ClientDialer, ConnectionState, Dialed, Dialer, Jitter, WsClient, WsSignal,
+};
+
+/// Where to pick up a connection's event stream after a reconnect.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resume {
+    /// The `connection_id` from the previous `hello`.
+    pub connection_id: String,
+    /// The `seq` of the next event the client expects.
+    pub sequence_number: i64,
+}
 
 /// How long [`WsConnection::connect`] waits for the upgrade, the
 /// authentication reply and `hello`, together.
@@ -131,6 +144,10 @@ pub enum DisconnectReason {
 pub enum WsMessage {
     /// A server event other than `hello`.
     Event(RawEvent),
+    /// A `hello` after the connection opened. On a resumed connection this
+    /// means the server could not resume: its `connection_id` is new and
+    /// events were missed.
+    Hello(Hello),
     /// The connection ended; nothing follows.
     Disconnected {
         /// Why.
@@ -187,8 +204,19 @@ impl WsConnection {
         client: &Client,
         config: WsConfig,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
+        Self::resume(client, config, None).await
+    }
+
+    /// [`WsConnection::connect_with`], asking the server to resume the event
+    /// stream `resume` names. The server either replays what was missed
+    /// under the same `connection_id`, or starts over with a new one.
+    pub async fn resume(
+        client: &Client,
+        config: WsConfig,
+        resume: Option<&Resume>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         let token = session_token(client)?;
-        let request = upgrade_request(&websocket_url(client)?)?;
+        let request = upgrade_request(&websocket_url(client, resume)?, &token)?;
         tokio::time::timeout(CONNECT_TIMEOUT, async move {
             let connector = Connector::Rustls(Arc::new(tls::client_config(tls::WEBSOCKET_ALPN)?));
             let (socket, _) = tokio_tungstenite::connect_async_tls_with_config(
@@ -199,7 +227,7 @@ impl WsConnection {
             )
             .await
             .map_err(from_tungstenite)?;
-            Self::handshake(socket, token, config).await
+            Self::handshake(socket, token, config, resume).await
         })
         .await
         .map_err(|_| ApiError::Timeout)?
@@ -211,14 +239,15 @@ impl WsConnection {
         stream: impl Transport,
         client: &Client,
         config: WsConfig,
+        resume: Option<&Resume>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         let token = session_token(client)?;
-        let request = upgrade_request(&websocket_url(client)?)?;
+        let request = upgrade_request(&websocket_url(client, resume)?, &token)?;
         tokio::time::timeout(CONNECT_TIMEOUT, async move {
             let (socket, _) = tokio_tungstenite::client_async(request, stream)
                 .await
                 .map_err(from_tungstenite)?;
-            Self::handshake(socket, token, config).await
+            Self::handshake(socket, token, config, resume).await
         })
         .await
         .map_err(|_| ApiError::Timeout)?
@@ -228,6 +257,7 @@ impl WsConnection {
         mut socket: WebSocketStream<S>,
         token: String,
         config: WsConfig,
+        resume: Option<&Resume>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         // seq 1 is the authentication challenge; requests count up from 2.
         let challenge = json!({
@@ -240,6 +270,20 @@ impl WsConnection {
             .await
             .map_err(from_tungstenite)?;
         drop(token);
+
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        // A resumed connection gets no `hello`: the server replays what was
+        // missed, or nothing. If it cannot resume, a `hello` with a new
+        // `connection_id` follows as [`WsMessage::Hello`].
+        if let Some(resume) = resume.filter(|r| !r.connection_id.is_empty()) {
+            let hello = Hello {
+                connection_id: resume.connection_id.clone(),
+                server_version: String::new(),
+            };
+            tokio::spawn(run(socket, command_rx, events, config));
+            return Ok((Self { hello, commands }, receiver));
+        }
 
         let mut early = Vec::new();
         let hello = loop {
@@ -270,16 +314,16 @@ impl WsConnection {
             }
         };
 
-        let (events, receiver) = mpsc::unbounded_channel();
         for event in early {
             let _ = events.send(WsMessage::Event(event));
         }
-        let (commands, command_rx) = mpsc::unbounded_channel();
         tokio::spawn(run(socket, command_rx, events, config));
         Ok((Self { hello, commands }, receiver))
     }
 
-    /// The `hello` the server sent on connecting.
+    /// The `hello` the server sent on connecting. For a resumed connection,
+    /// which gets no `hello`, the resumed `connection_id` and an empty
+    /// version.
     pub fn hello(&self) -> &Hello {
         &self.hello
     }
@@ -406,6 +450,11 @@ async fn run<S: Transport>(
                             let _ = waiter.send(Ok(reply));
                         }
                     }
+                    Some(Incoming::Event(event)) if event.event == "hello" => {
+                        if let Ok(hello) = serde_json::from_value(event.data) {
+                            let _ = events.send(WsMessage::Hello(hello));
+                        }
+                    }
                     Some(Incoming::Event(event)) => {
                         let _ = events.send(WsMessage::Event(event));
                     }
@@ -447,20 +496,38 @@ fn session_token(client: &Client) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::InvalidUrl("the client has no session token".into()))
 }
 
-fn upgrade_request(url: &url::Url) -> Result<tungstenite::handshake::client::Request, ApiError> {
+/// The upgrade request, authenticated with `token`. Mattermost only resumes
+/// a connection when the session is known at upgrade time, so the token goes
+/// in the `Authorization` header as well as in the challenge after it (which
+/// the server ignores when the header already signed the socket in, and
+/// which still works behind a proxy that strips the header).
+fn upgrade_request(
+    url: &url::Url,
+    token: &str,
+) -> Result<tungstenite::handshake::client::Request, ApiError> {
     let mut request = url
         .as_str()
         .into_client_request()
         .map_err(|e| ApiError::InvalidUrl(e.to_string()))?;
-    request.headers_mut().insert(
+    let headers = request.headers_mut();
+    headers.insert(
         "User-Agent",
         HeaderValue::from_static(concat!("Matty/", env!("CARGO_PKG_VERSION"))),
     );
+    let mut bearer = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| ApiError::InvalidUrl("the session token is not a valid header".into()))?;
+    bearer.set_sensitive(true);
+    headers.insert("Authorization", bearer);
     Ok(request)
 }
 
-fn websocket_url(client: &Client) -> Result<url::Url, ApiError> {
+fn websocket_url(client: &Client, resume: Option<&Resume>) -> Result<url::Url, ApiError> {
     let mut url = client.api_url("websocket")?;
+    if let Some(resume) = resume {
+        url.query_pairs_mut()
+            .append_pair("connection_id", &resume.connection_id)
+            .append_pair("sequence_number", &resume.sequence_number.to_string());
+    }
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
         .map_err(|()| ApiError::InvalidUrl(format!("cannot use {scheme} for {url}")))?;

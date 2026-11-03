@@ -9,7 +9,7 @@
 use matty_api::{
     ApiError, Client, Credentials, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery,
     models::PostChange,
-    ws::{WsConnection, WsMessage},
+    ws::{ConnectionState, WsClient, WsConnection, WsMessage, WsSignal},
 };
 
 fn server() -> Option<(String, String, String)> {
@@ -138,8 +138,10 @@ async fn post_thread_and_read_state_round_trip() {
         .channel_posts(&channel.id, &PostsQuery::latest(5).collapsed_threads(true))
         .await
         .unwrap();
-    assert_eq!(
-        latest.order[0], root.id,
+    // Other live tests post to the same channel at the same time, so
+    // check membership rather than position.
+    assert!(
+        latest.order.contains(&root.id) && !latest.order.contains(&reply.id),
         "CRT lists the root, not the reply"
     );
 
@@ -250,6 +252,184 @@ async fn websocket_hello_events_and_replies() {
     assert_eq!(posted["pending_post_id"], pending.as_str());
     client.delete_post(&post.id).await.unwrap();
     connection.close();
+}
+
+#[tokio::test]
+async fn websocket_resumes_after_reconnect() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "matty-live-test-ws-resume".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let team = client.my_teams().await.unwrap().remove(0);
+    let channel = client
+        .my_channels(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "O")
+        .expect("a public channel");
+    let (ws, mut signals) = WsClient::connect(client.clone());
+
+    let first = wait_for(&mut signals, |s| {
+        matches!(s, WsSignal::State(ConnectionState::Connected { .. }))
+    })
+    .await;
+    let Some(WsSignal::State(ConnectionState::Connected { connection_id })) = first.last() else {
+        unreachable!()
+    };
+    let connection_id = connection_id.clone();
+
+    let pending = format!("{}:{}", me.id, web_time_millis());
+    let one = client
+        .create_post(&NewPost::new(&channel.id, "resume test one", &pending))
+        .await
+        .unwrap();
+    let seen = wait_for(
+        &mut signals,
+        |s| matches!(s, WsSignal::Event(e) if e.event == "posted"),
+    )
+    .await;
+    let WsSignal::Event(before) = seen.last().unwrap() else {
+        unreachable!()
+    };
+    let before_seq = before.seq;
+
+    ws.reconnect_now();
+    let reconnected = wait_for(&mut signals, |s| {
+        matches!(s, WsSignal::State(ConnectionState::Connected { .. }))
+    })
+    .await;
+    // reconnect_now redials at once, often before the server has retired
+    // the old socket, so it may resume or start over; either way the
+    // signals must say which. (websocket_connection_resumes checks a resume.)
+    let resynced = reconnected.contains(&WsSignal::ResyncRequired);
+    if !resynced {
+        assert_eq!(
+            reconnected.last(),
+            Some(&WsSignal::State(ConnectionState::Connected {
+                connection_id: connection_id.clone()
+            })),
+        );
+    }
+    let two = client
+        .create_post(&NewPost::new(
+            &channel.id,
+            "resume test two",
+            format!("{pending}-2"),
+        ))
+        .await
+        .unwrap();
+    let seen = wait_for(&mut signals, |s| {
+        matches!(s, WsSignal::Event(e) if e.event == "posted" && e.data["post"].as_str().unwrap().contains(&two.id))
+    })
+    .await;
+    let resynced = resynced || seen.contains(&WsSignal::ResyncRequired);
+
+    let WsSignal::Event(after) = seen.last().unwrap() else {
+        unreachable!()
+    };
+    if !resynced {
+        assert!(after.seq > before_seq, "a resumed stream keeps counting");
+    }
+    let posted: Vec<i64> = seen
+        .iter()
+        .filter_map(|s| match s {
+            WsSignal::Event(e) => Some(e.seq),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        posted.windows(2).all(|w| w[0] < w[1]),
+        "in order, no duplicates: {posted:?}"
+    );
+
+    client.delete_post(&one.id).await.unwrap();
+    client.delete_post(&two.id).await.unwrap();
+    ws.stop();
+}
+
+#[tokio::test]
+async fn websocket_connection_resumes() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "matty-live-test-ws-resume-raw".into(),
+        ..Default::default()
+    };
+    let client = Client::new(url)
+        .unwrap()
+        .login(&credentials)
+        .await
+        .unwrap()
+        .client;
+    let (connection, mut events) = WsConnection::connect(&client).await.unwrap();
+    let id = connection.hello().connection_id.clone();
+    connection.get_statuses_by_ids(&[]).await.unwrap();
+    // Read whatever the server sent in the first moment.
+    let mut next = 1;
+    while let Ok(Some(WsMessage::Event(event))) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
+    {
+        next = event.seq + 1;
+    }
+    connection.close();
+    // Give the server a moment to retire the socket, as a backoff would.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let resume = matty_api::ws::Resume {
+        connection_id: id.clone(),
+        sequence_number: next,
+    };
+    let (resumed, mut events) = WsConnection::resume(&client, Default::default(), Some(&resume))
+        .await
+        .unwrap();
+    resumed.user_typing("", "").await.ok();
+    let mut seqs = Vec::new();
+    while let Ok(Some(message)) =
+        tokio::time::timeout(std::time::Duration::from_millis(1500), events.recv()).await
+    {
+        match message {
+            WsMessage::Event(event) => seqs.push(event.seq),
+            WsMessage::Hello(hello) => panic!("not resumed: new id {}", hello.connection_id),
+            WsMessage::Disconnected { reason } => panic!("{reason:?}"),
+        }
+    }
+    // The server sends status_change events on reconnecting; they continue
+    // the old numbering.
+    assert!(!seqs.is_empty(), "events on the resumed stream");
+    assert_eq!(seqs[0], next, "{seqs:?}");
+}
+
+async fn wait_for(
+    signals: &mut tokio::sync::mpsc::UnboundedReceiver<WsSignal>,
+    want: impl Fn(&WsSignal) -> bool,
+) -> Vec<WsSignal> {
+    let mut seen = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let signal = signals.recv().await.unwrap();
+            let done = want(&signal);
+            seen.push(signal);
+            if done {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("signal within 15s");
+    seen
 }
 
 fn web_time_millis() -> u128 {
