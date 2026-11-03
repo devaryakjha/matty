@@ -338,14 +338,44 @@ impl MainWindow {
                 ChannelEvent::Rename(name) => {
                     let name = name.clone();
                     if let Some(id) = this.selected_channel.clone() {
+                        this.patch_channel(&id, Some(name.to_string()), None, None);
                         this.rename_row(&id, name, cx);
                     }
                     this.refresh_channel_info(cx);
                 }
-                ChannelEvent::SetHeader(_)
-                | ChannelEvent::SetPurpose(_)
-                | ChannelEvent::SetNotifications { .. }
-                | ChannelEvent::AddMembers(_) => this.refresh_channel_info(cx),
+                ChannelEvent::SetHeader(text) => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.patch_channel(&id, None, Some(text.to_string()), None);
+                    }
+                    this.refresh_channel_info(cx);
+                }
+                ChannelEvent::SetPurpose(text) => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.patch_channel(&id, None, None, Some(text.to_string()));
+                    }
+                    this.refresh_channel_info(cx);
+                }
+                ChannelEvent::SetNotifications {
+                    muted,
+                    notifications,
+                } => {
+                    if let (Some(live), Some(id)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SetChannelNotifications {
+                            channel_id: id.to_string(),
+                            props: crate::live::notify_props(*muted, notifications),
+                        });
+                    }
+                    this.refresh_channel_info(cx);
+                }
+                ChannelEvent::AddMembers(people) => {
+                    if let (Some(live), Some(id)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::AddMembers {
+                            channel_id: id.to_string(),
+                            user_ids: people.iter().map(|p| p.user_id.to_string()).collect(),
+                        });
+                    }
+                    this.refresh_channel_info(cx);
+                }
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
@@ -387,8 +417,17 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.set_favorite(favorite, cx));
                 }
-                RightPaneEvent::ToggleMute { muted, .. } => {
+                RightPaneEvent::ToggleMute { channel, muted } => {
                     let muted = *muted;
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::SetChannelNotifications {
+                            channel_id: channel.to_string(),
+                            props: std::collections::HashMap::from([(
+                                "mark_unread".to_string(),
+                                if muted { "mention" } else { "all" }.to_string(),
+                            )]),
+                        });
+                    }
                     this.channel
                         .update(cx, |channel, cx| channel.set_muted(muted, cx));
                 }
@@ -573,6 +612,14 @@ impl MainWindow {
             self.new_message
                 .update(cx, |view, cx| view.set_profiles(people, cx));
         }
+        // Only while the pane still shows that search.
+        if let Some(model) = update.search
+            && let Some(RightPaneContent::Search(shown)) = self.right_pane.read(cx).content()
+            && shown.query == model.query
+        {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        }
         if let Some(id) = update.join_failed {
             self.browse
                 .update(cx, |browse, cx| browse.set_joined(&id, false, cx));
@@ -632,6 +679,11 @@ impl MainWindow {
                     details.pinned,
                     cx,
                 );
+            });
+        }
+        if let Some((muted, notifications)) = update.notifications {
+            self.channel.update(cx, |view, cx| {
+                view.set_notifications(muted, notifications, cx);
             });
         }
         if let Some(profiles) = update.profiles {
@@ -999,6 +1051,24 @@ impl MainWindow {
     }
 
     /// Renames the sidebar row for `id` after a rename from the header.
+    /// Sends a channel's new name, header or purpose to the server.
+    fn patch_channel(
+        &self,
+        id: &str,
+        display_name: Option<String>,
+        header: Option<String>,
+        purpose: Option<String>,
+    ) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::PatchChannel {
+                channel_id: id.to_owned(),
+                display_name,
+                header,
+                purpose,
+            });
+        }
+    }
+
     fn rename_row(&mut self, id: &str, name: SharedString, cx: &mut Context<Self>) {
         let mut model = self.sidebar.read(cx).model().clone();
         for row in model.categories.iter_mut().flat_map(|c| c.rows.iter_mut()) {
@@ -1013,6 +1083,11 @@ impl MainWindow {
     /// Leaves `id`: sync owns the server side; the row goes and the first
     /// remaining public channel opens.
     fn leave_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::LeaveChannel {
+                channel_id: id.to_string(),
+            });
+        }
         let mut model = self.sidebar.read(cx).model().clone();
         for category in model.categories.iter_mut() {
             category.rows.retain(|row| row.id != id);
@@ -1176,6 +1251,11 @@ impl MainWindow {
     /// preview answers from its fixtures and a live session shows the
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = self.live.as_mut()
+            && !query.is_empty()
+        {
+            live.search(&query);
+        }
         let preview = crate::preview::enabled();
         let model = SearchModel {
             results: if preview {

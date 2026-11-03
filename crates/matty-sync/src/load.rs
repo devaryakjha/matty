@@ -67,6 +67,11 @@ pub(crate) enum Loaded {
         channels: Vec<Channel>,
         members: std::collections::HashMap<String, i64>,
     },
+    /// Search results, best first.
+    Search {
+        terms: String,
+        posts: Vec<matty_api::models::Post>,
+    },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
     /// An opened channel's posts could not load.

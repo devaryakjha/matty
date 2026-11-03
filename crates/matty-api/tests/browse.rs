@@ -276,3 +276,43 @@ async fn browsing_creating_and_team_people_use_the_expected_requests() {
         "ada"
     );
 }
+
+#[tokio::test]
+async fn channel_settings_use_the_expected_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/channels/c1/patch"))
+        .and(body_json(json!({ "header": "Ship it" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "team_id": "t1", "type": "O", "name": "c1", "display_name": "C1", "header": "Ship it"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/channels/c1/members/me1/notify_props"))
+        .and(body_json(
+            json!({ "mark_unread": "mention", "desktop": "all" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "OK" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let patch = matty_api::ChannelPatch {
+        header: Some("Ship it".into()),
+        ..matty_api::ChannelPatch::default()
+    };
+    assert_eq!(
+        client.patch_channel("c1", &patch).await.unwrap().header,
+        "Ship it"
+    );
+    let props = std::collections::HashMap::from([
+        ("mark_unread".to_string(), "mention".to_string()),
+        ("desktop".to_string(), "all".to_string()),
+    ]);
+    client
+        .update_channel_notify_props("c1", "me1", &props)
+        .await
+        .unwrap();
+}

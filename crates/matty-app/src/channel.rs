@@ -791,6 +791,23 @@ impl ChannelView {
         }
     }
 
+    /// The user's notification preferences for the channel as the server
+    /// has them, with its mute.
+    pub fn set_notifications(
+        &mut self,
+        muted: bool,
+        notifications: ChannelNotifications,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(model) = self.model.as_mut()
+            && (model.muted, model.notifications) != (muted, notifications)
+        {
+            model.muted = muted;
+            model.notifications = notifications;
+            cx.notify();
+        }
+    }
+
     /// The people typing in the channel now, for the line under the
     /// transcript.
     pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {

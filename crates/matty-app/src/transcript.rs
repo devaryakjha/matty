@@ -54,33 +54,9 @@ pub fn channel_model(
             *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
         });
         previous = Some((&post.user_id, post.create_at, day.clone()));
-        let author = users
-            .get(&post.user_id)
-            .map(display_name)
-            .unwrap_or_else(|| "Someone".into());
-        rows.push(Post {
-            id: post.id.clone().into(),
-            author: author.into(),
-            time,
-            day,
-            body: post.message.clone().into(),
-            reactions: reactions(post, viewer.user_id, users),
-            mentions_me: !viewer.username.is_empty() && mentions(&post.message, &mention),
-            edited: post.edit_at != 0,
-            continues,
-            mine: post.user_id == viewer.user_id,
-            saved: false,
-            pinned: post.is_pinned,
-            // Sync's optimistic copy of a send keeps the client's id until
-            // the server's post replaces it.
-            status: if !post.pending_post_id.is_empty() && post.id == post.pending_post_id {
-                PostStatus::Pending
-            } else {
-                PostStatus::Sent
-            },
-            replies: None,
-            files: Vec::new(),
-        });
+        rows.push(display_post(
+            post, users, viewer, &mention, day, time, continues,
+        ));
     }
     ChannelModel {
         id: row.id.clone(),
@@ -100,6 +76,53 @@ pub fn channel_model(
         notifications: Default::default(),
         typing: Vec::new(),
     }
+}
+
+/// One post as the views draw it.
+fn display_post(
+    post: &ApiPost,
+    users: &HashMap<String, User>,
+    viewer: &Viewer<'_>,
+    mention: &str,
+    day: SharedString,
+    time: u16,
+    continues: bool,
+) -> Post {
+    let author = users
+        .get(&post.user_id)
+        .map(display_name)
+        .unwrap_or_else(|| "Someone".into());
+    Post {
+        id: post.id.clone().into(),
+        author: author.into(),
+        time,
+        day,
+        body: post.message.clone().into(),
+        reactions: reactions(post, viewer.user_id, users),
+        mentions_me: !viewer.username.is_empty() && mentions(&post.message, mention),
+        edited: post.edit_at != 0,
+        continues,
+        mine: post.user_id == viewer.user_id,
+        saved: false,
+        pinned: post.is_pinned,
+        // Sync's optimistic copy of a send keeps the client's id until
+        // the server's post replaces it.
+        status: if !post.pending_post_id.is_empty() && post.id == post.pending_post_id {
+            PostStatus::Pending
+        } else {
+            PostStatus::Sent
+        },
+        replies: None,
+        files: Vec::new(),
+    }
+}
+
+/// A post shown on its own, as in search results: never a continuation.
+pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Post {
+    let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+    let (time, day) = when(post.create_at, viewer.zone, today);
+    let mention = format!("@{}", viewer.username);
+    display_post(post, users, viewer, &mention, day, time, false)
 }
 
 /// Minutes since local midnight, and the day label the post falls under.
