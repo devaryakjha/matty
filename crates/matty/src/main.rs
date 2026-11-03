@@ -2,6 +2,10 @@
 
 use std::process::ExitCode;
 
+#[expect(
+    clippy::print_stdout,
+    reason = "--version and --help answer on stdout before the app or its logger starts"
+)]
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {

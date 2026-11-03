@@ -23,6 +23,10 @@ dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry", "ansi"] }
+tracing-appender = "0.2"
+regex = "1"
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }
@@ -39,6 +43,7 @@ unsafe_code = "deny"
 dbg_macro = "deny"
 todo = "deny"
 unwrap_used = "warn"
+print_stdout = "deny"
 
 [profile.dev]
 debug = 1
