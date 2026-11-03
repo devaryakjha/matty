@@ -47,6 +47,12 @@ pub enum Command {
         /// The signed-in client.
         client: Client,
     },
+    /// Publishes what the cache has without touching the network, as
+    /// `matty --offline` and the launch before a session is restored do.
+    ShowCache,
+    /// Signs out: the session ends here at once, then on the server.
+    /// [`Connection::SignedOut`](crate::Connection::SignedOut) follows.
+    SignOut,
     /// A decoded server event to apply, from the WebSocket.
     Event(Box<WsEvent>),
     /// A channel is on screen: publish its posts now and whenever they
@@ -196,6 +202,8 @@ impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connect { .. } => f.write_str("Connect"),
+            Self::ShowCache => f.write_str("ShowCache"),
+            Self::SignOut => f.write_str("SignOut"),
             Self::Event(event) => f.debug_tuple("Event").field(event).finish(),
             Self::OpenChannel { channel_id } => f
                 .debug_struct("OpenChannel")
@@ -469,6 +477,29 @@ impl Engine {
                         resync_again: false,
                     });
                 }
+                Message::Command(Command::ShowCache) => {
+                    dirty.all_teams = true;
+                    dirty.unreads = true;
+                    dirty.channels.extend(self.open_channels.iter().cloned());
+                }
+                Message::Command(Command::SignOut) => match self.session.take() {
+                    Some(old) => {
+                        old.load.abort();
+                        // Dropping the session closes the WebSocket.
+                        let client = old.client.clone();
+                        drop(old);
+                        let loaded = self.loaded.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = client.logout().await {
+                                tracing::warn!(%error, "the server did not end the session");
+                            }
+                            let _ = loaded.send(Loaded::SignedOut);
+                        });
+                    }
+                    None => dirty
+                        .direct
+                        .push(ChangeSet::Connection(Connection::SignedOut)),
+                },
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
                     to_fetch.push(channel_id.clone());
@@ -932,6 +963,9 @@ impl Engine {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
             Loaded::Done => dirty.direct.push(ChangeSet::Connection(Connection::Loaded)),
+            Loaded::SignedOut => dirty
+                .direct
+                .push(ChangeSet::Connection(Connection::SignedOut)),
             Loaded::Posts {
                 channel_id,
                 posts: list,
