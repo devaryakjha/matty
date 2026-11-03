@@ -222,3 +222,30 @@ async fn set_status_sends_the_dnd_end_time() {
         .unwrap();
     assert_eq!(status.dnd_end_time, 1_800_000_000);
 }
+
+#[tokio::test]
+async fn one_channel_and_my_membership() {
+    let server = MockServer::start().await;
+    let channels: Vec<Value> = fixture("my_channels");
+    let members: Vec<Value> = fixture("my_channel_members");
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&channels[0]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/members/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&members[0]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap();
+    let channel = client.channel("c1").await.unwrap();
+    assert_eq!(channel.id, channels[0]["id"].as_str().unwrap());
+    let member = client.my_channel_member("c1").await.unwrap();
+    assert_eq!(
+        member.channel_id,
+        members[0]["channel_id"].as_str().unwrap()
+    );
+}
