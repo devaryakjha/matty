@@ -151,6 +151,7 @@ impl RightPaneView {
             saved: false,
             pinned: false,
             status: PostStatus::Pending,
+            replies: None,
         };
         thread.replies.push(reply);
         let content = self.content.clone();

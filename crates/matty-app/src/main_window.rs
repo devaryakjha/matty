@@ -162,7 +162,8 @@ impl MainWindow {
             | ChannelEvent::TogglePin(_)
             | ChannelEvent::Edit(_)
             | ChannelEvent::Delete(_)
-            | ChannelEvent::Retry(_) => {}
+            | ChannelEvent::Retry(_)
+            | ChannelEvent::ToggleFollow { .. } => {}
         })
         .detach();
         cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
