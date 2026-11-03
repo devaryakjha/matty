@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import time
 import urllib.error
@@ -35,6 +36,27 @@ PREVIEW_PAGES = {
 </head><body>preview</body></html>""",
     "plain.html": "<!doctype html><html><head><title>Plain page</title></head><body>no tags</body></html>",
 }
+
+
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+SECRET_KEYS = {"token", "password", "auth_data", "mfa_secret", "csrf"}
+
+
+def sanitize(value, key: str = ""):
+    """Blanks secrets and replaces addresses outside example.com, so a
+    recording never holds a session token or a real email. The seed only
+    makes example.com users; this guards against recording another server."""
+    if isinstance(value, dict):
+        return {k: sanitize(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize(v, key) for v in value]
+    if isinstance(value, str):
+        lower = key.lower()
+        if value and (lower in SECRET_KEYS or lower.endswith("_token")):
+            return ""
+        return EMAIL.sub(lambda m: m.group(0) if m.group(0).endswith("@example.com")
+                         else "redacted@example.com", value)
+    return value
 
 
 class Session:
@@ -86,7 +108,7 @@ def main() -> None:
     def save(name: str, value) -> None:
         if args.only and name not in args.only:
             return
-        (out / f"{name}.json").write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+        (out / f"{name}.json").write_text(json.dumps(sanitize(value), indent=2, ensure_ascii=False) + "\n")
         print(f"recorded {name}")
 
     def get(name: str, path: str, session=tester) -> object:

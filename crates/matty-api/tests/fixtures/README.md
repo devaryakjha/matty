@@ -14,3 +14,15 @@ seeded names and on relationships between fields, not on ids.
 by hand from Mattermost's `format=old` client config and license (every value
 a string) and cover the keys `ServerCapabilities` reads. #19 replaces them
 with responses recorded from each supported server version.
+
+`tests/fixtures.rs` decodes every `v*/` file with the model named for it in
+its table, encodes it again, and fails when a value changes, which is how an
+enum value Matty does not know shows up, or when a file has no model listed.
+Fields Matty does not read are only printed (`--nocapture`). It also fails on
+a session token or an address outside `example.com` in any fixture; the
+recorder blanks or replaces those before writing.
+
+To record another server version without running it locally, start the
+`record fixtures` workflow with the image tags
+(`gh workflow run record-fixtures.yml -f versions="12.0"`) and commit the
+`fixtures-v<version>` artifacts it uploads.

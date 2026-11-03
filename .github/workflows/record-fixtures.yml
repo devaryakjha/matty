@@ -1,0 +1,51 @@
+# Records matty-api fixtures from a fresh, seeded server of each version
+# asked for, and uploads them as an artifact to commit (#19). Run it from the
+# Actions tab, or: gh workflow run record-fixtures.yml -f versions="12.0 10.11"
+name: record fixtures
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: Mattermost image tags, separated by spaces
+        required: true
+        default: "12.0"
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.split.outputs.versions }}
+    steps:
+      - id: split
+        env:
+          VERSIONS: ${{ inputs.versions }}
+        run: echo "versions=$(jq -cn --arg v "$VERSIONS" '$v | split(" ") | map(select(. != ""))')" >> "$GITHUB_OUTPUT"
+
+  record:
+    needs: matrix
+    name: record (Mattermost ${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    env:
+      MATTY_MM_VERSION: ${{ matrix.server }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the server
+        run: scripts/dev-server up
+      - name: Seed
+        run: python3 scripts/seed.py
+      - name: Record
+        run: python3 scripts/record-fixtures.py --version "${{ matrix.server }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures-v${{ matrix.server }}
+          path: crates/matty-api/tests/fixtures/v${{ matrix.server }}
+          if-no-files-found: error
