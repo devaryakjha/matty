@@ -107,6 +107,7 @@ use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
 use crate::drafts::{Draft, DraftsModel};
+use crate::profile::UserProfile;
 use crate::right_pane::{ListedPost, ThreadModel};
 use crate::threads::{ThreadRow, ThreadsModel};
 
@@ -281,6 +282,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         } else {
             DEFAULT_MAX_POST_SIZE
         },
+        profiles: profiles(),
     })
 }
 
@@ -337,6 +339,65 @@ pub fn mentions() -> Vec<ListedPost> {
         .into_iter()
         .flatten()
         .collect()
+}
+
+/// Everyone who posts in the fixtures, for the profile card.
+pub fn profiles() -> Vec<UserProfile> {
+    let profile = |username: &str,
+                   display_name: &str,
+                   position: Option<&str>,
+                   presence,
+                   status_text: Option<&str>,
+                   local_time: Option<&str>| UserProfile {
+        username: username.into(),
+        display_name: display_name.into(),
+        position: position.map(Into::into),
+        presence,
+        status_text: status_text.map(Into::into),
+        local_time: local_time.map(Into::into),
+    };
+    vec![
+        profile(
+            "priya",
+            "Priya Nair",
+            Some("Product designer"),
+            Presence::Online,
+            Some("In a review until 3"),
+            Some("14:32"),
+        ),
+        profile(
+            "sam",
+            "Sam Okafor",
+            Some("Release manager"),
+            Presence::Away,
+            None,
+            Some("10:02"),
+        ),
+        profile(
+            "lena",
+            "Lena Fischer",
+            Some("Engineer, Windows"),
+            Presence::Dnd,
+            Some("Heads down"),
+            Some("10:02"),
+        ),
+        profile(
+            "jonas",
+            "Jonas Weber",
+            Some("Support"),
+            Presence::Offline,
+            None,
+            None,
+        ),
+        profile(
+            "arya",
+            "Arya",
+            Some("Maintainer"),
+            Presence::Online,
+            None,
+            None,
+        ),
+    ]
 }
 
 /// The user's unsent messages, for the Drafts view.

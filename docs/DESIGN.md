@@ -197,6 +197,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   will read, and a row with Delete in `destructive` on the left and
   Open (outline) and Send (primary) on the right. Deleting or sending
   removes the card at once and the sidebar count follows.
+- **Profile card** (PLAN G9; M2 in §3) opens from any avatar in the transcript, in
+  a `popover_popup` anchored to it (`design-17`). It leads with the `Lg`
+  avatar carrying the presence dot, the display name in `title`,
+  `@username` in `meta`, then the position; below, the presence as a
+  colored dot with the custom status ("Online · In a review until 3") and
+  the local time with a clock glyph. Two half-width buttons close it:
+  Message (primary) opens the direct message, Mention (outline) inserts
+  `@username ` into the composer and focuses it. Nothing else lives on the
+  card; everything about a person beyond this belongs in the right pane.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

@@ -204,20 +204,27 @@ impl MainWindow {
                 .detach();
             view
         });
-        cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
-            ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
-            ChannelEvent::OpenPinned => this.show_pinned(cx),
-            // Sync picks these up once it owns the channel model; the view
-            // already shows the change.
-            ChannelEvent::Send(_)
-            | ChannelEvent::ToggleReaction { .. }
-            | ChannelEvent::ToggleSave(_)
-            | ChannelEvent::TogglePin(_)
-            | ChannelEvent::Edit(_)
-            | ChannelEvent::Delete(_)
-            | ChannelEvent::Retry(_)
-            | ChannelEvent::ToggleFollow { .. } => {}
-        })
+        cx.subscribe_in(
+            &channel,
+            window,
+            |this, _, event: &ChannelEvent, window, cx| match event {
+                ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+                ChannelEvent::OpenPinned => this.show_pinned(cx),
+                ChannelEvent::OpenDirect { display_name, .. } => {
+                    this.open_direct(display_name.clone(), window, cx)
+                }
+                // Sync picks these up once it owns the channel model; the view
+                // already shows the change.
+                ChannelEvent::Send(_)
+                | ChannelEvent::ToggleReaction { .. }
+                | ChannelEvent::ToggleSave(_)
+                | ChannelEvent::TogglePin(_)
+                | ChannelEvent::Edit(_)
+                | ChannelEvent::Delete(_)
+                | ChannelEvent::Retry(_)
+                | ChannelEvent::ToggleFollow { .. } => {}
+            },
+        )
         .detach();
         cx.subscribe_in(
             &right_pane,
@@ -420,6 +427,31 @@ impl MainWindow {
         });
         self.right_pane_open = true;
         cx.notify();
+    }
+
+    /// Opens the direct message with `display_name`; until sync can create
+    /// one, only an existing sidebar row can be opened.
+    fn open_direct(
+        &mut self,
+        display_name: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| {
+                matches!(row.kind, crate::sidebar::ChannelKind::Direct { .. })
+                    && row.name == display_name
+            })
+            .map(|row| row.id.clone());
+        if let Some(id) = id {
+            self.open_channel(id, window, cx);
+        }
     }
 
     fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {

@@ -13,6 +13,7 @@ pub mod logging;
 pub mod login;
 mod main_window;
 pub mod preview;
+pub mod profile;
 pub mod right_pane;
 pub mod settings;
 pub mod sidebar;
