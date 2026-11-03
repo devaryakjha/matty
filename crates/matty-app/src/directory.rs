@@ -14,6 +14,7 @@ use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
+    checkbox::Checkbox,
     dialog::{DialogHandle, dialog_description, dialog_title},
     field::Field,
     input::{Input, InputEvent, InputState},
@@ -665,5 +666,233 @@ mod tests {
         assert_eq!(channel_handle("  release -- 2026  "), "release-2026");
         assert_eq!(channel_handle("ok_name!"), "ok_name");
         assert_eq!(channel_handle("-"), "");
+    }
+}
+
+/// What the Add members dialog decided.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddMembersEvent {
+    /// Add these people (by user id) to the channel the dialog was opened for.
+    Add(Vec<UserProfile>),
+}
+
+/// The "Add members" dialog: a searchable, multi-select people list.
+pub struct AddMembersView {
+    channel: SharedString,
+    profiles: Vec<UserProfile>,
+    selected: Vec<SharedString>,
+    search: Entity<InputState>,
+    handle: DialogHandle,
+    focus_search: bool,
+    _subscription: gpui_kit::Subscription,
+}
+
+impl EventEmitter<AddMembersEvent> for AddMembersView {}
+
+impl AddMembersView {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search people"));
+        let subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        Self {
+            channel: SharedString::default(),
+            profiles: Vec::new(),
+            selected: Vec::new(),
+            search,
+            handle: DialogHandle::new(false),
+            focus_search: false,
+            _subscription: subscription,
+        }
+    }
+
+    pub fn handle(&self) -> &DialogHandle {
+        &self.handle
+    }
+
+    /// Opens the dialog for `channel` with `profiles` to choose from (people
+    /// not yet in it, as far as the caller knows).
+    pub fn open(
+        &mut self,
+        channel: SharedString,
+        profiles: Vec<UserProfile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.channel = channel;
+        self.profiles = profiles;
+        self.selected.clear();
+        self.search
+            .update(cx, |search, cx| search.set_value("", window, cx));
+        self.handle.open(window, cx);
+        self.focus_search = true;
+        cx.notify();
+    }
+
+    fn toggle(&mut self, user_id: SharedString, cx: &mut Context<Self>) {
+        match self.selected.iter().position(|id| *id == user_id) {
+            Some(index) => {
+                self.selected.remove(index);
+            }
+            None => self.selected.push(user_id),
+        }
+        cx.notify();
+    }
+
+    fn add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        let people: Vec<UserProfile> = self
+            .profiles
+            .iter()
+            .filter(|profile| self.selected.contains(&profile.user_id))
+            .cloned()
+            .collect();
+        self.handle.close(window, cx);
+        cx.emit(AddMembersEvent::Add(people));
+    }
+
+    fn row(&self, profile: &UserProfile, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let checked = self.selected.contains(&profile.user_id);
+        let initial: String = profile.display_name.chars().take(1).collect();
+        let username = profile.username.clone();
+        let (row_id, box_id) = (profile.user_id.clone(), profile.user_id.clone());
+        let box_view = cx.weak_entity();
+        div()
+            .id(gpui_kit::ElementId::Name(
+                format!("add-members.{username}").into(),
+            ))
+            .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
+            .px(theme.space(2.))
+            .mx(theme.space(-2.))
+            .rounded(theme.radius.md)
+            .flex()
+            .items_center()
+            .gap(theme.space(3.))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.colors.accent))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle(row_id.clone(), cx)))
+            .child(
+                Checkbox::new(gpui_kit::ElementId::Name(
+                    format!("add-members.{username}.checkbox").into(),
+                ))
+                .checked(checked)
+                .aria_label(profile.display_name.clone())
+                .on_change(move |_, _, _, cx| {
+                    box_view
+                        .update(cx, |this, cx| this.toggle(box_id.clone(), cx))
+                        .ok();
+                }),
+            )
+            .child(
+                Avatar::new(gpui_kit::ElementId::Name(
+                    format!("add-members.{username}.avatar").into(),
+                ))
+                .size(AvatarSize::Sm)
+                .fallback(initial)
+                .aria_label(profile.display_name.clone()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .type_style(style::UI, &theme)
+                    .text_color(theme.colors.foreground)
+                    .child(profile.display_name.clone()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(format!("@{username}")),
+            )
+    }
+}
+
+impl Render for AddMembersView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        if self.focus_search {
+            self.focus_search = false;
+            let focus = self.search.read(cx).focus_handle(cx);
+            window.on_next_frame(move |window, cx| window.focus(&focus, cx));
+        }
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let rows: Vec<_> = self
+            .profiles
+            .iter()
+            .filter(|profile| {
+                query.is_empty()
+                    || profile.display_name.to_lowercase().contains(&query)
+                    || profile.username.to_lowercase().contains(&query)
+            })
+            .map(|profile| self.row(profile, cx).into_any_element())
+            .collect();
+        let count = self.selected.len();
+        let add_label = match count {
+            0 => "Add".to_string(),
+            1 => "Add 1 person".to_string(),
+            n => format!("Add {n} people"),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(4.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(1.))
+                    .child(dialog_title("add-members.title", cx).child("Add members"))
+                    .child(
+                        dialog_description("add-members.description", cx)
+                            .child(format!("They join #{} and see its history.", self.channel)),
+                    ),
+            )
+            .child(Input::new(&self.search).aria_label("Search people"))
+            .child(
+                div()
+                    .id("add-members.list")
+                    .overflow_y_scroll()
+                    .max_h(scaled(&theme, metrics::ROW_HEIGHT * 8.))
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(0.5))
+                    .when(rows.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .py(theme.space(6.))
+                                .flex()
+                                .justify_center()
+                                .type_style(style::UI, &theme)
+                                .text_color(theme.colors.muted_foreground)
+                                .child(format!("Nobody matches “{query}”")),
+                        )
+                    })
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .child(
+                        Button::new("add-members.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .child("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.handle.close(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("add-members.add")
+                            .variant(ButtonVariant::Default)
+                            .disabled(count == 0)
+                            .child(add_label)
+                            .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
+                    ),
+            )
     }
 }

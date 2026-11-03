@@ -343,6 +343,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `ChannelEvent::SetNotifications`, since Mattermost stores them on the
   membership in one call; the Mute switch and the info pane's Mute chip
   stay in step through `ChannelModel.muted`.
+- **Add members** (PLAN §3 M1): from the channel menu or the empty
+  state's button, a dialog with a people search and one checkbox row per
+  person (avatar, name, `@handle`); the whole row toggles, and the primary
+  button counts the choice ("Add 2 people") and stays disabled at zero
+  (`design-33`). Adding bumps the header's member count at once and emits
+  `ChannelEvent::AddMembers` for sync.
 - **Who reacted**: hovering a reaction chip shows gpuicn's tooltip with
   the names, "You, Sam Okafor and 2 others reacted with 👍", built from
   `PostReaction::summary` (`design-30`). "You" comes first, three names at

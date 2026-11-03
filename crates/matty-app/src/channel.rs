@@ -18,6 +18,7 @@ use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
 };
+use crate::directory::{AddMembersEvent, AddMembersView};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
@@ -363,6 +364,9 @@ pub enum ChannelEvent {
         muted: bool,
         notifications: ChannelNotifications,
     },
+    /// The user added these people from the Add members dialog; the view
+    /// already counts them.
+    AddMembers(Vec<UserProfile>),
 }
 
 /// A post being edited in place: its own composer sits where the body was.
@@ -397,6 +401,7 @@ pub struct ChannelView {
     header_menu: Entity<MenuState>,
     edit: Entity<ChannelEditView>,
     notifications: Entity<NotificationsView>,
+    add_members: Entity<AddMembersView>,
     leave: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
@@ -551,11 +556,20 @@ impl ChannelView {
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
         let notifications = cx.new(|_| NotificationsView::new());
+        let add_members = cx.new(|cx| AddMembersView::new(window, cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let subscriptions = vec![
             cx.subscribe(&edit, |this, _, event: &ChannelEditEvent, cx| {
                 let ChannelEditEvent::Save { field, value } = event;
                 this.apply_edit(*field, value.clone(), cx);
+            }),
+            cx.subscribe(&add_members, |this, _, event: &AddMembersEvent, cx| {
+                let AddMembersEvent::Add(people) = event;
+                if let Some(model) = this.model.as_mut() {
+                    model.members += people.len();
+                }
+                cx.notify();
+                cx.emit(ChannelEvent::AddMembers(people.clone()));
             }),
             cx.subscribe(&notifications, |this, _, event: &NotificationsEvent, cx| {
                 let NotificationsEvent::Save {
@@ -611,6 +625,7 @@ impl ChannelView {
             header_menu,
             edit,
             notifications,
+            add_members,
             leave: DialogHandle::new(false),
             picker,
             picker_open: false,
@@ -1631,6 +1646,16 @@ impl ChannelView {
                 ChannelField::Name,
             ));
             items.push(MenuItem::separator());
+            let members_view = view.clone();
+            items.push(
+                MenuItem::new("channel.menu.add-members", "Add members…").on_click(
+                    move |_, window, cx| {
+                        members_view
+                            .update(cx, |this, cx| this.open_add_members(window, cx))
+                            .ok();
+                    },
+                ),
+            );
             let leave = self.leave.clone();
             items.push(
                 MenuItem::new("channel.menu.leave", "Leave channel…")
@@ -1652,6 +1677,30 @@ impl ChannelView {
         };
         self.edit
             .update(cx, |edit, cx| edit.open(field, &current, window, cx));
+    }
+
+    /// Opens Add members with the team's profiles minus the user.
+    fn open_add_members(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let me = self.me.clone();
+        let people: Vec<UserProfile> = model
+            .profiles
+            .iter()
+            .filter(|profile| profile.display_name != me)
+            .cloned()
+            .collect();
+        let name = model.name.clone();
+        self.add_members
+            .update(cx, |view, cx| view.open(name, people, window, cx));
+    }
+
+    fn add_members_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.add_members.read(cx).handle().clone();
+        let popup = dialog_popup("channel.add-members.popup", "Add members", cx)
+            .child(self.add_members.clone());
+        dialog("channel.add-members", &handle, popup, window, cx)
     }
 
     fn open_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2492,7 +2541,7 @@ impl ChannelView {
     }
 
     /// A channel with no posts yet: its purpose and a way to bring people in.
-    fn empty_channel(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
+    fn empty_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let direct = matches!(channel.kind, ChannelKind::Direct { .. });
         let media = div()
@@ -2553,6 +2602,9 @@ impl ChannelView {
                         .variant(ButtonVariant::Outline)
                         .size(ButtonSize::Sm)
                         .aria_label("Add members")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_add_members(window, cx)),
+                        )
                         .child(
                             lucide(LucideIcon::UserPlus)
                                 .size(scaled(&theme, 14.))
@@ -2672,6 +2724,7 @@ impl Render for ChannelView {
             .child(self.delete_dialog(window, cx))
             .child(self.edit_dialog(window, cx))
             .child(self.notifications_dialog(window, cx))
+            .child(self.add_members_dialog(window, cx))
             .child(self.leave_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
