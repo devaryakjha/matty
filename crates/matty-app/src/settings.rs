@@ -108,6 +108,16 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
+/// The account signed in last, so its cache can open at launch. Holds no
+/// secret: the session token belongs in the keychain (#77).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedAccount {
+    pub server: String,
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -126,6 +136,7 @@ pub struct Settings {
     pub log_level: LogLevel,
     pub load_remote_images: RemoteImages,
     pub clock: ClockFormat,
+    pub account: Option<SavedAccount>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -148,6 +159,7 @@ impl Default for Settings {
             log_level: LogLevel::Info,
             load_remote_images: RemoteImages::Always,
             clock: ClockFormat::TwentyFourHour,
+            account: None,
             unknown: serde_json::Map::new(),
         }
     }

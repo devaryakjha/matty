@@ -13,13 +13,17 @@ fn main() -> ExitCode {
             matty_app::run();
             ExitCode::SUCCESS
         }
+        Some("--offline") => {
+            matty_app::run_offline();
+            ExitCode::SUCCESS
+        }
         Some("--version" | "-V") => {
             println!("matty {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") => {
             println!(
-                "matty {}\n\nUSAGE:\n    matty [--version | --help]",
+                "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help]\n\n    --offline    open the last account's cache without connecting",
                 env!("CARGO_PKG_VERSION")
             );
             ExitCode::SUCCESS

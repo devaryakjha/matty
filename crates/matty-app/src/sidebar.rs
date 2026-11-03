@@ -234,6 +234,12 @@ impl SidebarView {
         &self.model
     }
 
+    /// The team name in the header.
+    pub fn set_team_name(&mut self, name: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.team_name = name.into();
+        cx.notify();
+    }
+
     /// Replaces the model, keeping the user's collapsed categories.
     pub fn set_model(&mut self, mut model: SidebarModel, cx: &mut Context<Self>) {
         for category in &mut model.categories {

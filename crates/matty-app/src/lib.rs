@@ -11,6 +11,7 @@ pub mod actions;
 pub mod channel;
 pub mod drafts;
 pub mod emoji;
+pub mod live;
 pub mod logging;
 pub mod login;
 mod main_window;
@@ -38,6 +39,20 @@ use ui::title_bar::title_bar_window_options;
 /// The smallest window PLAN §4.1 supports.
 pub const MIN_WINDOW: (f32, f32) = (480., 400.);
 const DEFAULT_WINDOW: (f32, f32) = (1200., 800.);
+
+static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `matty --offline` started the app: the last account's cache
+/// opens without signing in.
+pub fn offline() -> bool {
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`run`] with the cache of the last account and no network.
+pub fn run_offline() {
+    OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+    run();
+}
 
 /// Starts the GPUI application and opens the main window. Blocks until the
 /// app quits.
