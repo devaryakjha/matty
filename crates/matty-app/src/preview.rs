@@ -103,7 +103,7 @@ pub fn sidebar() -> SidebarModel {
     }
 }
 
-use crate::channel::{ChannelModel, Post, PostReaction};
+use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
 use crate::right_pane::ThreadModel;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
@@ -127,6 +127,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         mine: false,
         saved: false,
         pinned: false,
+        status: PostStatus::Sent,
     };
     let reaction = |emoji: &str, count: usize, mine: bool| PostReaction {
         emoji: emoji.into(),
@@ -219,6 +220,18 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "On it. Code blocks render like this now:\n\n```rust\nlet theme = UiTheme::read(cx);\n```",
         ),
     ];
+    let mut posts = posts;
+    posts.push(Post {
+        mine: true,
+        status: PostStatus::Failed,
+        ..post(
+            "p9",
+            "Arya",
+            "Not sent",
+            "Today",
+            "Also: who owns the Windows build this week?",
+        )
+    });
     // Two channels show the states PLAN §4.5 asks for: one still loading,
     // one with nothing posted yet.
     let (posts, loading, first_unread) = match id {
@@ -241,6 +254,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         loading,
         posts,
         first_unread,
+        // A short limit on one channel shows the counter without a novel.
+        max_post_size: if id == "help-desk" {
+            200
+        } else {
+            DEFAULT_MAX_POST_SIZE
+        },
     })
 }
 
@@ -266,6 +285,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         mine: author == "Arya",
         saved: false,
         pinned: false,
+        status: PostStatus::Sent,
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),

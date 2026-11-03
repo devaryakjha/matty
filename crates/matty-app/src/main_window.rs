@@ -131,7 +131,13 @@ impl MainWindow {
             .as_deref()
             .filter(|_| crate::preview::enabled())
             .and_then(crate::preview::channel);
-        let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
+        // The display name comes from the session once sync owns it.
+        let me = if crate::preview::enabled() {
+            "Arya"
+        } else {
+            "You"
+        };
+        let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
         // No session store yet: the sign-in card shows unless the preview
         // fixtures stand in for a signed-in workspace.
@@ -155,7 +161,8 @@ impl MainWindow {
             | ChannelEvent::ToggleSave(_)
             | ChannelEvent::TogglePin(_)
             | ChannelEvent::Edit(_)
-            | ChannelEvent::Delete(_) => {}
+            | ChannelEvent::Delete(_)
+            | ChannelEvent::Retry(_) => {}
         })
         .detach();
         cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
