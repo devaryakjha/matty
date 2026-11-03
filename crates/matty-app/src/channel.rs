@@ -89,6 +89,39 @@ impl PostReaction {
     }
 }
 
+/// The header markers after a post's time: "Pinned", "Saved" and "(edited)",
+/// in that order, as Mattermost shows them. Pinned and Saved carry their
+/// icon so they read at a glance without competing with the author. The
+/// icon is its own header child because the header aligns on baselines and
+/// a nested row would sit low.
+pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
+    let muted = theme.colors.muted_foreground;
+    let label = |text: &'static str| {
+        div()
+            .type_style(style::META, theme)
+            .text_color(muted)
+            .child(text)
+            .into_any_element()
+    };
+    let icon = |icon: LucideIcon| {
+        lucide(icon)
+            .size(scaled(theme, 12.))
+            .text_color(muted)
+            .into_any_element()
+    };
+    let mut markers = Vec::new();
+    if post.pinned {
+        markers.extend([icon(LucideIcon::Pin), label("Pinned")]);
+    }
+    if post.saved {
+        markers.extend([icon(LucideIcon::Bookmark), label("Saved")]);
+    }
+    if post.edited {
+        markers.push(label("(edited)"));
+    }
+    markers
+}
+
 /// The tooltip builder for a message's reaction chips, looking each chip
 /// up in `reactions` by emoji.
 pub fn reaction_tooltip(
@@ -2147,13 +2180,8 @@ impl ChannelView {
                 )
                 .into_any_element(),
             });
-        if post.edited {
-            row = row.header_child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child("(edited)"),
-            );
+        for marker in post_markers(post, &theme) {
+            row = row.header_child(marker);
         }
         if !post.reactions.is_empty() {
             // The chip row gets an add button; posts without reactions use
