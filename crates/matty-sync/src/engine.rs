@@ -4,19 +4,23 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use matty_api::Client;
 use matty_api::capabilities::CollapsedThreads;
 use matty_api::models::Preference;
 use matty_api::ws::WsEvent;
+use matty_api::{Client, ServerCapabilities};
 use matty_store::posts::{self, Window};
 use matty_store::sidebar::{self, UnreadMode};
 use matty_store::{Store, StoreError};
-use rusqlite::{Connection as Db, Transaction};
+use rusqlite::Connection as Db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::change::{ChangeSet, Connection, POSTS_WINDOW};
+use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
+
+/// Followed threads in a team's Threads list snapshot.
+const THREAD_LIST: usize = 200;
 
 /// Most messages applied in one transaction, so a flood still publishes.
 const BATCH: usize = 512;
@@ -49,6 +53,27 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// A thread is on screen: publish it now and whenever it changes.
+    OpenThread {
+        /// The root post's id.
+        root_id: String,
+    },
+    /// The thread left the screen.
+    CloseThread {
+        /// The root post's id.
+        root_id: String,
+    },
+    /// The Threads view of a team is on screen: publish its list now and
+    /// whenever it changes.
+    OpenThreadList {
+        /// The team.
+        team_id: String,
+    },
+    /// The Threads view left the screen.
+    CloseThreadList {
+        /// The team.
+        team_id: String,
+    },
 }
 
 impl std::fmt::Debug for Command {
@@ -64,6 +89,22 @@ impl std::fmt::Debug for Command {
                 .debug_struct("CloseChannel")
                 .field("channel_id", channel_id)
                 .finish(),
+            Self::OpenThread { root_id } => f
+                .debug_struct("OpenThread")
+                .field("root_id", root_id)
+                .finish(),
+            Self::CloseThread { root_id } => f
+                .debug_struct("CloseThread")
+                .field("root_id", root_id)
+                .finish(),
+            Self::OpenThreadList { team_id } => f
+                .debug_struct("OpenThreadList")
+                .field("team_id", team_id)
+                .finish(),
+            Self::CloseThreadList { team_id } => f
+                .debug_struct("CloseThreadList")
+                .field("team_id", team_id)
+                .finish(),
         }
     }
 }
@@ -73,14 +114,27 @@ pub(crate) enum Message {
     Subscribe(async_channel::Sender<ChangeSet>),
 }
 
-/// What a batch touched.
+/// What a batch touched, so each view gets one fresh snapshot.
 #[derive(Default)]
-struct Dirty {
-    channels: BTreeSet<String>,
-    teams: BTreeSet<String>,
-    all_teams: bool,
-    unreads: bool,
-    direct: Vec<ChangeSet>,
+pub(crate) struct Dirty {
+    /// Channels whose posts changed.
+    pub(crate) channels: BTreeSet<String>,
+    /// Thread roots whose thread changed.
+    pub(crate) threads: BTreeSet<String>,
+    /// Teams whose Threads list changed.
+    pub(crate) thread_lists: BTreeSet<String>,
+    /// Teams whose sidebar changed.
+    pub(crate) teams: BTreeSet<String>,
+    /// Every team's sidebar changed (a direct message, a user's name).
+    pub(crate) all_teams: bool,
+    /// The team rail's badges changed.
+    pub(crate) unreads: bool,
+    /// Preferences changed.
+    pub(crate) preferences: bool,
+    /// The cache lost track of the server and must catch up (#37).
+    pub(crate) resync: bool,
+    /// Change sets that carry their own data.
+    pub(crate) direct: Vec<ChangeSet>,
 }
 
 /// The signed-in session the engine loads with.
@@ -96,7 +150,12 @@ struct Session {
 
 pub(crate) struct Engine {
     store: Store,
+    /// The signed-in user, from the cache until the account loads.
+    me: Option<String>,
+    capabilities: Option<ServerCapabilities>,
     open_channels: BTreeSet<String>,
+    open_threads: BTreeSet<String>,
+    open_thread_lists: BTreeSet<String>,
     subscribers: Vec<async_channel::Sender<ChangeSet>>,
     session: Option<Session>,
     loaded: mpsc::UnboundedSender<Loaded>,
@@ -106,9 +165,14 @@ pub(crate) struct Engine {
 impl Engine {
     pub(crate) fn new(store: Store) -> Self {
         let (loaded, loaded_inbox) = mpsc::unbounded_channel();
+        let me = posts::cursor(store.conn(), ME_KEY).ok().flatten();
         Self {
             store,
+            me,
+            capabilities: None,
             open_channels: BTreeSet::new(),
+            open_threads: BTreeSet::new(),
+            open_thread_lists: BTreeSet::new(),
             subscribers: Vec::new(),
             session: None,
             loaded,
@@ -157,6 +221,7 @@ impl Engine {
         dirty: &mut Dirty,
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
+        let mut fetches = Vec::new();
         let tx = self.store.conn_mut().transaction()?;
         for message in messages {
             match message {
@@ -189,12 +254,32 @@ impl Engine {
                 Message::Command(Command::CloseChannel { channel_id }) => {
                     self.open_channels.remove(&channel_id);
                 }
-                Message::Command(Command::Event(event)) => apply_event(&tx, *event, dirty)?,
+                Message::Command(Command::OpenThread { root_id }) => {
+                    self.open_threads.insert(root_id.clone());
+                    dirty.threads.insert(root_id);
+                }
+                Message::Command(Command::CloseThread { root_id }) => {
+                    self.open_threads.remove(&root_id);
+                }
+                Message::Command(Command::OpenThreadList { team_id }) => {
+                    self.open_thread_lists.insert(team_id.clone());
+                    dirty.thread_lists.insert(team_id);
+                }
+                Message::Command(Command::CloseThreadList { team_id }) => {
+                    self.open_thread_lists.remove(&team_id);
+                }
+                Message::Command(Command::Event(event)) => {
+                    events::apply(&tx, *event, self.me.as_deref(), dirty, &mut fetches)?;
+                }
             }
         }
         tx.commit()?;
         for channel_id in to_fetch {
             self.fetch_channel(&channel_id);
+        }
+        fetches.dedup();
+        for what in fetches {
+            self.fetch(what);
         }
         Ok(())
     }
@@ -215,6 +300,19 @@ impl Engine {
             session.collapsed_threads,
             self.loaded.clone(),
         ));
+    }
+
+    /// Runs a fetch an event asked for, when connected. Without a session
+    /// the next initial load covers it.
+    fn fetch(&self, what: Fetch) {
+        if let Some(session) = &self.session {
+            tokio::spawn(load::fetch(
+                session.client.clone(),
+                session.user_id.clone(),
+                what,
+                self.loaded.clone(),
+            ));
+        }
     }
 
     fn write_loaded(&mut self, result: Loaded, dirty: &mut Dirty) -> Result<(), StoreError> {
@@ -257,6 +355,8 @@ impl Engine {
                     session.user_id = me.id.clone();
                     session.collapsed_threads = crt;
                 }
+                self.me = Some(me.id.clone());
+                self.capabilities = Some((*capabilities).clone());
                 dirty
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
@@ -316,6 +416,51 @@ impl Engine {
                 tx.commit()?;
                 dirty.channels.insert(channel_id);
             }
+            Loaded::Channel { channel, member } => {
+                let tx = self.store.conn_mut().transaction()?;
+                sidebar::upsert_channels(&tx, std::slice::from_ref(&*channel))?;
+                if let Some(member) = member {
+                    sidebar::upsert_channel_members(&tx, std::slice::from_ref(&*member))?;
+                }
+                tx.commit()?;
+                // A new channel lands in a category the server picked.
+                if channel.team_id.is_empty() {
+                    dirty.all_teams = true;
+                } else {
+                    self.fetch(Fetch::Categories(channel.team_id.clone()));
+                    dirty.teams.insert(channel.team_id.clone());
+                }
+                dirty.unreads = true;
+                dirty.channels.insert(channel.id);
+            }
+            Loaded::TeamInfo(team) => {
+                sidebar::upsert_teams(self.store.conn(), std::slice::from_ref(&*team))?;
+                dirty.unreads = true;
+            }
+            Loaded::Categories {
+                team_id,
+                categories,
+            } => {
+                let tx = self.store.conn_mut().transaction()?;
+                sidebar::replace_categories(&tx, &team_id, &categories)?;
+                tx.commit()?;
+                dirty.teams.insert(team_id);
+            }
+            Loaded::Capabilities(capabilities) => {
+                let preferences = all_preferences(self.store.conn())?;
+                let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
+                posts::set_cursor(self.store.conn(), CRT_KEY, if crt { "1" } else { "0" })?;
+                if let Some(session) = &mut self.session {
+                    session.collapsed_threads = crt;
+                }
+                self.capabilities = Some((*capabilities).clone());
+                dirty
+                    .direct
+                    .push(ChangeSet::Config(Arc::from(capabilities)));
+                dirty.all_teams = true;
+                dirty.unreads = true;
+                dirty.channels.extend(self.open_channels.iter().cloned());
+            }
             Loaded::PostsFailed { channel_id, error } => {
                 if let Some(session) = &mut self.session {
                     session.fetched.remove(&channel_id);
@@ -331,7 +476,13 @@ impl Engine {
         Ok(())
     }
 
-    fn publish(&mut self, dirty: Dirty) {
+    fn publish(&mut self, mut dirty: Dirty) {
+        if dirty.preferences {
+            self.preferences_changed(&mut dirty);
+        }
+        if dirty.resync {
+            tracing::info!("an event asks for a resync");
+        }
         let mut changes = dirty.direct;
         let conn = self.store.conn();
         let user_id = posts::cursor(conn, ME_KEY).ok().flatten();
@@ -363,6 +514,30 @@ impl Engine {
                 }
             }
         }
+        for root_id in dirty.threads {
+            if !self.open_threads.contains(&root_id) {
+                continue;
+            }
+            match posts::thread(conn, &root_id) {
+                Ok(thread) => changes.push(ChangeSet::Thread {
+                    root_id,
+                    posts: Arc::from(thread),
+                }),
+                Err(error) => tracing::error!(%error, "could not read a thread snapshot"),
+            }
+        }
+        for team_id in dirty.thread_lists {
+            if !self.open_thread_lists.contains(&team_id) {
+                continue;
+            }
+            match posts::threads(conn, &team_id, false, THREAD_LIST) {
+                Ok(threads) => changes.push(ChangeSet::ThreadList {
+                    team_id,
+                    threads: Arc::from(threads),
+                }),
+                Err(error) => tracing::error!(%error, "could not read a thread list"),
+            }
+        }
         let roots_only = mode == UnreadMode::CollapsedThreads;
         for channel_id in dirty.channels {
             if !self.open_channels.contains(&channel_id) {
@@ -381,6 +556,49 @@ impl Engine {
                 .retain(|subscriber| subscriber.try_send(change.clone()).is_ok());
         }
     }
+}
+
+impl Engine {
+    /// Preferences changed: the collapsed-threads choice may have too, which
+    /// changes every count and the channel windows.
+    fn preferences_changed(&mut self, dirty: &mut Dirty) {
+        dirty.direct.push(ChangeSet::Preferences);
+        let Some(capabilities) = &self.capabilities else {
+            return;
+        };
+        let conn = self.store.conn();
+        let Ok(preferences) = all_preferences(conn) else {
+            return;
+        };
+        let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
+        if cached_crt(conn).ok() == Some(crt) {
+            return;
+        }
+        if let Err(error) = posts::set_cursor(conn, CRT_KEY, if crt { "1" } else { "0" }) {
+            tracing::error!(%error, "could not store the collapsed-threads mode");
+        }
+        if let Some(session) = &mut self.session {
+            session.collapsed_threads = crt;
+        }
+        dirty.all_teams = true;
+        dirty.unreads = true;
+        dirty.channels.extend(self.open_channels.iter().cloned());
+    }
+}
+
+fn all_preferences(conn: &Db) -> Result<Vec<Preference>, StoreError> {
+    let mut statement = conn.prepare_cached("SELECT category, name, value FROM preferences")?;
+    let preferences = statement
+        .query_map([], |row| {
+            Ok(Preference {
+                category: row.get(0)?,
+                name: row.get(1)?,
+                value: row.get(2)?,
+                ..Preference::default()
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(preferences)
 }
 
 fn cached_crt(conn: &Db) -> Result<bool, StoreError> {
@@ -409,46 +627,4 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
         CollapsedThreads::DefaultOn => chosen.unwrap_or(true),
         CollapsedThreads::DefaultOff => chosen.unwrap_or(false),
     }
-}
-
-/// Applies one server event. Events this engine does not handle yet are
-/// ignored; the full set comes with #36.
-fn apply_event(tx: &Transaction<'_>, event: WsEvent, dirty: &mut Dirty) -> Result<(), StoreError> {
-    match event {
-        WsEvent::Posted(posted) => {
-            dirty.channels.insert(posted.post.channel_id.clone());
-            posts::insert_posts(tx, std::slice::from_ref(&posted.post))?;
-        }
-        WsEvent::PostEdited(post) => {
-            dirty.channels.insert(post.channel_id.clone());
-            posts::insert_posts(tx, std::slice::from_ref(&post))?;
-        }
-        WsEvent::PostDeleted(post) => {
-            dirty.channels.insert(post.channel_id.clone());
-            posts::mark_deleted(tx, &post.id, post.delete_at)?;
-        }
-        WsEvent::ReactionAdded(reaction) => {
-            if let Some(post) = posts::post(tx, &reaction.post_id)? {
-                dirty.channels.insert(post.channel_id);
-            }
-            posts::add_reaction(tx, &reaction)?;
-        }
-        WsEvent::ReactionRemoved(reaction) => {
-            if let Some(post) = posts::post(tx, &reaction.post_id)? {
-                dirty.channels.insert(post.channel_id);
-            }
-            posts::remove_reaction(tx, &reaction)?;
-        }
-        WsEvent::Typing {
-            user_id,
-            channel_id,
-            parent_id,
-        } => dirty.direct.push(ChangeSet::Typing {
-            user_id,
-            channel_id,
-            parent_id,
-        }),
-        _ => {}
-    }
-    Ok(())
 }

@@ -13,6 +13,7 @@
 mod bridge;
 mod change;
 mod engine;
+mod events;
 mod load;
 
 pub use bridge::{SyncHandle, spawn};

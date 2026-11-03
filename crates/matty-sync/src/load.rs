@@ -10,6 +10,8 @@ use matty_api::models::{
 use matty_api::{ApiError, Client, ServerCapabilities};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::events::Fetch;
+
 /// Posts fetched on each side of the first unread when a channel opens.
 pub(crate) const OPEN_LIMIT: u32 = 60;
 
@@ -49,6 +51,68 @@ pub(crate) enum Loaded {
     },
     /// An opened channel's posts could not load.
     PostsFailed { channel_id: String, error: String },
+    /// A channel an event named, with the user's membership when they have one.
+    Channel {
+        channel: Box<Channel>,
+        member: Option<Box<ChannelMember>>,
+    },
+    /// A team the user joined; its channels follow as [`Loaded::Team`].
+    TeamInfo(Box<Team>),
+    /// A team's sidebar categories, reloaded.
+    Categories {
+        team_id: String,
+        categories: SidebarCategories,
+    },
+    /// The server's config or license changed.
+    Capabilities(Box<ServerCapabilities>),
+}
+
+/// Runs a fetch an event asked for. Failures are logged: the next resync
+/// brings the cache back in line.
+pub(crate) async fn fetch(
+    client: Client,
+    user_id: String,
+    what: Fetch,
+    results: UnboundedSender<Loaded>,
+) {
+    let outcome: Result<(), ApiError> = async {
+        match &what {
+            Fetch::Channel(channel_id) => {
+                let channel = client.channel(channel_id).await?;
+                // Not a member (a public channel someone else made): the
+                // sidebar leaves it out, but posts and names still resolve.
+                let member = client.my_channel_member(channel_id).await.ok();
+                let _ = results.send(Loaded::Channel {
+                    channel: Box::new(channel),
+                    member: member.map(Box::new),
+                });
+            }
+            Fetch::Team(team_id) => {
+                let teams = client.my_teams().await?;
+                if let Some(joined) = teams.into_iter().find(|t| &t.id == team_id) {
+                    let _ = results.send(Loaded::TeamInfo(Box::new(joined)));
+                    let loaded = team(&client, &user_id, team_id).await?;
+                    let _ = results.send(loaded);
+                }
+            }
+            Fetch::Categories(team_id) => {
+                let categories = client.sidebar_categories(team_id).await?;
+                let _ = results.send(Loaded::Categories {
+                    team_id: team_id.clone(),
+                    categories,
+                });
+            }
+            Fetch::Capabilities => {
+                let capabilities = client.capabilities().await?;
+                let _ = results.send(Loaded::Capabilities(Box::new(capabilities)));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = outcome {
+        tracing::warn!(?what, %error, "a fetch for an event failed");
+    }
 }
 
 /// Loads the account, then every team at once, then emoji and statuses.

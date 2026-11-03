@@ -628,3 +628,20 @@ pub fn advance_since(conn: &Connection, key: &str, at: i64) -> Result<i64> {
     let value = cursor(conn, key)?.unwrap_or_default();
     Ok(value.parse().unwrap_or(at))
 }
+
+/// Changes a root post's reply count by `delta` when a reply arrives or is
+/// deleted. Returns whether the root is cached.
+pub fn add_replies(conn: &Connection, root_id: &str, delta: i64) -> Result<bool> {
+    let changed = conn
+        .prepare_cached("UPDATE posts SET reply_count = MAX(reply_count + ?2, 0) WHERE id = ?1")?
+        .execute(params![root_id, delta])?;
+    Ok(changed > 0)
+}
+
+/// The team a followed thread is listed under, if cached.
+pub fn thread_team(conn: &Connection, thread_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached("SELECT team_id FROM threads WHERE id = ?1")?
+        .query_row([thread_id], |row| row.get(0))
+        .optional()?)
+}
