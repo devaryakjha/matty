@@ -4375,10 +4375,14 @@ dependencies = [
 name = "matty-app"
 version = "0.0.1"
 dependencies = [
+ "dirs 6.0.0",
  "gpui-icons",
  "gpui-kit",
  "gpui-pre-platform",
  "gpuicn",
+ "serde",
+ "serde_json",
+ "tempfile",
  "web-time",
 ]
 

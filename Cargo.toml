@@ -32,6 +32,8 @@ url = "2"
 wiremock = "0.6.5"
 rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+dirs = "6"
+tempfile = "3"
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }
