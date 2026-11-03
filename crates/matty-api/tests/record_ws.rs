@@ -36,7 +36,6 @@ async fn sign_in(url: &str, login: &str, password: &str) -> (Client, User) {
     let credentials = Credentials {
         login_id: login.into(),
         password: password.into(),
-        device_id: format!("matty-record-ws-{login}"),
         ..Default::default()
     };
     let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
@@ -516,7 +515,7 @@ async fn upload_emoji(url: &str, password: &str, creator: &str, name: &str) {
 async fn session_token(url: &str, login: &str, password: &str) -> String {
     let response = reqwest::Client::new()
         .post(format!("{url}/api/v4/users/login"))
-        .json(&json!({"login_id": login, "password": password, "device_id": format!("matty-record-ws-raw-{login}")}))
+        .json(&json!({"login_id": login, "password": password}))
         .send()
         .await
         .unwrap();

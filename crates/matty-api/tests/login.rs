@@ -17,7 +17,7 @@ fn credentials() -> Credentials {
     Credentials {
         login_id: "arya".into(),
         password: "hunter2".into(),
-        device_id: "matty-test".into(),
+        device_id: "apple:matty-test".into(),
         ..Default::default()
     }
 }
@@ -28,7 +28,7 @@ async fn login_takes_the_token_from_the_header() {
     Mock::given(method("POST"))
         .and(path("/api/v4/users/login"))
         .and(body_partial_json(
-            json!({"login_id": "arya", "password": "hunter2", "device_id": "matty-test"}),
+            json!({"login_id": "arya", "password": "hunter2", "device_id": "apple:matty-test"}),
         ))
         .respond_with(
             ResponseTemplate::new(200)

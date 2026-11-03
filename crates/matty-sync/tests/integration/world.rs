@@ -33,8 +33,6 @@ pub async fn sign_in(url: &str, login: &str, password: &str) -> (Client, String)
         .login(&Credentials {
             login_id: login.into(),
             password: password.into(),
-            // Unique: a sign-in revokes the session that had the same device.
-            device_id: format!("matty-sync-integration-{}", unique()),
             ..Default::default()
         })
         .await

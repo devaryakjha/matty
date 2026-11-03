@@ -24,7 +24,9 @@ pub struct Credentials {
     pub mfa_token: Option<String>,
     /// Sign in against AD/LDAP only.
     pub ldap_only: bool,
-    /// A stable id for this install, so the server can tell devices apart.
+    /// A push-notification device, `<platform>:<token>` such as
+    /// `apple:…` or `android_rn:…`. Leave it empty on desktop: servers from
+    /// 12.0 refuse the sign-in when it is anything else.
     pub device_id: String,
 }
 

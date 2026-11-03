@@ -58,8 +58,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The ESRs join this list with #199.
-        server: ["10.5"]
+        # The current release and the extended support releases still
+        # getting patches (PLAN §6.3), plus 10.5, the dev server's default.
+        server: ["12.0", "11.7", "10.11", "10.5"]
     env:
       MATTY_MM_VERSION: ${{ matrix.server }}
       MATTY_TEST_SERVER: http://localhost:8065
@@ -100,7 +101,10 @@ jobs:
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync
       - name: Collect the server logs
         if: failure() && steps.changes.outputs.code == 'true'
-        run: docker compose -f docker/compose.yml logs --no-color > mattermost.log
+        # Also in the job log: artifacts need a browser session to download.
+        run: |
+          docker compose -f docker/compose.yml logs --no-color > mattermost.log
+          tail -n 200 mattermost.log
       - if: failure() && steps.changes.outputs.code == 'true'
         uses: actions/upload-artifact@v4
         with:
