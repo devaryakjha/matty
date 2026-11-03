@@ -1,0 +1,14 @@
+{
+  "event": "channel_scheme_updated",
+  "data": {},
+  "broadcast": {
+    "omit_users": null,
+    "user_id": "",
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "team_id": "",
+    "connection_id": "",
+    "omit_connection_id": ""
+  },
+  "seq": 101,
+  "_source": "hand-written from mattermost/server model/websocket_message.go and app publishers; this dev server does not send it"
+}

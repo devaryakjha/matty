@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": ""
+  },
+  "data": {
+    "team": "{\"id\":\"twi9esnyqidym8upn6muio4x9h\",\"create_at\":1793728206116,\"update_at\":1793728922053,\"delete_at\":0,\"display_name\":\"Dev\",\"name\":\"dev\",\"description\":\"dev team 919634\",\"email\":\"\",\"type\":\"O\",\"company_name\":\"\",\"allowed_domains\":\"\",\"invite_id\":\"\",\"allow_open_invite\":false,\"scheme_id\":null,\"group_constrained\":null,\"policy_id\":null,\"cloud_limits_archived\":false}"
+  },
+  "event": "update_team",
+  "seq": 48
+}

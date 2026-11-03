@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "865owkf9afre7myntpn9oupyae",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "post": "{\"id\":\"5oikzsjw8tnhu84eo9gwedbmkw\",\"create_at\":1793728923482,\"update_at\":0,\"edit_at\":0,\"delete_at\":0,\"is_pinned\":false,\"user_id\":\"rm9qb436airnmmjzxy7soiff9c\",\"channel_id\":\"865owkf9afre7myntpn9oupyae\",\"root_id\":\"\",\"original_id\":\"\",\"message\":\"An error occurred while listing channels.\",\"type\":\"system_ephemeral\",\"props\":{},\"hashtags\":\"\",\"file_ids\":null,\"pending_post_id\":\"\",\"reply_count\":0,\"last_reply_at\":0,\"participants\":null,\"metadata\":{}}"
+  },
+  "event": "ephemeral_message",
+  "seq": 60
+}

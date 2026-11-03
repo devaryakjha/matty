@@ -1,0 +1,22 @@
+{
+  "broadcast": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "channel_display_name": "Random",
+    "channel_name": "random",
+    "channel_type": "O",
+    "mentions": "[\"rm9qb436airnmmjzxy7soiff9c\"]",
+    "post": "{\"id\":\"kopk7q94u3ybmkrzrwbo1npoqo\",\"create_at\":1793728917643,\"update_at\":1793728917643,\"edit_at\":0,\"delete_at\":0,\"is_pinned\":false,\"user_id\":\"bkr5t3gqiigy5yn34xjb6rwmna\",\"channel_id\":\"r7w6egqkajd8byosc158i4famw\",\"root_id\":\"\",\"original_id\":\"\",\"message\":\"@tester ws fixture root\",\"type\":\"\",\"props\":{},\"hashtags\":\"\",\"file_ids\":[],\"pending_post_id\":\"rm9qb436airnmmjzxy7soiff9c:1793728917637\",\"remote_id\":\"\",\"reply_count\":0,\"last_reply_at\":0,\"participants\":null,\"metadata\":{}}",
+    "sender_name": "@admin",
+    "set_online": true,
+    "team_id": "twi9esnyqidym8upn6muio4x9h"
+  },
+  "event": "posted",
+  "seq": 2
+}

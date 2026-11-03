@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "emoji": "{\"id\":\"hket89majjfg5ccpujngththph\",\"create_at\":1793728923596,\"update_at\":1793728923596,\"delete_at\":0,\"creator_id\":\"bkr5t3gqiigy5yn34xjb6rwmna\",\"name\":\"ws_919634\"}"
+  },
+  "event": "emoji_added",
+  "seq": 61
+}

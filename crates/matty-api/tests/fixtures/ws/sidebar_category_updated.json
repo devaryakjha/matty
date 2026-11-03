@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "updatedCategories": "[{\"id\":\"4k6tzw1pk7r5mfupx6bi1fcc4a\",\"user_id\":\"rm9qb436airnmmjzxy7soiff9c\",\"team_id\":\"twi9esnyqidym8upn6muio4x9h\",\"sort_order\":0,\"sorting\":\"\",\"type\":\"custom\",\"display_name\":\"WS 919634 renamed\",\"muted\":false,\"collapsed\":false,\"channel_ids\":[\"865owkf9afre7myntpn9oupyae\"]}]"
+  },
+  "event": "sidebar_category_updated",
+  "seq": 45
+}

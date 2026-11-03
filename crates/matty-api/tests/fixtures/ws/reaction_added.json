@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "reaction": "{\"user_id\":\"bkr5t3gqiigy5yn34xjb6rwmna\",\"post_id\":\"kopk7q94u3ybmkrzrwbo1npoqo\",\"emoji_name\":\"tada\",\"create_at\":1793728917977,\"update_at\":1793728917977,\"delete_at\":0,\"remote_id\":\"\",\"channel_id\":\"r7w6egqkajd8byosc158i4famw\"}"
+  },
+  "event": "reaction_added",
+  "seq": 4
+}

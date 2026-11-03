@@ -446,3 +446,41 @@ pub struct ChannelUnreadAt {
     /// The new `last_viewed_at`: just before the post marked unread.
     pub last_viewed_at: i64,
 }
+
+/// A message draft, synced across the user's devices.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Draft {
+    /// Milliseconds since the epoch.
+    pub create_at: i64,
+    /// Milliseconds since the epoch.
+    pub update_at: i64,
+    /// Milliseconds since the epoch; nonzero when deleted.
+    pub delete_at: i64,
+    /// Author.
+    pub user_id: String,
+    /// Channel.
+    pub channel_id: String,
+    /// Thread root, for a reply draft.
+    pub root_id: String,
+    /// Draft text.
+    pub message: String,
+    /// Properties.
+    #[serde(deserialize_with = "null_as_default")]
+    pub props: HashMap<String, Value>,
+    /// Attached file ids.
+    #[serde(deserialize_with = "null_as_default")]
+    pub file_ids: Vec<String>,
+}
+
+/// A user's acknowledgement of a post that asked for one (licensed).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PostAcknowledgement {
+    /// Who acknowledged.
+    pub user_id: String,
+    /// Post.
+    pub post_id: String,
+    /// Milliseconds since the epoch; 0 once removed.
+    pub acknowledged_at: i64,
+}

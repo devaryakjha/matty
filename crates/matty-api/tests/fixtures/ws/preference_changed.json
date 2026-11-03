@@ -1,0 +1,16 @@
+{
+  "event": "preference_changed",
+  "data": {
+    "preference": "{\"user_id\": \"rm9qb436airnmmjzxy7soiff9c\", \"category\": \"display_settings\", \"name\": \"use_military_time\", \"value\": \"true\"}"
+  },
+  "broadcast": {
+    "omit_users": null,
+    "user_id": "rm9qb436airnmmjzxy7soiff9c",
+    "channel_id": "",
+    "team_id": "",
+    "connection_id": "",
+    "omit_connection_id": ""
+  },
+  "seq": 108,
+  "_source": "hand-written from mattermost/server model/websocket_message.go and app publishers; this dev server does not send it"
+}

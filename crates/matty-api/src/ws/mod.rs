@@ -18,6 +18,9 @@ use tokio_tungstenite::{
 
 use crate::{ApiError, Client, models::null_as_default, tls};
 
+mod events;
+pub use events::{Event, PostUnread, Posted, ThreadReadChanged, WsEvent};
+
 /// How long [`WsConnection::connect`] waits for the upgrade, the
 /// authentication reply and `hello`, together.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);

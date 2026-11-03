@@ -1,0 +1,21 @@
+{
+  "broadcast": {
+    "channel_id": "r7w6egqkajd8byosc158i4famw",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "last_viewed_at": 1793728918294,
+    "mention_count": 0,
+    "mention_count_root": 0,
+    "msg_count": 53,
+    "msg_count_root": 46,
+    "post_id": "94h76j13ebnymfgzrso5xbxzdo",
+    "urgent_mention_count": 0
+  },
+  "event": "post_unread",
+  "seq": 14
+}
