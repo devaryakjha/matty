@@ -103,6 +103,7 @@ pub fn sidebar() -> SidebarModel {
     }
 }
 
+use crate::account::Account;
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
@@ -349,6 +350,16 @@ fn hm(time: &str) -> u16 {
     hour.parse::<u16>().expect("hour") * 60 + minute.parse::<u16>().expect("minute")
 }
 
+/// The signed-in user, for the account menu.
+pub fn account() -> Account {
+    Account {
+        display_name: "Arya".into(),
+        username: "arya".into(),
+        presence: Presence::Online,
+        status_text: None,
+    }
+}
+
 /// Everyone who posts in the fixtures, for the profile card.
 pub fn profiles() -> Vec<UserProfile> {
     let profile = |username: &str,
@@ -357,6 +368,7 @@ pub fn profiles() -> Vec<UserProfile> {
                    presence,
                    status_text: Option<&str>,
                    local_time: Option<&str>| UserProfile {
+        user_id: format!("u-{username}").into(),
         username: username.into(),
         display_name: display_name.into(),
         position: position.map(Into::into),

@@ -175,6 +175,7 @@ pub enum ChannelEvent {
     OpenPinned,
     /// The user chose Message on someone's profile card.
     OpenDirect {
+        user_id: SharedString,
         username: SharedString,
         display_name: SharedString,
     },
@@ -795,6 +796,7 @@ impl ChannelView {
                     on_message: Box::new(move |window, cx| {
                         close_message.update(cx, |state, cx| state.dismiss(window, cx));
                         let event = ChannelEvent::OpenDirect {
+                            user_id: message_profile.user_id.clone(),
                             username: message_profile.username.clone(),
                             display_name: message_profile.display_name.clone(),
                         };

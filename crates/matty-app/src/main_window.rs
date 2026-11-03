@@ -12,6 +12,7 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::account::{AccountEvent, AccountView};
 use crate::actions::{
     self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
     OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
@@ -27,11 +28,10 @@ use crate::settings::{
     SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
-use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::switcher::{Switcher, SwitcherEvent};
 use crate::threads::{ThreadsEvent, ThreadsModel, ThreadsView};
 use crate::ui::{
-    avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     kbd::{Kbd, format_shortcut},
@@ -77,6 +77,8 @@ pub struct MainWindow {
     channel: Entity<ChannelView>,
     switcher: Entity<Switcher>,
     right_pane: Entity<RightPaneView>,
+    /// The title bar avatar and its menu: presence, status, sign out.
+    account: Entity<AccountView>,
     focus: FocusHandle,
     /// The channel the sidebar selected; the channel view follows it in M1.
     selected_channel: Option<gpui_kit::SharedString>,
@@ -148,6 +150,19 @@ impl MainWindow {
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
+        cx.subscribe_in(
+            &account,
+            window,
+            |this, _, event: &AccountEvent, window, cx| {
+                // Presence and status reach sync through the same event; the
+                // menu already shows them.
+                if let AccountEvent::SignOut = event {
+                    this.sign_out(window, cx);
+                }
+            },
+        )
+        .detach();
         let threads_model = if crate::preview::enabled() {
             crate::preview::threads()
         } else {
@@ -264,6 +279,7 @@ impl MainWindow {
             channel,
             switcher,
             right_pane,
+            account,
             focus,
             selected_channel,
             sidebar_visible: true,
@@ -636,7 +652,6 @@ impl MainWindow {
             return TitleBar::new().into_any_element();
         }
         let theme = UiTheme::read(cx).clone();
-        let palette = Palette::read(cx);
         let platform = Platform::current();
         let switcher_keys = Self::shortcut_for("Quick switcher").unwrap_or_default();
         let switcher = Button::new("titlebar.switcher")
@@ -660,26 +675,7 @@ impl MainWindow {
                 Platform::MacOs => "cmd-k",
                 Platform::Other => "ctrl-k",
             }));
-        let me = div()
-            .relative()
-            .flex_shrink_0()
-            .child(
-                Avatar::new("titlebar.me")
-                    .size(AvatarSize::Sm)
-                    .fallback("M")
-                    .aria_label("You, online"),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .bottom(px(-1.))
-                    .right(px(-1.))
-                    .size(scaled(&theme, 10.))
-                    .rounded_full()
-                    .bg(palette.online)
-                    .border_2()
-                    .border_color(theme.colors.sidebar),
-            );
+        let me = self.account.clone();
         TitleBar::new()
             .child(
                 div()
@@ -747,6 +743,20 @@ impl MainWindow {
                     .child(div().pl(theme.space(1.)).child(me)),
             )
             .into_any_element()
+    }
+
+    /// Sign out returns to the sign-in card; sync clears the session when it
+    /// handles `AccountEvent::SignOut` itself.
+    fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.login.is_some() {
+            return;
+        }
+        let view = cx.new(|cx| LoginView::new(LoginModel::default(), window, cx));
+        cx.subscribe_in(&view, window, Self::on_login_event)
+            .detach();
+        self.login = Some(view);
+        self.right_pane_open = false;
+        cx.notify();
     }
 
     /// Replaces the connection state; sync calls this as it goes.

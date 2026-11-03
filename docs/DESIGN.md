@@ -206,6 +206,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Message (primary) opens the direct message, Mention (outline) inserts
   `@username ` into the composer and focuses it. Nothing else lives on the
   card; everything about a person beyond this belongs in the right pane.
+- **Account menu** (PLAN §3 M1 presence; §4.5 sign out) hangs off the
+  title bar avatar, which carries the presence dot (`design-19`). A `menu`
+  with a `label` row ("Arya · @arya"), the four presences as radio items,
+  "Set a status…" (or "Status: …" once set) opening a small dialog with one
+  field and Clear, Cancel, Done, then Preferences and "Sign out…". Signing
+  out confirms in an `alert_dialog` with the destructive button named for
+  the action, and returns to the sign-in card.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

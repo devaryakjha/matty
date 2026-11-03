@@ -6,6 +6,7 @@
 
 #![allow(missing_docs)]
 
+pub mod account;
 pub mod actions;
 pub mod channel;
 pub mod drafts;
