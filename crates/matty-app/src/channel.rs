@@ -4,21 +4,25 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Window, div,
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 
+use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::sidebar::ChannelKind;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
+    alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState},
+    dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
+    menu::{Menu, MenuItem, MenuState},
     message::{
-        Message, MessageHighlight, Reaction, day_divider, message_action, message_actions,
-        new_messages_divider,
+        Message, MessageHighlight, MessageStatus, Reaction, day_divider, message_action,
+        message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
     skeleton::Skeleton,
@@ -33,6 +37,20 @@ pub struct PostReaction {
     /// Whether the current user is among the reactors.
     pub mine: bool,
 }
+
+/// Where a post is on its way to the server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PostStatus {
+    #[default]
+    Sent,
+    /// In the outbox; drawn at reduced opacity.
+    Pending,
+    /// The send failed; the row offers Retry and Delete.
+    Failed,
+}
+
+/// Mattermost's default `MaxPostSize`, until the server's config arrives.
+pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
 /// One post, already formatted for display: sync does the time zone and
 /// Markdown rewriting, the view only draws.
@@ -52,6 +70,11 @@ pub struct Post {
     /// True when the previous post is from the same author within five
     /// minutes; the row then hides its avatar and header.
     pub continues: bool,
+    /// Written by the current user: Edit and Delete appear in its menu.
+    pub mine: bool,
+    pub saved: bool,
+    pub pinned: bool,
+    pub status: PostStatus,
 }
 
 /// A channel with the posts loaded for it.
@@ -74,6 +97,8 @@ pub struct ChannelModel {
     /// Index of the first post after the user's last view, for the
     /// "New messages" line.
     pub first_unread: Option<usize>,
+    /// The server's `MaxPostSize`; the composer counts down to it.
+    pub max_post_size: usize,
 }
 
 /// A row in the transcript: posts interleaved with dividers.
@@ -109,27 +134,93 @@ pub enum ChannelEvent {
     Send(SharedString),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
+    /// The user added or removed their reaction; the view already shows it.
+    ToggleReaction {
+        post: SharedString,
+        emoji: SharedString,
+    },
+    /// Saved or unsaved a post; the view already shows it.
+    ToggleSave(SharedString),
+    /// Pinned or unpinned a post to the channel; the view already shows it.
+    TogglePin(SharedString),
+    /// The user wants to edit their post.
+    Edit(SharedString),
+    /// The user confirmed deleting their post; the view already removed it.
+    Delete(SharedString),
+    /// Retry a failed send; the view shows it pending again.
+    Retry(SharedString),
 }
+
+/// What a More-menu item does to the view.
+type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<ChannelView>)>;
+
+/// The reactions one click away, as Mattermost's recent-emoji row. The full
+/// picker arrives with the emoji data from sync.
+const QUICK_REACTIONS: [(&str, &str); 6] = [
+    ("👍", "Thumbs up"),
+    ("❤️", "Heart"),
+    ("😂", "Joy"),
+    ("🎉", "Tada"),
+    ("👀", "Eyes"),
+    ("🚀", "Rocket"),
+];
 
 pub struct ChannelView {
     model: Option<ChannelModel>,
     rows: Vec<Row>,
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
+    /// One menu for every post: its items are set when it opens.
+    menu: Entity<MenuState>,
+    delete: DialogHandle,
+    /// The post the delete dialog asks about.
+    deleting: Option<SharedString>,
+    /// The current user's display name, for optimistic rows.
+    me: SharedString,
+    /// Characters in the composer, for the Send button and the counter.
+    draft_len: usize,
+    /// Numbers the optimistic rows until sync assigns ids.
+    pending_seq: usize,
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<ChannelEvent> for ChannelView {}
 
 impl ChannelView {
-    pub fn new(model: Option<ChannelModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        model: Option<ChannelModel>,
+        me: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let composer = cx.new(|cx| ComposerState::new(8, window, cx));
+        let menu = cx.new(|cx| MenuState::new([], cx));
+        let subscriptions = vec![cx.subscribe_in(
+            &composer,
+            window,
+            |this, composer, event: &ComposerEvent, window, cx| match event {
+                ComposerEvent::Change => {
+                    this.draft_len = composer.read(cx).value(cx).chars().count();
+                    cx.notify();
+                }
+                ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
+                _ => {}
+            },
+        )];
         let mut this = Self {
             model: None,
             rows,
             list,
             composer,
+            menu,
+            delete: DialogHandle::new(false),
+            deleting: None,
+            me: me.into(),
+            draft_len: 0,
+            pending_seq: 0,
+            _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
         this
@@ -163,6 +254,339 @@ impl ChannelView {
         });
         self.model = model;
         cx.notify();
+    }
+
+    fn max_post_size(&self) -> usize {
+        self.model
+            .as_ref()
+            .map_or(DEFAULT_MAX_POST_SIZE, |channel| channel.max_post_size)
+    }
+
+    fn can_send(&self) -> bool {
+        self.model.is_some() && self.draft_len > 0 && self.draft_len <= self.max_post_size()
+    }
+
+    /// Appends the text as a pending post by the current user, clears the
+    /// composer and tells sync (PLAN §4.3: optimistic send through the
+    /// outbox). Blank text and text over the limit stay in the composer.
+    fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let body: SharedString = text.trim().to_string().into();
+        if body.is_empty() || body.chars().count() > self.max_post_size() {
+            return;
+        }
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        self.pending_seq += 1;
+        let last = model.posts.last();
+        let post = Post {
+            id: format!("pending-{}", self.pending_seq).into(),
+            author: self.me.clone(),
+            time: "Sending…".into(),
+            day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
+            body: body.clone(),
+            reactions: vec![],
+            mentions_me: false,
+            edited: false,
+            continues: last
+                .is_some_and(|post| post.author == self.me && post.status != PostStatus::Failed),
+            mine: true,
+            saved: false,
+            pinned: false,
+            status: PostStatus::Pending,
+        };
+        model.posts.push(post);
+        self.set_model(Some(model), window, cx);
+        self.composer
+            .update(cx, |composer, cx| composer.set_value("", window, cx));
+        self.draft_len = 0;
+        cx.emit(ChannelEvent::Send(body));
+    }
+
+    fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let changed = self.mutate_post(
+            &id,
+            |post| {
+                post.status = PostStatus::Pending;
+                post.time = "Sending…".into();
+            },
+            cx,
+        );
+        if changed {
+            cx.emit(ChannelEvent::Retry(id));
+        }
+    }
+
+    /// Wraps the selection in Markdown from a toolbar button or shortcut.
+    fn wrap(&mut self, before: &str, after: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.update(cx, |composer, cx| {
+            composer.wrap_selection(before, after, window, cx);
+            composer.focus(window, cx);
+        });
+    }
+
+    fn last_own_post(&self) -> Option<SharedString> {
+        self.model.as_ref()?.posts.iter().rev().find_map(|post| {
+            (post.mine && post.status == PostStatus::Sent).then(|| post.id.clone())
+        })
+    }
+
+    /// Applies `change` to the post with `id`, if it is loaded, and redraws.
+    /// Rows index posts, so nothing else moves.
+    fn mutate_post(
+        &mut self,
+        id: &SharedString,
+        change: impl FnOnce(&mut Post),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(post) = self
+            .model
+            .as_mut()
+            .and_then(|channel| channel.posts.iter_mut().find(|post| &post.id == id))
+        else {
+            return false;
+        };
+        change(post);
+        cx.notify();
+        true
+    }
+
+    /// Flips the user's reaction locally and tells sync. A chip that drops
+    /// to zero disappears, as on the server.
+    fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
+        let changed = self.mutate_post(
+            &id,
+            |post| {
+                if let Some(at) = post.reactions.iter().position(|r| r.emoji == emoji) {
+                    let reaction = &mut post.reactions[at];
+                    if reaction.mine {
+                        reaction.mine = false;
+                        reaction.count = reaction.count.saturating_sub(1);
+                        if reaction.count == 0 {
+                            post.reactions.remove(at);
+                        }
+                    } else {
+                        reaction.mine = true;
+                        reaction.count += 1;
+                    }
+                } else {
+                    post.reactions.push(PostReaction {
+                        emoji: emoji.clone(),
+                        count: 1,
+                        mine: true,
+                    });
+                }
+            },
+            cx,
+        );
+        if changed {
+            cx.emit(ChannelEvent::ToggleReaction { post: id, emoji });
+        }
+    }
+
+    fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
+            cx.emit(ChannelEvent::ToggleSave(id));
+        }
+    }
+
+    fn toggle_pin(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let mut now_pinned = false;
+        let changed = self.mutate_post(
+            &id,
+            |post| {
+                post.pinned = !post.pinned;
+                now_pinned = post.pinned;
+            },
+            cx,
+        );
+        if changed {
+            if let Some(channel) = self.model.as_mut() {
+                channel.pinned = if now_pinned {
+                    channel.pinned + 1
+                } else {
+                    channel.pinned.saturating_sub(1)
+                };
+            }
+            cx.emit(ChannelEvent::TogglePin(id));
+        }
+    }
+
+    /// Removes the post from the transcript and tells sync. The rows are
+    /// rebuilt because the dividers around it may go too.
+    fn delete_post(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        let Some(at) = model.posts.iter().position(|post| post.id == id) else {
+            return;
+        };
+        let reached_server = model.posts[at].status == PostStatus::Sent;
+        model.posts.remove(at);
+        // The "New messages" line stays above the same post.
+        model.first_unread = model.first_unread.and_then(|first| {
+            let first = if at < first { first - 1 } else { first };
+            (first < model.posts.len()).then_some(first)
+        });
+        self.set_model(Some(model), window, cx);
+        if reached_server {
+            cx.emit(ChannelEvent::Delete(id));
+        }
+    }
+
+    /// Opens the shared menu at the pointer with `items`.
+    fn open_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.open_at(Some(at), window, cx);
+        });
+    }
+
+    fn reaction_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        QUICK_REACTIONS
+            .iter()
+            .map(|(emoji, name)| {
+                let view = view.clone();
+                let id = id.clone();
+                let emoji: SharedString = (*emoji).into();
+                let label: SharedString = format!("{emoji}  {name}").into();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("react.{name}").into()),
+                    label,
+                )
+                .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
+                .on_click(move |_, _, cx| {
+                    let (view, id, emoji) = (view.clone(), id.clone(), emoji.clone());
+                    view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                        .ok();
+                })
+            })
+            .collect()
+    }
+
+    fn more_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        let act = |name: &'static str, label: SharedString, run: MenuAction| {
+            let view = view.clone();
+            MenuItem::new(
+                gpui_kit::ElementId::Name(format!("post.menu.{name}").into()),
+                label,
+            )
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| run(this, window, cx)).ok();
+            })
+        };
+        let body = post.body.clone();
+        let mut items = vec![
+            act(
+                "copy",
+                "Copy text".into(),
+                Box::new(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+                }),
+            ),
+            {
+                let id = id.clone();
+                act(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_pin(id.clone(), cx)),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
+                )
+            },
+        ];
+        if post.mine {
+            let edit_id = id.clone();
+            let delete_id = id.clone();
+            items.push(MenuItem::separator());
+            items.push(act(
+                "edit",
+                "Edit".into(),
+                Box::new(move |_, _, cx| cx.emit(ChannelEvent::Edit(edit_id.clone()))),
+            ));
+            items.push(act(
+                "delete",
+                "Delete…".into(),
+                Box::new(move |this, window, cx| {
+                    this.deleting = Some(delete_id.clone());
+                    this.delete.open(window, cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        items
+    }
+
+    /// "Delete message?" with the action named in the button (PLAN §4.5).
+    fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let channel: SharedString = match self.model.as_ref() {
+            Some(channel) => match channel.kind {
+                ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
+                    "this conversation".into()
+                }
+                _ => format!("#{}", channel.name).into(),
+            },
+            None => "the channel".into(),
+        };
+        let popup = dialog_popup("post.delete.popup", "Delete message", cx)
+            .child(dialog_title("post.delete.title", cx).child("Delete this message?"))
+            .child(
+                dialog_description("post.delete.description", cx).child(format!(
+                    "It is removed for everyone in {channel}. This cannot be undone."
+                )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel("post.delete.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action("post.delete.confirm")
+                            .variant(ButtonVariant::Destructive)
+                            .label("Delete"),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
+            view.update(cx, |this, cx| {
+                if let Some(id) = this.deleting.take() {
+                    this.delete_post(id, window, cx);
+                }
+            })
+            .ok();
+            true
+        })
     }
 
     fn header(&self, channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
@@ -285,13 +709,23 @@ impl ChannelView {
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
         let thread_id = id.clone();
+        let react_items = Self::reaction_items_for(post, cx);
+        let more_items = Self::more_items_for(post, cx);
+        let save_id = id.clone();
         let actions = message_actions(cx)
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                LucideIcon::FaceSlightlySmilingPlus,
-                "Add reaction",
-                cx,
-            ))
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                    LucideIcon::FaceSlightlySmilingPlus,
+                    "Add reaction",
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        this.open_menu(react_items.clone(), event.position(), window, cx)
+                    },
+                )),
+            )
             .child(
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
@@ -303,18 +737,36 @@ impl ChannelView {
                     cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
                 })),
             )
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                LucideIcon::Bookmark,
-                "Save",
-                cx,
-            ))
-            .child(message_action(
-                gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
-                LucideIcon::Ellipsis,
-                "More actions",
-                cx,
-            ));
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                    if post.saved {
+                        LucideIcon::BookmarkCheck
+                    } else {
+                        LucideIcon::Bookmark
+                    },
+                    if post.saved { "Unsave" } else { "Save" },
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
+            )
+            .child(
+                message_action(
+                    gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
+                    LucideIcon::Ellipsis,
+                    "More actions",
+                    cx,
+                )
+                .on_click(cx.listener(
+                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                        this.open_menu(more_items.clone(), event.position(), window, cx)
+                    },
+                )),
+            );
+        let reaction_post = id.clone();
+        let view = cx.entity().downgrade();
+        let retry_view = view.clone();
+        let retry_id = id.clone();
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
             .timestamp(post.time.clone())
@@ -336,6 +788,31 @@ impl ChannelView {
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
+            .on_reaction(move |emoji, _, cx| {
+                let (id, emoji) = (reaction_post.clone(), emoji.clone());
+                view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                    .ok();
+            })
+            .status(match post.status {
+                PostStatus::Sent => MessageStatus::Sent,
+                PostStatus::Pending => MessageStatus::Pending,
+                PostStatus::Failed => MessageStatus::Failed,
+            })
+            .on_retry({
+                let (view, id) = (retry_view.clone(), retry_id.clone());
+                move |_, _, cx| {
+                    let id = id.clone();
+                    view.update(cx, |this, cx| this.retry(id, cx)).ok();
+                }
+            })
+            .on_delete({
+                let (view, id) = (retry_view, retry_id);
+                move |_, window, cx| {
+                    let id = id.clone();
+                    view.update(cx, |this, cx| this.delete_post(id, window, cx))
+                        .ok();
+                }
+            })
             .actions(actions)
             .px(scaled(&theme, metrics::GUTTER))
             .child(markdown(
@@ -393,7 +870,7 @@ impl ChannelView {
         .pb(theme.space(1.))
     }
 
-    fn composer(&self, cx: &App) -> impl IntoElement + use<> {
+    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let tool = |id: &'static str, label: &'static str, glyph: LucideIcon| {
             Button::new(id)
@@ -406,7 +883,57 @@ impl ChannelView {
                         .text_color(theme.colors.muted_foreground),
                 )
         };
+        let max = self.max_post_size();
+        let over = self.draft_len > max;
+        // The counter appears in the last tenth and stays while over.
+        let counter = (over || self.draft_len + max / 10 >= max).then(|| {
+            div()
+                .type_style(style::META, &theme)
+                .text_color(if over {
+                    theme.colors.destructive
+                } else {
+                    theme.colors.muted_foreground
+                })
+                .child(format!("{} / {}", self.draft_len, max))
+        });
+        let emoji_items: Vec<MenuItem> = QUICK_REACTIONS
+            .iter()
+            .map(|(emoji, name)| {
+                let view = cx.entity().downgrade();
+                let glyph: SharedString = (*emoji).into();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("composer.emoji.{name}").into()),
+                    format!("{emoji}  {name}"),
+                )
+                .on_click(move |_, window, cx| {
+                    let glyph = glyph.clone();
+                    view.update(cx, |this, cx| {
+                        this.composer.update(cx, |composer, cx| {
+                            composer.insert(format!("{glyph} "), window, cx);
+                            composer.focus(window, cx);
+                        })
+                    })
+                    .ok();
+                })
+            })
+            .collect();
+        let mut key = gpui_kit::KeyContext::new_with_defaults(cx.platform_info().os);
+        key.add("Composer");
+        if self.draft_len == 0 {
+            key.add("empty");
+        }
         div()
+            .key_context(key)
+            .on_action(cx.listener(|this, _: &EditLastMessage, _, cx| {
+                if let Some(id) = this.last_own_post() {
+                    cx.emit(ChannelEvent::Edit(id));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ReplyToLastMessage, _, cx| {
+                if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
+                    cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                }
+            }))
             .flex_shrink_0()
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
@@ -414,26 +941,51 @@ impl ChannelView {
             .child(
                 Composer::new(&self.composer)
                     .rounded(theme.radius.lg)
-                    .child(tool("composer.attach", "Attach files", LucideIcon::Plus))
-                    .child(tool("composer.bold", "Bold", LucideIcon::Bold))
-                    .child(tool("composer.italic", "Italic", LucideIcon::Italic))
-                    .child(tool("composer.code", "Code", LucideIcon::Code))
-                    .child(tool(
-                        "composer.emoji",
-                        "Emoji",
-                        LucideIcon::FaceSlightlySmiling,
+                    .child(
+                        tool("composer.attach", "Attach files", LucideIcon::Plus).on_click(
+                            |_, window, cx| window.dispatch_action(Box::new(UploadFiles), cx),
+                        ),
+                    )
+                    .child(tool("composer.bold", "Bold", LucideIcon::Bold).on_click(
+                        cx.listener(|this, _, window, cx| this.wrap("**", "**", window, cx)),
                     ))
-                    .child(tool(
-                        "composer.mention",
-                        "Mention someone",
-                        LucideIcon::AtSign,
+                    .child(
+                        tool("composer.italic", "Italic", LucideIcon::Italic).on_click(
+                            cx.listener(|this, _, window, cx| this.wrap("_", "_", window, cx)),
+                        ),
+                    )
+                    .child(tool("composer.code", "Code", LucideIcon::Code).on_click(
+                        cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
                     ))
+                    .child(
+                        tool("composer.emoji", "Emoji", LucideIcon::FaceSlightlySmiling).on_click(
+                            cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                this.open_menu(emoji_items.clone(), event.position(), window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        tool("composer.mention", "Mention someone", LucideIcon::AtSign).on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.composer.update(cx, |composer, cx| {
+                                    composer.insert("@", window, cx);
+                                    composer.focus(window, cx);
+                                })
+                            }),
+                        ),
+                    )
                     .child(div().flex_1())
+                    .children(counter)
                     .child(
                         Button::new("composer.send")
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::IconSm)
                             .aria_label("Send")
+                            .disabled(!self.can_send())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let text = this.composer.read(cx).value(cx);
+                                this.send(text, window, cx)
+                            }))
                             .child(
                                 lucide(LucideIcon::SendHorizontal)
                                     .size(scaled(&theme, metrics::ICON))
@@ -642,14 +1194,18 @@ impl ChannelView {
 }
 
 impl Render for ChannelView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .bg(theme.colors.background);
+            .bg(theme.colors.background)
+            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
+                this.composer
+                    .update(cx, |composer, cx| composer.focus(window, cx))
+            }));
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };
@@ -663,6 +1219,9 @@ impl Render for ChannelView {
         root.child(self.header(&channel, cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(self.composer(cx))
+            // Zero-size host for the shared post menu; it opens at the pointer.
+            .child(Menu::new(&self.menu, "Message actions").context_area(div()))
+            .child(self.delete_dialog(window, cx))
     }
 }
 
@@ -681,6 +1240,10 @@ mod tests {
             mentions_me: false,
             edited: false,
             continues: false,
+            mine: false,
+            saved: false,
+            pinned: false,
+            status: PostStatus::Sent,
         }
     }
 
@@ -689,6 +1252,7 @@ mod tests {
         let channel = ChannelModel {
             purpose: None,
             loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
             id: "c".into(),
             name: "c".into(),
             kind: ChannelKind::Public,

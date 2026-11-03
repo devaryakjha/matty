@@ -141,6 +141,26 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   link. Errors are one `meta` sentence in `destructive` with an icon, placed
   above the button they concern; a request in flight puts a spinner in the
   primary button and never blocks the window.
+- **Post actions** live in the hover toolbar: add reaction, reply in
+  thread, save (the bookmark fills when saved) and a More menu. Add
+  reaction opens a menu of the six quick reactions with the user's own
+  checked, until the emoji data arrives for the full picker. More holds
+  Copy text, Pin/Unpin, Save/Unsave and, on the user's own posts, Edit and
+  Delete. Reactions, saves and pins apply in the view at once and a chip
+  that drops to zero disappears. Delete asks in an alert dialog whose
+  button says Delete (PLAN §4.5); nothing destructive happens from a menu
+  alone.
+- **Composer feedback** (PLAN §4.3): Enter or the send button appends the
+  post at once as a row by the current user at 60% opacity with "Sending…"
+  for its time; the composer clears without waiting for the server. Send is
+  disabled while the composer is empty or over the limit. A row the server
+  refused keeps its text, says "Message failed to send." in `destructive`
+  with an icon, and offers Retry and Delete as text links; nothing is lost
+  and nothing pops up. A `meta` counter ("189 / 200") appears next to Send
+  only in the last tenth of the server's `MaxPostSize` and turns
+  `destructive` over it. The B, I and code buttons wrap the selection in
+  Markdown and leave focus in the composer; Up in an empty composer edits
+  the user's last post, Shift+Up replies to the newest one.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.
