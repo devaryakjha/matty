@@ -100,3 +100,55 @@ async fn browse_people_and_create_answer_with_their_change_sets() {
     };
     assert_eq!(channel_id, "c9");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_answers_with_its_posts_and_their_authors_first() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/teams/t1/posts/search"))
+        .and(wiremock::matchers::body_partial_json(json!({"terms": "lunch from:ada", "time_zone_offset": 3600})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "order": ["p2", "p1"],
+            "posts": {
+                "p1": {"id": "p1", "channel_id": "c1", "user_id": "ada", "create_at": 1, "message": "lunch?"},
+                "p2": {"id": "p2", "channel_id": "c1", "user_id": "ada", "create_at": 2, "message": "lunch!"}
+            },
+            "matches": {"p1": ["lunch"], "p2": ["lunch"]}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/users/ids"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "ada", "username": "ada", "first_name": "Ada"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    next(&changes, |c| matches!(c, ChangeSet::Sidebar { .. })).await;
+    sync.send(Command::Search {
+        team_id: "t1".into(),
+        terms: "lunch from:ada".into(),
+        time_zone_offset: 3600,
+    });
+    let ChangeSet::Search { terms, posts } =
+        next(&changes, |c| matches!(c, ChangeSet::Search { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(terms, "lunch from:ada");
+    assert_eq!(
+        posts.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        ["p2", "p1"]
+    );
+    let ChangeSet::Users(users) = next(&changes, |c| matches!(c, ChangeSet::Users(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(users[0].id, "ada");
+}

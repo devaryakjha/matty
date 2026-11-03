@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::SharedString;
-use matty_api::models::{Channel, ChannelStats, User};
+use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
 
@@ -39,14 +39,18 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
-    /// The open channel as stored, and its counts once fetched.
+    /// The open channel as stored, the user's membership, and its counts
+    /// once fetched.
     channel: Option<Arc<Channel>>,
+    member: Option<Arc<ChannelMember>>,
     stats: Option<Arc<ChannelStats>>,
     /// Who is typing in the open channel, and since when.
     typing: Vec<(String, Instant)>,
     /// A channel sync made ready (joined, created, a new direct message)
     /// that the sidebar has yet to show.
     ready: Option<String>,
+    /// The search on screen and its results once they come.
+    search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
 }
 
 /// How long a typing notice lasts without another.
@@ -87,6 +91,10 @@ pub struct Update {
     pub ready: Option<SharedString>,
     /// A join the server refused, for Browse to show as not joined again.
     pub join_failed: Option<SharedString>,
+    /// The open channel's mute and notification preferences.
+    pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
+    /// The search's results, or its failure.
+    pub search: Option<crate::right_pane::SearchModel>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -102,6 +110,65 @@ pub enum ChannelUpdate {
         updated: Vec<Post>,
         appended: Vec<Post>,
     },
+}
+
+/// A membership's mute and notification preferences, from Mattermost's
+/// `notify_props`. Muting is `mark_unread: mention`, as in the web app.
+pub fn notifications(member: &ChannelMember) -> (bool, crate::channel::ChannelNotifications) {
+    use crate::channel::{ChannelNotifications, NotifyLevel};
+    let prop = |key: &str| member.notify_props.get(key).map_or("", String::as_str);
+    let level = |key: &str| match prop(key) {
+        "all" => NotifyLevel::All,
+        "mention" => NotifyLevel::Mentions,
+        "none" => NotifyLevel::None,
+        _ => NotifyLevel::Default,
+    };
+    let muted = prop("mark_unread") == "mention";
+    (
+        muted,
+        ChannelNotifications {
+            desktop: level("desktop"),
+            mobile: level("push"),
+            ignore_channel_mentions: prop("ignore_channel_mentions") == "on",
+            mark_unread_mentions_only: muted,
+        },
+    )
+}
+
+/// The `notify_props` to send for a mute switch and preferences.
+pub fn notify_props(
+    muted: bool,
+    notifications: &crate::channel::ChannelNotifications,
+) -> HashMap<String, String> {
+    use crate::channel::NotifyLevel;
+    let level = |level: NotifyLevel| match level {
+        NotifyLevel::Default => "default",
+        NotifyLevel::All => "all",
+        NotifyLevel::Mentions => "mention",
+        NotifyLevel::None => "none",
+    };
+    let mark_unread = if muted || notifications.mark_unread_mentions_only {
+        "mention"
+    } else {
+        "all"
+    };
+    HashMap::from([
+        (
+            "desktop".to_string(),
+            level(notifications.desktop).to_string(),
+        ),
+        ("push".to_string(), level(notifications.mobile).to_string()),
+        ("mark_unread".to_string(), mark_unread.to_string()),
+        (
+            "ignore_channel_mentions".to_string(),
+            if notifications.ignore_channel_mentions {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string(),
+        ),
+    ])
 }
 
 /// How to go from the posts on screen to `new` without a reset, or `None`
@@ -165,9 +232,11 @@ impl Live {
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 channel: None,
+                member: None,
                 stats: None,
                 typing: Vec::new(),
                 ready: None,
+                search: None,
             },
             changes,
         ))
@@ -193,6 +262,7 @@ impl Live {
         self.posts = None;
         self.shown = None;
         self.channel = None;
+        self.member = None;
         self.stats = None;
         self.typing.clear();
         self.open = Some(row);
@@ -235,6 +305,9 @@ impl Live {
         model.members = details.members;
         model.pinned = details.pinned;
         model.typing = self.typing_names();
+        if let Some(member) = &self.member {
+            (model.muted, model.notifications) = notifications(member);
+        }
         model.profiles = self.profiles();
         Some(model)
     }
@@ -289,6 +362,56 @@ impl Live {
         self.typing
             .retain(|(_, since)| now.saturating_duration_since(*since) < TYPING_FOR);
         (self.typing.len() != before).then(|| self.typing_names())
+    }
+
+    /// Searches the shown team; the results come as [`Update::search`].
+    pub fn search(&mut self, terms: &str) {
+        let Some(team_id) = self.team.clone() else {
+            return;
+        };
+        let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
+        self.search = Some((terms.to_owned(), None));
+        self.send(Command::Search {
+            team_id,
+            terms: terms.to_owned(),
+            time_zone_offset: offset,
+        });
+    }
+
+    /// The search model for what has come back so far.
+    fn search_model(&self) -> Option<crate::right_pane::SearchModel> {
+        let (terms, posts) = self.search.as_ref()?;
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            username: &self.me.1,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+        };
+        Some(crate::right_pane::SearchModel {
+            query: terms.clone().into(),
+            searching: posts.is_none(),
+            results: posts
+                .iter()
+                .flat_map(|posts| posts.iter())
+                .map(|post| crate::right_pane::ListedPost {
+                    channel_id: post.channel_id.clone().into(),
+                    channel_name: self
+                        .channel_name(&post.channel_id)
+                        .unwrap_or_else(|| "Another channel".into()),
+                    post: crate::transcript::listed_post(post, &self.users, &viewer),
+                })
+                .collect(),
+        })
+    }
+
+    /// A channel's name in any team's sidebar.
+    fn channel_name(&self, channel_id: &str) -> Option<SharedString> {
+        self.sections
+            .values()
+            .flat_map(|sections| sections.iter())
+            .flat_map(|section| section.channels.iter())
+            .find(|channel| channel.id == channel_id)
+            .map(|channel| channel.display_name.clone().into())
     }
 
     /// The team on screen.
@@ -414,9 +537,32 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
-            ChangeSet::Channel(channel) if self.is_open(&channel.id) => {
+            ChangeSet::Search { terms, posts } => {
+                if let Some((asked, results)) = self.search.as_mut()
+                    && asked == terms
+                {
+                    *results = Some(posts.clone());
+                    update.search = self.search_model();
+                }
+            }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "search", ..
+            }) => {
+                // Shown as no results rather than searching forever.
+                if let Some((_, results)) = self.search.as_mut() {
+                    *results = Some(Arc::from(Vec::new()));
+                    update.search = self.search_model();
+                }
+            }
+            ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 update.details = self.shown_details();
+                if let Some(member) = member {
+                    self.member = Some(member.clone());
+                    if self.shown.is_some() {
+                        update.notifications = Some(notifications(member));
+                    }
+                }
             }
             ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
                 self.stats = Some(stats.clone());
@@ -452,6 +598,13 @@ impl Live {
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
+                }
+                if self
+                    .search
+                    .as_ref()
+                    .is_some_and(|(_, posts)| posts.is_some())
+                {
+                    update.search = self.search_model();
                 }
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
@@ -915,11 +1068,14 @@ mod tests {
     fn the_header_and_counts_follow_the_first_snapshot() {
         let mut live = live();
         opened(&mut live);
-        let update = live.apply(&ChangeSet::Channel(Arc::new(Channel {
-            id: "c1".into(),
-            header: "Ship it".into(),
-            ..Channel::default()
-        })));
+        let update = live.apply(&ChangeSet::Channel {
+            channel: Arc::new(Channel {
+                id: "c1".into(),
+                header: "Ship it".into(),
+                ..Channel::default()
+            }),
+            member: None,
+        });
         assert_eq!(
             update.details,
             Some(Details {
@@ -1050,5 +1206,92 @@ mod tests {
             .map(|p| p.username.to_string())
             .collect();
         assert_eq!(names, ["ada", "zed"]);
+    }
+
+    #[test]
+    fn search_results_name_their_channel_and_ignore_older_searches() {
+        let mut live = live();
+        live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![channel("town", "O", 0, 0)])]),
+        });
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        live.search("lunch");
+        let hit = |id: &str, channel: &str| matty_api::models::Post {
+            id: id.into(),
+            channel_id: channel.into(),
+            user_id: "ada".into(),
+            message: "lunch?".into(),
+            ..Default::default()
+        };
+        let stale = live.apply(&ChangeSet::Search {
+            terms: "lunc".into(),
+            posts: Arc::from(vec![hit("p0", "town")]),
+        });
+        assert_eq!(stale.search, None);
+        let model = live
+            .apply(&ChangeSet::Search {
+                terms: "lunch".into(),
+                posts: Arc::from(vec![hit("p1", "town"), hit("p2", "elsewhere")]),
+            })
+            .search
+            .unwrap();
+        assert!(!model.searching);
+        assert_eq!(
+            model
+                .results
+                .iter()
+                .map(|r| (r.post.id.as_ref(), r.channel_name.as_ref()))
+                .collect::<Vec<_>>(),
+            [("p1", "town"), ("p2", "Another channel")]
+        );
+        // Names arriving later redraw the results.
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            username: "ada".into(),
+            ..User::default()
+        }])));
+        assert_eq!(
+            update.search.unwrap().results[0].post.author.as_ref(),
+            "ada"
+        );
+    }
+
+    #[test]
+    fn notification_preferences_round_trip_through_notify_props() {
+        use crate::channel::{ChannelNotifications, NotifyLevel};
+        let member = ChannelMember {
+            notify_props: HashMap::from([
+                ("desktop".to_string(), "mention".to_string()),
+                ("push".to_string(), "none".to_string()),
+                ("mark_unread".to_string(), "mention".to_string()),
+                ("ignore_channel_mentions".to_string(), "on".to_string()),
+            ]),
+            ..ChannelMember::default()
+        };
+        let (muted, prefs) = notifications(&member);
+        assert!(muted);
+        assert_eq!(
+            prefs,
+            ChannelNotifications {
+                desktop: NotifyLevel::Mentions,
+                mobile: NotifyLevel::None,
+                ignore_channel_mentions: true,
+                mark_unread_mentions_only: true,
+            }
+        );
+        let props = notify_props(muted, &prefs);
+        assert_eq!(
+            notifications(&ChannelMember {
+                notify_props: props,
+                ..ChannelMember::default()
+            }),
+            (muted, prefs)
+        );
+        let (muted, prefs) = notifications(&ChannelMember::default());
+        assert!(!muted);
+        assert_eq!(prefs, ChannelNotifications::default());
     }
 }

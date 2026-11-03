@@ -26,6 +26,21 @@ pub struct NewChannel {
     pub kind: String,
 }
 
+/// The fields of a channel to change, as `PUT channels/{id}/patch` takes
+/// them; `None` leaves a field alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelPatch {
+    /// The name people see.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The header text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// What the channel is for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
 /// A post search, as `POST teams/{id}/posts/search` takes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SearchQuery {
@@ -137,6 +152,33 @@ impl Client {
         channel_ids: &[String],
     ) -> Result<std::collections::HashMap<String, i64>, ApiError> {
         self.post("channels/stats/member_count", channel_ids).await
+    }
+
+    /// `PUT channels/{channel_id}/patch`: renames a channel or changes its
+    /// header or purpose.
+    pub async fn patch_channel(
+        &self,
+        channel_id: &str,
+        patch: &ChannelPatch,
+    ) -> Result<Channel, ApiError> {
+        self.put(&format!("channels/{channel_id}/patch"), patch)
+            .await
+    }
+
+    /// `PUT channels/{channel_id}/members/{user_id}/notify_props`: changes
+    /// these of the user's notification properties for the channel.
+    pub async fn update_channel_notify_props(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+        props: &std::collections::HashMap<String, String>,
+    ) -> Result<(), ApiError> {
+        self.put::<_, Value>(
+            &format!("channels/{channel_id}/members/{user_id}/notify_props"),
+            props,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// `POST channels`: creates a public (`O`) or private (`P`) channel the
