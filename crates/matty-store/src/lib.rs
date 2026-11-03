@@ -3,6 +3,7 @@
 //! Only the sync engine writes here, and the main thread never opens the
 //! database (PLAN §6.2, §6.5). Plain Rust: this crate must never depend on GPUI.
 
+pub mod media;
 mod migrations;
 mod open;
 pub mod posts;
