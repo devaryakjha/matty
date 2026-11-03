@@ -22,6 +22,10 @@ pub const SIDEBAR_DEFAULT: f32 = 240.;
 pub const RIGHT_PANE_MIN: f32 = 320.;
 pub const RIGHT_PANE_MAX: f32 = 640.;
 pub const RIGHT_PANE_DEFAULT: f32 = 400.;
+/// Zoom limits and step.
+pub const ZOOM_MIN: f32 = 0.5;
+pub const ZOOM_MAX: f32 = 2.;
+pub const ZOOM_STEP: f32 = 0.1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,6 +84,8 @@ pub struct Settings {
     pub right_pane_width: f32,
     pub theme: ThemeChoice,
     pub text_scale: f32,
+    /// Window zoom from Cmd+= / Cmd+- / Cmd+0, scaling text and spacing.
+    pub zoom: f32,
     pub launch_at_login: bool,
     pub close_to_tray: bool,
     pub cache_size_mb: u32,
@@ -100,6 +106,7 @@ impl Default for Settings {
             right_pane_width: RIGHT_PANE_DEFAULT,
             theme: ThemeChoice::System,
             text_scale: 1.,
+            zoom: 1.,
             launch_at_login: false,
             close_to_tray: false,
             cache_size_mb: 500,
@@ -135,6 +142,7 @@ impl Settings {
             RIGHT_PANE_DEFAULT,
         );
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
+        self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
         self
     }
 }
