@@ -244,7 +244,7 @@ impl MainWindow {
                 | ChannelEvent::ToggleReaction { .. }
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
-                | ChannelEvent::Edit(_)
+                | ChannelEvent::SaveEdit { .. }
                 | ChannelEvent::Delete(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}

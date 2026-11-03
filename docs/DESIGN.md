@@ -260,6 +260,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   time" as the caption, zoom, arrows and ←/→, an Open (download) action
   before Close, and Escape returning focus. The thread pane and the Saved,
   Pinned, Mentions and Search listings show the same chips and lightbox.
+- **Editing in place** (PLAN §4.3 edit): Edit in a post's menu, or Up in
+  an empty composer for the last own post, swaps the post body for a
+  `Composer` holding the text with the caret at the end, a `meta` hint
+  "Enter to save · Escape to cancel" and Ghost Cancel and Default Save
+  buttons, and scrolls the row into view (`design-25`). Enter or Save
+  keeps the text and adds "(edited)" at once; Escape, Cancel, an unchanged
+  or emptied body closes the editor with nothing sent. Shift+Up in an
+  empty composer still opens the newest post's thread. Focus returns to
+  the main composer either way.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

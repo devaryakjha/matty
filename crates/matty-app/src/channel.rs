@@ -219,14 +219,25 @@ pub enum ChannelEvent {
     ToggleSave(SharedString),
     /// Pinned or unpinned a post to the channel; the view already shows it.
     TogglePin(SharedString),
-    /// The user wants to edit their post.
-    Edit(SharedString),
+    /// The user saved an edit; the view already shows the new text with
+    /// the "(edited)" marker.
+    SaveEdit {
+        post: SharedString,
+        text: SharedString,
+    },
     /// The user confirmed deleting their post; the view already removed it.
     Delete(SharedString),
     /// Retry a failed send; the view shows it pending again.
     Retry(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
+}
+
+/// A post being edited in place: its own composer sits where the body was.
+struct Editing {
+    post: SharedString,
+    composer: Entity<ComposerState>,
+    _subscription: gpui_kit::Subscription,
 }
 
 /// What a More-menu item does to the view.
@@ -268,6 +279,8 @@ pub struct ChannelView {
     lightbox_handle: DialogHandle,
     /// File ids behind the lightbox's images, for its Open button.
     lightbox_files: Vec<SharedString>,
+    /// The post whose body is a composer right now (PLAN §4.3 edit).
+    editing: Option<Editing>,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -297,9 +310,32 @@ impl ChannelView {
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let view = cx.weak_entity();
+        let keys = view.clone();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
             state.set_triggers(['@', '~', ':'], cx);
+            // Up in an empty composer edits the last own post, Shift+Up
+            // replies to the newest one; the editor sees arrows first, so
+            // the keymap rows alone never fire.
+            state.set_on_key(move |keystroke, window, cx| {
+                if keystroke.key != "up" {
+                    return false;
+                }
+                keys.update(cx, |this, cx| {
+                    if this.draft_len > 0 {
+                        return false;
+                    }
+                    if keystroke.modifiers.shift {
+                        if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
+                            cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                        }
+                    } else if let Some(id) = this.last_own_post() {
+                        this.start_edit(id, window, cx);
+                    }
+                    true
+                })
+                .unwrap_or(false)
+            });
             // Images and files on the clipboard go to the tray; text pastes
             // as usual.
             state.set_on_paste(move |item, _, cx| {
@@ -396,6 +432,7 @@ impl ChannelView {
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
+            editing: None,
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -679,6 +716,160 @@ impl ChannelView {
         self.model.as_ref()?.posts.iter().rev().find_map(|post| {
             (post.mine && post.status == PostStatus::Sent).then(|| post.id.clone())
         })
+    }
+
+    /// Turns the post's body into a composer holding its text. Enter saves,
+    /// Escape cancels; only the user's own sent posts qualify.
+    fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(post) = self.model.as_ref().and_then(|model| {
+            model
+                .posts
+                .iter()
+                .find(|post| post.id == id && post.mine && post.status == PostStatus::Sent)
+        }) else {
+            return;
+        };
+        let body = post.body.clone();
+        let view = cx.weak_entity();
+        let composer = cx.new(|cx| {
+            let mut state = ComposerState::new(12, window, cx);
+            state.set_value(body, window, cx);
+            state.set_on_key(move |keystroke, window, cx| {
+                if keystroke.key == "escape" {
+                    view.update(cx, |this, cx| this.cancel_edit(window, cx))
+                        .ok();
+                    true
+                } else {
+                    false
+                }
+            });
+            state
+        });
+        let subscription = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, event: &ComposerEvent, window, cx| {
+                if let ComposerEvent::Submit(text) = event {
+                    this.save_edit(text.clone(), window, cx);
+                }
+            },
+        );
+        let focus = composer.clone();
+        window.on_next_frame(move |window, cx| {
+            focus.update(cx, |composer, cx| {
+                let end = composer.value(cx).len();
+                composer.set_selection(end..end, cx);
+                composer.focus(window, cx);
+            });
+        });
+        let row = self.rows.iter().position(|row| match row {
+            Row::Post(index) => self
+                .model
+                .as_ref()
+                .is_some_and(|model| model.posts[*index].id == id),
+            _ => false,
+        });
+        self.editing = Some(Editing {
+            post: id,
+            composer,
+            _subscription: subscription,
+        });
+        self.list.update(cx, |list, cx| {
+            list.remeasure(cx);
+            if let Some(row) = row {
+                list.scroll_to_item(row, cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Keeps the new text and tells sync; an unchanged or emptied body just
+    /// closes the editor, since deleting has its own confirmation.
+    fn save_edit(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref() else {
+            return;
+        };
+        let id = editing.post.clone();
+        let body: SharedString = text.trim().to_string().into();
+        let unchanged = self
+            .model
+            .as_ref()
+            .and_then(|model| model.posts.iter().find(|post| post.id == id))
+            .is_none_or(|post| post.body == body);
+        if body.is_empty() || body.chars().count() > self.max_post_size() || unchanged {
+            self.cancel_edit(window, cx);
+            return;
+        }
+        self.mutate_post(
+            &id,
+            |post| {
+                post.body = body.clone();
+                post.edited = true;
+            },
+            cx,
+        );
+        cx.emit(ChannelEvent::SaveEdit {
+            post: id,
+            text: body,
+        });
+        self.cancel_edit(window, cx);
+    }
+
+    /// The in-place editor for a post: its composer, the key hint and the
+    /// Cancel and Save buttons.
+    fn editor(
+        composer: &Entity<ComposerState>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let save = composer.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .pt(theme.space(1.))
+            .child(Composer::new(composer).rounded(theme.radius.md))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(2.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .type_style(style::META, &theme)
+                            .text_color(theme.colors.muted_foreground)
+                            .child("Enter to save · Escape to cancel"),
+                    )
+                    .child(
+                        Button::new("post.edit.cancel")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .label("Cancel")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.cancel_edit(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("post.edit.save")
+                            .variant(ButtonVariant::Default)
+                            .size(ButtonSize::Sm)
+                            .label("Save")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let text = save.read(cx).value(cx);
+                                this.save_edit(text, window, cx)
+                            })),
+                    ),
+            )
     }
 
     /// Applies `change` to the post with `id`, if it is loaded, and redraws.
@@ -992,7 +1183,7 @@ impl ChannelView {
             items.push(act(
                 "edit",
                 "Edit".into(),
-                Box::new(move |_, _, cx| cx.emit(ChannelEvent::Edit(edit_id.clone()))),
+                Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
             ));
             items.push(act(
                 "delete",
@@ -1244,6 +1435,7 @@ impl ChannelView {
     fn post_row(
         post: &Post,
         profile: Option<&UserProfile>,
+        editor: Option<&Entity<ComposerState>>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -1356,11 +1548,15 @@ impl ChannelView {
             })
             .actions(actions)
             .px(scaled(&theme, metrics::GUTTER))
-            .child(markdown(
-                gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
-                post.body.clone(),
-                cx,
-            ));
+            .child(match editor {
+                Some(composer) => Self::editor(composer, cx).into_any_element(),
+                None => markdown(
+                    gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
+                    post.body.clone(),
+                    cx,
+                )
+                .into_any_element(),
+            });
         if post.edited {
             row = row.header_child(
                 div()
@@ -1548,8 +1744,13 @@ impl ChannelView {
                     let profile = profiles
                         .iter()
                         .find(|profile| profile.display_name == post.author);
-                    view.update(cx, |_, cx| {
-                        Self::post_row(&post, profile, cx).into_any_element()
+                    view.update(cx, |this, cx| {
+                        let editor = this
+                            .editing
+                            .as_ref()
+                            .filter(|editing| editing.post == post.id)
+                            .map(|editing| editing.composer.clone());
+                        Self::post_row(&post, profile, editor.as_ref(), cx).into_any_element()
                     })
                 }
                 None => div().into_any_element(),
@@ -1619,9 +1820,9 @@ impl ChannelView {
         }
         div()
             .key_context(key)
-            .on_action(cx.listener(|this, _: &EditLastMessage, _, cx| {
+            .on_action(cx.listener(|this, _: &EditLastMessage, window, cx| {
                 if let Some(id) = this.last_own_post() {
-                    cx.emit(ChannelEvent::Edit(id));
+                    this.start_edit(id, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ReplyToLastMessage, _, cx| {
