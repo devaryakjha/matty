@@ -335,6 +335,21 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::ToggleFavorite(_) => this.refresh_channel_info(cx),
+                ChannelEvent::Rename(name) => {
+                    let name = name.clone();
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.rename_row(&id, name, cx);
+                    }
+                    this.refresh_channel_info(cx);
+                }
+                ChannelEvent::SetHeader(_) | ChannelEvent::SetPurpose(_) => {
+                    this.refresh_channel_info(cx)
+                }
+                ChannelEvent::Leave => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.leave_channel(id, window, cx);
+                    }
+                }
                 // Sync picks these up in later changes; the view already
                 // shows the change.
                 ChannelEvent::Upload { .. }
@@ -380,6 +395,7 @@ impl MainWindow {
                 RightPaneEvent::Jump { channel, .. } => {
                     this.open_channel(channel.clone(), window, cx)
                 }
+                RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -937,6 +953,48 @@ impl MainWindow {
             purpose,
         ));
         self.open_channel(id, window, cx);
+    }
+
+    /// Renames the sidebar row for `id` after a rename from the header.
+    fn rename_row(&mut self, id: &str, name: SharedString, cx: &mut Context<Self>) {
+        let mut model = self.sidebar.read(cx).model().clone();
+        for row in model.categories.iter_mut().flat_map(|c| c.rows.iter_mut()) {
+            if row.id.as_ref() == id {
+                row.name = name.clone();
+            }
+        }
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+    }
+
+    /// Leaves `id`: sync owns the server side; the row goes and the first
+    /// remaining public channel opens.
+    fn leave_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let mut model = self.sidebar.read(cx).model().clone();
+        for category in model.categories.iter_mut() {
+            category.rows.retain(|row| row.id != id);
+        }
+        let next = model
+            .categories
+            .iter()
+            .flat_map(|c| c.rows.iter())
+            .find(|row| matches!(row.kind, crate::sidebar::ChannelKind::Public))
+            .map(|row| row.id.clone());
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+        self.joined.retain(|c| c.id != id);
+        self.browse
+            .update(cx, |browse, cx| browse.set_joined(&id, false, cx));
+        self.right_pane_open = false;
+        match next {
+            Some(next) => self.open_channel(next, window, cx),
+            None => {
+                self.selected_channel = None;
+                self.channel
+                    .update(cx, |view, cx| view.set_model(None, window, cx));
+                cx.notify();
+            }
+        }
     }
 
     /// Appends `row` to the sidebar category `category_id`.

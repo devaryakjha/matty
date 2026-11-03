@@ -325,6 +325,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   composer and in thread replies (`design-30`).
   Every change applies behind the dialog as it is made; the only button is
   Done.
+- **Channel menu** (PLAN §3 M1 channel management): the channel name in
+  the header is a gpuicn `Menu` trigger with a chevron: "Edit header…",
+  "Edit purpose…", "Rename channel…" and "Leave channel…" (`design-31`);
+  conversations with people only get the header. The three edits share
+  one dialog (`channel_settings.rs`): a title and one line on where the
+  text shows, a `Field` prefilled with the current value, a live
+  "67 / 1024" count that turns into the field error past Mattermost's
+  limit, Enter saves. Leave uses the same alert dialog as the info pane
+  and lands on the first remaining public channel.
 - **Who reacted**: hovering a reaction chip shows gpuicn's tooltip with
   the names, "You, Sam Okafor and 2 others reacted with 👍", built from
   `PostReaction::summary` (`design-30`). "You" comes first, three names at

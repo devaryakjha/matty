@@ -15,6 +15,7 @@ use gpui_kit::{
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
+use crate::channel_settings::{ChannelEditEvent, ChannelEditView, ChannelField};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
@@ -23,9 +24,9 @@ use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     attachment::{Attachment, attachment_group},
     avatar::{Avatar, AvatarSize},
-    button::{Button, ButtonSize, ButtonVariant},
+    button::{Button, ButtonSize, ButtonVariant, style_button},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
-    dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
+    dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     lightbox::{LightboxImage, LightboxState, lightbox},
@@ -291,6 +292,15 @@ pub enum ChannelEvent {
     Retry(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
+    /// The user renamed the channel from its header menu; the view already
+    /// shows the new name.
+    Rename(SharedString),
+    /// The user changed the header text; the view already shows it.
+    SetHeader(SharedString),
+    /// The user changed the purpose; the view already shows it.
+    SetPurpose(SharedString),
+    /// The user confirmed leaving the channel from its header menu.
+    Leave,
 }
 
 /// A post being edited in place: its own composer sits where the body was.
@@ -321,6 +331,10 @@ pub struct ChannelView {
     composer: Entity<ComposerState>,
     /// One menu for every post: its items are set when it opens.
     menu: Entity<MenuState>,
+    /// The channel name's menu: rename, header, purpose, leave.
+    header_menu: Entity<MenuState>,
+    edit: Entity<ChannelEditView>,
+    leave: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
     picker_open: bool,
@@ -471,8 +485,14 @@ impl ChannelView {
             state
         });
         let menu = cx.new(|cx| MenuState::new([], cx));
+        let header_menu = cx.new(|cx| MenuState::new([], cx));
+        let edit = cx.new(|cx| ChannelEditView::new(window, cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let subscriptions = vec![
+            cx.subscribe(&edit, |this, _, event: &ChannelEditEvent, cx| {
+                let ChannelEditEvent::Save { field, value } = event;
+                this.apply_edit(*field, value.clone(), cx);
+            }),
             cx.subscribe_in(
                 &composer,
                 window,
@@ -509,6 +529,9 @@ impl ChannelView {
             list,
             composer,
             menu,
+            header_menu,
+            edit,
+            leave: DialogHandle::new(false),
             picker,
             picker_open: false,
             picker_target: None,
@@ -544,6 +567,7 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) {
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
+        self.refresh_header_menu(model.as_ref(), cx);
         let count = self.rows.len();
         self.list = cx.new(|cx| MessageListState::new(count, cx));
         self.unseen = 0;
@@ -1490,6 +1514,136 @@ impl ChannelView {
         })
     }
 
+    /// Rebuilds the channel name's menu for `model`: conversations with
+    /// people cannot be renamed or left.
+    fn refresh_header_menu(&mut self, model: Option<&ChannelModel>, cx: &mut Context<Self>) {
+        let view = cx.weak_entity();
+        let edit = |id: &'static str, label: &'static str, field: ChannelField| {
+            let view = view.clone();
+            MenuItem::new(id, label).on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| this.edit_channel(field, window, cx))
+                    .ok();
+            })
+        };
+        let is_channel =
+            model.is_some_and(|m| matches!(m.kind, ChannelKind::Public | ChannelKind::Private));
+        let mut items = vec![edit(
+            "channel.menu.header",
+            "Edit header…",
+            ChannelField::Header,
+        )];
+        if is_channel {
+            items.push(edit(
+                "channel.menu.purpose",
+                "Edit purpose…",
+                ChannelField::Purpose,
+            ));
+            items.push(edit(
+                "channel.menu.rename",
+                "Rename channel…",
+                ChannelField::Name,
+            ));
+            items.push(MenuItem::separator());
+            let leave = self.leave.clone();
+            items.push(
+                MenuItem::new("channel.menu.leave", "Leave channel…")
+                    .on_click(move |_, window, cx| leave.open(window, cx)),
+            );
+        }
+        self.header_menu
+            .update(cx, |menu, cx| menu.set_items(items, cx));
+    }
+
+    fn edit_channel(&mut self, field: ChannelField, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let current = match field {
+            ChannelField::Name => model.name.to_string(),
+            ChannelField::Header => model.header.clone().unwrap_or_default().to_string(),
+            ChannelField::Purpose => model.purpose.clone().unwrap_or_default().to_string(),
+        };
+        self.edit
+            .update(cx, |edit, cx| edit.open(field, &current, window, cx));
+    }
+
+    /// Applies a saved edit to the model and tells sync.
+    fn apply_edit(&mut self, field: ChannelField, value: SharedString, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let optional = (!value.is_empty()).then(|| value.clone());
+        let event = match field {
+            ChannelField::Name => {
+                if model.name == value {
+                    return;
+                }
+                model.name = value.clone();
+                ChannelEvent::Rename(value)
+            }
+            ChannelField::Header => {
+                if model.header == optional {
+                    return;
+                }
+                model.header = optional;
+                ChannelEvent::SetHeader(value)
+            }
+            ChannelField::Purpose => {
+                if model.purpose == optional {
+                    return;
+                }
+                model.purpose = optional;
+                ChannelEvent::SetPurpose(value)
+            }
+        };
+        cx.notify();
+        cx.emit(event);
+    }
+
+    fn edit_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.edit.read(cx).handle().clone();
+        let title = self.edit.read(cx).field().title();
+        let popup = dialog_popup("channel.edit.popup", title, cx).child(self.edit.clone());
+        dialog("channel.edit", &handle, popup, window, cx)
+    }
+
+    fn leave_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let name: SharedString = match self.model.as_ref() {
+            Some(channel) => format!("#{}", channel.name).into(),
+            None => "this channel".into(),
+        };
+        let popup = dialog_popup("channel.leave.popup", "Leave channel", cx)
+            .child(dialog_title("channel.leave.title", cx).child(format!("Leave {name}?")))
+            .child(
+                dialog_description("channel.leave.description", cx).child(
+                    "You stop receiving its messages and it leaves your sidebar. You can join again later.",
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel("channel.leave.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action("channel.leave.confirm")
+                            .variant(ButtonVariant::Destructive)
+                            .label("Leave"),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog("channel.leave", &self.leave, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |_, cx| cx.emit(ChannelEvent::Leave)).ok();
+            true
+        })
+    }
+
     fn header(&self, channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
@@ -1538,19 +1692,38 @@ impl ChannelView {
                     .min_w_0()
                     .gap(theme.space(1.))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(theme.space(1.5))
-                            .px(theme.space(2.))
-                            .type_style(style::TITLE, &theme)
-                            .text_color(theme.colors.foreground)
-                            .children(kind_icon.map(|glyph| {
-                                lucide(glyph)
-                                    .size(scaled(&theme, metrics::ICON))
-                                    .text_color(muted)
-                            }))
-                            .child(channel.name.clone()),
+                        Menu::new(&self.header_menu, "Channel menu")
+                            .trigger(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(theme.space(1.5))
+                                    .type_style(style::TITLE, &theme)
+                                    .text_color(theme.colors.foreground)
+                                    .children(kind_icon.map(|glyph| {
+                                        lucide(glyph)
+                                            .size(scaled(&theme, metrics::ICON))
+                                            .text_color(muted)
+                                    }))
+                                    .child(channel.name.clone())
+                                    .child(
+                                        lucide(LucideIcon::ChevronDown)
+                                            .size(scaled(&theme, 14.))
+                                            .text_color(muted),
+                                    ),
+                            )
+                            .trigger_style_with({
+                                let theme = theme.clone();
+                                move |button| {
+                                    style_button(
+                                        button.aria_label("Channel menu").px(theme.space(2.)),
+                                        false,
+                                        ButtonVariant::Ghost,
+                                        ButtonSize::Sm,
+                                        &theme,
+                                    )
+                                }
+                            }),
                     )
                     .child(
                         Button::new("channel.star")
@@ -2385,6 +2558,8 @@ impl Render for ChannelView {
             // Zero-size host for the shared post menu; it opens at the pointer.
             .child(Menu::new(&self.menu, "Message actions").context_area(div()))
             .child(self.delete_dialog(window, cx))
+            .child(self.edit_dialog(window, cx))
+            .child(self.leave_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
 }
