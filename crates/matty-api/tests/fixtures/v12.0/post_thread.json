@@ -1,0 +1,96 @@
+{
+  "order": [
+    "d1qqqxg67pfh3j8isi5q4fdsbw",
+    "ph7rxxtwtifaxpd96ao8fy5cbo"
+  ],
+  "posts": {
+    "d1qqqxg67pfh3j8isi5q4fdsbw": {
+      "id": "d1qqqxg67pfh3j8isi5q4fdsbw",
+      "create_at": 1793741241375,
+      "update_at": 1793741241508,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "wnq7e5zwtty9ifo935mz9xs4ja",
+      "channel_id": "mcrpcris73nedytot8egs939gh",
+      "root_id": "",
+      "original_id": "",
+      "message": "Meeting moved to 3pm.",
+      "type": "",
+      "props": {
+        "matty_seed": 6
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "has_reactions": true,
+      "remote_id": "",
+      "reply_count": 1,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {
+        "reactions": [
+          {
+            "user_id": "aehtqhox9pnw7yzofogzzybxse",
+            "post_id": "d1qqqxg67pfh3j8isi5q4fdsbw",
+            "emoji_name": "tada",
+            "create_at": 1793741241431,
+            "update_at": 1793741241431,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "mcrpcris73nedytot8egs939gh"
+          },
+          {
+            "user_id": "ua491po4wpn9i868m4ti1xptrc",
+            "post_id": "d1qqqxg67pfh3j8isi5q4fdsbw",
+            "emoji_name": "heart",
+            "create_at": 1793741241469,
+            "update_at": 1793741241469,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "mcrpcris73nedytot8egs939gh"
+          },
+          {
+            "user_id": "irtscfjzujy98qmdjn8ggfc9je",
+            "post_id": "d1qqqxg67pfh3j8isi5q4fdsbw",
+            "emoji_name": "joy",
+            "create_at": 1793741241492,
+            "update_at": 1793741241492,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "mcrpcris73nedytot8egs939gh"
+          }
+        ]
+      }
+    },
+    "ph7rxxtwtifaxpd96ao8fy5cbo": {
+      "id": "ph7rxxtwtifaxpd96ao8fy5cbo",
+      "create_at": 1793741241508,
+      "update_at": 1793741241508,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "u6sc41zb5trmzyweq9bwnm7qyw",
+      "channel_id": "mcrpcris73nedytot8egs939gh",
+      "root_id": "d1qqqxg67pfh3j8isi5q4fdsbw",
+      "original_id": "",
+      "message": "Agreed, let's do that. Meeting moved to 3pm.",
+      "type": "",
+      "props": {
+        "matty_seed": 7
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 1,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    }
+  },
+  "next_post_id": "",
+  "prev_post_id": "",
+  "has_next": false,
+  "first_inaccessible_post_time": 0
+}

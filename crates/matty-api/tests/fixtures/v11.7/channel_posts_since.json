@@ -1,0 +1,82 @@
+{
+  "order": [
+    "7uoh1rxoj7g47pibcx95fsmboy",
+    "6uiz4ca71tds5j4xc8ioz6izuo",
+    "xzr9mnjeqibd8bkpgm679ytmoo"
+  ],
+  "posts": {
+    "6uiz4ca71tds5j4xc8ioz6izuo": {
+      "id": "6uiz4ca71tds5j4xc8ioz6izuo",
+      "create_at": 1793741264323,
+      "update_at": 1793741264333,
+      "edit_at": 0,
+      "delete_at": 1793741264333,
+      "is_pinned": false,
+      "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+      "channel_id": "a5nxgbsbejyifc4ccg5qj6aker",
+      "root_id": "",
+      "original_id": "xzr9mnjeqibd8bkpgm679ytmoo",
+      "message": "",
+      "type": "",
+      "props": {},
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 0,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    },
+    "7uoh1rxoj7g47pibcx95fsmboy": {
+      "id": "7uoh1rxoj7g47pibcx95fsmboy",
+      "create_at": 1793741264337,
+      "update_at": 1793741264345,
+      "edit_at": 0,
+      "delete_at": 1793741264345,
+      "is_pinned": false,
+      "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+      "channel_id": "a5nxgbsbejyifc4ccg5qj6aker",
+      "root_id": "",
+      "original_id": "",
+      "message": "",
+      "type": "",
+      "props": {
+        "deleteBy": "t37xi8nk1pn1fgdycs1d9mb4aa"
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 0,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    },
+    "xzr9mnjeqibd8bkpgm679ytmoo": {
+      "id": "xzr9mnjeqibd8bkpgm679ytmoo",
+      "create_at": 1793741264323,
+      "update_at": 1793741264333,
+      "edit_at": 1793741264333,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+      "channel_id": "a5nxgbsbejyifc4ccg5qj6aker",
+      "root_id": "",
+      "original_id": "",
+      "message": "Edited by the recorder",
+      "type": "",
+      "props": {},
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "reply_count": 0,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    }
+  },
+  "next_post_id": "",
+  "prev_post_id": "",
+  "first_inaccessible_post_time": 0
+}

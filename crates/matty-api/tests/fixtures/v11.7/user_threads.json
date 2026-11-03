@@ -1,0 +1,3739 @@
+{
+  "total": 73,
+  "total_unread_threads": 37,
+  "total_unread_mentions": 28,
+  "total_unread_urgent_mentions": 0,
+  "threads": [
+    {
+      "id": "tgehh36zz3n77p6e8e7iajtejc",
+      "reply_count": 2,
+      "last_reply_at": 1793741264379,
+      "last_viewed_at": 1793741264375,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        },
+        {
+          "id": "h4xzc9enzfrgdff5xqxknaodzr",
+          "create_at": 1793741235452,
+          "update_at": 1793741263973,
+          "delete_at": 0,
+          "username": "admin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "admin@example.com",
+          "nickname": "",
+          "first_name": "",
+          "last_name": "",
+          "position": "",
+          "roles": "system_user system_admin",
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "tgehh36zz3n77p6e8e7iajtejc",
+        "create_at": 1793741264355,
+        "update_at": 1793741264379,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "a5nxgbsbejyifc4ccg5qj6aker",
+        "root_id": "",
+        "original_id": "",
+        "message": "A thread to follow",
+        "type": "",
+        "props": {},
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "om48ofwfd3y7fgr6a31f543hqo",
+      "reply_count": 1,
+      "last_reply_at": 1793741263295,
+      "last_viewed_at": 1793741263309,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "om48ofwfd3y7fgr6a31f543hqo",
+        "create_at": 1793741263227,
+        "update_at": 1793741263295,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "> A block quote\n> spanning lines\n>\n> > and a nested one",
+        "type": "",
+        "props": {
+          "matty_seed": 405
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "6f8iid85midgurjc9jd3kt1egy",
+      "reply_count": 1,
+      "last_reply_at": 1793741262882,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "9d8gfqipapng9q81joaqwgtahe",
+          "create_at": 1793741236734,
+          "update_at": 1793741241854,
+          "delete_at": 0,
+          "username": "frances.diffie",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "frances.diffie@example.com",
+          "nickname": "Frances",
+          "first_name": "Frances",
+          "last_name": "Diffie",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236853,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "6f8iid85midgurjc9jd3kt1egy",
+        "create_at": 1793741262469,
+        "update_at": 1793741262882,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "Hey @ivan.konrad, can you look at ~town-square? Also @here and @channel.",
+        "type": "",
+        "props": {
+          "channel_mentions": {
+            "town-square": {
+              "display_name": "Town Square",
+              "id": "zbn46mzxnf8pij9dcjk4m1dceh",
+              "team_name": "dev"
+            }
+          },
+          "matty_seed": 363
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "ycbx5i756t8xzmysz34etamprr",
+      "reply_count": 1,
+      "last_reply_at": 1793741262651,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3ezougcyhirzprzqbseig65hje",
+          "create_at": 1793741235977,
+          "update_at": 1793741241655,
+          "delete_at": 0,
+          "username": "alan.allen",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "alan.allen@example.com",
+          "nickname": "Alan",
+          "first_name": "Alan",
+          "last_name": "Allen",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236099,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "ycbx5i756t8xzmysz34etamprr",
+        "create_at": 1793741262363,
+        "update_at": 1793741262651,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "The staging server is down, investigating. Deploy finished without errors. Can someone review my PR? Agreed, let's do that.",
+        "type": "",
+        "props": {
+          "matty_seed": 355
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "99dady31q3gtbjqgbb76mkrkar",
+      "reply_count": 1,
+      "last_reply_at": 1793741260494,
+      "last_viewed_at": 1793741260507,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "99dady31q3gtbjqgbb76mkrkar",
+        "create_at": 1793741260229,
+        "update_at": 1793741260494,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "dg84t58cdifaxd7pdm364hejjo",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "Has anyone seen the new design mocks?",
+        "type": "",
+        "props": {
+          "matty_seed": 242
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "6ieop4ue67bffru7y1u6q9u1ue",
+      "reply_count": 2,
+      "last_reply_at": 1793741259372,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "d17ehbobhtnsdgx7deqgz43b6h",
+          "create_at": 1793741236605,
+          "update_at": 1793741241825,
+          "delete_at": 0,
+          "username": "edsger.wirth",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "edsger.wirth@example.com",
+          "nickname": "Edsger",
+          "first_name": "Edsger",
+          "last_name": "Wirth",
+          "position": "Product",
+          "roles": "system_user",
+          "last_picture_update": 1793741236727,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "6ieop4ue67bffru7y1u6q9u1ue",
+        "create_at": 1793741258650,
+        "update_at": 1793741259372,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "d17ehbobhtnsdgx7deqgz43b6h",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Agreed, let's do that. I'll take a look after standup. I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 17
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 2,
+      "unread_mentions": 2,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "j96gzmhtn3rk8fyew9g5bj16rh",
+      "reply_count": 1,
+      "last_reply_at": 1793741259363,
+      "last_viewed_at": 1793741259390,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "j96gzmhtn3rk8fyew9g5bj16rh",
+        "create_at": 1793741258287,
+        "update_at": 1793741259363,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "Can someone review my PR? I pushed a fix for the flaky test. Back online now.",
+        "type": "",
+        "props": {
+          "matty_seed": 149
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "nwdgwiqjgbyzxxf5ixfftq74ge",
+      "reply_count": 1,
+      "last_reply_at": 1793741259310,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "w7599ujxj7dq5dtswf4c8bxxro",
+          "create_at": 1793741236358,
+          "update_at": 1793741241750,
+          "delete_at": 0,
+          "username": "claude.liskov",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "claude.liskov@example.com",
+          "nickname": "Claude",
+          "first_name": "Claude",
+          "last_name": "Liskov",
+          "position": "",
+          "roles": "system_user",
+          "last_picture_update": 1793741236475,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "nwdgwiqjgbyzxxf5ixfftq74ge",
+        "create_at": 1793741258420,
+        "update_at": 1793741259310,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "d17ehbobhtnsdgx7deqgz43b6h",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Let's ship it. I'll take a look after standup. Meeting moved to 3pm. Has anyone seen the new design mocks?",
+        "type": "",
+        "props": {
+          "matty_seed": 10
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "jtgwtffhfb89ixckbd31wmd4th",
+      "reply_count": 1,
+      "last_reply_at": 1793741259258,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "9d8gfqipapng9q81joaqwgtahe",
+          "create_at": 1793741236734,
+          "update_at": 1793741241854,
+          "delete_at": 0,
+          "username": "frances.diffie",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "frances.diffie@example.com",
+          "nickname": "Frances",
+          "first_name": "Frances",
+          "last_name": "Diffie",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236853,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "jtgwtffhfb89ixckbd31wmd4th",
+        "create_at": 1793741257876,
+        "update_at": 1793741259258,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "I pushed a fix for the flaky test. Has anyone seen the new design mocks? I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 141
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "xtgg6f314bbpmpmft37npsh9sy",
+      "reply_count": 1,
+      "last_reply_at": 1793741259243,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "xtgg6f314bbpmpmft37npsh9sy",
+        "create_at": 1793741257872,
+        "update_at": 1793741259243,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "w7599ujxj7dq5dtswf4c8bxxro",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details. Can someone review my PR?",
+        "type": "",
+        "props": {
+          "matty_seed": 3
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "4azf549j6tgm8gnzm3stcopzww",
+      "reply_count": 1,
+      "last_reply_at": 1793741259158,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "4azf549j6tgm8gnzm3stcopzww",
+        "create_at": 1793741258498,
+        "update_at": 1793741259158,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Meeting moved to 3pm. Lunch at noon? Here's the doc with the details. Meeting moved to 3pm.",
+        "type": "",
+        "props": {
+          "matty_seed": 13
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "b89a3dx9ujf59e1ng1ajm7cxso",
+      "reply_count": 1,
+      "last_reply_at": 1793741258855,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "oniyfpnipbgzpgjpdpfkotyozw",
+          "create_at": 1793741236106,
+          "update_at": 1793741241682,
+          "delete_at": 0,
+          "username": "barbara.torvalds",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "barbara.torvalds@example.com",
+          "nickname": "Barbara",
+          "first_name": "Barbara",
+          "last_name": "Torvalds",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236227,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "b89a3dx9ujf59e1ng1ajm7cxso",
+        "create_at": 1793741258719,
+        "update_at": 1793741258855,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "ecdatmk1y7dptefwcfyh8xygma",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details. Agreed, let's do that.",
+        "type": "",
+        "props": {
+          "matty_seed": 17
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "i8n5rkhd1intjpxsegsmtjtk5o",
+      "reply_count": 1,
+      "last_reply_at": 1793741258753,
+      "last_viewed_at": 1793741258782,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "i8n5rkhd1intjpxsegsmtjtk5o",
+        "create_at": 1793741258538,
+        "update_at": 1793741258753,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "ecdatmk1y7dptefwcfyh8xygma",
+        "root_id": "",
+        "original_id": "",
+        "message": "Back online now.",
+        "type": "",
+        "props": {
+          "matty_seed": 12
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "16i86zx5stgimemfgmyursp7ko",
+      "reply_count": 1,
+      "last_reply_at": 1793741258691,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "16i86zx5stgimemfgmyursp7ko",
+        "create_at": 1793741258472,
+        "update_at": 1793741258691,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "5d6xanjg5tyr3fiu6dybiixkaw",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Meeting moved to 3pm.",
+        "type": "",
+        "props": {
+          "matty_seed": 12
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "gannt1sdjj8i3k13tezxhomejr",
+      "reply_count": 1,
+      "last_reply_at": 1793741258669,
+      "last_viewed_at": 1793741258729,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "gannt1sdjj8i3k13tezxhomejr",
+        "create_at": 1793741257639,
+        "update_at": 1793741258669,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |\n| longer cell | `code` | **bold** |",
+        "type": "",
+        "props": {
+          "matty_seed": 5
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "4wnrah96jfnwfbzr3ns367wr8c",
+      "reply_count": 1,
+      "last_reply_at": 1793741258646,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "4wnrah96jfnwfbzr3ns367wr8c",
+        "create_at": 1793741258521,
+        "update_at": 1793741258646,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Has anyone seen the new design mocks? Agreed, let's do that. Agreed, let's do that. Let's ship it.",
+        "type": "",
+        "props": {
+          "matty_seed": 29
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "7zxrhgp963gsie47stre8gukfe",
+      "reply_count": 1,
+      "last_reply_at": 1793741258600,
+      "last_viewed_at": 1793741258628,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "7zxrhgp963gsie47stre8gukfe",
+        "create_at": 1793741257685,
+        "update_at": 1793741258600,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details. Deploy finished without errors. Has anyone seen the new design mocks?",
+        "type": "",
+        "props": {
+          "matty_seed": 7
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "ru4sdk3o4bggzkk7gk4c46rwxo",
+      "reply_count": 1,
+      "last_reply_at": 1793741258567,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "oniyfpnipbgzpgjpdpfkotyozw",
+          "create_at": 1793741236106,
+          "update_at": 1793741241682,
+          "delete_at": 0,
+          "username": "barbara.torvalds",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "barbara.torvalds@example.com",
+          "nickname": "Barbara",
+          "first_name": "Barbara",
+          "last_name": "Torvalds",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236227,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "ru4sdk3o4bggzkk7gk4c46rwxo",
+        "create_at": 1793741258373,
+        "update_at": 1793741258567,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "oniyfpnipbgzpgjpdpfkotyozw",
+        "channel_id": "ecdatmk1y7dptefwcfyh8xygma",
+        "root_id": "",
+        "original_id": "",
+        "message": "The build is green again. Thanks, that worked! I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 8
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "o8ztzg8e33g3uey56ohqt65nqh",
+      "reply_count": 1,
+      "last_reply_at": 1793741258519,
+      "last_viewed_at": 1793741258576,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "o8ztzg8e33g3uey56ohqt65nqh",
+        "create_at": 1793741257984,
+        "update_at": 1793741258519,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Thanks, that worked!",
+        "type": "",
+        "props": {
+          "matty_seed": 17
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "q4xz9do17pnzzeijifpj4ugppa",
+      "reply_count": 1,
+      "last_reply_at": 1793741258438,
+      "last_viewed_at": 1793741258479,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "q4xz9do17pnzzeijifpj4ugppa",
+        "create_at": 1793741258308,
+        "update_at": 1793741258438,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3ezougcyhirzprzqbseig65hje",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "Deploy finished without errors. Here's the doc with the details.",
+        "type": "",
+        "props": {
+          "matty_seed": 150
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "q1jpexwsu7yxmxc5tkktajigso",
+      "reply_count": 1,
+      "last_reply_at": 1793741258432,
+      "last_viewed_at": 1793741258485,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "q1jpexwsu7yxmxc5tkktajigso",
+        "create_at": 1793741257807,
+        "update_at": 1793741258432,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Lunch at noon?",
+        "type": "",
+        "props": {
+          "matty_seed": 20
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "hna5c1zbaing5beqachtdh7a4h",
+      "reply_count": 3,
+      "last_reply_at": 1793741258358,
+      "last_viewed_at": 1793741257706,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        },
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "hna5c1zbaing5beqachtdh7a4h",
+        "create_at": 1793741256861,
+        "update_at": 1793741258358,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Agreed, let's do that. I pushed a fix for the flaky test. Let's ship it.",
+        "type": "",
+        "props": {
+          "matty_seed": 1
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "xa5udb16uiykzfjn81t5kmr66c",
+      "reply_count": 1,
+      "last_reply_at": 1793741258358,
+      "last_viewed_at": 1793741258404,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "xa5udb16uiykzfjn81t5kmr66c",
+        "create_at": 1793741257722,
+        "update_at": 1793741258358,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "The build is green again. I'll take a look after standup.",
+        "type": "",
+        "props": {
+          "matty_seed": 20
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "y3cu311hcbgompw7p6uqbnp1ea",
+      "reply_count": 2,
+      "last_reply_at": 1793741258339,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        },
+        {
+          "id": "w7599ujxj7dq5dtswf4c8bxxro",
+          "create_at": 1793741236358,
+          "update_at": 1793741241750,
+          "delete_at": 0,
+          "username": "claude.liskov",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "claude.liskov@example.com",
+          "nickname": "Claude",
+          "first_name": "Claude",
+          "last_name": "Liskov",
+          "position": "",
+          "roles": "system_user",
+          "last_picture_update": 1793741236475,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "y3cu311hcbgompw7p6uqbnp1ea",
+        "create_at": 1793741257620,
+        "update_at": 1793741258339,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "Tagging #release-notes and #m0 for later",
+        "type": "",
+        "props": {
+          "matty_seed": 0
+        },
+        "hashtags": "#release-notes #m0",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 2,
+      "unread_mentions": 2,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "b74u4f8xstrxidbj4rpbs8zeer",
+      "reply_count": 1,
+      "last_reply_at": 1793741258266,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "b74u4f8xstrxidbj4rpbs8zeer",
+        "create_at": 1793741257179,
+        "update_at": 1793741258266,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Let's ship it. I'll take a look after standup. Can someone review my PR? I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 6
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "z7qnoh1wkpbi7d9oyj7id35hay",
+      "reply_count": 1,
+      "last_reply_at": 1793741258246,
+      "last_viewed_at": 1793741258281,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "z7qnoh1wkpbi7d9oyj7id35hay",
+        "create_at": 1793741258006,
+        "update_at": 1793741258246,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Agreed, let's do that.",
+        "type": "",
+        "props": {
+          "matty_seed": 18
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "r6rs3nhayjr9xe64ico9cdiqrc",
+      "reply_count": 1,
+      "last_reply_at": 1793741258216,
+      "last_viewed_at": 1793741258266,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "r6rs3nhayjr9xe64ico9cdiqrc",
+        "create_at": 1793741256927,
+        "update_at": 1793741258216,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "Can someone review my PR? Lunch at noon? Here's the doc with the details.",
+        "type": "",
+        "props": {
+          "matty_seed": 0
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "q8dd95dmpjyx3xaib63p5ndima",
+      "reply_count": 1,
+      "last_reply_at": 1793741258192,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "q8dd95dmpjyx3xaib63p5ndima",
+        "create_at": 1793741257478,
+        "update_at": 1793741258192,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Let's ship it. Here's the doc with the details. Here's the doc with the details.",
+        "type": "",
+        "props": {
+          "matty_seed": 14
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "nj6ygbfq4fyj9bb6jzkuobkyey",
+      "reply_count": 1,
+      "last_reply_at": 1793741258142,
+      "last_viewed_at": 1793741258169,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "nj6ygbfq4fyj9bb6jzkuobkyey",
+        "create_at": 1793741257933,
+        "update_at": 1793741258142,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Thanks, that worked! Meeting moved to 3pm. Thanks, that worked!",
+        "type": "",
+        "props": {
+          "matty_seed": 14
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "7g6w44bxu3ropejqxye8i6socr",
+      "reply_count": 1,
+      "last_reply_at": 1793741257998,
+      "last_viewed_at": 1793741258048,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "7g6w44bxu3ropejqxye8i6socr",
+        "create_at": 1793741257821,
+        "update_at": 1793741257998,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Above the rule\n\n---\n\nBelow the rule",
+        "type": "",
+        "props": {
+          "matty_seed": 28
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "xowoxkwmutndpko1d3tepi8aoc",
+      "reply_count": 1,
+      "last_reply_at": 1793741257950,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "w7599ujxj7dq5dtswf4c8bxxro",
+          "create_at": 1793741236358,
+          "update_at": 1793741241750,
+          "delete_at": 0,
+          "username": "claude.liskov",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "claude.liskov@example.com",
+          "nickname": "Claude",
+          "first_name": "Claude",
+          "last_name": "Liskov",
+          "position": "",
+          "roles": "system_user",
+          "last_picture_update": 1793741236475,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "xowoxkwmutndpko1d3tepi8aoc",
+        "create_at": 1793741257475,
+        "update_at": 1793741257950,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "w7599ujxj7dq5dtswf4c8bxxro",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "I pushed a fix for the flaky test. Deploy finished without errors. The build is green again.",
+        "type": "",
+        "props": {
+          "matty_seed": 14
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "us6hs1zwojfy9edam1jb3ckpeh",
+      "reply_count": 1,
+      "last_reply_at": 1793741257941,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "us6hs1zwojfy9edam1jb3ckpeh",
+        "create_at": 1793741257448,
+        "update_at": 1793741257941,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Lunch at noon? The staging server is down, investigating.",
+        "type": "",
+        "props": {
+          "matty_seed": 13
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "9k1jbm6s8p8hfe9bg7bs1n3i3r",
+      "reply_count": 1,
+      "last_reply_at": 1793741257939,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3ezougcyhirzprzqbseig65hje",
+          "create_at": 1793741235977,
+          "update_at": 1793741241655,
+          "delete_at": 0,
+          "username": "alan.allen",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "alan.allen@example.com",
+          "nickname": "Alan",
+          "first_name": "Alan",
+          "last_name": "Allen",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236099,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "9k1jbm6s8p8hfe9bg7bs1n3i3r",
+        "create_at": 1793741257801,
+        "update_at": 1793741257939,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "ecdatmk1y7dptefwcfyh8xygma",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details. Has anyone seen the new design mocks? Back online now. The build is green again.",
+        "type": "",
+        "props": {
+          "matty_seed": 2
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "4z834dbp9inq8m3tai3xpyr8rc",
+      "reply_count": 1,
+      "last_reply_at": 1793741257876,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "oniyfpnipbgzpgjpdpfkotyozw",
+          "create_at": 1793741236106,
+          "update_at": 1793741241682,
+          "delete_at": 0,
+          "username": "barbara.torvalds",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "barbara.torvalds@example.com",
+          "nickname": "Barbara",
+          "first_name": "Barbara",
+          "last_name": "Torvalds",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236227,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "4z834dbp9inq8m3tai3xpyr8rc",
+        "create_at": 1793741257555,
+        "update_at": 1793741257876,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Deploy finished without errors. I pushed a fix for the flaky test. Agreed, let's do that.",
+        "type": "",
+        "props": {
+          "matty_seed": 21
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "ah6topa7rtrkprow17de3n3qmc",
+      "reply_count": 2,
+      "last_reply_at": 1793741257871,
+      "last_viewed_at": 1793741257921,
+      "participants": [
+        {
+          "id": "mdxf83nt13djbeahk3rwdiaf4w",
+          "create_at": 1793741236234,
+          "update_at": 1793741241722,
+          "delete_at": 0,
+          "username": "brian.franklin",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "brian.franklin@example.com",
+          "nickname": "Brian",
+          "first_name": "Brian",
+          "last_name": "Franklin",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236351,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        },
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "ah6topa7rtrkprow17de3n3qmc",
+        "create_at": 1793741256780,
+        "update_at": 1793741257871,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "I pushed a fix for the flaky test. Thanks, that worked! The staging server is down, investigating. I'll take a look after standup.",
+        "type": "",
+        "props": {
+          "matty_seed": 0
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "qdix44b4t7nfmq3asgoccgcbyw",
+      "reply_count": 1,
+      "last_reply_at": 1793741257744,
+      "last_viewed_at": 1793741257819,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "qdix44b4t7nfmq3asgoccgcbyw",
+        "create_at": 1793741257703,
+        "update_at": 1793741257744,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "w7599ujxj7dq5dtswf4c8bxxro",
+        "channel_id": "oheee88iei8s9bxs9n7t9e69ce",
+        "root_id": "",
+        "original_id": "",
+        "message": "```rust\nfn main() {\n    println!(\"hello, matty\");\n}\n```",
+        "type": "",
+        "props": {
+          "matty_seed": 1
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "nd3ycwrgejfcbeusqxqw7zatxh",
+      "reply_count": 1,
+      "last_reply_at": 1793741257716,
+      "last_viewed_at": 1793741257759,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "nd3ycwrgejfcbeusqxqw7zatxh",
+        "create_at": 1793741257527,
+        "update_at": 1793741257716,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "euq4adf35tr57xppc7unebsxxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Lunch at noon?",
+        "type": "",
+        "props": {
+          "matty_seed": 2
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "1ghhtdbkxfyr8f4xt1p6otyaio",
+      "reply_count": 1,
+      "last_reply_at": 1793741257686,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3ezougcyhirzprzqbseig65hje",
+          "create_at": 1793741235977,
+          "update_at": 1793741241655,
+          "delete_at": 0,
+          "username": "alan.allen",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "alan.allen@example.com",
+          "nickname": "Alan",
+          "first_name": "Alan",
+          "last_name": "Allen",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236099,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "1ghhtdbkxfyr8f4xt1p6otyaio",
+        "create_at": 1793741257581,
+        "update_at": 1793741257686,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "oniyfpnipbgzpgjpdpfkotyozw",
+        "channel_id": "ecdatmk1y7dptefwcfyh8xygma",
+        "root_id": "",
+        "original_id": "",
+        "message": "1. first\n2. second\n   1. nested\n3. third",
+        "type": "",
+        "props": {
+          "matty_seed": 0
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "uf1ufz4yhibq7dpad6u9fxzmpo",
+      "reply_count": 1,
+      "last_reply_at": 1793741257666,
+      "last_viewed_at": 1793741257712,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "uf1ufz4yhibq7dpad6u9fxzmpo",
+        "create_at": 1793741257627,
+        "update_at": 1793741257666,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Agreed, let's do that. Let's ship it.",
+        "type": "",
+        "props": {
+          "matty_seed": 23
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "tokkdu43xfgg8bdkyqjf6z31fy",
+      "reply_count": 1,
+      "last_reply_at": 1793741257631,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "w7599ujxj7dq5dtswf4c8bxxro",
+          "create_at": 1793741236358,
+          "update_at": 1793741241750,
+          "delete_at": 0,
+          "username": "claude.liskov",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "claude.liskov@example.com",
+          "nickname": "Claude",
+          "first_name": "Claude",
+          "last_name": "Liskov",
+          "position": "",
+          "roles": "system_user",
+          "last_picture_update": 1793741236475,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "tokkdu43xfgg8bdkyqjf6z31fy",
+        "create_at": 1793741257219,
+        "update_at": 1793741257631,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "w7599ujxj7dq5dtswf4c8bxxro",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "The build is green again. Thanks, that worked! Has anyone seen the new design mocks? The staging server is down, investigating.",
+        "type": "",
+        "props": {
+          "matty_seed": 8
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "c3yhbihqp7ykxxxwz1q8gpdury",
+      "reply_count": 1,
+      "last_reply_at": 1793741257418,
+      "last_viewed_at": 1793741257464,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "c3yhbihqp7ykxxxwz1q8gpdury",
+        "create_at": 1793741257347,
+        "update_at": 1793741257418,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "Deploy finished without errors. Agreed, let's do that. The build is green again.",
+        "type": "",
+        "props": {
+          "matty_seed": 11
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "jezdrin99t8zdfzndgwddw5fzh",
+      "reply_count": 1,
+      "last_reply_at": 1793741257350,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3ezougcyhirzprzqbseig65hje",
+          "create_at": 1793741235977,
+          "update_at": 1793741241655,
+          "delete_at": 0,
+          "username": "alan.allen",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "alan.allen@example.com",
+          "nickname": "Alan",
+          "first_name": "Alan",
+          "last_name": "Allen",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236099,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "jezdrin99t8zdfzndgwddw5fzh",
+        "create_at": 1793741256462,
+        "update_at": 1793741257350,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3ezougcyhirzprzqbseig65hje",
+        "channel_id": "bcn7tkyc6iy5myg8msebxjsjyc",
+        "root_id": "",
+        "original_id": "",
+        "message": "Agreed, let's do that.",
+        "type": "",
+        "props": {
+          "matty_seed": 7
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "7am8dqzer7f1mxgqdy987aw14e",
+      "reply_count": 1,
+      "last_reply_at": 1793741257348,
+      "last_viewed_at": 1793741257411,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "7am8dqzer7f1mxgqdy987aw14e",
+        "create_at": 1793741256908,
+        "update_at": 1793741257348,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "I'll take a look after standup. Let's ship it.",
+        "type": "",
+        "props": {
+          "matty_seed": 3
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "ep4uqb4y87fm7pdcznog5aroyh",
+      "reply_count": 1,
+      "last_reply_at": 1793741257315,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "oniyfpnipbgzpgjpdpfkotyozw",
+          "create_at": 1793741236106,
+          "update_at": 1793741241682,
+          "delete_at": 0,
+          "username": "barbara.torvalds",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "barbara.torvalds@example.com",
+          "nickname": "Barbara",
+          "first_name": "Barbara",
+          "last_name": "Torvalds",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236227,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "ep4uqb4y87fm7pdcznog5aroyh",
+        "create_at": 1793741257220,
+        "update_at": 1793741257315,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "I'll take a look after standup.",
+        "type": "",
+        "props": {
+          "matty_seed": 12
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "sq1byoxg3ibr9yt4ydhdto9i4o",
+      "reply_count": 1,
+      "last_reply_at": 1793741257268,
+      "last_viewed_at": 1793741257337,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "sq1byoxg3ibr9yt4ydhdto9i4o",
+        "create_at": 1793741256987,
+        "update_at": 1793741257268,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "541xobeee7ratkkgjpuj83wcwa",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details. Thanks, that worked!",
+        "type": "",
+        "props": {
+          "matty_seed": 1
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "nmtp5ojpqpyu3e5e9w9rdpjgow",
+      "reply_count": 1,
+      "last_reply_at": 1793741257251,
+      "last_viewed_at": 1793741257288,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "nmtp5ojpqpyu3e5e9w9rdpjgow",
+        "create_at": 1793741257102,
+        "update_at": 1793741257251,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "71m8aphx6frripfyj7z7yfbcfr",
+        "root_id": "",
+        "original_id": "",
+        "message": "Lunch at noon? Let's ship it. Deploy finished without errors. Back online now.",
+        "type": "",
+        "props": {
+          "matty_seed": 5
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "has_reactions": true,
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "bz14jbcyzfrppj8tmid6o6xuka",
+      "reply_count": 1,
+      "last_reply_at": 1793741257246,
+      "last_viewed_at": 1793741257296,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "bz14jbcyzfrppj8tmid6o6xuka",
+        "create_at": 1793741257139,
+        "update_at": 1793741257246,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "oniyfpnipbgzpgjpdpfkotyozw",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Can someone review my PR? Thanks, that worked! The build is green again. Meeting moved to 3pm.",
+        "type": "",
+        "props": {
+          "matty_seed": 10
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "dy9hjhnuafr4pdxpztiu9s7x1h",
+      "reply_count": 1,
+      "last_reply_at": 1793741257005,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "oniyfpnipbgzpgjpdpfkotyozw",
+          "create_at": 1793741236106,
+          "update_at": 1793741241682,
+          "delete_at": 0,
+          "username": "barbara.torvalds",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "barbara.torvalds@example.com",
+          "nickname": "Barbara",
+          "first_name": "Barbara",
+          "last_name": "Torvalds",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236227,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "dy9hjhnuafr4pdxpztiu9s7x1h",
+        "create_at": 1793741256772,
+        "update_at": 1793741257005,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "oniyfpnipbgzpgjpdpfkotyozw",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Can someone review my PR? Lunch at noon? I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 4
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "88zj7txo5iguzgq9h9ora1m8br",
+      "reply_count": 1,
+      "last_reply_at": 1793741256923,
+      "last_viewed_at": 1793741256979,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "88zj7txo5iguzgq9h9ora1m8br",
+        "create_at": 1793741256679,
+        "update_at": 1793741256923,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "4ownus7qnt81ub6gutta4djuxh",
+        "root_id": "",
+        "original_id": "",
+        "message": "Let's ship it. The build is green again. The staging server is down, investigating.",
+        "type": "",
+        "props": {
+          "matty_seed": 1
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "b66a7x7pqbfkxm6mmo9udiu5ir",
+      "reply_count": 1,
+      "last_reply_at": 1793741256857,
+      "last_viewed_at": 1793741256904,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "b66a7x7pqbfkxm6mmo9udiu5ir",
+        "create_at": 1793741256147,
+        "update_at": 1793741256857,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3ezougcyhirzprzqbseig65hje",
+        "channel_id": "bcn7tkyc6iy5myg8msebxjsjyc",
+        "root_id": "",
+        "original_id": "",
+        "message": "I pushed a fix for the flaky test. Back online now. Has anyone seen the new design mocks? Here's the doc with the details.",
+        "type": "",
+        "props": {
+          "matty_seed": 1
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "e1imnsm553fjzdojx3sywun77a",
+      "reply_count": 1,
+      "last_reply_at": 1793741256671,
+      "last_viewed_at": 1793741256715,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "e1imnsm553fjzdojx3sywun77a",
+        "create_at": 1793741256073,
+        "update_at": 1793741256671,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "iuk13h3ksbyd8xymd7tkzxhi6h",
+        "root_id": "",
+        "original_id": "",
+        "message": "Here's the doc with the details.",
+        "type": "",
+        "props": {
+          "matty_seed": 19
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "4c1b7y8r1b8aikunq99tu5pqbw",
+      "reply_count": 1,
+      "last_reply_at": 1793741256589,
+      "last_viewed_at": 1793741256630,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "4c1b7y8r1b8aikunq99tu5pqbw",
+        "create_at": 1793741256348,
+        "update_at": 1793741256589,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "bcn7tkyc6iy5myg8msebxjsjyc",
+        "root_id": "",
+        "original_id": "",
+        "message": "Tagging #release-notes and #m0 for later",
+        "type": "",
+        "props": {
+          "matty_seed": 5
+        },
+        "hashtags": "#release-notes #m0",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "6kj4mr8ehinq3gduxw1o4wyyke",
+      "reply_count": 1,
+      "last_reply_at": 1793741256580,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3dt6dmgj37b5uqmdcsq55twb5h",
+          "create_at": 1793741235845,
+          "update_at": 1793741241626,
+          "delete_at": 0,
+          "username": "ada.lovelace",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "ada.lovelace@example.com",
+          "nickname": "Ada",
+          "first_name": "Ada",
+          "last_name": "Lovelace",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741235971,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "6kj4mr8ehinq3gduxw1o4wyyke",
+        "create_at": 1793741255917,
+        "update_at": 1793741256580,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "iuk13h3ksbyd8xymd7tkzxhi6h",
+        "root_id": "",
+        "original_id": "",
+        "message": "Deploy finished without errors. Back online now. Let's ship it. Thanks, that worked!",
+        "type": "",
+        "props": {
+          "matty_seed": 15
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "ppo4af4k4bd6bpj4eax7ssa5jc",
+      "reply_count": 1,
+      "last_reply_at": 1793741256223,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3dt6dmgj37b5uqmdcsq55twb5h",
+          "create_at": 1793741235845,
+          "update_at": 1793741241626,
+          "delete_at": 0,
+          "username": "ada.lovelace",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "ada.lovelace@example.com",
+          "nickname": "Ada",
+          "first_name": "Ada",
+          "last_name": "Lovelace",
+          "position": "Designer",
+          "roles": "system_user",
+          "last_picture_update": 1793741235971,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "ppo4af4k4bd6bpj4eax7ssa5jc",
+        "create_at": 1793741256099,
+        "update_at": 1793741256223,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+        "channel_id": "iuk13h3ksbyd8xymd7tkzxhi6h",
+        "root_id": "",
+        "original_id": "",
+        "message": "Lunch at noon? Can someone review my PR? Back online now. I pushed a fix for the flaky test.",
+        "type": "",
+        "props": {
+          "matty_seed": 20
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "c5z4ueuhyibyzr6og68sragjqe",
+      "reply_count": 1,
+      "last_reply_at": 1793741256188,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "3ezougcyhirzprzqbseig65hje",
+          "create_at": 1793741235977,
+          "update_at": 1793741241655,
+          "delete_at": 0,
+          "username": "alan.allen",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "alan.allen@example.com",
+          "nickname": "Alan",
+          "first_name": "Alan",
+          "last_name": "Allen",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741236099,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "c5z4ueuhyibyzr6og68sragjqe",
+        "create_at": 1793741256094,
+        "update_at": 1793741256188,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "3ezougcyhirzprzqbseig65hje",
+        "channel_id": "bcn7tkyc6iy5myg8msebxjsjyc",
+        "root_id": "",
+        "original_id": "",
+        "message": "Meeting moved to 3pm. I'll take a look after standup.",
+        "type": "",
+        "props": {
+          "matty_seed": 0
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "wpxfh1eme7nu9rnow7883h9wsr",
+      "reply_count": 1,
+      "last_reply_at": 1793741255985,
+      "last_viewed_at": 1793741256039,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "wpxfh1eme7nu9rnow7883h9wsr",
+        "create_at": 1793741255510,
+        "update_at": 1793741255985,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "iuk13h3ksbyd8xymd7tkzxhi6h",
+        "root_id": "",
+        "original_id": "",
+        "message": "Meeting moved to 3pm. Lunch at noon? Can someone review my PR? Thanks, that worked!",
+        "type": "",
+        "props": {
+          "matty_seed": 3
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "iudm6uxbzpfi5qsg4zrbex3jyy",
+      "reply_count": 1,
+      "last_reply_at": 1793741255844,
+      "last_viewed_at": 1793741255882,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "iudm6uxbzpfi5qsg4zrbex3jyy",
+        "create_at": 1793741255648,
+        "update_at": 1793741255844,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "3dt6dmgj37b5uqmdcsq55twb5h",
+        "channel_id": "iuk13h3ksbyd8xymd7tkzxhi6h",
+        "root_id": "",
+        "original_id": "",
+        "message": "```\nno language\n    indented inside\n```",
+        "type": "",
+        "props": {
+          "matty_seed": 7
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "5ze311tqxtywmjibj3wd8xzuie",
+      "reply_count": 1,
+      "last_reply_at": 1793741253790,
+      "last_viewed_at": 0,
+      "participants": [
+        {
+          "id": "mptuj53kx7g7txns5obfu6hpra",
+          "create_at": 1793741238126,
+          "update_at": 1793741242161,
+          "delete_at": 0,
+          "username": "rob.cerf",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "rob.cerf@example.com",
+          "nickname": "Rob",
+          "first_name": "Rob",
+          "last_name": "Cerf",
+          "position": "Engineer",
+          "roles": "system_user",
+          "last_picture_update": 1793741238247,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "5ze311tqxtywmjibj3wd8xzuie",
+        "create_at": 1793741253520,
+        "update_at": 1793741253790,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "74fxoubwhpruzepnhg7oryesjy",
+        "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+        "root_id": "",
+        "original_id": "",
+        "message": "Back online now.",
+        "type": "",
+        "props": {
+          "matty_seed": 56
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 1,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "xdb6gt88obbrfmpajj8kb5esso",
+      "reply_count": 2,
+      "last_reply_at": 1793741253402,
+      "last_viewed_at": 1793741252452,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        },
+        {
+          "id": "5d6xanjg5tyr3fiu6dybiixkaw",
+          "create_at": 1793741236481,
+          "update_at": 1793741241794,
+          "delete_at": 0,
+          "username": "dennis.rossum",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "dennis.rossum@example.com",
+          "nickname": "Dennis",
+          "first_name": "Dennis",
+          "last_name": "Rossum",
+          "position": "",
+          "roles": "system_user",
+          "last_picture_update": 1793741236599,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "xdb6gt88obbrfmpajj8kb5esso",
+        "create_at": 1793741252287,
+        "update_at": 1793741253402,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": true,
+        "user_id": "mdxf83nt13djbeahk3rwdiaf4w",
+        "channel_id": "37jjwi95w3883ekkoc8mjzbjer",
+        "root_id": "",
+        "original_id": "",
+        "message": "Meeting moved to 3pm. Deploy finished without errors. The staging server is down, investigating. Meeting moved to 3pm.",
+        "type": "",
+        "props": {
+          "matty_seed": 15
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 1,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    },
+    {
+      "id": "i14jifuwwjgtfm4uaydpfeuzwh",
+      "reply_count": 1,
+      "last_reply_at": 1793741253296,
+      "last_viewed_at": 1793741253353,
+      "participants": [
+        {
+          "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+          "create_at": 1793741235720,
+          "update_at": 1793741263857,
+          "delete_at": 0,
+          "username": "tester",
+          "auth_data": "",
+          "auth_service": "",
+          "email": "tester@example.com",
+          "nickname": "Test",
+          "first_name": "Test",
+          "last_name": "User",
+          "position": "Support",
+          "roles": "system_user",
+          "last_picture_update": 1793741235839,
+          "locale": "en",
+          "timezone": {
+            "automaticTimezone": "",
+            "manualTimezone": "",
+            "useAutomaticTimezone": "true"
+          },
+          "remote_id": "",
+          "disable_welcome_email": false
+        }
+      ],
+      "post": {
+        "id": "i14jifuwwjgtfm4uaydpfeuzwh",
+        "create_at": 1793741252492,
+        "update_at": 1793741253296,
+        "edit_at": 0,
+        "delete_at": 0,
+        "is_pinned": false,
+        "user_id": "h4xzc9enzfrgdff5xqxknaodzr",
+        "channel_id": "37jjwi95w3883ekkoc8mjzbjer",
+        "root_id": "",
+        "original_id": "",
+        "message": "The build is green again. Meeting moved to 3pm. The build is green again. Has anyone seen the new design mocks?",
+        "type": "",
+        "props": {
+          "matty_seed": 18
+        },
+        "hashtags": "",
+        "file_ids": [],
+        "pending_post_id": "",
+        "remote_id": "",
+        "reply_count": 0,
+        "last_reply_at": 0,
+        "participants": null
+      },
+      "unread_replies": 0,
+      "unread_mentions": 0,
+      "is_urgent": false,
+      "delete_at": 0
+    }
+  ]
+}

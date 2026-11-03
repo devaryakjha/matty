@@ -1,0 +1,59 @@
+{
+  "id": "ncmzhhfdppyatpkff3c8wz9xkh",
+  "create_at": 1793741262016,
+  "update_at": 1793741262016,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+  "channel_id": "1myjbgbttjrfmxs1bijkjk7dbh",
+  "root_id": "",
+  "original_id": "",
+  "message": "Preview http://localhost:8065/static/matty-preview/page.html",
+  "type": "",
+  "props": {},
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [
+      {
+        "type": "opengraph",
+        "url": "http://localhost:8065/static/matty-preview/page.html",
+        "data": {
+          "type": "website",
+          "url": "",
+          "title": "Matty preview page",
+          "description": "A page with Open Graph tags for link preview fixtures.",
+          "determiner": "",
+          "site_name": "Matty dev server",
+          "locale": "",
+          "locales_alternate": null,
+          "images": [
+            {
+              "url": "http://localhost:8065/static/images/c_avatar.png",
+              "secure_url": "",
+              "type": "",
+              "width": 0,
+              "height": 0
+            }
+          ],
+          "audios": null,
+          "videos": null
+        }
+      }
+    ],
+    "images": {
+      "http://localhost:8065/static/images/c_avatar.png": {
+        "width": 18,
+        "height": 17,
+        "format": "png",
+        "frame_count": 0
+      }
+    }
+  }
+}

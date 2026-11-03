@@ -1,5 +1,6 @@
 # Records matty-api fixtures from a fresh, seeded server of each version
-# asked for, and uploads them as an artifact to commit (#19). Run it from the
+# asked for (#19). Each version's files are uploaded as an artifact and
+# pushed alone to the branch fixtures/v<version>, to merge or check out. Run it from the
 # Actions tab, or: gh workflow run record-fixtures.yml -f versions="12.0 10.11"
 name: record fixtures
 
@@ -34,6 +35,8 @@ jobs:
       fail-fast: false
       matrix:
         server: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    permissions:
+      contents: write
     env:
       MATTY_MM_VERSION: ${{ matrix.server }}
     steps:
@@ -49,3 +52,14 @@ jobs:
           name: fixtures-v${{ matrix.server }}
           path: crates/matty-api/tests/fixtures/v${{ matrix.server }}
           if-no-files-found: error
+      - name: Push the files to fixtures/v${{ matrix.server }}
+        env:
+          VERSION: ${{ matrix.server }}
+        run: |
+          dir="crates/matty-api/tests/fixtures/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "fixtures/v$VERSION"
+          git add "$dir"
+          git commit -m "Record fixtures from Mattermost $VERSION"
+          git push --force origin "fixtures/v$VERSION"

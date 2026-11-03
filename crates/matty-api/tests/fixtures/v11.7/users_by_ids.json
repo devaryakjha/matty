@@ -1,0 +1,26 @@
+[
+  {
+    "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+    "create_at": 1793741235720,
+    "update_at": 1793741241599,
+    "delete_at": 0,
+    "username": "tester",
+    "auth_data": "",
+    "auth_service": "",
+    "email": "tester@example.com",
+    "nickname": "Test",
+    "first_name": "Test",
+    "last_name": "User",
+    "position": "Support",
+    "roles": "system_user",
+    "last_picture_update": 1793741235839,
+    "locale": "en",
+    "timezone": {
+      "automaticTimezone": "",
+      "manualTimezone": "",
+      "useAutomaticTimezone": "true"
+    },
+    "remote_id": "",
+    "disable_welcome_email": false
+  }
+]

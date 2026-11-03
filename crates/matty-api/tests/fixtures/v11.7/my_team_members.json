@@ -1,0 +1,22 @@
+[
+  {
+    "team_id": "dk6g54q3jbfwdggtboc74jbssw",
+    "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+    "roles": "team_user",
+    "delete_at": 0,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  },
+  {
+    "team_id": "ya1os63muifo9naotya3c5zjqy",
+    "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+    "roles": "team_user",
+    "delete_at": 0,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  }
+]

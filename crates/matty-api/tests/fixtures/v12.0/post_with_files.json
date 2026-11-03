@@ -1,0 +1,71 @@
+{
+  "id": "7rdwaq4a87b58xgktkmc5qo11y",
+  "create_at": 1793741238587,
+  "update_at": 1793741238736,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": true,
+  "user_id": "c1a8j3yzj3yh3qb1wh7uxbh4kr",
+  "channel_id": "wgo7dzydmtn9zr3eqj43h15iah",
+  "root_id": "",
+  "original_id": "",
+  "message": "Meeting moved to 3pm. Here's the doc with the details. The build is green again. Lunch at noon?",
+  "type": "",
+  "props": {
+    "matty_seed": 0
+  },
+  "hashtags": "",
+  "file_ids": [
+    "bbw639maujg5bjgw4rt4panf6h"
+  ],
+  "pending_post_id": "",
+  "has_reactions": true,
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "emojis": [
+      {
+        "id": "i4z56sxgx3bedxgw4sanymzj5y",
+        "create_at": 1793741229217,
+        "update_at": 1793741229217,
+        "delete_at": 0,
+        "creator_id": "aehtqhox9pnw7yzofogzzybxse",
+        "name": "this-is-fine"
+      }
+    ],
+    "files": [
+      {
+        "id": "bbw639maujg5bjgw4rt4panf6h",
+        "user_id": "c1a8j3yzj3yh3qb1wh7uxbh4kr",
+        "post_id": "7rdwaq4a87b58xgktkmc5qo11y",
+        "channel_id": "wgo7dzydmtn9zr3eqj43h15iah",
+        "create_at": 1793741238467,
+        "update_at": 1793741238467,
+        "delete_at": 0,
+        "name": "image-300x900.png",
+        "extension": "png",
+        "size": 8306,
+        "mime_type": "image/png",
+        "width": 300,
+        "height": 900,
+        "has_preview_image": true,
+        "mini_preview": "/9j/2wCEAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRQBAwQEBQQFCQUFCRQNCw0UFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFP/AABEIABAAEAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOl7g9+3+f8AA0nr+v8A9f8A+uKXuR37/wD1/wD64pOw/T/P+Br4s+aP/9k=",
+        "remote_id": "",
+        "archived": false
+      }
+    ],
+    "reactions": [
+      {
+        "user_id": "i57humkhwinaidf8hh9cwg659y",
+        "post_id": "7rdwaq4a87b58xgktkmc5qo11y",
+        "emoji_name": "this-is-fine",
+        "create_at": 1793741238708,
+        "update_at": 1793741238708,
+        "delete_at": 0,
+        "remote_id": "",
+        "channel_id": "wgo7dzydmtn9zr3eqj43h15iah"
+      }
+    ]
+  }
+}

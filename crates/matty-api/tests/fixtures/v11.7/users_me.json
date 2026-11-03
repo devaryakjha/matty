@@ -1,0 +1,38 @@
+{
+  "id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+  "create_at": 1793741235720,
+  "update_at": 1793741241599,
+  "delete_at": 0,
+  "username": "tester",
+  "auth_service": "",
+  "email": "tester@example.com",
+  "nickname": "Test",
+  "first_name": "Test",
+  "last_name": "User",
+  "position": "Support",
+  "roles": "system_user",
+  "notify_props": {
+    "channel": "true",
+    "comments": "never",
+    "desktop": "mention",
+    "desktop_sound": "true",
+    "desktop_threads": "all",
+    "email": "true",
+    "email_threads": "all",
+    "first_name": "false",
+    "mention_keys": "",
+    "push": "mention",
+    "push_status": "online",
+    "push_threads": "all"
+  },
+  "last_password_update": 1793741235720,
+  "last_picture_update": 1793741235839,
+  "locale": "en",
+  "timezone": {
+    "automaticTimezone": "",
+    "manualTimezone": "",
+    "useAutomaticTimezone": "true"
+  },
+  "remote_id": "",
+  "disable_welcome_email": false
+}

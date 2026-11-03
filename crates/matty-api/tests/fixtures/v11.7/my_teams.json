@@ -1,0 +1,40 @@
+[
+  {
+    "id": "dk6g54q3jbfwdggtboc74jbssw",
+    "create_at": 1793741240766,
+    "update_at": 1793741240766,
+    "delete_at": 0,
+    "display_name": "Dev",
+    "name": "dev",
+    "description": "",
+    "email": "",
+    "type": "O",
+    "company_name": "",
+    "allowed_domains": "",
+    "invite_id": "f8cb3hojtjbw7erqkk8dmfinuo",
+    "allow_open_invite": false,
+    "scheme_id": null,
+    "group_constrained": null,
+    "policy_id": null,
+    "cloud_limits_archived": false
+  },
+  {
+    "id": "ya1os63muifo9naotya3c5zjqy",
+    "create_at": 1793741240853,
+    "update_at": 1793741240853,
+    "delete_at": 0,
+    "display_name": "Ops",
+    "name": "ops",
+    "description": "",
+    "email": "",
+    "type": "O",
+    "company_name": "",
+    "allowed_domains": "",
+    "invite_id": "uhd3usmi9frfp8gbkox9z3y5ih",
+    "allow_open_invite": false,
+    "scheme_id": null,
+    "group_constrained": null,
+    "policy_id": null,
+    "cloud_limits_archived": false
+  }
+]
