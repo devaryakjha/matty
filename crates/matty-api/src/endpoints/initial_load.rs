@@ -148,6 +148,16 @@ impl Client {
         self.put(&format!("users/{user_id}/status"), &body).await
     }
 
+    /// `GET channels/{channel_id}`.
+    pub async fn channel(&self, channel_id: &str) -> Result<Channel, ApiError> {
+        self.get(&format!("channels/{channel_id}")).await
+    }
+
+    /// `GET channels/{channel_id}/members/me`: the user's own membership.
+    pub async fn my_channel_member(&self, channel_id: &str) -> Result<ChannelMember, ApiError> {
+        self.get(&format!("channels/{channel_id}/members/me")).await
+    }
+
     /// `GET channels/{channel_id}/stats`.
     pub async fn channel_stats(&self, channel_id: &str) -> Result<ChannelStats, ApiError> {
         self.get(&format!("channels/{channel_id}/stats")).await

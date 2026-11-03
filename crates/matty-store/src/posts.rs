@@ -16,7 +16,7 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// The local clock in ms, for `touched_at`.
-pub(crate) fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
@@ -41,7 +41,8 @@ fn from_json<T: serde::de::DeserializeOwned + Default>(text: &str) -> T {
 /// that id (see [`replace_pending`]), whichever of the REST response or the
 /// WebSocket `posted` event arrives first, so a send never shows twice.
 /// Reactions and files are taken from `metadata` and replace what was stored
-/// for the post. Call inside a transaction for batches.
+/// for the post. Each channel's `since` cursor moves to the newest server
+/// time seen. Call inside a transaction for batches.
 pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
     let mut drop_pending = conn
         .prepare_cached("DELETE FROM posts WHERE (pending_post_id = ?1 OR id = ?1) AND id != ?2")?;
@@ -94,6 +95,11 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
         ])?;
         clear_reactions.execute([&post.id])?;
         clear_files.execute([&post.id])?;
+        // An optimistic row's times are the local clock's; cursors only
+        // take the server's.
+        if post.id != post.pending_post_id {
+            note_seen(conn, post)?;
+        }
         if post.delete_at == 0 {
             for reaction in &post.metadata.reactions {
                 add_reaction(
@@ -146,6 +152,13 @@ pub fn replace_pending(conn: &Connection, pending_post_id: &str, post: &Post) ->
 /// Marks a post deleted (`post_deleted`), clearing its text, reactions and
 /// files. It stays so a `since` catch-up does not bring it back.
 pub fn mark_deleted(conn: &Connection, post_id: &str, delete_at: i64) -> Result<()> {
+    if let Some(channel_id) = conn
+        .prepare_cached("SELECT channel_id FROM posts WHERE id = ?1")?
+        .query_row([post_id], |row| row.get::<_, String>(0))
+        .optional()?
+    {
+        advance_since(conn, &channel_since_key(&channel_id), delete_at)?;
+    }
     conn.execute(
         "UPDATE posts SET delete_at = ?2, message = '', props = '{}', metadata = '{}'
          WHERE id = ?1",
@@ -627,4 +640,85 @@ pub fn advance_since(conn: &Connection, key: &str, at: i64) -> Result<i64> {
     .execute(params![key, at.to_string()])?;
     let value = cursor(conn, key)?.unwrap_or_default();
     Ok(value.parse().unwrap_or(at))
+}
+
+/// Changes a root post's reply count by `delta` when a reply arrives or is
+/// deleted. Returns whether the root is cached.
+pub fn add_replies(conn: &Connection, root_id: &str, delta: i64) -> Result<bool> {
+    let changed = conn
+        .prepare_cached("UPDATE posts SET reply_count = MAX(reply_count + ?2, 0) WHERE id = ?1")?
+        .execute(params![root_id, delta])?;
+    Ok(changed > 0)
+}
+
+/// The team a followed thread is listed under, if cached.
+pub fn thread_team(conn: &Connection, thread_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached("SELECT team_id FROM threads WHERE id = ?1")?
+        .query_row([thread_id], |row| row.get(0))
+        .optional()?)
+}
+
+/// Drops a channel's cached posts, with their reactions and files, before a
+/// fresh page replaces them. Posts still waiting in the outbox stay.
+pub fn clear_channel(conn: &Connection, channel_id: &str) -> Result<usize> {
+    let removed = conn
+        .prepare_cached(
+            "DELETE FROM posts WHERE channel_id = ?1
+               AND id NOT IN (SELECT pending_post_id FROM outbox)",
+        )?
+        .execute([channel_id])?;
+    conn.prepare_cached(
+        "DELETE FROM files WHERE channel_id = ?1 AND post_id != ''
+           AND post_id NOT IN (SELECT id FROM posts WHERE channel_id = ?1)",
+    )?
+    .execute([channel_id])?;
+    Ok(removed)
+}
+
+/// Channels with cached posts, most recent post first.
+pub fn cached_channels(conn: &Connection) -> Result<Vec<String>> {
+    let mut statement = conn.prepare_cached(
+        "SELECT channel_id FROM posts GROUP BY channel_id ORDER BY MAX(create_at) DESC",
+    )?;
+    let channels = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(channels)
+}
+
+/// The key for a team's thread-list `since` cursor.
+pub fn threads_since_key(team_id: &str) -> String {
+    format!("threads_since:{team_id}")
+}
+
+/// Moves a channel's `since` cursor to the newest server time on `post`.
+pub fn note_seen(conn: &Connection, post: &Post) -> Result<()> {
+    let at = post
+        .update_at
+        .max(post.create_at)
+        .max(post.edit_at)
+        .max(post.delete_at);
+    if at > 0 && !post.channel_id.is_empty() {
+        advance_since(conn, &channel_since_key(&post.channel_id), at)?;
+    }
+    Ok(())
+}
+
+/// Removes a post outright, as when the user discards an unsent message.
+/// Unlike [`mark_deleted`], nothing is kept.
+pub fn remove_post(conn: &Connection, post_id: &str) -> Result<bool> {
+    let removed = conn
+        .prepare_cached("DELETE FROM posts WHERE id = ?1")?
+        .execute([post_id])?;
+    conn.prepare_cached("DELETE FROM files WHERE post_id = ?1")?
+        .execute([post_id])?;
+    Ok(removed > 0)
+}
+
+/// The newest `create_at` among a channel's cached posts, or 0.
+pub fn newest_create_at(conn: &Connection, channel_id: &str) -> Result<i64> {
+    Ok(conn
+        .prepare_cached("SELECT COALESCE(MAX(create_at), 0) FROM posts WHERE channel_id = ?1")?
+        .query_row([channel_id], |row| row.get(0))?)
 }

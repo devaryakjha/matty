@@ -4461,6 +4461,7 @@ dependencies = [
  "async-channel",
  "matty-api",
  "matty-store",
+ "proptest",
  "rusqlite",
  "serde_json",
  "tempfile",

@@ -559,3 +559,219 @@ pub fn teams_with_unreads(
     }
     Ok(result)
 }
+
+// Live updates from WebSocket events (#36).
+
+/// A cached channel: what the server last sent, with the counts and dates
+/// events have moved since.
+pub fn channel(conn: &Connection, channel_id: &str) -> Result<Option<Channel>> {
+    use rusqlite::OptionalExtension as _;
+    let channel = conn
+        .prepare_cached(
+            "SELECT data, team_id, last_post_at, last_root_post_at, total_msg_count,
+                    total_msg_count_root, delete_at
+             FROM channels WHERE id = ?1",
+        )?
+        .query_row([channel_id], |row| {
+            let data: String = row.get(0)?;
+            let mut channel: Channel = serde_json::from_str(&data).unwrap_or_default();
+            channel.id = channel_id.to_owned();
+            channel.team_id = row.get(1)?;
+            channel.last_post_at = row.get(2)?;
+            channel.last_root_post_at = row.get(3)?;
+            channel.total_msg_count = row.get(4)?;
+            channel.total_msg_count_root = row.get(5)?;
+            channel.delete_at = row.get(6)?;
+            Ok(channel)
+        })
+        .optional()?;
+    Ok(channel)
+}
+
+/// A user's cached membership of a channel.
+pub fn channel_member(
+    conn: &Connection,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<Option<ChannelMember>> {
+    use rusqlite::OptionalExtension as _;
+    let member = conn
+        .prepare_cached(
+            "SELECT roles, last_viewed_at, msg_count, mention_count, msg_count_root,
+                    mention_count_root, urgent_mention_count, notify_props, last_update_at
+             FROM channel_members WHERE channel_id = ?1 AND user_id = ?2",
+        )?
+        .query_row([channel_id, user_id], |row| {
+            let notify_props: String = row.get(7)?;
+            Ok(ChannelMember {
+                channel_id: channel_id.to_owned(),
+                user_id: user_id.to_owned(),
+                roles: row.get(0)?,
+                last_viewed_at: row.get(1)?,
+                msg_count: row.get(2)?,
+                mention_count: row.get(3)?,
+                msg_count_root: row.get(4)?,
+                mention_count_root: row.get(5)?,
+                urgent_mention_count: row.get(6)?,
+                notify_props: serde_json::from_str(&notify_props).unwrap_or_default(),
+                last_update_at: row.get(8)?,
+            })
+        })
+        .optional()?;
+    Ok(member)
+}
+
+/// A new post, as the counts see it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewPost {
+    /// When it was created.
+    pub create_at: i64,
+    /// A root post rather than a reply.
+    pub is_root: bool,
+    /// The user wrote it, so it is read.
+    pub by_me: bool,
+    /// It mentions the user (always true in a direct message).
+    pub mentions_me: bool,
+    /// It is an urgent-priority mention.
+    pub urgent: bool,
+}
+
+/// Counts a new post in its channel, as the server does: the channel's
+/// totals and last post time, and the user's read count when they wrote it
+/// or mention count when it mentions them. `false` when the channel is not
+/// cached.
+pub fn count_post(
+    conn: &Connection,
+    channel_id: &str,
+    user_id: &str,
+    post: &NewPost,
+) -> Result<bool> {
+    let root = i64::from(post.is_root);
+    let changed = conn
+        .prepare_cached(
+            "UPDATE channels SET
+                 total_msg_count = total_msg_count + 1,
+                 total_msg_count_root = total_msg_count_root + ?2,
+                 last_post_at = MAX(last_post_at, ?3),
+                 last_root_post_at = CASE WHEN ?2 = 1 THEN MAX(last_root_post_at, ?3)
+                                          ELSE last_root_post_at END
+             WHERE id = ?1",
+        )?
+        .execute(params![channel_id, root, post.create_at])?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    if post.by_me {
+        conn.prepare_cached(
+            "UPDATE channel_members SET msg_count = msg_count + 1,
+                 msg_count_root = msg_count_root + ?3,
+                 last_viewed_at = MAX(last_viewed_at, ?4)
+             WHERE channel_id = ?1 AND user_id = ?2",
+        )?
+        .execute(params![channel_id, user_id, root, post.create_at])?;
+    } else if post.mentions_me {
+        conn.prepare_cached(
+            "UPDATE channel_members SET mention_count = mention_count + 1,
+                 mention_count_root = mention_count_root + ?3,
+                 urgent_mention_count = urgent_mention_count + ?4
+             WHERE channel_id = ?1 AND user_id = ?2",
+        )?
+        .execute(params![channel_id, user_id, root, i64::from(post.urgent)])?;
+    }
+    Ok(true)
+}
+
+/// The user read the channel up to `viewed_at` (`channel_viewed`,
+/// `multiple_channels_viewed`): everything in it counts as seen.
+pub fn mark_viewed(
+    conn: &Connection,
+    channel_id: &str,
+    user_id: &str,
+    viewed_at: i64,
+) -> Result<()> {
+    conn.prepare_cached(
+        "UPDATE channel_members SET
+             msg_count = (SELECT total_msg_count FROM channels WHERE id = ?1),
+             msg_count_root = (SELECT total_msg_count_root FROM channels WHERE id = ?1),
+             mention_count = 0, mention_count_root = 0, urgent_mention_count = 0,
+             last_viewed_at = MAX(last_viewed_at, ?3)
+         WHERE channel_id = ?1 AND user_id = ?2
+           AND EXISTS (SELECT 1 FROM channels WHERE id = ?1)",
+    )?
+    .execute(params![channel_id, user_id, viewed_at])?;
+    Ok(())
+}
+
+/// A read position the server computed (`post_unread`, after marking a post
+/// unread).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadState {
+    /// The new last-viewed time.
+    pub last_viewed_at: i64,
+    /// Messages seen.
+    pub msg_count: i64,
+    /// Root messages seen.
+    pub msg_count_root: i64,
+    /// Unread mentions.
+    pub mention_count: i64,
+    /// Unread mentions in root posts.
+    pub mention_count_root: i64,
+    /// Unread urgent mentions.
+    pub urgent_mention_count: i64,
+}
+
+/// Sets the user's read position in a channel to what the server says.
+pub fn set_read_state(
+    conn: &Connection,
+    channel_id: &str,
+    user_id: &str,
+    state: &ReadState,
+) -> Result<()> {
+    conn.prepare_cached(
+        "UPDATE channel_members SET last_viewed_at = ?3, msg_count = ?4, msg_count_root = ?5,
+             mention_count = ?6, mention_count_root = ?7, urgent_mention_count = ?8
+         WHERE channel_id = ?1 AND user_id = ?2",
+    )?
+    .execute(params![
+        channel_id,
+        user_id,
+        state.last_viewed_at,
+        state.msg_count,
+        state.msg_count_root,
+        state.mention_count,
+        state.mention_count_root,
+        state.urgent_mention_count
+    ])?;
+    Ok(())
+}
+
+/// Archives a channel (`channel_deleted`), or restores it with 0. Archived
+/// channels leave the sidebar but keep their posts.
+pub fn set_channel_deleted(conn: &Connection, channel_id: &str, delete_at: i64) -> Result<()> {
+    conn.prepare_cached("UPDATE channels SET delete_at = ?2 WHERE id = ?1")?
+        .execute(params![channel_id, delete_at])?;
+    Ok(())
+}
+
+/// A category's place in its team's order, if cached.
+pub fn category_sort_order(conn: &Connection, category_id: &str) -> Result<Option<i64>> {
+    use rusqlite::OptionalExtension as _;
+    Ok(conn
+        .prepare_cached("SELECT sort_order FROM categories WHERE id = ?1")?
+        .query_row([category_id], |row| row.get(0))
+        .optional()?)
+}
+
+/// Reorders a team's categories (`sidebar_category_order_updated`).
+/// Categories not listed keep their relative order after the listed ones.
+pub fn set_category_order(conn: &Connection, team_id: &str, order: &[String]) -> Result<()> {
+    let listed = i64::try_from(order.len()).unwrap_or(i64::MAX);
+    conn.prepare_cached("UPDATE categories SET sort_order = ?2 + sort_order WHERE team_id = ?1")?
+        .execute(params![team_id, listed])?;
+    let mut statement = conn
+        .prepare_cached("UPDATE categories SET sort_order = ?3 WHERE id = ?1 AND team_id = ?2")?;
+    for (position, id) in order.iter().enumerate() {
+        statement.execute(params![id, team_id, position as i64])?;
+    }
+    Ok(())
+}
