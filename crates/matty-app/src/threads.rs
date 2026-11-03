@@ -12,6 +12,7 @@ use gpui_kit::{
 
 use crate::channel::ReplySummary;
 use crate::right_pane::{RightPaneContent, RightPaneView, ThreadModel};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
@@ -74,6 +75,11 @@ impl ThreadsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.subscribe(
+            &SettingsStore::global(cx),
+            |_, _, _: &SettingsChanged, cx| cx.notify(),
+        )
+        .detach();
         let detail = cx.new(|cx| RightPaneView::new(me, window, cx));
         let mut this = Self {
             model: ThreadsModel::default(),
@@ -196,6 +202,7 @@ impl ThreadsView {
 
     fn row(&self, row: &ThreadRow, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        let clock = ClockFormat::current(cx);
         let root = &row.thread.root;
         let selected = self.selected.as_ref() == Some(row.id());
         let id = row.id().clone();
@@ -263,7 +270,7 @@ impl ThreadsView {
                                 div()
                                     .type_style(style::META, &theme)
                                     .text_color(theme.colors.muted_foreground)
-                                    .child(row.summary.last_time.clone()),
+                                    .child(row.summary.last_reply_label(clock)),
                             ),
                     )
                     .child(

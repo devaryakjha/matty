@@ -23,8 +23,8 @@ use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
-    RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
-    ThemeChoice, WindowGeometry, ZOOM_STEP,
+    ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
+    SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -204,20 +204,27 @@ impl MainWindow {
                 .detach();
             view
         });
-        cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
-            ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
-            ChannelEvent::OpenPinned => this.show_pinned(cx),
-            // Sync picks these up once it owns the channel model; the view
-            // already shows the change.
-            ChannelEvent::Send(_)
-            | ChannelEvent::ToggleReaction { .. }
-            | ChannelEvent::ToggleSave(_)
-            | ChannelEvent::TogglePin(_)
-            | ChannelEvent::Edit(_)
-            | ChannelEvent::Delete(_)
-            | ChannelEvent::Retry(_)
-            | ChannelEvent::ToggleFollow { .. } => {}
-        })
+        cx.subscribe_in(
+            &channel,
+            window,
+            |this, _, event: &ChannelEvent, window, cx| match event {
+                ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+                ChannelEvent::OpenPinned => this.show_pinned(cx),
+                ChannelEvent::OpenDirect { display_name, .. } => {
+                    this.open_direct(display_name.clone(), window, cx)
+                }
+                // Sync picks these up once it owns the channel model; the view
+                // already shows the change.
+                ChannelEvent::Send(_)
+                | ChannelEvent::ToggleReaction { .. }
+                | ChannelEvent::ToggleSave(_)
+                | ChannelEvent::TogglePin(_)
+                | ChannelEvent::Edit(_)
+                | ChannelEvent::Delete(_)
+                | ChannelEvent::Retry(_)
+                | ChannelEvent::ToggleFollow { .. } => {}
+            },
+        )
         .detach();
         cx.subscribe_in(
             &right_pane,
@@ -420,6 +427,31 @@ impl MainWindow {
         });
         self.right_pane_open = true;
         cx.notify();
+    }
+
+    /// Opens the direct message with `display_name`; until sync can create
+    /// one, only an existing sidebar row can be opened.
+    fn open_direct(
+        &mut self,
+        display_name: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| {
+                matches!(row.kind, crate::sidebar::ChannelKind::Direct { .. })
+                    && row.name == display_name
+            })
+            .map(|row| row.id.clone());
+        if let Some(id) = id {
+            self.open_channel(id, window, cx);
+        }
     }
 
     fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
@@ -929,6 +961,32 @@ impl MainWindow {
                 .unwrap_or(1.);
             size_store.update(cx, |store, cx| store.update(cx, |s| s.text_scale = scale));
         });
+        let clock_value: SharedString = match settings.clock {
+            ClockFormat::TwelveHour => "12",
+            ClockFormat::TwentyFourHour => "24",
+        }
+        .into();
+        let clock_store = store.clone();
+        let clock_item = |id: &'static str, value: &'static str, text: &'static str| {
+            ToggleGroupItem::new(id, value)
+                .aria_label(text)
+                .flex_1()
+                .child(text)
+        };
+        let clock_group = ToggleGroup::new("preferences.clock")
+            .aria_label("Clock")
+            .joined(true)
+            .w_full()
+            .value([clock_value])
+            .item(clock_item("preferences.clock.12", "12", "12-hour"))
+            .item(clock_item("preferences.clock.24", "24", "24-hour"))
+            .on_change(move |next, _, cx| {
+                let clock = match next.first().map(|v| v.as_ref()) {
+                    Some("12") => ClockFormat::TwelveHour,
+                    _ => ClockFormat::TwentyFourHour,
+                };
+                clock_store.update(cx, |store, cx| store.update(cx, |s| s.clock = clock));
+            });
         let switch_row =
             |id: &'static str,
              title: &'static str,
@@ -982,6 +1040,7 @@ impl MainWindow {
                     .pt(theme.space(1.))
                     .child(section("Theme", theme_group.into_any_element()))
                     .child(section("Text size", size_group.into_any_element()))
+                    .child(section("Clock", clock_group.into_any_element()))
                     .child(section(
                         "Window",
                         div()

@@ -54,6 +54,38 @@ pub enum RemoteImages {
     Ask,
 }
 
+/// How post times read: "8:02 PM" or "20:02".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockFormat {
+    TwelveHour,
+    #[default]
+    TwentyFourHour,
+}
+
+impl ClockFormat {
+    /// Formats minutes since local midnight.
+    pub fn format(self, minutes: u16) -> String {
+        let (hour, minute) = ((minutes / 60) % 24, minutes % 60);
+        match self {
+            Self::TwentyFourHour => format!("{hour:02}:{minute:02}"),
+            Self::TwelveHour => {
+                let suffix = if hour < 12 { "AM" } else { "PM" };
+                let hour = match hour % 12 {
+                    0 => 12,
+                    hour => hour,
+                };
+                format!("{hour}:{minute:02} {suffix}")
+            }
+        }
+    }
+
+    /// The format the user chose, for views that print a time.
+    pub fn current(cx: &App) -> Self {
+        SettingsStore::global(cx).read(cx).get().clock
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
@@ -93,6 +125,7 @@ pub struct Settings {
     pub update_channel: UpdateChannel,
     pub log_level: LogLevel,
     pub load_remote_images: RemoteImages,
+    pub clock: ClockFormat,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -114,6 +147,7 @@ impl Default for Settings {
             update_channel: UpdateChannel::Stable,
             log_level: LogLevel::Info,
             load_remote_images: RemoteImages::Always,
+            clock: ClockFormat::TwentyFourHour,
             unknown: serde_json::Map::new(),
         }
     }
@@ -311,6 +345,16 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn clock_formats_both_ways() {
+        assert_eq!(ClockFormat::TwentyFourHour.format(8 * 60 + 2), "08:02");
+        assert_eq!(ClockFormat::TwentyFourHour.format(0), "00:00");
+        assert_eq!(ClockFormat::TwelveHour.format(8 * 60 + 2), "8:02 AM");
+        assert_eq!(ClockFormat::TwelveHour.format(0), "12:00 AM");
+        assert_eq!(ClockFormat::TwelveHour.format(12 * 60), "12:00 PM");
+        assert_eq!(ClockFormat::TwelveHour.format(20 * 60 + 2), "8:02 PM");
     }
 
     #[test]

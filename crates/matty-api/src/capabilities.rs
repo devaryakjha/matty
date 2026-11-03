@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A Mattermost server version, `major.minor.patch`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -243,7 +243,7 @@ impl ServerCapabilities {
 }
 
 /// The `system/ping` answer.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Ping {
     /// `OK` when healthy.
     pub status: String,
