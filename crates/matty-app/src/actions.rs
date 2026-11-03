@@ -40,6 +40,8 @@ gpui_kit::actions!(
         ExpandRightPane,
         /// Show recent mentions. (MM)
         RecentMentions,
+        /// Show saved messages. (Matty)
+        SavedMessages,
         /// Pick files to upload to the current channel. (MM)
         UploadFiles,
         /// Edit your last message, from an empty composer. (MM)
@@ -205,6 +207,13 @@ pub fn bindings() -> Vec<Binding> {
             main,
             "cmd-shift-m",
             "ctrl-shift-m"
+        ),
+        row!(
+            "Saved messages",
+            SavedMessages,
+            main,
+            "cmd-shift-b",
+            "ctrl-shift-b"
         ),
         row!("Upload files", UploadFiles, main, "cmd-u", "ctrl-u"),
         row!(

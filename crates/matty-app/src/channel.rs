@@ -151,6 +151,8 @@ pub enum ChannelEvent {
     Send(SharedString),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
+    /// The user asked for the channel's pinned messages.
+    OpenPinned,
     /// The user added or removed their reaction; the view already shows it.
     ToggleReaction {
         post: SharedString,
@@ -609,7 +611,7 @@ impl ChannelView {
         })
     }
 
-    fn header(&self, channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
+    fn header(&self, channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
         let icon = |glyph: LucideIcon| {
@@ -714,12 +716,15 @@ impl ChannelView {
                         LucideIcon::Users,
                         channel.members,
                     ))
-                    .child(count(
-                        "channel.pinned",
-                        format!("{} pinned messages", channel.pinned),
-                        LucideIcon::Pin,
-                        channel.pinned,
-                    ))
+                    .child(
+                        count(
+                            "channel.pinned",
+                            format!("{} pinned messages", channel.pinned),
+                            LucideIcon::Pin,
+                            channel.pinned,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenPinned))),
+                    )
                     .child(action("channel.info", "Channel info", LucideIcon::Info)),
             )
     }

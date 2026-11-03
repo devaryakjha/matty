@@ -6,8 +6,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window, div,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 
 use crate::actions::{self, CloseRightPane};
@@ -33,11 +33,28 @@ pub struct ThreadModel {
     pub following: bool,
 }
 
+/// A post listed outside its channel: saved, pinned or a mention.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPost {
+    pub channel_id: SharedString,
+    pub channel_name: SharedString,
+    pub post: Post,
+}
+
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
     Thread(ThreadModel),
     ChannelInfo(ChannelModel),
+    /// The current channel's pinned posts, newest first.
+    Pinned {
+        channel_name: SharedString,
+        posts: Vec<ListedPost>,
+    },
+    /// The user's saved posts across channels, newest first.
+    Saved(Vec<ListedPost>),
+    /// Posts that mention the user, newest first.
+    Mentions(Vec<ListedPost>),
 }
 
 /// What the pane asks the window to do.
@@ -60,6 +77,11 @@ pub enum RightPaneEvent {
     ToggleReaction {
         post: SharedString,
         emoji: SharedString,
+    },
+    /// Jump to `post` in `channel` from a listing.
+    Jump {
+        channel: SharedString,
+        post: SharedString,
     },
 }
 
@@ -118,7 +140,7 @@ impl RightPaneView {
     fn thread_mut(&mut self) -> Option<&mut ThreadModel> {
         match self.content.as_mut()? {
             RightPaneContent::Thread(thread) => Some(thread),
-            RightPaneContent::ChannelInfo(_) => None,
+            _ => None,
         }
     }
 
@@ -501,6 +523,20 @@ impl RightPaneView {
 
     /// Nothing open: one line on how to get a thread here.
     fn empty(cx: &App) -> impl IntoElement + use<> {
+        Self::empty_state(
+            LucideIcon::MessageSquareReply,
+            "No thread open",
+            "Hover a message and choose Reply in thread to follow it here.",
+            cx,
+        )
+    }
+
+    fn empty_state(
+        glyph: LucideIcon,
+        title: &'static str,
+        description: &'static str,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let media = div()
             .size(theme.space(10.))
@@ -510,7 +546,7 @@ impl RightPaneView {
             .items_center()
             .justify_center()
             .child(
-                lucide(LucideIcon::MessageSquareReply)
+                lucide(glyph)
                     .size(scaled(&theme, metrics::ICON_LARGE))
                     .text_color(theme.colors.muted_foreground),
             );
@@ -529,18 +565,90 @@ impl RightPaneView {
                             EmptyTitle::new()
                                 .type_style(style::TITLE, &theme)
                                 .text_center()
-                                .child("No thread open"),
+                                .child(title),
                         )
                         .description(
                             EmptyDescription::new()
                                 .type_style(style::META, &theme)
                                 .text_center()
-                                .child(
-                                    "Hover a message and choose Reply in thread to follow it here.",
-                                ),
+                                .child(description),
                         ),
                 ),
             )
+    }
+
+    /// Saved, pinned and mention listings: each post under a caption with
+    /// its channel and a Jump link, separated by hairlines.
+    fn listing(
+        &self,
+        id: &'static str,
+        items: &[ListedPost],
+        empty: (LucideIcon, &'static str, &'static str),
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        if items.is_empty() {
+            return Self::empty_state(empty.0, empty.1, empty.2, cx).into_any_element();
+        }
+        let theme = UiTheme::read(cx).clone();
+        let view = cx.entity().downgrade();
+        div()
+            .id(id)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .py(theme.space(2.))
+            .children(items.iter().map(|item| {
+                let channel = match item.channel_name.as_ref() {
+                    name if name.contains(' ') => name.to_string(),
+                    name => format!("#{name}"),
+                };
+                let (jump_channel, jump_post) = (item.channel_id.clone(), item.post.id.clone());
+                let jump_view = view.clone();
+                div()
+                    .pb(theme.space(2.))
+                    .mb(theme.space(2.))
+                    .border_b(style::hairline())
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .px(theme.space(4.))
+                            .pb(theme.space(1.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .type_style(style::META, &theme)
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(format!("{channel} · {}", item.post.day)),
+                            )
+                            .child(
+                                Button::new(gpui_kit::ElementId::Name(
+                                    format!("{id}.{}.jump", item.post.id).into(),
+                                ))
+                                .variant(ButtonVariant::Link)
+                                .size(ButtonSize::Xs)
+                                .child("Jump")
+                                .on_click(move |_, _, cx| {
+                                    let event = RightPaneEvent::Jump {
+                                        channel: jump_channel.clone(),
+                                        post: jump_post.clone(),
+                                    };
+                                    jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+                                }),
+                            ),
+                    )
+                    .child(Self::post_row(
+                        &view,
+                        &Post {
+                            continues: false,
+                            ..item.post.clone()
+                        },
+                        true,
+                        cx,
+                    ))
+            }))
+            .into_any_element()
     }
 
     fn channel_info(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
@@ -609,6 +717,52 @@ impl Render for RightPaneView {
             Some(RightPaneContent::ChannelInfo(channel)) => root
                 .child(self.header("Channel info".into(), Some(channel.name.clone()), cx))
                 .child(Self::channel_info(&channel, cx)),
+            Some(RightPaneContent::Pinned {
+                channel_name,
+                posts,
+            }) => root
+                .child(self.header(
+                    "Pinned messages".into(),
+                    Some(match channel_name.as_ref() {
+                        name if name.contains(' ') => name.to_string().into(),
+                        name => format!("#{name}").into(),
+                    }),
+                    cx,
+                ))
+                .child(self.listing(
+                    "right-pane.pinned",
+                    &posts,
+                    (
+                        LucideIcon::Pin,
+                        "Nothing pinned yet",
+                        "Pin a message from its More menu to keep it here for everyone.",
+                    ),
+                    cx,
+                )),
+            Some(RightPaneContent::Saved(posts)) => root
+                .child(self.header("Saved messages".into(), None, cx))
+                .child(self.listing(
+                    "right-pane.saved",
+                    &posts,
+                    (
+                        LucideIcon::Bookmark,
+                        "Nothing saved yet",
+                        "Save a message from its hover toolbar to find it here later.",
+                    ),
+                    cx,
+                )),
+            Some(RightPaneContent::Mentions(posts)) => root
+                .child(self.header("Recent mentions".into(), None, cx))
+                .child(self.listing(
+                    "right-pane.mentions",
+                    &posts,
+                    (
+                        LucideIcon::AtSign,
+                        "No mentions yet",
+                        "Messages that mention you or your keywords show up here.",
+                    ),
+                    cx,
+                )),
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),

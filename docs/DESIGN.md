@@ -184,6 +184,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   replies" in `primary` or "3 replies" in `meta`, plus a `primary` dot at
   the right while unread. Selecting a row reads it. The empty list says how
   threads get there.
+- **Pinned, Saved and Recent mentions** are right-pane listings, opened
+  from the channel header's pin count, the title bar's bookmark and @
+  buttons, or Cmd/Ctrl+Shift+B and M. Each post sits under a `meta`
+  caption "#channel · Today" with a Jump link on the right, drawn as an
+  ordinary message (author, time, body, reactions, no hover toolbar), and
+  a hairline separates entries. Empty listings say how a post gets there.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, a joined toggle group for theme (System, Light, Dark) and text
   size (90 to 130 percent), switches with a one-line `meta` explanation.

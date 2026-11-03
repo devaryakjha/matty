@@ -15,7 +15,8 @@ use gpui_kit::{
 use crate::actions::{
     self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
     OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
-    RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
+    RecentMentions, ResetZoom, SavedMessages, ShowShortcuts, ToggleRightPane, ToggleSidebar,
+    ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
@@ -176,6 +177,7 @@ impl MainWindow {
         });
         cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
             ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+            ChannelEvent::OpenPinned => this.show_pinned(cx),
             // Sync picks these up once it owns the channel model; the view
             // already shows the change.
             ChannelEvent::Send(_)
@@ -188,14 +190,22 @@ impl MainWindow {
             | ChannelEvent::ToggleFollow { .. } => {}
         })
         .detach();
-        cx.subscribe(&right_pane, |this, _, event: &RightPaneEvent, cx| {
-            // Sync owns the rest (PLAN §4.3); the pane already shows them.
-            let RightPaneEvent::Close = event else {
-                return;
-            };
-            this.right_pane_open = false;
-            cx.notify();
-        })
+        cx.subscribe_in(
+            &right_pane,
+            window,
+            |this, _, event: &RightPaneEvent, window, cx| match event {
+                RightPaneEvent::Close => {
+                    this.right_pane_open = false;
+                    cx.notify();
+                }
+                // The post itself scrolls into view once sync can page to it.
+                RightPaneEvent::Jump { channel, .. } => {
+                    this.open_channel(channel.clone(), window, cx)
+                }
+                // Sync owns the rest (PLAN §4.3); the pane already shows them.
+                _ => {}
+            },
+        )
         .detach();
         cx.subscribe_in(
             &sidebar,
@@ -367,6 +377,50 @@ impl MainWindow {
         });
         self.right_pane_open = true;
         cx.notify();
+    }
+
+    fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
+        self.threads_open = false;
+        self.right_pane
+            .update(cx, |pane, cx| pane.set_content(Some(content), cx));
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    fn show_pinned(&mut self, cx: &mut Context<Self>) {
+        let Some(channel) = self.channel.read(cx).model().cloned() else {
+            return;
+        };
+        let posts = if crate::preview::enabled() {
+            crate::preview::pinned(&channel)
+        } else {
+            vec![]
+        };
+        self.show_listing(
+            RightPaneContent::Pinned {
+                channel_name: channel.name.clone(),
+                posts,
+            },
+            cx,
+        );
+    }
+
+    fn show_saved(&mut self, cx: &mut Context<Self>) {
+        let posts = if crate::preview::enabled() {
+            crate::preview::saved()
+        } else {
+            vec![]
+        };
+        self.show_listing(RightPaneContent::Saved(posts), cx);
+    }
+
+    fn show_mentions(&mut self, cx: &mut Context<Self>) {
+        let posts = if crate::preview::enabled() {
+            crate::preview::mentions()
+        } else {
+            vec![]
+        };
+        self.show_listing(RightPaneContent::Mentions(posts), cx);
     }
 
     /// Shows the current channel's info in the right pane.
@@ -592,7 +646,15 @@ impl MainWindow {
                         "Recent mentions",
                         LucideIcon::AtSign,
                         Box::new(RecentMentions),
-                        false,
+                        true,
+                        cx,
+                    ))
+                    .child(Self::icon_button(
+                        "titlebar.saved",
+                        "Saved messages",
+                        LucideIcon::Bookmark,
+                        Box::new(SavedMessages),
+                        true,
                         cx,
                     ))
                     .child(Self::icon_button(
@@ -1071,6 +1133,8 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
+            .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
+            .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
             .size_full()
             .flex()
             .flex_col()
