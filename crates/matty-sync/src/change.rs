@@ -82,6 +82,24 @@ pub enum ChangeSet {
     /// An open channel's member and pinned-post counts, fetched as it
     /// opens.
     Stats(Arc<ChannelStats>),
+    /// A team's public channels, joined or not, with member counts by
+    /// channel id: the answer to [`Command::Browse`](crate::Command::Browse).
+    Directory {
+        /// The team.
+        team_id: String,
+        /// Its public channels.
+        channels: Arc<[Channel]>,
+        /// Members by channel id.
+        members: Arc<std::collections::HashMap<String, i64>>,
+    },
+    /// A team's active people: the answer to
+    /// [`Command::FindPeople`](crate::Command::FindPeople).
+    People {
+        /// The team.
+        team_id: String,
+        /// Its people.
+        users: Arc<[User]>,
+    },
     /// These users' statuses changed.
     Presence(Arc<[Status]>),
     /// A channel the user asked to open ([`Command::OpenDirect`] or

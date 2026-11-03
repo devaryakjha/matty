@@ -7,8 +7,24 @@ use serde_json::{Value, json};
 
 use crate::{
     ApiError, Client,
-    models::{Channel, ChannelMember, PostList, Reaction, SearchResults, UserAutocomplete},
+    models::{Channel, ChannelMember, PostList, Reaction, SearchResults, User, UserAutocomplete},
 };
+
+/// A channel to create, as `POST channels` takes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct NewChannel {
+    /// The team it belongs to.
+    pub team_id: String,
+    /// The URL handle: lowercase letters, digits, `-` and `_`.
+    pub name: String,
+    /// The name people see.
+    pub display_name: String,
+    /// What the channel is for; may be empty.
+    pub purpose: String,
+    /// `O` public or `P` private.
+    #[serde(rename = "type")]
+    pub kind: String,
+}
 
 /// A post search, as `POST teams/{id}/posts/search` takes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -108,6 +124,40 @@ impl Client {
         self.get_query(
             &format!("teams/{team_id}/channels"),
             &[
+                ("page", page.to_string()),
+                ("per_page", per_page.to_string()),
+            ],
+        )
+        .await
+    }
+
+    /// `POST channels/stats/member_count`: member counts by channel id.
+    pub async fn channel_member_counts(
+        &self,
+        channel_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, i64>, ApiError> {
+        self.post("channels/stats/member_count", channel_ids).await
+    }
+
+    /// `POST channels`: creates a public (`O`) or private (`P`) channel the
+    /// user is then a member of.
+    pub async fn create_channel(&self, channel: &NewChannel) -> Result<Channel, ApiError> {
+        self.post("channels", channel).await
+    }
+
+    /// `GET users?in_team=&active=true`: one page of a team's people, for
+    /// starting a direct message.
+    pub async fn team_users(
+        &self,
+        team_id: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<User>, ApiError> {
+        self.get_query(
+            "users",
+            &[
+                ("in_team", team_id.to_owned()),
+                ("active", "true".to_owned()),
                 ("page", page.to_string()),
                 ("per_page", per_page.to_string()),
             ],

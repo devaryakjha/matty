@@ -196,6 +196,33 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Lists the team's public channels with their member counts, for
+    /// Browse channels; [`ChangeSet::Directory`](crate::ChangeSet::Directory)
+    /// answers.
+    Browse {
+        /// The team.
+        team_id: String,
+    },
+    /// Lists the team's active people, for starting a direct message;
+    /// [`ChangeSet::People`](crate::ChangeSet::People) answers.
+    FindPeople {
+        /// The team.
+        team_id: String,
+    },
+    /// Creates a channel the user is then in;
+    /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
+    CreateChannel {
+        /// The team.
+        team_id: String,
+        /// The URL handle.
+        name: String,
+        /// The name people see.
+        display_name: String,
+        /// What it is for; may be empty.
+        purpose: String,
+        /// Private instead of public.
+        private: bool,
+    },
 }
 
 impl std::fmt::Debug for Command {
@@ -310,6 +337,16 @@ impl std::fmt::Debug for Command {
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
                 .finish(),
+            Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
+            Self::FindPeople { team_id } => f
+                .debug_struct("FindPeople")
+                .field("team_id", team_id)
+                .finish(),
+            Self::CreateChannel { team_id, name, .. } => f
+                .debug_struct("CreateChannel")
+                .field("team_id", team_id)
+                .field("name", name)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -705,6 +742,27 @@ impl Engine {
                 Message::Command(Command::LeaveChannel { channel_id }) => {
                     writes.push(Write::Leave { channel_id });
                 }
+                Message::Command(Command::Browse { team_id }) => {
+                    writes.push(Write::Browse { team_id });
+                }
+                Message::Command(Command::FindPeople { team_id }) => {
+                    writes.push(Write::People { team_id });
+                }
+                Message::Command(Command::CreateChannel {
+                    team_id,
+                    name,
+                    display_name,
+                    purpose,
+                    private,
+                }) => {
+                    writes.push(Write::Create(Box::new(matty_api::NewChannel {
+                        team_id,
+                        name,
+                        display_name,
+                        purpose,
+                        kind: if private { "P" } else { "O" }.into(),
+                    })));
+                }
             }
         }
         tx.commit()?;
@@ -1003,6 +1061,22 @@ impl Engine {
                 posts::insert_posts(&tx, &fetched)?;
                 tx.commit()?;
                 dirty.channels.insert(channel_id);
+            }
+            Loaded::Directory {
+                team_id,
+                channels,
+                members,
+            } => dirty.direct.push(ChangeSet::Directory {
+                team_id,
+                channels: Arc::from(channels),
+                members: Arc::new(members),
+            }),
+            Loaded::People { team_id, users } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                dirty.direct.push(ChangeSet::People {
+                    team_id,
+                    users: Arc::from(users),
+                });
             }
             Loaded::Ready { channel, member } => {
                 let channel_id = channel.id.clone();

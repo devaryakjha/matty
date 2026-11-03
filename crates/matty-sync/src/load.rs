@@ -61,6 +61,14 @@ pub(crate) enum Loaded {
     Posts { channel_id: String, posts: PostList },
     /// An opened channel's counts.
     Stats(ChannelStats),
+    /// A team's public channels and their member counts.
+    Directory {
+        team_id: String,
+        channels: Vec<Channel>,
+        members: std::collections::HashMap<String, i64>,
+    },
+    /// A team's active people.
+    People { team_id: String, users: Vec<User> },
     /// An opened channel's posts could not load.
     PostsFailed { channel_id: String, error: String },
     /// A channel an event named, with the user's membership when they have one.
