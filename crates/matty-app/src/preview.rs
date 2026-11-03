@@ -308,6 +308,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         members: 42,
         pinned: 3,
         favorite: id == "design",
+        muted: id == "random",
         purpose: (id == "release-2026-11").then(|| {
             "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
         }),
@@ -450,6 +451,40 @@ fn hm(time: &str) -> u16 {
 }
 
 /// The signed-in user, for the account menu.
+/// Posts that arrive in #general twelve seconds after it opens, to show
+/// the live path and the "N new messages" pill.
+pub fn incoming(channel_id: &str) -> Vec<Post> {
+    if channel_id != "general" {
+        return vec![];
+    }
+    let post = |id: &str, author: &str, time: &str, body: &str| Post {
+        id: id.into(),
+        author: author.into(),
+        time: hm(time),
+        day: "Today".into(),
+        body: body.into(),
+        reactions: vec![],
+        mentions_me: false,
+        edited: false,
+        continues: false,
+        mine: false,
+        saved: false,
+        pinned: false,
+        status: PostStatus::Sent,
+        replies: None,
+        files: vec![],
+    };
+    vec![
+        post("p10", "Jonas Weber", "08:41", "Found it, thanks!"),
+        post(
+            "p11",
+            "Priya Nair",
+            "08:42",
+            "Merging the sidebar PR now; the title bar fix can follow in its own PR.",
+        ),
+    ]
+}
+
 /// What the composer tray shows after Attach: a thumbnail, a file still
 /// uploading and one that failed.
 pub fn uploads() -> Vec<Upload> {
@@ -689,6 +724,8 @@ mod tests {
             .collect();
         assert!(!ids.is_empty());
         assert_eq!(uploads().len(), 3);
+        assert_eq!(incoming("general").len(), 2);
+        assert!(incoming("design").is_empty());
         for id in &ids {
             if let Some(channel) = channel(id) {
                 pinned(&channel);
