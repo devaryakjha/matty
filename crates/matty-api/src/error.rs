@@ -18,6 +18,9 @@ pub enum ApiError {
         /// `request_id` from the body or the `X-Request-Id` header, for support.
         request_id: Option<String>,
     },
+    /// The account needs a multi-factor code, or the code was wrong.
+    #[error("enter the code from your authenticator app")]
+    MfaRequired,
     /// The server kept answering 429 after the retries ran out.
     #[error("the server is rate limiting requests; try again in a moment")]
     RateLimited,
