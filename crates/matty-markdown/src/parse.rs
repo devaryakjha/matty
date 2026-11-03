@@ -1,7 +1,8 @@
 //! Mattermost Markdown into a [`Document`], on top of `pulldown-cmark`.
 
 use pulldown_cmark::{
-    Alignment as CmAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+    Alignment as CmAlignment, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag,
+    TagEnd,
 };
 
 use crate::autolink::autolink;
@@ -281,9 +282,12 @@ impl Builder {
             Tag::Strikethrough if !source.starts_with("~~") => Kind::SingleTilde,
             Tag::Strikethrough => Kind::Strikethrough,
             Tag::Link {
-                dest_url, title, ..
+                link_type,
+                dest_url,
+                title,
+                ..
             } => Kind::Link {
-                url: dest_url.into_string(),
+                url: link_url(link_type, &dest_url),
                 title: title.into_string(),
             },
             Tag::Image {
@@ -375,9 +379,11 @@ impl Builder {
             }
             Kind::TableRow => parent.rows.push(frame.cells),
             Kind::TableCell => parent.cells.push(finish(frame.inlines)),
-            Kind::Emphasis => parent.inlines.push(Inline::Emphasis(frame.inlines)),
-            Kind::Strong => parent.inlines.push(Inline::Strong(frame.inlines)),
-            Kind::Strikethrough => parent.inlines.push(Inline::Strikethrough(frame.inlines)),
+            Kind::Emphasis => parent.inlines.push(Inline::Emphasis(finish(frame.inlines))),
+            Kind::Strong => parent.inlines.push(Inline::Strong(finish(frame.inlines))),
+            Kind::Strikethrough => parent
+                .inlines
+                .push(Inline::Strikethrough(finish(frame.inlines))),
             Kind::SingleTilde => {
                 parent.push_text("~");
                 for inline in frame.inlines {
@@ -431,6 +437,31 @@ impl Builder {
         Document {
             blocks: root.blocks,
         }
+    }
+}
+
+/// A written link's target as Mattermost opens it: `<a@b.c>` mails, and a
+/// bare domain such as `example.com/x` gets `http://`.
+fn link_url(link_type: LinkType, url: &str) -> String {
+    if link_type == LinkType::Email {
+        return format!("mailto:{url}");
+    }
+    let has_scheme = url.find(':').is_some_and(|colon| {
+        url[..colon]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            && colon > 0
+    });
+    let first = url.split(['/', '?', '#']).next().unwrap_or("");
+    let looks_like_domain = first.contains('.')
+        && !first.starts_with('.')
+        && first
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-'));
+    if !has_scheme && looks_like_domain {
+        format!("http://{url}")
+    } else {
+        url.to_owned()
     }
 }
 

@@ -4467,6 +4467,8 @@ version = "0.0.1"
 dependencies = [
  "insta",
  "pulldown-cmark",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

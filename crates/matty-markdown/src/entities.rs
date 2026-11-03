@@ -129,7 +129,7 @@ fn split(text: &str, is_emoji: &dyn Fn(&str) -> bool, out: &mut Vec<Inline>) {
 /// character that cannot be part of a word, a name or an address.
 fn starts_word(text: &str, at: usize) -> bool {
     text[..at].chars().next_back().is_none_or(|c| {
-        !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '@' | '~' | ':' | '#' | '/'))
+        !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '@' | '~' | ':' | '#'))
     })
 }
 
@@ -154,10 +154,11 @@ fn mention(text: &str, at: usize) -> Option<Entity> {
         return None;
     }
     let name_start = at + 1;
+    // `:` joins a remote (shared channel) user to their server: `@ana:org`.
     let end = run_end(text, name_start, |c| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')
+        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':')
     });
-    let end = trim_end(text, name_start, end, &['.', '-', '_']);
+    let end = trim_end(text, name_start, end, &['.', '-', '_', ':']);
     let name = &text[name_start..end];
     if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
         return None;
@@ -215,11 +216,11 @@ fn emoji(text: &str, at: usize, is_emoji: &dyn Fn(&str) -> bool) -> Option<Entit
 }
 
 fn hashtag(text: &str, at: usize) -> Option<Entity> {
-    // Only after whitespace or at the start, so `a#b` and `C#` stay text.
+    // Only after whitespace, `(` or `/`, so `a#b` and `C#` stay text.
     if text[..at]
         .chars()
         .next_back()
-        .is_some_and(|c| !c.is_whitespace() && c != '(')
+        .is_some_and(|c| !c.is_whitespace() && !matches!(c, '(' | '/'))
     {
         return None;
     }

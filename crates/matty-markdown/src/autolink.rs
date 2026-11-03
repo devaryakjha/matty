@@ -70,7 +70,28 @@ fn is_boundary(c: char) -> bool {
 fn url_at(text: &str, start: usize) -> Option<Found> {
     let rest = &text[start..];
     let lower = |prefix: &str| {
-        rest.len() >= prefix.len() && rest[..prefix.len()].eq_ignore_ascii_case(prefix)
+        rest.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    };
+    if lower("mailto:") {
+        let address = &rest[7..];
+        let found = email_around(address, address.find('@')?)?;
+        return (found.start == 0).then(|| Found {
+            start,
+            end: start + 7 + found.end,
+            url: rest[..7 + found.end].to_owned(),
+        });
+    }
+    // `www.`, or `www` and up to three digits, as marked allows.
+    let www_len = if lower("www") {
+        let digits = rest[3..]
+            .chars()
+            .take(4)
+            .take_while(char::is_ascii_digit)
+            .count();
+        (digits <= 3 && rest[3 + digits..].starts_with('.')).then_some(4 + digits)
+    } else {
+        None
     };
     let (scheme_len, www) = if lower("https://") {
         (8, false)
@@ -78,35 +99,28 @@ fn url_at(text: &str, start: usize) -> Option<Found> {
         (7, false)
     } else if lower("ftp://") {
         (6, false)
-    } else if lower("www.") {
-        (0, true)
     } else {
-        return None;
+        (www_len?, true)
     };
     let run = rest
         .find(|c: char| c.is_whitespace() || c == '<')
         .unwrap_or(rest.len());
     let len = trim_trailing(&rest[..run]);
-    // A domain, with at least one character after the scheme (or `www.`).
-    let host_start = if www { 4 } else { scheme_len };
-    if len <= host_start {
-        return None;
-    }
-    let host_end = rest[host_start..len]
-        .find(['/', '?', '#'])
-        .map_or(len, |at| host_start + at);
-    let host = &rest[host_start..host_end];
-    if host.is_empty()
-        || !host
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '@'))
-    {
-        return None;
-    }
-    if www && !host.contains('.') {
+    // A host, with at least one character after the scheme or `www.`. Any
+    // character but a space counts: IPv6 literals and Unicode names are hosts.
+    if len <= scheme_len {
         return None;
     }
     let shown = &rest[..len];
+    // `www.` needs a dotted name after it: `www.example.com`, not `www.word`.
+    if www
+        && !shown[scheme_len..]
+            .split(['/', '?', '#'])
+            .next()
+            .is_some_and(|host| host.contains('.'))
+    {
+        return None;
+    }
     let url = if www {
         format!("http://{shown}")
     } else {
@@ -166,7 +180,16 @@ fn email_around(text: &str, at: usize) -> Option<Found> {
         .take_while(|&(_, c)| local_ok(c))
         .last()
         .map(|(i, _)| i)?;
-    if start > 0 && !is_boundary(text[..start].chars().next_back()?) {
+    // An address may also follow another `@`: `a@b@c.d` links `b@c.d`.
+    if start > 0
+        && !text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| is_boundary(c) || c == '@')
+    {
+        return None;
+    }
+    if text[start..at].starts_with('.') || text[start..at].ends_with('.') {
         return None;
     }
     let domain_ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
@@ -179,7 +202,13 @@ fn email_around(text: &str, at: usize) -> Option<Found> {
         end -= 1;
     }
     let domain = &text[at + 1..end];
-    if !domain.contains('.') || domain.ends_with(['-', '_']) || domain.starts_with('.') {
+    // A dotted name whose last label has a letter, so not an IP address.
+    let tld = domain.rsplit('.').next().unwrap_or("");
+    if !domain.contains('.')
+        || domain.ends_with(['-', '_'])
+        || domain.starts_with('.')
+        || !tld.chars().any(|c| c.is_ascii_alphabetic())
+    {
         return None;
     }
     let address = &text[start..end];
