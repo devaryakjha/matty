@@ -967,8 +967,13 @@ impl Engine {
                     sidebar::upsert_channel_members(&tx, std::slice::from_ref(&*member))?;
                 }
                 tx.commit()?;
-                // A new channel lands in a category the server picked.
+                // A new channel lands in a category the server picked: for
+                // a direct or group message, the messages category of
+                // every team.
                 if channel.team_id.is_empty() {
+                    for team_id in cached_team_ids(self.store.conn())? {
+                        self.fetch(Fetch::Categories(team_id));
+                    }
                     dirty.all_teams = true;
                 } else {
                     self.fetch(Fetch::Categories(channel.team_id.clone()));
