@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::SharedString;
-use matty_api::models::{Channel, ChannelStats, User};
+use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
 
@@ -39,8 +39,10 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
-    /// The open channel as stored, and its counts once fetched.
+    /// The open channel as stored, the user's membership, and its counts
+    /// once fetched.
     channel: Option<Arc<Channel>>,
+    member: Option<Arc<ChannelMember>>,
     stats: Option<Arc<ChannelStats>>,
     /// Who is typing in the open channel, and since when.
     typing: Vec<(String, Instant)>,
@@ -89,6 +91,8 @@ pub struct Update {
     pub ready: Option<SharedString>,
     /// A join the server refused, for Browse to show as not joined again.
     pub join_failed: Option<SharedString>,
+    /// The open channel's mute and notification preferences.
+    pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
     /// The session ended; the window returns to sign-in.
@@ -106,6 +110,65 @@ pub enum ChannelUpdate {
         updated: Vec<Post>,
         appended: Vec<Post>,
     },
+}
+
+/// A membership's mute and notification preferences, from Mattermost's
+/// `notify_props`. Muting is `mark_unread: mention`, as in the web app.
+pub fn notifications(member: &ChannelMember) -> (bool, crate::channel::ChannelNotifications) {
+    use crate::channel::{ChannelNotifications, NotifyLevel};
+    let prop = |key: &str| member.notify_props.get(key).map_or("", String::as_str);
+    let level = |key: &str| match prop(key) {
+        "all" => NotifyLevel::All,
+        "mention" => NotifyLevel::Mentions,
+        "none" => NotifyLevel::None,
+        _ => NotifyLevel::Default,
+    };
+    let muted = prop("mark_unread") == "mention";
+    (
+        muted,
+        ChannelNotifications {
+            desktop: level("desktop"),
+            mobile: level("push"),
+            ignore_channel_mentions: prop("ignore_channel_mentions") == "on",
+            mark_unread_mentions_only: muted,
+        },
+    )
+}
+
+/// The `notify_props` to send for a mute switch and preferences.
+pub fn notify_props(
+    muted: bool,
+    notifications: &crate::channel::ChannelNotifications,
+) -> HashMap<String, String> {
+    use crate::channel::NotifyLevel;
+    let level = |level: NotifyLevel| match level {
+        NotifyLevel::Default => "default",
+        NotifyLevel::All => "all",
+        NotifyLevel::Mentions => "mention",
+        NotifyLevel::None => "none",
+    };
+    let mark_unread = if muted || notifications.mark_unread_mentions_only {
+        "mention"
+    } else {
+        "all"
+    };
+    HashMap::from([
+        (
+            "desktop".to_string(),
+            level(notifications.desktop).to_string(),
+        ),
+        ("push".to_string(), level(notifications.mobile).to_string()),
+        ("mark_unread".to_string(), mark_unread.to_string()),
+        (
+            "ignore_channel_mentions".to_string(),
+            if notifications.ignore_channel_mentions {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string(),
+        ),
+    ])
 }
 
 /// How to go from the posts on screen to `new` without a reset, or `None`
@@ -169,6 +232,7 @@ impl Live {
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 channel: None,
+                member: None,
                 stats: None,
                 typing: Vec::new(),
                 ready: None,
@@ -198,6 +262,7 @@ impl Live {
         self.posts = None;
         self.shown = None;
         self.channel = None;
+        self.member = None;
         self.stats = None;
         self.typing.clear();
         self.open = Some(row);
@@ -240,6 +305,9 @@ impl Live {
         model.members = details.members;
         model.pinned = details.pinned;
         model.typing = self.typing_names();
+        if let Some(member) = &self.member {
+            (model.muted, model.notifications) = notifications(member);
+        }
         model.profiles = self.profiles();
         Some(model)
     }
@@ -486,9 +554,15 @@ impl Live {
                     update.search = self.search_model();
                 }
             }
-            ChangeSet::Channel(channel) if self.is_open(&channel.id) => {
+            ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 update.details = self.shown_details();
+                if let Some(member) = member {
+                    self.member = Some(member.clone());
+                    if self.shown.is_some() {
+                        update.notifications = Some(notifications(member));
+                    }
+                }
             }
             ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
                 self.stats = Some(stats.clone());
@@ -994,11 +1068,14 @@ mod tests {
     fn the_header_and_counts_follow_the_first_snapshot() {
         let mut live = live();
         opened(&mut live);
-        let update = live.apply(&ChangeSet::Channel(Arc::new(Channel {
-            id: "c1".into(),
-            header: "Ship it".into(),
-            ..Channel::default()
-        })));
+        let update = live.apply(&ChangeSet::Channel {
+            channel: Arc::new(Channel {
+                id: "c1".into(),
+                header: "Ship it".into(),
+                ..Channel::default()
+            }),
+            member: None,
+        });
         assert_eq!(
             update.details,
             Some(Details {
@@ -1180,5 +1257,41 @@ mod tests {
             update.search.unwrap().results[0].post.author.as_ref(),
             "ada"
         );
+    }
+
+    #[test]
+    fn notification_preferences_round_trip_through_notify_props() {
+        use crate::channel::{ChannelNotifications, NotifyLevel};
+        let member = ChannelMember {
+            notify_props: HashMap::from([
+                ("desktop".to_string(), "mention".to_string()),
+                ("push".to_string(), "none".to_string()),
+                ("mark_unread".to_string(), "mention".to_string()),
+                ("ignore_channel_mentions".to_string(), "on".to_string()),
+            ]),
+            ..ChannelMember::default()
+        };
+        let (muted, prefs) = notifications(&member);
+        assert!(muted);
+        assert_eq!(
+            prefs,
+            ChannelNotifications {
+                desktop: NotifyLevel::Mentions,
+                mobile: NotifyLevel::None,
+                ignore_channel_mentions: true,
+                mark_unread_mentions_only: true,
+            }
+        );
+        let props = notify_props(muted, &prefs);
+        assert_eq!(
+            notifications(&ChannelMember {
+                notify_props: props,
+                ..ChannelMember::default()
+            }),
+            (muted, prefs)
+        );
+        let (muted, prefs) = notifications(&ChannelMember::default());
+        assert!(!muted);
+        assert_eq!(prefs, ChannelNotifications::default());
     }
 }

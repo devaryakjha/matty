@@ -2,7 +2,9 @@
 //! answers with a [`Loaded`] that the engine writes like any other result.
 
 use matty_api::models::{Draft, Reaction};
-use matty_api::{ApiError, Client, NewChannel, PostPatch, SearchQuery};
+use std::collections::HashMap;
+
+use matty_api::{ApiError, ChannelPatch, Client, NewChannel, PostPatch, SearchQuery};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::load::Loaded;
@@ -70,6 +72,18 @@ pub(crate) enum Write {
         query: Box<SearchQuery>,
     },
     Create(Box<NewChannel>),
+    Patch {
+        channel_id: String,
+        patch: ChannelPatch,
+    },
+    Notify {
+        channel_id: String,
+        props: HashMap<String, String>,
+    },
+    AddMembers {
+        channel_id: String,
+        user_ids: Vec<String>,
+    },
 }
 
 impl Write {
@@ -92,6 +106,9 @@ impl Write {
             Self::People { .. } => "find people",
             Self::Search { .. } => "search",
             Self::Create(_) => "create channel",
+            Self::Patch { .. } => "change channel",
+            Self::Notify { .. } => "change notifications",
+            Self::AddMembers { .. } => "add members",
         }
     }
 
@@ -108,7 +125,11 @@ impl Write {
             Self::SaveDraft(draft) => draft.channel_id.clone(),
             Self::Status { .. } => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
-            Self::Join { channel_id } | Self::Leave { channel_id } => channel_id.clone(),
+            Self::Join { channel_id }
+            | Self::Leave { channel_id }
+            | Self::Patch { channel_id, .. }
+            | Self::Notify { channel_id, .. }
+            | Self::AddMembers { channel_id, .. } => channel_id.clone(),
             Self::Browse { team_id } | Self::People { team_id } | Self::Search { team_id, .. } => {
                 team_id.clone()
             }
@@ -279,6 +300,33 @@ pub(crate) async fn run(
                     posts: results.list.ordered().cloned().collect(),
                     terms: query.terms,
                 })
+            }
+            Write::Patch { channel_id, patch } => {
+                let channel = client.patch_channel(&channel_id, &patch).await?;
+                Some(Loaded::Channel {
+                    channel: Box::new(channel),
+                    member: None,
+                })
+            }
+            Write::Notify { channel_id, props } => {
+                client
+                    .update_channel_notify_props(&channel_id, &user_id, &props)
+                    .await?;
+                let member = client.my_channel_member(&channel_id).await?;
+                let channel = client.channel(&channel_id).await?;
+                Some(Loaded::Channel {
+                    channel: Box::new(channel),
+                    member: Some(Box::new(member)),
+                })
+            }
+            Write::AddMembers {
+                channel_id,
+                user_ids,
+            } => {
+                for id in &user_ids {
+                    client.add_channel_member(&channel_id, id).await?;
+                }
+                Some(Loaded::Stats(client.channel_stats(&channel_id).await?))
             }
             Write::Create(new) => {
                 let channel = client.create_channel(&new).await?;

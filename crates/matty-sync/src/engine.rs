@@ -209,6 +209,35 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Renames a channel or changes its header or purpose; `None` leaves
+    /// a field alone. The channel comes back in
+    /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
+    PatchChannel {
+        /// The channel.
+        channel_id: String,
+        /// The new name people see.
+        display_name: Option<String>,
+        /// The new header.
+        header: Option<String>,
+        /// The new purpose.
+        purpose: Option<String>,
+    },
+    /// Changes these of the user's notification properties for a channel
+    /// (`desktop`, `push`, `mark_unread`, `ignore_channel_mentions`).
+    SetChannelNotifications {
+        /// The channel.
+        channel_id: String,
+        /// The properties to change.
+        props: std::collections::HashMap<String, String>,
+    },
+    /// Adds people to a channel; the counts come back in
+    /// [`ChangeSet::Stats`](crate::ChangeSet::Stats).
+    AddMembers {
+        /// The channel.
+        channel_id: String,
+        /// The people.
+        user_ids: Vec<String>,
+    },
     /// Searches the team's messages;
     /// [`ChangeSet::Search`](crate::ChangeSet::Search) answers.
     Search {
@@ -348,6 +377,23 @@ impl std::fmt::Debug for Command {
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
+            Self::PatchChannel { channel_id, .. } => f
+                .debug_struct("PatchChannel")
+                .field("channel_id", channel_id)
+                .finish_non_exhaustive(),
+            Self::SetChannelNotifications { channel_id, props } => f
+                .debug_struct("SetChannelNotifications")
+                .field("channel_id", channel_id)
+                .field("props", props)
+                .finish(),
+            Self::AddMembers {
+                channel_id,
+                user_ids,
+            } => f
+                .debug_struct("AddMembers")
+                .field("channel_id", channel_id)
+                .field("user_ids", user_ids)
+                .finish(),
             Self::Search { team_id, .. } => f
                 .debug_struct("Search")
                 .field("team_id", team_id)
@@ -369,6 +415,10 @@ pub(crate) enum Message {
     Command(Command),
     Subscribe(async_channel::Sender<ChangeSet>),
 }
+
+/// What a subscriber has of an open channel: its `update_at` and the
+/// user's notification properties for it.
+type SentChannel = (i64, Option<std::collections::HashMap<String, String>>);
 
 /// Search results asked for at once.
 const SEARCH_PAGE: u32 = 60;
@@ -432,7 +482,7 @@ pub(crate) struct Engine {
     asked_users: BTreeSet<String>,
     /// Open channels sent in [`ChangeSet::Channel`], by their `update_at`,
     /// so a posts change does not repeat them.
-    sent_channels: std::collections::BTreeMap<String, i64>,
+    sent_channels: std::collections::BTreeMap<String, SentChannel>,
     session: Option<Session>,
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
@@ -762,6 +812,29 @@ impl Engine {
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
+                Message::Command(Command::PatchChannel {
+                    channel_id,
+                    display_name,
+                    header,
+                    purpose,
+                }) => writes.push(Write::Patch {
+                    channel_id,
+                    patch: matty_api::ChannelPatch {
+                        display_name,
+                        header,
+                        purpose,
+                    },
+                }),
+                Message::Command(Command::SetChannelNotifications { channel_id, props }) => {
+                    writes.push(Write::Notify { channel_id, props });
+                }
+                Message::Command(Command::AddMembers {
+                    channel_id,
+                    user_ids,
+                }) => writes.push(Write::AddMembers {
+                    channel_id,
+                    user_ids,
+                }),
                 Message::Command(Command::Search {
                     team_id,
                     terms,
@@ -1427,15 +1500,27 @@ impl Engine {
             if !self.open_channels.contains(&channel_id) {
                 continue;
             }
+            let member = self.me.as_deref().and_then(|me| {
+                sidebar::channel_member(conn, &channel_id, me)
+                    .inspect_err(|error| tracing::error!(%error, "could not read a membership"))
+                    .ok()
+                    .flatten()
+            });
             match sidebar::channel(conn, &channel_id) {
-                Ok(Some(channel))
-                    if self.sent_channels.get(&channel_id) != Some(&channel.update_at) =>
-                {
-                    self.sent_channels
-                        .insert(channel_id.clone(), channel.update_at);
-                    changes.push(ChangeSet::Channel(Arc::new(channel)));
+                Ok(Some(channel)) => {
+                    let sent = (
+                        channel.update_at,
+                        member.as_ref().map(|m| m.notify_props.clone()),
+                    );
+                    if self.sent_channels.get(&channel_id) != Some(&sent) {
+                        self.sent_channels.insert(channel_id.clone(), sent);
+                        changes.push(ChangeSet::Channel {
+                            channel: Arc::new(channel),
+                            member: member.map(Arc::new),
+                        });
+                    }
                 }
-                Ok(_) => {}
+                Ok(None) => {}
                 Err(error) => tracing::error!(%error, "could not read a channel"),
             }
             match posts::posts_window(conn, &channel_id, Window::Latest, POSTS_WINDOW, roots_only) {

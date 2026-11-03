@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use matty_api::ServerCapabilities;
-use matty_api::models::{Channel, ChannelStats, Draft, Post, Status, User};
+use matty_api::models::{Channel, ChannelMember, ChannelStats, Draft, Post, Status, User};
 use matty_api::ws::ConnectionState;
 use matty_store::outbox::Outgoing;
 use matty_store::posts::ThreadSummary;
@@ -76,9 +76,15 @@ pub enum ChangeSet {
     /// People whose posts are on screen, each once per subscriber as they
     /// become known: from the cache at once, from the server when missing.
     Users(Arc<[User]>),
-    /// An open channel as stored: name, header and purpose. Sent when it
-    /// opens and when the server changes it.
-    Channel(Arc<Channel>),
+    /// An open channel as stored: name, header and purpose, with the
+    /// user's membership (notification properties). Sent when it opens and
+    /// when either changes.
+    Channel {
+        /// The channel.
+        channel: Arc<Channel>,
+        /// The user's membership, once known.
+        member: Option<Arc<ChannelMember>>,
+    },
     /// An open channel's member and pinned-post counts, fetched as it
     /// opens.
     Stats(Arc<ChannelStats>),
