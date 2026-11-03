@@ -233,6 +233,9 @@ impl ChannelModel {
 /// What the channel view asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelEvent {
+    /// The user changed the composer's text; sync tells the channel at
+    /// most every few seconds. `root` is the thread when replying.
+    Typing { root: Option<SharedString> },
     /// The user submitted the composer with this text and these uploads
     /// (ids from `Upload`), all of which the view showed as ready.
     Send {
@@ -476,6 +479,9 @@ impl ChannelView {
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
                         this.draft_len = composer.read(cx).value(cx).chars().count();
+                        if this.draft_len > 0 {
+                            cx.emit(ChannelEvent::Typing { root: None });
+                        }
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
@@ -643,6 +649,47 @@ impl ChannelView {
     pub fn set_favorite(&mut self, favorite: bool, cx: &mut Context<Self>) {
         if let Some(model) = self.model.as_mut() {
             model.favorite = favorite;
+            cx.notify();
+        }
+    }
+
+    /// Sync loaded the channel's header, purpose and counts; the scroll
+    /// stays where it is.
+    pub fn set_details(
+        &mut self,
+        header: Option<SharedString>,
+        purpose: Option<SharedString>,
+        members: usize,
+        pinned: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(model) = self.model.as_mut() {
+            model.header = header;
+            model.purpose = purpose;
+            model.members = members;
+            model.pinned = pinned;
+            cx.notify();
+        }
+    }
+
+    /// The people typing in the channel now, for the line under the
+    /// transcript.
+    pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
+        if let Some(model) = self.model.as_mut()
+            && model.typing != names
+        {
+            model.typing = names;
+            cx.notify();
+        }
+    }
+
+    /// Profiles for the avatar card and `@` autocomplete, as sync learns
+    /// of people.
+    pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
+        if let Some(model) = self.model.as_mut()
+            && model.profiles != profiles
+        {
+            model.profiles = profiles;
             cx.notify();
         }
     }

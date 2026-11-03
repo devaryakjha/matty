@@ -5,15 +5,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::SharedString;
-use matty_api::models::User;
+use matty_api::models::{Channel, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
 
 use crate::channel::{ChannelModel, Post};
 use crate::login::{SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
+use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence};
 
@@ -37,6 +39,23 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
+    /// The open channel as stored, and its counts once fetched.
+    channel: Option<Arc<Channel>>,
+    stats: Option<Arc<ChannelStats>>,
+    /// Who is typing in the open channel, and since when.
+    typing: Vec<(String, Instant)>,
+}
+
+/// How long a typing notice lasts without another.
+pub const TYPING_FOR: Duration = Duration::from_secs(5);
+
+/// The channel header's text and counts.
+#[derive(Debug, PartialEq)]
+pub struct Details {
+    pub header: Option<SharedString>,
+    pub purpose: Option<SharedString>,
+    pub members: usize,
+    pub pinned: usize,
 }
 
 /// What a change set means for the window.
@@ -49,6 +68,13 @@ pub struct Update {
     pub connection: Option<ConnectionState>,
     /// What changed in the open channel's view.
     pub channel: Option<ChannelUpdate>,
+    /// The open channel's header and counts.
+    pub details: Option<Details>,
+    /// Who is typing in the open channel now; the window checks again
+    /// after [`TYPING_FOR`].
+    pub typing: Option<Vec<SharedString>>,
+    /// The people in the open channel's posts.
+    pub profiles: Option<Vec<UserProfile>>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -126,6 +152,9 @@ impl Live {
                 max_post_size: None,
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
+                channel: None,
+                stats: None,
+                typing: Vec::new(),
             },
             changes,
         ))
@@ -150,6 +179,9 @@ impl Live {
         });
         self.posts = None;
         self.shown = None;
+        self.channel = None;
+        self.stats = None;
+        self.typing.clear();
         self.open = Some(row);
         self.channel_model().expect("a channel is open")
     }
@@ -177,13 +209,95 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
-        Some(crate::transcript::channel_model(
+        let mut model = crate::transcript::channel_model(
             row,
             self.posts.as_deref(),
             &self.users,
             &viewer,
             self.max_post_size,
-        ))
+        );
+        let details = self.details(model.pinned);
+        model.header = details.header;
+        model.purpose = details.purpose;
+        model.members = details.members;
+        model.pinned = details.pinned;
+        model.typing = self.typing_names();
+        model.profiles = self.profiles();
+        Some(model)
+    }
+
+    /// The header, purpose and counts as far as they are known; until the
+    /// counts come, pins are those among the loaded posts.
+    fn details(&self, pinned_loaded: usize) -> Details {
+        let text =
+            |text: &str| (!text.trim().is_empty()).then(|| SharedString::from(text.to_string()));
+        let count = |count: i64| usize::try_from(count).unwrap_or(0);
+        Details {
+            header: self.channel.as_ref().and_then(|c| text(&c.header)),
+            purpose: self.channel.as_ref().and_then(|c| text(&c.purpose)),
+            members: self.stats.as_ref().map_or(0, |s| count(s.member_count)),
+            pinned: self
+                .stats
+                .as_ref()
+                .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
+        }
+    }
+
+    fn typing_names(&self) -> Vec<SharedString> {
+        self.typing
+            .iter()
+            .map(|(user_id, _)| {
+                self.users
+                    .get(user_id)
+                    .map(crate::transcript::display_name)
+                    .unwrap_or_else(|| "Someone".into())
+                    .into()
+            })
+            .collect()
+    }
+
+    /// Everyone with a post in the open channel's snapshot, first poster
+    /// first.
+    fn profiles(&self) -> Vec<UserProfile> {
+        let mut seen = std::collections::HashSet::new();
+        self.posts
+            .iter()
+            .flat_map(|posts| posts.iter())
+            .filter(|post| seen.insert(post.user_id.as_str()))
+            .filter_map(|post| self.users.get(&post.user_id))
+            .map(|user| UserProfile {
+                user_id: user.id.clone().into(),
+                username: user.username.clone().into(),
+                display_name: crate::transcript::display_name(user).into(),
+                position: None,
+                presence: self
+                    .presence
+                    .get(&user.id)
+                    .copied()
+                    .unwrap_or(Presence::Offline),
+                status_text: None,
+                local_time: None,
+            })
+            .collect()
+    }
+
+    /// Drops typing notices older than [`TYPING_FOR`]; the names left when
+    /// any went.
+    pub fn expire_typing(&mut self, now: Instant) -> Option<Vec<SharedString>> {
+        let before = self.typing.len();
+        self.typing
+            .retain(|(_, since)| now.saturating_duration_since(*since) < TYPING_FOR);
+        (self.typing.len() != before).then(|| self.typing_names())
+    }
+
+    pub fn is_typing(&self) -> bool {
+        !self.typing.is_empty()
+    }
+
+    fn is_open(&self, channel_id: &str) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|row| row.id.as_ref() == channel_id)
     }
 
     /// The sidebar row for `channel_id` in the shown team.
@@ -225,6 +339,26 @@ impl Live {
                         .insert(status.user_id.clone(), presence(&status.status));
                 }
                 update.categories = self.shown_categories();
+                if self.shown.is_some() {
+                    update.profiles = Some(self.profiles());
+                }
+            }
+            ChangeSet::Channel(channel) if self.is_open(&channel.id) => {
+                self.channel = Some(channel.clone());
+                update.details = self.shown_details();
+            }
+            ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
+                self.stats = Some(stats.clone());
+                update.details = self.shown_details();
+            }
+            ChangeSet::Typing {
+                user_id,
+                channel_id,
+                parent_id,
+            } if self.is_open(channel_id) && parent_id.is_empty() && *user_id != self.me.0 => {
+                self.typing.retain(|(id, _)| id != user_id);
+                self.typing.push((user_id.clone(), Instant::now()));
+                update.typing = Some(self.typing_names());
             }
             ChangeSet::Posts { channel_id, posts } => {
                 if self
@@ -232,8 +366,16 @@ impl Live {
                     .as_ref()
                     .is_some_and(|row| row.id.as_ref() == channel_id)
                 {
+                    // Someone who just posted has stopped typing.
+                    let newest = posts.last().map(|post| post.user_id.as_str());
+                    let typing = self.typing.len();
+                    self.typing.retain(|(id, _)| Some(id.as_str()) != newest);
+                    if self.typing.len() != typing {
+                        update.typing = Some(self.typing_names());
+                    }
                     self.posts = Some(posts.clone());
                     update.channel = self.channel_update();
+                    update.profiles = self.shown.is_some().then(|| self.profiles());
                 }
             }
             ChangeSet::Users(users) => {
@@ -242,6 +384,10 @@ impl Live {
                 }
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
+                    update.profiles = Some(self.profiles());
+                    if !self.typing.is_empty() {
+                        update.typing = Some(self.typing_names());
+                    }
                 }
             }
             ChangeSet::Config(capabilities) => {
@@ -256,6 +402,13 @@ impl Live {
             _ => {}
         }
         update
+    }
+
+    /// The details for a channel view that has its model; before that the
+    /// first snapshot carries them.
+    fn shown_details(&self) -> Option<Details> {
+        let shown = self.shown.as_ref()?;
+        Some(self.details(shown.iter().filter(|post| post.pinned).count()))
     }
 
     fn shown_categories(&self) -> Option<Vec<Category>> {
@@ -672,5 +825,80 @@ mod tests {
         let old = [shown("a", "one"), shown("c", "three")];
         let new = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
         assert_eq!(patch(&old, &new), None);
+    }
+
+    fn opened(live: &mut Live) {
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![matty_api::models::Post {
+                id: "p1".into(),
+                user_id: "ada".into(),
+                is_pinned: true,
+                ..Default::default()
+            }]),
+        });
+    }
+
+    #[test]
+    fn the_header_and_counts_follow_the_first_snapshot() {
+        let mut live = live();
+        opened(&mut live);
+        let update = live.apply(&ChangeSet::Channel(Arc::new(Channel {
+            id: "c1".into(),
+            header: "Ship it".into(),
+            ..Channel::default()
+        })));
+        assert_eq!(
+            update.details,
+            Some(Details {
+                header: Some("Ship it".into()),
+                purpose: None,
+                members: 0,
+                pinned: 1,
+            })
+        );
+        let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {
+            channel_id: "c1".into(),
+            member_count: 12,
+            pinnedpost_count: 4,
+            ..ChannelStats::default()
+        })));
+        let details = update.details.unwrap();
+        assert_eq!((details.members, details.pinned), (12, 4));
+        // Another channel's counts are not this one's.
+        let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {
+            channel_id: "c2".into(),
+            ..ChannelStats::default()
+        })));
+        assert_eq!(update.details, None);
+    }
+
+    #[test]
+    fn typing_shows_names_and_runs_out() {
+        let mut live = live();
+        opened(&mut live);
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            username: "ada".into(),
+            ..User::default()
+        }])));
+        let typing = |user: &str, channel: &str| ChangeSet::Typing {
+            user_id: user.into(),
+            channel_id: channel.into(),
+            parent_id: String::new(),
+        };
+        assert_eq!(
+            live.apply(&typing("ada", "c1")).typing,
+            Some(vec!["ada".into()])
+        );
+        assert_eq!(live.apply(&typing("me", "c1")).typing, None);
+        assert_eq!(live.apply(&typing("bob", "c2")).typing, None);
+        assert_eq!(live.expire_typing(Instant::now()), None);
+        assert_eq!(
+            live.expire_typing(Instant::now() + TYPING_FOR),
+            Some(Vec::new())
+        );
+        assert!(!live.is_typing());
     }
 }

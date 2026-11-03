@@ -127,6 +127,8 @@ pub struct MainWindow {
     /// The sync engine, once there is an account to show.
     live: Option<Live>,
     _live_task: Option<gpui_kit::Task<()>>,
+    /// Clears typing notices as they run out.
+    _typing_task: Option<gpui_kit::Task<()>>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     sidebar_shown: bool,
@@ -316,6 +318,14 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::Typing { root } => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::Typing {
+                            channel_id: channel.to_string(),
+                            parent_id: root.as_ref().map(ToString::to_string).unwrap_or_default(),
+                        });
+                    }
+                }
                 ChannelEvent::SaveEdit { post, text } => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::EditPost {
@@ -428,6 +438,7 @@ impl MainWindow {
             history_at: 0,
             live: None,
             _live_task: None,
+            _typing_task: None,
             login_server: None,
             sidebar_shown: false,
         };
@@ -483,6 +494,31 @@ impl MainWindow {
                 let applied =
                     this.update_in(cx, |this, window, cx| this.apply(&change, window, cx));
                 if applied.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Clears typing notices once they run out, checking again while
+    /// anyone is left.
+    fn expire_typing_later(&mut self, cx: &mut Context<Self>) {
+        self._typing_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(crate::live::TYPING_FOR / 2)
+                    .await;
+                let left = this.update(cx, |this, cx| {
+                    let live = this.live.as_mut()?;
+                    let names = live.expire_typing(std::time::Instant::now());
+                    let left = live.is_typing();
+                    if let Some(names) = names {
+                        this.channel
+                            .update(cx, |view, cx| view.set_typing(names, cx));
+                    }
+                    Some(left)
+                });
+                if !matches!(left, Ok(Some(true))) {
                     break;
                 }
             }
@@ -548,6 +584,29 @@ impl MainWindow {
                 view.append_posts(appended, cx);
             }),
             None => {}
+        }
+        if let Some(details) = update.details {
+            self.channel.update(cx, |view, cx| {
+                view.set_details(
+                    details.header,
+                    details.purpose,
+                    details.members,
+                    details.pinned,
+                    cx,
+                );
+            });
+        }
+        if let Some(profiles) = update.profiles {
+            self.channel
+                .update(cx, |view, cx| view.set_profiles(profiles, cx));
+        }
+        if let Some(names) = update.typing {
+            let someone = !names.is_empty();
+            self.channel
+                .update(cx, |view, cx| view.set_typing(names, cx));
+            if someone {
+                self.expire_typing_later(cx);
+            }
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
