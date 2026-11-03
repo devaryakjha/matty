@@ -1,0 +1,49 @@
+{
+  "id": "7z8ajccw7jrn3e4eadbud3heaw",
+  "create_at": 1793741246045,
+  "update_at": 1793741246045,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "sbi1e4u4w38m58dy99ramjktwa",
+  "channel_id": "7u7xbkg9jpd4zfm8jk8y45ypze",
+  "root_id": "feg8ht3zp3rr5mdcisdfoes5cr",
+  "original_id": "",
+  "message": "I pushed a fix for the flaky test.",
+  "type": "",
+  "props": {
+    "matty_seed": 25
+  },
+  "hashtags": "",
+  "file_ids": [
+    "coahkxf4ttfa8g9d6xepx9hcie"
+  ],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 1,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "files": [
+      {
+        "id": "coahkxf4ttfa8g9d6xepx9hcie",
+        "user_id": "sbi1e4u4w38m58dy99ramjktwa",
+        "post_id": "7z8ajccw7jrn3e4eadbud3heaw",
+        "channel_id": "7u7xbkg9jpd4zfm8jk8y45ypze",
+        "create_at": 1793741245929,
+        "update_at": 1793741245929,
+        "delete_at": 0,
+        "name": "image-1200x400.png",
+        "extension": "png",
+        "size": 9368,
+        "mime_type": "image/png",
+        "width": 1200,
+        "height": 400,
+        "has_preview_image": true,
+        "mini_preview": "/9j/2wCEAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRQBAwQEBQQFCQUFCRQNCw0UFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFP/AABEIABAAEAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AKx8MH/i2vw+K4Of7Z1VfzbDf+PD8qB4nO74k/EENg/8gbSm/Jcr/wCOn86QeJxj4k/EENkY/sbSm/Jcr/46fzoPhgBfht8PiuQR/bOqr+bYb/x4flWv+L5/m/0Rr/2E/wDb/wD6fr/+46f4H//Z",
+        "remote_id": "",
+        "archived": false
+      }
+    ]
+  }
+}

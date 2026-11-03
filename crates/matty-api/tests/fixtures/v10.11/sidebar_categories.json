@@ -1,0 +1,98 @@
+{
+  "categories": [
+    {
+      "id": "favorites_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c",
+      "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+      "team_id": "63rdyxdg8fy3pmh9sbsb7uty5c",
+      "sort_order": 0,
+      "sorting": "",
+      "type": "favorites",
+      "display_name": "Favorites",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": []
+    },
+    {
+      "id": "zgte88bk7frutgj7byermq8tyh",
+      "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+      "team_id": "63rdyxdg8fy3pmh9sbsb7uty5c",
+      "sort_order": 10,
+      "sorting": "",
+      "type": "custom",
+      "display_name": "Social",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": [
+        "1myjbgbttjrfmxs1bijkjk7dbh",
+        "jdremdawpi8tz84hdoi3o8jyey"
+      ]
+    },
+    {
+      "id": "ai6uujkyd7fn7jp63km611anre",
+      "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+      "team_id": "63rdyxdg8fy3pmh9sbsb7uty5c",
+      "sort_order": 20,
+      "sorting": "",
+      "type": "custom",
+      "display_name": "Projects",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": [
+        "bteuxsjxeire3yao95b6y3j5wy",
+        "3ix7z155rb8xxxs5qki5wgqcue",
+        "p77b3ij3bfn7mqo545s99zngao"
+      ]
+    },
+    {
+      "id": "channels_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c",
+      "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+      "team_id": "63rdyxdg8fy3pmh9sbsb7uty5c",
+      "sort_order": 30,
+      "sorting": "",
+      "type": "channels",
+      "display_name": "Channels",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": [
+        "c38m8ue3gp893xenqq9k3xf5do",
+        "rzd4hjrkgtyaun76hyw7f4rr6a",
+        "46kjx8jpytyi5dm8obs4hgj7hr",
+        "61xipzqgjtdtfkuss61jhyk9bh",
+        "c6fzypzzmfn5dybqazuu3w1soe",
+        "7k6xshwftidazp6bh5kejfryae",
+        "gq1r3anma3y4pbxn6o5s6xe4cy",
+        "erwj49f3d7bsdjxtushfdqc5zh",
+        "9yg37qn6stnwbxdtyoeg88rinr",
+        "7u7xbkg9jpd4zfm8jk8y45ypze"
+      ]
+    },
+    {
+      "id": "direct_messages_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c",
+      "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+      "team_id": "63rdyxdg8fy3pmh9sbsb7uty5c",
+      "sort_order": 40,
+      "sorting": "recent",
+      "type": "direct_messages",
+      "display_name": "Direct Messages",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": [
+        "xgcwwwi7pirxpqtfzftqb653de",
+        "cc83qrjucpn488ebz9dzt9c3ey",
+        "g5jkuexu8td1tktgwsd7x3oopa",
+        "j86fpfhouj8x7pycd7wqgmnwta",
+        "no967zucm7r5xb76w6uu6jobzy",
+        "sor8j1p61fyqjnxondkumycc7r",
+        "ji3hptszsbdgtcb5h8mkgyzuta",
+        "x74db3xgetykjqwza3uzfm7pdh"
+      ]
+    }
+  ],
+  "order": [
+    "favorites_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c",
+    "zgte88bk7frutgj7byermq8tyh",
+    "ai6uujkyd7fn7jp63km611anre",
+    "channels_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c",
+    "direct_messages_7y59x7xm1pff9yjxmjfu35zjyy_63rdyxdg8fy3pmh9sbsb7uty5c"
+  ]
+}

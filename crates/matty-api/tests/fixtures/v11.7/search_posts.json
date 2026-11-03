@@ -1,0 +1,34 @@
+{
+  "order": [
+    "wrqdbk7gt3gqfdmup7nmox8k3h"
+  ],
+  "posts": {
+    "wrqdbk7gt3gqfdmup7nmox8k3h": {
+      "id": "wrqdbk7gt3gqfdmup7nmox8k3h",
+      "create_at": 1793741264441,
+      "update_at": 1793741264441,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+      "channel_id": "a5nxgbsbejyifc4ccg5qj6aker",
+      "root_id": "",
+      "original_id": "",
+      "message": "The recorder hides a zebrafish here",
+      "type": "",
+      "props": {},
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 0,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    }
+  },
+  "next_post_id": "",
+  "prev_post_id": "",
+  "first_inaccessible_post_time": 0,
+  "matches": null
+}

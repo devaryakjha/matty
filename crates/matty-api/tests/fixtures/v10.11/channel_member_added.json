@@ -1,0 +1,24 @@
+{
+  "channel_id": "46kjx8jpytyi5dm8obs4hgj7hr",
+  "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+  "roles": "channel_user",
+  "last_viewed_at": 0,
+  "msg_count": 0,
+  "mention_count": 0,
+  "mention_count_root": 0,
+  "urgent_mention_count": 0,
+  "msg_count_root": 0,
+  "notify_props": {
+    "channel_auto_follow_threads": "off",
+    "desktop": "default",
+    "email": "default",
+    "ignore_channel_mentions": "default",
+    "mark_unread": "all",
+    "push": "default"
+  },
+  "last_update_at": 1793741262260,
+  "scheme_guest": false,
+  "scheme_user": true,
+  "scheme_admin": false,
+  "explicit_roles": ""
+}

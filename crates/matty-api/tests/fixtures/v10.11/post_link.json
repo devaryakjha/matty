@@ -1,0 +1,30 @@
+{
+  "id": "ii6zsnuu37g8888yb8ha9gg69o",
+  "create_at": 1793741262048,
+  "update_at": 1793741262048,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "7y59x7xm1pff9yjxmjfu35zjyy",
+  "channel_id": "1myjbgbttjrfmxs1bijkjk7dbh",
+  "root_id": "",
+  "original_id": "",
+  "message": "Plain http://localhost:8065/static/matty-preview/plain.html",
+  "type": "",
+  "props": {},
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [
+      {
+        "type": "link",
+        "url": "http://localhost:8065/static/matty-preview/plain.html"
+      }
+    ]
+  }
+}

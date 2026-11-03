@@ -1,0 +1,122 @@
+{
+  "order": [
+    "eejf3s49zig3tr5mtmwhp5wm3w",
+    "ie4zfu6ispbipeg5jp9b8853bh",
+    "g84o8gtrqfybtjsbjygtbkxngc"
+  ],
+  "posts": {
+    "eejf3s49zig3tr5mtmwhp5wm3w": {
+      "id": "eejf3s49zig3tr5mtmwhp5wm3w",
+      "create_at": 1793741251488,
+      "update_at": 1793741252857,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "mptuj53kx7g7txns5obfu6hpra",
+      "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+      "root_id": "",
+      "original_id": "",
+      "message": "Thanks, that worked! Agreed, let's do that. The build is green again. Here's the doc with the details.",
+      "type": "",
+      "props": {
+        "matty_seed": 5
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 2,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    },
+    "g84o8gtrqfybtjsbjygtbkxngc": {
+      "id": "g84o8gtrqfybtjsbjygtbkxngc",
+      "create_at": 1793741252857,
+      "update_at": 1793741252857,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "d17ehbobhtnsdgx7deqgz43b6h",
+      "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+      "root_id": "eejf3s49zig3tr5mtmwhp5wm3w",
+      "original_id": "",
+      "message": "Thanks, that worked! Has anyone seen the new design mocks? I pushed a fix for the flaky test. I'll take a look after standup.",
+      "type": "",
+      "props": {
+        "matty_seed": 36
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "remote_id": "",
+      "reply_count": 2,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {}
+    },
+    "ie4zfu6ispbipeg5jp9b8853bh": {
+      "id": "ie4zfu6ispbipeg5jp9b8853bh",
+      "create_at": 1793741251601,
+      "update_at": 1793741251743,
+      "edit_at": 0,
+      "delete_at": 0,
+      "is_pinned": false,
+      "user_id": "h4xzc9enzfrgdff5xqxknaodzr",
+      "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a",
+      "root_id": "eejf3s49zig3tr5mtmwhp5wm3w",
+      "original_id": "",
+      "message": "Back online now.",
+      "type": "",
+      "props": {
+        "matty_seed": 10
+      },
+      "hashtags": "",
+      "file_ids": [],
+      "pending_post_id": "",
+      "has_reactions": true,
+      "remote_id": "",
+      "reply_count": 2,
+      "last_reply_at": 0,
+      "participants": null,
+      "metadata": {
+        "reactions": [
+          {
+            "user_id": "t37xi8nk1pn1fgdycs1d9mb4aa",
+            "post_id": "ie4zfu6ispbipeg5jp9b8853bh",
+            "emoji_name": "joy",
+            "create_at": 1793741251689,
+            "update_at": 1793741251689,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a"
+          },
+          {
+            "user_id": "d17ehbobhtnsdgx7deqgz43b6h",
+            "post_id": "ie4zfu6ispbipeg5jp9b8853bh",
+            "emoji_name": "+1",
+            "create_at": 1793741251719,
+            "update_at": 1793741251719,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a"
+          },
+          {
+            "user_id": "9d8gfqipapng9q81joaqwgtahe",
+            "post_id": "ie4zfu6ispbipeg5jp9b8853bh",
+            "emoji_name": "eyes",
+            "create_at": 1793741251742,
+            "update_at": 1793741251742,
+            "delete_at": 0,
+            "remote_id": "",
+            "channel_id": "yykq55xjkj8cdyk4frhpw9pr4a"
+          }
+        ]
+      }
+    }
+  },
+  "next_post_id": "",
+  "prev_post_id": "",
+  "has_next": false,
+  "first_inaccessible_post_time": 0
+}

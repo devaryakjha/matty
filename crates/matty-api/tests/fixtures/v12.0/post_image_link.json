@@ -1,0 +1,38 @@
+{
+  "id": "i3s3za5hupykpmdcbu6qbuf61c",
+  "create_at": 1793741259788,
+  "update_at": 1793741259788,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "zo43cbpjbidx3brhmpwn983emw",
+  "channel_id": "qkgfbj9bop8k3e1wr1thmy7wsa",
+  "root_id": "",
+  "original_id": "",
+  "message": "http://localhost:8065/static/images/appIcons.png",
+  "type": "",
+  "props": {},
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [
+      {
+        "type": "image",
+        "url": "http://localhost:8065/static/images/appIcons.png"
+      }
+    ],
+    "images": {
+      "http://localhost:8065/static/images/appIcons.png": {
+        "width": 300,
+        "height": 51,
+        "format": "png",
+        "frame_count": 0
+      }
+    }
+  }
+}

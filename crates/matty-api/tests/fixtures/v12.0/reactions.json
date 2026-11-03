@@ -1,0 +1,22 @@
+[
+  {
+    "user_id": "zo43cbpjbidx3brhmpwn983emw",
+    "post_id": "oxme14yzhiy8pg94aqyoojz5wh",
+    "emoji_name": "matty",
+    "create_at": 1793741259847,
+    "update_at": 1793741259847,
+    "delete_at": 0,
+    "remote_id": "",
+    "channel_id": "qkgfbj9bop8k3e1wr1thmy7wsa"
+  },
+  {
+    "user_id": "aehtqhox9pnw7yzofogzzybxse",
+    "post_id": "oxme14yzhiy8pg94aqyoojz5wh",
+    "emoji_name": "+1",
+    "create_at": 1793741259856,
+    "update_at": 1793741259856,
+    "delete_at": 0,
+    "remote_id": "",
+    "channel_id": "qkgfbj9bop8k3e1wr1thmy7wsa"
+  }
+]
