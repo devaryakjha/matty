@@ -104,6 +104,7 @@ pub fn sidebar() -> SidebarModel {
 }
 
 use crate::account::Account;
+use crate::attachments::{self, AttachmentStatus, Upload, UploadSource};
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus, ReplySummary,
 };
@@ -415,6 +416,34 @@ fn hm(time: &str) -> u16 {
 }
 
 /// The signed-in user, for the account menu.
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed.
+pub fn uploads() -> Vec<Upload> {
+    let mut mockup = Upload::from_image(
+        "u-mockup",
+        attachments::png(include_bytes!("../assets/preview/mockup.png")),
+    )
+    .ready(48_312);
+    mockup.name = "sidebar-mockup.png".into();
+    vec![
+        mockup,
+        Upload {
+            id: "u-notes".into(),
+            name: "release-notes.pdf".into(),
+            size: 2_516_582,
+            source: UploadSource::Path("release-notes.pdf".into()),
+            status: AttachmentStatus::Uploading(0.6),
+        },
+        Upload {
+            id: "u-log".into(),
+            name: "matty-2026-11-03.log".into(),
+            size: 918_000,
+            source: UploadSource::Path("matty-2026-11-03.log".into()),
+            status: AttachmentStatus::Failed,
+        },
+    ]
+}
+
 pub fn account() -> Account {
     Account {
         display_name: "Arya".into(),
@@ -624,6 +653,7 @@ mod tests {
             .flat_map(|category| category.rows.iter().map(|row| row.id.clone()))
             .collect();
         assert!(!ids.is_empty());
+        assert_eq!(uploads().len(), 3);
         for id in &ids {
             if let Some(channel) = channel(id) {
                 pinned(&channel);

@@ -240,6 +240,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   composer ("Priya is typing…", "Sam and Lena are typing…", "Several
   people are typing…" beyond two), first names only, so the composer
   never jumps.
+- **Composer attachments** (PLAN §4.3, §4.6 Files) sit in an
+  `attachment_group` directly above the composer card (`design-23`):
+  gpuicn `Attachment` thumbnails for images and cards with a type icon,
+  the name and "PDF · 2.4 MB" for anything else. Files arrive from the
+  Attach button or Cmd+U (the platform file dialog), from dropping onto
+  the composer, which tints it `accent` while hovering, and from pasting
+  an image, which becomes "Pasted image.png". A chip shows "Uploading…
+  60%" with a progress bar, then its meta line; a failed one turns
+  `destructive`, says "Upload failed" and gets Retry. Each has a remove
+  button. Send stays disabled while any file is uploading or failed, and
+  a post may be files alone; the tray clears on send.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

@@ -236,7 +236,10 @@ impl MainWindow {
                 }
                 // Sync picks these up once it owns the channel model; the view
                 // already shows the change.
-                ChannelEvent::Send(_)
+                ChannelEvent::Send { .. }
+                | ChannelEvent::Upload { .. }
+                | ChannelEvent::CancelUpload(_)
+                | ChannelEvent::RetryUpload(_)
                 | ChannelEvent::ToggleReaction { .. }
                 | ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
