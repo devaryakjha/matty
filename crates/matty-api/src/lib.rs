@@ -7,8 +7,11 @@
 //! The client is async and runs on tokio (spike S2, option A): Matty drives it
 //! from one background runtime and hands results to the UI through channels.
 
+pub mod capabilities;
 mod client;
+mod endpoints;
 mod error;
 
+pub use capabilities::{ServerCapabilities, UnsupportedVersion, Version};
 pub use client::{Client, ClientBuilder, RateLimit, Sleeper, TokioSleeper};
 pub use error::ApiError;

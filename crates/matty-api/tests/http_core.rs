@@ -166,3 +166,37 @@ async fn a_self_signed_certificate_is_a_tls_error() {
     };
     assert!(message.contains("certificate"), "{message}");
 }
+
+#[tokio::test]
+async fn reads_capabilities_with_format_old() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+    let fixture = |name: &str| -> Value {
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/config/client"))
+        .and(query_param("format", "old"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("config_client_team.json")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/license/client"))
+        .and(query_param("format", "old"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(fixture("license_client_unlicensed.json")),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap();
+    assert!(client.ping().await.unwrap().is_ok());
+    let caps = client.capabilities().await.unwrap();
+    assert_eq!(caps.version, matty_api::Version::new(10, 5, 0));
+    assert!(caps.minimum_supported().is_ok());
+}
