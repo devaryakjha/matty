@@ -391,6 +391,8 @@ conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 | --- | --- |
 | Quick switcher | Cmd+K (MM) |
 | Direct messages menu | Cmd+Shift+K (MM) |
+| Browse channels | Cmd+Shift+J (Matty) |
+| Create channel | Cmd+Shift+N (Matty) |
 | Search | Cmd+Shift+F (MM); Cmd+F also focuses search when not in a text field |
 | Previous / next channel | Alt+Up / Alt+Down (MM) |
 | Previous / next unread channel | Alt+Shift+Up / Alt+Shift+Down (MM) |

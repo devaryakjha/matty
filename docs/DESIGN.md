@@ -361,6 +361,11 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   and the same `post_markers` helper serves the channel and the thread
   pane. The icon is its own header child because the header aligns on
   baselines; a nested row sat two pixels low.
+- **Dialog shortcuts** (PLAN §4.4): Cmd/Ctrl+Shift+K opens New message,
+  as in Mattermost, and two Matty additions open the other sidebar-menu
+  dialogs: Cmd/Ctrl+Shift+J for Browse channels and Cmd/Ctrl+Shift+N for
+  Create channel (`design-35`). The shortcut sheet lists them from the
+  same table, so the sheet and the bindings cannot drift apart.
 
 ## 5. Components
 
