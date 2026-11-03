@@ -206,6 +206,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Message (primary) opens the direct message, Mention (outline) inserts
   `@username ` into the composer and focuses it. Nothing else lives on the
   card; everything about a person beyond this belongs in the right pane.
+- **Emoji picker** (PLAN §3 M1 reactions, gpuicn G7) is gpuicn's
+  `EmojiPicker` in a popover on the composer's emoji button, borderless on
+  a `popover`-colored surface (`design-20`). The catalog is the standard
+  set under Mattermost shortcodes, nine category tabs, search from two
+  characters, skin tones, and a Recent row from this session's picks. A
+  pick inserts the glyph into the composer. The hover toolbar and the
+  chips' add button keep the six quick reactions in a `menu`, with "More
+  emoji…" at the end opening the same picker for that post.
 - **Account menu** (PLAN §3 M1 presence; §4.5 sign out) hangs off the
   title bar avatar, which carries the presence dot (`design-19`). A `menu`
   with a `label` row ("Arya · @arya"), the four presences as radio items,
