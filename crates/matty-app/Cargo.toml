@@ -17,9 +17,13 @@ gpui-kit.workspace = true
 gpui_platform.workspace = true
 gpui-icons.workspace = true
 web-time.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [features]
 # Compiles Metal shaders at runtime so macOS builds need no Xcode Metal toolchain.
