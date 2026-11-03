@@ -4,15 +4,23 @@
 //! [`WsConnection::connect`] returns once the server has sent `hello`. A
 //! background task owns the socket; events arrive on the returned receiver
 //! and [`WsConnection::send`] queues a request and waits for its reply.
+//!
+//! The task sends `{"action":"ping"}` every [`WsConfig::ping_interval`] and
+//! ends the connection with [`DisconnectReason::Timeout`] when nothing at
+//! all arrives for [`WsConfig::pong_timeout`] after a ping.
 
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::{mpsc, oneshot},
+    time::Instant,
+};
 use tokio_tungstenite::{
-    Connector, MaybeTlsStream, WebSocketStream,
+    Connector, WebSocketStream,
     tungstenite::{self, Message, client::IntoClientRequest, http::HeaderValue},
 };
 
@@ -27,7 +35,28 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long [`WsConnection::send`] waits for a reply.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+/// Liveness settings for a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WsConfig {
+    /// How often to send `{"action":"ping"}`. 30 seconds by default.
+    pub ping_interval: Duration,
+    /// How long after a ping to wait for any frame before giving up on the
+    /// connection. 30 seconds by default.
+    pub pong_timeout: Duration,
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            ping_interval: Duration::from_secs(30),
+            pong_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// A byte stream a WebSocket can run over.
+pub trait Transport: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Transport for T {}
 
 /// Who a server event is for.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -93,6 +122,8 @@ pub enum DisconnectReason {
     Lost(String),
     /// [`WsConnection::close`] was called or the connection was dropped.
     ClientClosed,
+    /// Nothing arrived for [`WsConfig::pong_timeout`] after a ping.
+    Timeout,
 }
 
 /// What the connection delivers.
@@ -148,34 +179,56 @@ impl WsConnection {
     pub async fn connect(
         client: &Client,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
-        let token = client
-            .token_value()
-            .ok_or_else(|| ApiError::InvalidUrl("the client has no session token".into()))?
-            .to_string();
-        let url = websocket_url(client)?;
-        tokio::time::timeout(CONNECT_TIMEOUT, Self::open(url, token))
-            .await
-            .map_err(|_| ApiError::Timeout)?
+        Self::connect_with(client, WsConfig::default()).await
     }
 
-    async fn open(
-        url: url::Url,
-        token: String,
+    /// [`WsConnection::connect`] with liveness settings.
+    pub async fn connect_with(
+        client: &Client,
+        config: WsConfig,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| ApiError::InvalidUrl(e.to_string()))?;
-        request.headers_mut().insert(
-            "User-Agent",
-            HeaderValue::from_static(concat!("Matty/", env!("CARGO_PKG_VERSION"))),
-        );
-        let connector = Connector::Rustls(Arc::new(tls::client_config(tls::WEBSOCKET_ALPN)?));
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+        let token = session_token(client)?;
+        let request = upgrade_request(&websocket_url(client)?)?;
+        tokio::time::timeout(CONNECT_TIMEOUT, async move {
+            let connector = Connector::Rustls(Arc::new(tls::client_config(tls::WEBSOCKET_ALPN)?));
+            let (socket, _) = tokio_tungstenite::connect_async_tls_with_config(
+                request,
+                None,
+                false,
+                Some(connector),
+            )
+            .await
+            .map_err(from_tungstenite)?;
+            Self::handshake(socket, token, config).await
+        })
+        .await
+        .map_err(|_| ApiError::Timeout)?
+    }
+
+    /// Runs the WebSocket protocol for `client`'s server over a stream that
+    /// is already open, such as an in-memory pipe in tests or a proxy tunnel.
+    pub async fn connect_over(
+        stream: impl Transport,
+        client: &Client,
+        config: WsConfig,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
+        let token = session_token(client)?;
+        let request = upgrade_request(&websocket_url(client)?)?;
+        tokio::time::timeout(CONNECT_TIMEOUT, async move {
+            let (socket, _) = tokio_tungstenite::client_async(request, stream)
                 .await
                 .map_err(from_tungstenite)?;
+            Self::handshake(socket, token, config).await
+        })
+        .await
+        .map_err(|_| ApiError::Timeout)?
+    }
 
+    async fn handshake<S: Transport>(
+        mut socket: WebSocketStream<S>,
+        token: String,
+        config: WsConfig,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         // seq 1 is the authentication challenge; requests count up from 2.
         let challenge = json!({
             "seq": 1,
@@ -222,7 +275,7 @@ impl WsConnection {
             let _ = events.send(WsMessage::Event(event));
         }
         let (commands, command_rx) = mpsc::unbounded_channel();
-        tokio::spawn(run(socket, command_rx, events));
+        tokio::spawn(run(socket, command_rx, events, config));
         Ok((Self { hello, commands }, receiver))
     }
 
@@ -300,16 +353,37 @@ fn parse(frame: &Message) -> Option<Incoming> {
     }
 }
 
-async fn run(
-    mut socket: Socket,
+async fn run<S: Transport>(
+    mut socket: WebSocketStream<S>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<WsMessage>,
+    config: WsConfig,
 ) {
     let mut next_seq: u64 = 2;
     let mut pending: HashMap<u64, oneshot::Sender<Result<WsReply, ApiError>>> = HashMap::new();
+    let mut ping =
+        tokio::time::interval_at(Instant::now() + config.ping_interval, config.ping_interval);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Set when a ping goes out with nothing heard since; any frame clears it.
+    let mut deadline: Option<Instant> = None;
     let reason = loop {
+        let silent_until = deadline;
         tokio::select! {
-            frame = socket.next() => match frame {
+            () = async { tokio::time::sleep_until(silent_until.unwrap_or_else(Instant::now)).await },
+                if silent_until.is_some() => {
+                break DisconnectReason::Timeout;
+            }
+            _ = ping.tick() => {
+                let request = json!({ "seq": next_seq, "action": "ping" });
+                next_seq += 1;
+                if let Err(error) = socket.send(Message::text(request.to_string())).await {
+                    break DisconnectReason::Lost(error.to_string());
+                }
+                deadline.get_or_insert(Instant::now() + config.pong_timeout);
+            }
+            frame = socket.next() => {
+                deadline = None;
+                match frame {
                 None => break DisconnectReason::Lost("the stream ended".into()),
                 Some(Err(error)) => break DisconnectReason::Lost(error.to_string()),
                 Some(Ok(Message::Close(close))) => {
@@ -337,6 +411,7 @@ async fn run(
                     }
                     None => {}
                 },
+                }
             },
             command = commands.recv() => match command {
                 Some(Command::Send { action, data, reply }) => {
@@ -363,6 +438,25 @@ async fn run(
         let _ = waiter.send(Err(closed()));
     }
     let _ = events.send(WsMessage::Disconnected { reason });
+}
+
+fn session_token(client: &Client) -> Result<String, ApiError> {
+    client
+        .token_value()
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::InvalidUrl("the client has no session token".into()))
+}
+
+fn upgrade_request(url: &url::Url) -> Result<tungstenite::handshake::client::Request, ApiError> {
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| ApiError::InvalidUrl(e.to_string()))?;
+    request.headers_mut().insert(
+        "User-Agent",
+        HeaderValue::from_static(concat!("Matty/", env!("CARGO_PKG_VERSION"))),
+    );
+    Ok(request)
 }
 
 fn websocket_url(client: &Client) -> Result<url::Url, ApiError> {
