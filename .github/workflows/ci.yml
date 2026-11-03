@@ -32,6 +32,8 @@ jobs:
       - run: cargo test --workspace --locked --features matty/runtime_shaders
       - name: Plain-Rust crates do not depend on GPUI
         run: scripts/check-no-gpui.sh
+      - name: The app never opens the database itself
+        run: scripts/check-app-no-db.sh
       - run: cargo build --release --locked -p matty --features runtime_shaders
       - run: target/release/matty --version
       - uses: actions/upload-artifact@v4
