@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use matty_api::models::{
-    Channel, ChannelMember, Emoji, PostList, Preference, SidebarCategories, Status, Team, User,
-    UserThread,
+    Channel, ChannelMember, ChannelStats, Emoji, PostList, Preference, SidebarCategories, Status,
+    Team, User, UserThread,
 };
 use matty_api::ws::WsSignal;
 use matty_api::{ApiError, Client, Fetched, PostsQuery, ServerCapabilities, ThreadsQuery};
@@ -59,6 +59,8 @@ pub(crate) enum Loaded {
     Done,
     /// An opened channel's posts around the first unread.
     Posts { channel_id: String, posts: PostList },
+    /// An opened channel's counts.
+    Stats(ChannelStats),
     /// An opened channel's posts could not load.
     PostsFailed { channel_id: String, error: String },
     /// A channel an event named, with the user's membership when they have one.
@@ -309,6 +311,21 @@ pub(crate) async fn open_channel(
         },
     };
     let _ = results.send(message);
+}
+
+/// Fetches an opened channel's member and pinned-post counts. A failure
+/// only leaves the counts unknown, so it is logged and dropped.
+pub(crate) async fn channel_stats(
+    client: Client,
+    channel_id: String,
+    results: UnboundedSender<Loaded>,
+) {
+    match client.channel_stats(&channel_id).await {
+        Ok(stats) => {
+            let _ = results.send(Loaded::Stats(stats));
+        }
+        Err(error) => tracing::warn!(%error, "could not load a channel's counts"),
+    }
 }
 
 /// A `since` gap longer than this reloads the channel's latest page instead.

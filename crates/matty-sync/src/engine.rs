@@ -376,6 +376,9 @@ pub(crate) struct Engine {
     /// the server, so neither repeats.
     sent_users: BTreeSet<String>,
     asked_users: BTreeSet<String>,
+    /// Open channels sent in [`ChangeSet::Channel`], by their `update_at`,
+    /// so a posts change does not repeat them.
+    sent_channels: std::collections::BTreeMap<String, i64>,
     session: Option<Session>,
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
@@ -396,6 +399,7 @@ impl Engine {
             subscribers: Vec::new(),
             sent_users: BTreeSet::new(),
             asked_users: BTreeSet::new(),
+            sent_channels: std::collections::BTreeMap::new(),
             session: None,
             loaded,
             loaded_inbox: Some(loaded_inbox),
@@ -452,6 +456,7 @@ impl Engine {
                     self.subscribers.push(sender);
                     // The new subscriber has seen no one yet.
                     self.sent_users.clear();
+                    self.sent_channels.clear();
                 }
                 Message::Command(Command::Connect { client }) => {
                     if let Some(old) = self.session.take() {
@@ -517,6 +522,7 @@ impl Engine {
                 }
                 Message::Command(Command::CloseChannel { channel_id }) => {
                     self.open_channels.remove(&channel_id);
+                    self.sent_channels.remove(&channel_id);
                 }
                 Message::Command(Command::OpenThread { root_id }) => {
                     self.open_threads.insert(root_id.clone());
@@ -766,6 +772,11 @@ impl Engine {
             session.user_id.clone(),
             channel_id.to_owned(),
             session.collapsed_threads,
+            self.loaded.clone(),
+        ));
+        tokio::spawn(load::channel_stats(
+            session.client.clone(),
+            channel_id.to_owned(),
             self.loaded.clone(),
         ));
     }
@@ -1212,6 +1223,11 @@ impl Engine {
                     }
                 }
             }
+            Loaded::Stats(stats) => {
+                if self.open_channels.contains(&stats.channel_id) {
+                    dirty.direct.push(ChangeSet::Stats(Arc::new(stats)));
+                }
+            }
             Loaded::PostsFailed { channel_id, error } => {
                 if let Some(session) = &mut self.session {
                     session.fetched.remove(&channel_id);
@@ -1302,6 +1318,17 @@ impl Engine {
         for channel_id in dirty.channels {
             if !self.open_channels.contains(&channel_id) {
                 continue;
+            }
+            match sidebar::channel(conn, &channel_id) {
+                Ok(Some(channel))
+                    if self.sent_channels.get(&channel_id) != Some(&channel.update_at) =>
+                {
+                    self.sent_channels
+                        .insert(channel_id.clone(), channel.update_at);
+                    changes.push(ChangeSet::Channel(Arc::new(channel)));
+                }
+                Ok(_) => {}
+                Err(error) => tracing::error!(%error, "could not read a channel"),
             }
             match posts::posts_window(conn, &channel_id, Window::Latest, POSTS_WINDOW, roots_only) {
                 Ok(window) => changes.push(ChangeSet::Posts {
