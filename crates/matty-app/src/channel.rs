@@ -10,6 +10,8 @@ use gpui_kit::{
 };
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
+use crate::profile::{ProfileActions, UserProfile, profile_card};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::ChannelKind;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -26,6 +28,7 @@ use crate::ui::{
         message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
+    popover::popover,
     skeleton::Skeleton,
     theme::UiTheme,
 };
@@ -59,8 +62,8 @@ pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 pub struct Post {
     pub id: SharedString,
     pub author: SharedString,
-    /// `HH:MM` in the user's zone.
-    pub time: SharedString,
+    /// Minutes since midnight in the user's zone; `ClockFormat` prints it.
+    pub time: u16,
     /// The day divider label this post falls under ("Today", "Yesterday", a date).
     pub day: SharedString,
     /// Markdown body.
@@ -86,7 +89,11 @@ pub struct Post {
 pub struct ReplySummary {
     pub count: usize,
     /// `HH:MM` of the newest reply.
-    pub last_time: SharedString,
+    /// Minutes since midnight in the user's zone.
+    pub last_time: u16,
+    /// The day divider label of the last reply ("Today", "Yesterday", a
+    /// date); only a reply from today shows its time.
+    pub last_day: SharedString,
     /// Display names of the people who replied, newest first, at most three.
     pub participants: Vec<SharedString>,
     pub following: bool,
@@ -116,6 +123,8 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
+    /// Profiles of the people who posted, for the avatar card.
+    pub profiles: Vec<UserProfile>,
 }
 
 /// A row in the transcript: posts interleaved with dividers.
@@ -124,6 +133,17 @@ enum Row {
     Day(SharedString),
     NewMessages,
     Post(usize),
+}
+
+impl ReplySummary {
+    /// "08:13" for a reply from today, otherwise its day.
+    pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
+        if self.last_day.as_ref() == "Today" {
+            clock.format(self.last_time).into()
+        } else {
+            self.last_day.clone()
+        }
+    }
 }
 
 impl ChannelModel {
@@ -153,6 +173,11 @@ pub enum ChannelEvent {
     OpenThread(SharedString),
     /// The user asked for the channel's pinned messages.
     OpenPinned,
+    /// The user chose Message on someone's profile card.
+    OpenDirect {
+        username: SharedString,
+        display_name: SharedString,
+    },
     /// The user added or removed their reaction; the view already shows it.
     ToggleReaction {
         post: SharedString,
@@ -214,6 +239,11 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.subscribe(
+            &SettingsStore::global(cx),
+            |_, _, _: &SettingsChanged, cx| cx.notify(),
+        )
+        .detach();
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let composer = cx.new(|cx| ComposerState::new(8, window, cx));
@@ -303,7 +333,7 @@ impl ChannelView {
         let post = Post {
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
-            time: "Sending…".into(),
+            time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
             body: body.clone(),
             reactions: vec![],
@@ -326,14 +356,7 @@ impl ChannelView {
     }
 
     fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let changed = self.mutate_post(
-            &id,
-            |post| {
-                post.status = PostStatus::Pending;
-                post.time = "Sending…".into();
-            },
-            cx,
-        );
+        let changed = self.mutate_post(&id, |post| post.status = PostStatus::Pending, cx);
         if changed {
             cx.emit(ChannelEvent::Retry(id));
         }
@@ -729,10 +752,81 @@ impl ChannelView {
             )
     }
 
-    fn post_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The avatar, wrapped in the profile popover when the author is known.
+    fn avatar(
+        id: SharedString,
+        post: &Post,
+        profile: Option<&UserProfile>,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let initial: String = post.author.chars().take(1).collect();
+        let avatar = Avatar::new(gpui_kit::ElementId::Name(
+            format!("post.{id}.avatar").into(),
+        ))
+        .size(AvatarSize::Default)
+        .fallback(initial)
+        .aria_label(post.author.clone());
+        let Some(profile) = profile.cloned() else {
+            return avatar.into_any_element();
+        };
+        let view = cx.entity().downgrade();
+        let card_id = id.clone();
+        popover(gpui_kit::ElementId::Name(
+            format!("post.{id}.profile").into(),
+        ))
+        .offset(px(4.))
+        .trigger_with(move |_, _, _| {
+            div()
+                .id(gpui_kit::ElementId::Name(
+                    format!("post.{id}.avatar.trigger").into(),
+                ))
+                .cursor_pointer()
+                .child(avatar)
+                .into_any_element()
+        })
+        .content(move |_, _, cx| {
+            let (message_view, mention_view) = (view.clone(), view.clone());
+            let (message_profile, mention_profile) = (profile.clone(), profile.clone());
+            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            profile_card(
+                &card_id,
+                &profile,
+                ProfileActions {
+                    on_message: Box::new(move |window, cx| {
+                        close_message.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = ChannelEvent::OpenDirect {
+                            username: message_profile.username.clone(),
+                            display_name: message_profile.display_name.clone(),
+                        };
+                        message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    }),
+                    on_mention: Box::new(move |window, cx| {
+                        close_mention.update(cx, |state, cx| state.dismiss(window, cx));
+                        let text = format!("@{} ", mention_profile.username);
+                        mention_view
+                            .update(cx, |this, cx| {
+                                this.composer.update(cx, |composer, cx| {
+                                    composer.insert(text, window, cx);
+                                    composer.focus(window, cx);
+                                })
+                            })
+                            .ok();
+                    }),
+                },
+                cx,
+            )
+        })
+        .into_any_element()
+    }
+
+    fn post_row(
+        post: &Post,
+        profile: Option<&UserProfile>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
-        let initial: String = post.author.chars().take(1).collect();
+        let avatar = Self::avatar(id.clone(), post, profile, cx);
         let thread_id = id.clone();
         let react_items = Self::reaction_items_for(post, cx);
         let more_items = Self::more_items_for(post, cx);
@@ -792,24 +886,22 @@ impl ChannelView {
         let view = cx.entity().downgrade();
         let retry_view = view.clone();
         let retry_id = id.clone();
+        let time: SharedString = match post.status {
+            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+            PostStatus::Pending => "Sending…".into(),
+            PostStatus::Failed => "Not sent".into(),
+        };
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
-            .timestamp(post.time.clone())
-            .gutter_time(post.time.clone())
+            .timestamp(time.clone())
+            .gutter_time(time)
             .continuation(post.continues)
             .highlight(if post.mentions_me {
                 MessageHighlight::Mention
             } else {
                 MessageHighlight::None
             })
-            .avatar(
-                Avatar::new(gpui_kit::ElementId::Name(
-                    format!("post.{id}.avatar").into(),
-                ))
-                .size(AvatarSize::Default)
-                .fallback(initial)
-                .aria_label(post.author.clone()),
-            )
+            .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
@@ -934,7 +1026,10 @@ impl ChannelView {
                 div()
                     .type_style(style::META, &theme)
                     .text_color(theme.colors.muted_foreground)
-                    .child(format!("Last reply {}", summary.last_time)),
+                    .child(format!(
+                        "Last reply {}",
+                        summary.last_reply_label(ClockFormat::current(cx))
+                    )),
             )
             .child(
                 Button::new(gpui_kit::ElementId::Name(
@@ -982,6 +1077,7 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let rows = self.rows.clone();
         let posts = channel.posts.clone();
+        let profiles = channel.profiles.clone();
         let view = cx.entity();
         MessageList::new(
             "channel.transcript",
@@ -998,7 +1094,12 @@ impl ChannelView {
                 }
                 Some(Row::Post(post)) => {
                     let post = posts[*post].clone();
-                    view.update(cx, |_, cx| Self::post_row(&post, cx).into_any_element())
+                    let profile = profiles
+                        .iter()
+                        .find(|profile| profile.display_name == post.author);
+                    view.update(cx, |_, cx| {
+                        Self::post_row(&post, profile, cx).into_any_element()
+                    })
                 }
                 None => div().into_any_element(),
             },
@@ -1371,7 +1472,7 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
-            time: "10:00".into(),
+            time: 600,
             day: day.into(),
             body: "hi".into(),
             reactions: vec![],
@@ -1392,6 +1493,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
             id: "c".into(),
             name: "c".into(),
             kind: ChannelKind::Public,
