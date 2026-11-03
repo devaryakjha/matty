@@ -1,0 +1,12 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"| left | center | right | none |\\n|:--|:-:|--:|---|\\n| `a\\\\|b` | **2** | 3 | a \\\\| b |\")"
+---
+| left | center | right | none |
+|:--|:-:|--:|---|
+| `a\|b` | **2** | 3 | a \| b |
+----
+<table>
+<tr><th align="left">left</th><th align="center">center</th><th align="right">right</th><th>none</th></tr>
+<tr><td align="left"><code>a|b</code></td><td align="center"><strong>2</strong></td><td align="right">3</td><td>a | b</td></tr>
+</table>

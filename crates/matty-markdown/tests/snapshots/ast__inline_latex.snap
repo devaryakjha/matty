@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"the area is $\\\\pi r^2$ and costs $5 and $10\")"
+---
+the area is $\pi r^2$ and costs $5 and $10
+----
+<p>the area is <math>\pi r^2</math> and costs $5 and $10</p>

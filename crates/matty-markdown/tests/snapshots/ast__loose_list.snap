@@ -1,0 +1,16 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"- a\\n\\n  second paragraph\\n- b\")"
+---
+- a
+
+  second paragraph
+- b
+----
+<ul>
+<li>
+<p>a</p>
+<p>second paragraph</p>
+</li>
+<li>b</li>
+</ul>

@@ -1,0 +1,12 @@
+Matty
+Copyright (c) Matty contributors. Licensed under the MIT license (see LICENSE).
+
+This repository includes material from other projects:
+
+crates/matty-markdown/fixtures/webapp.json
+  Test inputs and expected outputs taken from the Mattermost webapp's tests
+  (https://github.com/mattermost/mattermost, webapp/channels/src/utils/),
+  with the expected HTML rewritten into Matty's form by
+  scripts/import-markdown-fixtures.py. The source commit is recorded in the
+  file. Copyright (c) 2015-present Mattermost, Inc. Licensed under the
+  Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0

@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"`https://code.example.com` [https://label.example.com](https://real.example.com)\")"
+---
+`https://code.example.com` [https://label.example.com](https://real.example.com)
+----
+<p><code>https://code.example.com</code> <a href="https://real.example.com">https://label.example.com</a></p>

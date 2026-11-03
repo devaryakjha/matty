@@ -1,0 +1,13 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"above\\n\\n---\\n\\nbelow\")"
+---
+above
+
+---
+
+below
+----
+<p>above</p>
+<hr>
+<p>below</p>

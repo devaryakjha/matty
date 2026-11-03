@@ -1,0 +1,11 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"- [ ] todo\\n- [x] done\")"
+---
+- [ ] todo
+- [x] done
+----
+<ul>
+<li unchecked>todo</li>
+<li checked>done</li>
+</ul>

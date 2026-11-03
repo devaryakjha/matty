@@ -1,0 +1,22 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"```latex\\nx^2\\n```\\n\\n```tex\\ny\\n```\\n\\n$$\\n\\\\frac{a}{b}\\n$$\")"
+---
+```latex
+x^2
+```
+
+```tex
+y
+```
+
+$$
+\frac{a}{b}
+$$
+----
+<pre lang="latex">x^2
+</pre>
+<pre lang="latex">y
+</pre>
+<pre lang="latex">\frac{a}{b}
+</pre>

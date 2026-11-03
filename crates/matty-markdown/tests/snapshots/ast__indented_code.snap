@@ -1,0 +1,9 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"    indented\\n    code\")"
+---
+    indented
+    code
+----
+<pre>indented
+code</pre>

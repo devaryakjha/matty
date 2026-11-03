@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"*em* _em_ **strong** __strong__ ~~struck~~ ***both***\")"
+---
+*em* _em_ **strong** __strong__ ~~struck~~ ***both***
+----
+<p><em>em</em> <em>em</em> <strong>strong</strong> <strong>strong</strong> <del>struck</del> <em><strong>both</strong></em></p>

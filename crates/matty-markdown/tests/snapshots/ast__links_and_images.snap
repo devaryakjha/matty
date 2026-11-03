@@ -1,0 +1,7 @@
+---
+source: crates/matty-markdown/tests/ast.rs
+expression: "render(\"[docs](https://docs.example.com \\\"Docs\\\") ![logo *x*](https://example.com/l.png) <https://angle.example.com>\")"
+---
+[docs](https://docs.example.com "Docs") ![logo *x*](https://example.com/l.png) <https://angle.example.com>
+----
+<p><a href="https://docs.example.com" title="Docs">docs</a> <img src="https://example.com/l.png" alt="logo x"> <a href="https://angle.example.com">https://angle.example.com</a></p>
