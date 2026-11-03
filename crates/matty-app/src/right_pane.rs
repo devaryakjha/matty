@@ -7,25 +7,29 @@ use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
 use crate::channel::{ChannelModel, Post, PostStatus};
+use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
-use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::sidebar::{ChannelKind, Presence};
+use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
+    alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
-    dialog::DialogHandle,
+    dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
     message::{Message, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
+    popover::popover,
     theme::UiTheme,
 };
 
@@ -103,6 +107,31 @@ pub enum RightPaneEvent {
     },
     /// The user clicked a file on a post; sync opens or downloads it.
     OpenFile(SharedString),
+    /// The channel info pane asked for the pinned listing.
+    OpenPinned,
+    /// Message on a member's profile card.
+    OpenDirect {
+        user_id: SharedString,
+        username: SharedString,
+        display_name: SharedString,
+    },
+    /// Mention on a member's profile card; the window puts `@username `
+    /// in the channel composer.
+    Mention(SharedString),
+    /// The info pane starred or unstarred the channel; it already shows it.
+    ToggleFavorite {
+        channel: SharedString,
+        favorite: bool,
+    },
+    /// The info pane muted or unmuted the channel; it already shows it.
+    ToggleMute {
+        channel: SharedString,
+        muted: bool,
+    },
+    /// The user confirmed leaving the channel.
+    Leave(SharedString),
+    /// The pane lists only the loaded profiles; sync fetches the rest.
+    LoadMembers(SharedString),
 }
 
 pub struct RightPaneView {
@@ -120,6 +149,8 @@ pub struct RightPaneView {
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
     lightbox_files: Vec<SharedString>,
+    /// The "Leave channel?" confirmation.
+    leave: DialogHandle,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -176,7 +207,15 @@ impl RightPaneView {
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
+            leave: DialogHandle::new(false),
             _subscriptions: subscriptions,
+        }
+    }
+
+    fn mutate_info(&mut self, change: impl FnOnce(&mut ChannelModel), cx: &mut Context<Self>) {
+        if let Some(RightPaneContent::ChannelInfo(channel)) = self.content.as_mut() {
+            change(channel);
+            cx.notify();
         }
     }
 
@@ -887,41 +926,343 @@ impl RightPaneView {
             .child(body)
     }
 
-    fn channel_info(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
+    /// Channel info (PLAN §3 M1 navigation): what the channel is for, the
+    /// actions on it, then its members with their presence.
+    fn channel_info(
+        &self,
+        channel: &ChannelModel,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let row = |label: &'static str, value: String| {
+        let muted = theme.colors.muted_foreground;
+        let label = |text: String| {
             div()
-                .flex()
-                .flex_col()
-                .gap(theme.space(1.))
+                .type_style(style::LABEL, &theme)
+                .text_color(muted)
+                .child(text.to_uppercase())
+        };
+        let kind_icon = match channel.kind {
+            ChannelKind::Public => Some(LucideIcon::Hash),
+            ChannelKind::Private => Some(LucideIcon::Lock),
+            ChannelKind::Direct { .. } | ChannelKind::Group { .. } => None,
+        };
+        let chip = |id: &'static str, text: SharedString, glyph: LucideIcon, on: bool| {
+            Button::new(id)
+                .variant(if on {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Outline
+                })
+                .size(ButtonSize::Sm)
                 .child(
                     div()
-                        .type_style(style::LABEL, &theme)
-                        .text_color(theme.colors.muted_foreground)
-                        .child(label.to_uppercase()),
-                )
-                .child(
-                    div()
-                        .type_style(style::BODY, &theme)
-                        .text_color(theme.colors.foreground)
-                        .child(value),
+                        .flex()
+                        .items_center()
+                        .gap(theme.space(1.5))
+                        .child(lucide(glyph).size(scaled(&theme, 14.)).text_color(if on {
+                            theme.colors.foreground
+                        } else {
+                            muted
+                        }))
+                        .child(text),
                 )
         };
+        let channel_id = channel.id.clone();
+        let (favorite_id, mute_id) = (channel_id.clone(), channel_id.clone());
+        let (favorite, is_muted) = (channel.favorite, channel.muted);
+        let leave = self.leave.clone();
+        let about = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .type_style(style::TITLE, &theme)
+                    .text_color(theme.colors.foreground)
+                    .children(kind_icon.map(|glyph| {
+                        lucide(glyph)
+                            .size(scaled(&theme, metrics::ICON))
+                            .text_color(muted)
+                    }))
+                    .child(channel.name.clone()),
+            )
+            .children(channel.purpose.clone().map(|text| {
+                div()
+                    .type_style(style::BODY, &theme)
+                    .text_color(theme.colors.foreground)
+                    .child(text)
+            }))
+            .children(channel.header.clone().map(|text| {
+                div()
+                    .type_style(style::UI, &theme)
+                    .text_color(muted)
+                    .child(text)
+            }));
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(theme.space(2.))
+            .child(
+                chip(
+                    "info.favorite",
+                    if favorite { "Favorited" } else { "Favorite" }.into(),
+                    LucideIcon::Star,
+                    favorite,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let favorite = !favorite;
+                    this.mutate_info(|channel| channel.favorite = favorite, cx);
+                    cx.emit(RightPaneEvent::ToggleFavorite {
+                        channel: favorite_id.clone(),
+                        favorite,
+                    });
+                })),
+            )
+            .child(
+                chip(
+                    "info.mute",
+                    if is_muted { "Muted" } else { "Mute" }.into(),
+                    if is_muted {
+                        LucideIcon::BellOff
+                    } else {
+                        LucideIcon::Bell
+                    },
+                    is_muted,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let muted = !is_muted;
+                    this.mutate_info(|channel| channel.muted = muted, cx);
+                    cx.emit(RightPaneEvent::ToggleMute {
+                        channel: mute_id.clone(),
+                        muted,
+                    });
+                })),
+            )
+            .child(
+                chip(
+                    "info.pinned",
+                    format!("{} pinned", channel.pinned).into(),
+                    LucideIcon::Pin,
+                    false,
+                )
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::OpenPinned))),
+            );
+        // Leaving sits on its own line, away from the toggles.
+        let actions = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .items_start()
+            .child(actions)
+            .when(kind_icon.is_some(), |actions| {
+                actions.child(
+                    Button::new("info.leave")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme.space(1.5))
+                                .text_color(theme.colors.destructive)
+                                .child(
+                                    lucide(LucideIcon::LogOut)
+                                        .size(scaled(&theme, 14.))
+                                        .text_color(theme.colors.destructive),
+                                )
+                                .child("Leave"),
+                        )
+                        .on_click(move |_, window, cx| leave.open(window, cx)),
+                )
+            });
+        let view = cx.entity().downgrade();
+        let members = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(1.))
+            .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
+            .children(
+                channel
+                    .profiles
+                    .iter()
+                    .map(|profile| Self::member_row(profile, &view, cx)),
+            )
+            .when(channel.profiles.len() < channel.members, |members| {
+                members.child(
+                    Button::new("info.members.all")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label(format!("Show all {} members", channel.members))
+                        .on_click(move |_, _, cx| {
+                            let event = RightPaneEvent::LoadMembers(channel_id.clone());
+                            view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                )
+            });
         div()
+            .id("right-pane.info")
+            .overflow_y_scroll()
+            .size_full()
             .flex()
             .flex_col()
             .gap(theme.space(5.))
             .p(theme.space(4.))
-            .child(row(
-                "Header",
-                channel
-                    .header
-                    .as_deref()
-                    .unwrap_or("No header yet")
-                    .to_string(),
-            ))
-            .child(row("Members", channel.members.to_string()))
-            .child(row("Pinned messages", channel.pinned.to_string()))
+            .child(about)
+            .child(actions)
+            .child(members)
+    }
+
+    /// One member: avatar with presence, name and handle, opening the
+    /// profile card.
+    fn member_row(
+        profile: &UserProfile,
+        view: &gpui_kit::WeakEntity<Self>,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let palette = Palette::read(cx);
+        let dot = match profile.presence {
+            Presence::Online => palette.online,
+            Presence::Away => palette.away,
+            Presence::Dnd => palette.dnd,
+            Presence::Offline => theme.colors.muted_foreground,
+        };
+        let initial: String = profile.display_name.chars().take(1).collect();
+        let username = profile.username.clone();
+        let (row_profile, card_profile) = (profile.clone(), profile.clone());
+        let (message_view, mention_view) = (view.clone(), view.clone());
+        popover(gpui_kit::ElementId::Name(
+            format!("info.member.{username}.popover").into(),
+        ))
+        .offset(px(4.))
+        .trigger_with(move |_, _, _| {
+            div()
+                .id(gpui_kit::ElementId::Name(
+                    format!("info.member.{}", row_profile.username).into(),
+                ))
+                .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
+                .px(theme.space(2.))
+                .mx(theme.space(-2.))
+                .rounded(theme.radius.md)
+                .flex()
+                .items_center()
+                .gap(theme.space(3.))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.colors.accent))
+                .child(
+                    div()
+                        .relative()
+                        .flex_shrink_0()
+                        .child(
+                            Avatar::new(gpui_kit::ElementId::Name(
+                                format!("info.member.{}.avatar", row_profile.username).into(),
+                            ))
+                            .size(AvatarSize::Sm)
+                            .fallback(initial.clone())
+                            .aria_label(row_profile.display_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom(px(-1.))
+                                .right(px(-1.))
+                                .size(px(9.))
+                                .rounded_full()
+                                .bg(dot)
+                                .border_2()
+                                .border_color(theme.colors.background),
+                        ),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .type_style(style::UI, &theme)
+                        .text_color(theme.colors.foreground)
+                        .child(row_profile.display_name.clone()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child(format!("@{}", row_profile.username)),
+                )
+                .into_any_element()
+        })
+        .content(move |_, _, cx| {
+            let (message_profile, mention_profile) = (card_profile.clone(), card_profile.clone());
+            let (message_view, mention_view) = (message_view.clone(), mention_view.clone());
+            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            profile_card(
+                &username,
+                &card_profile,
+                ProfileActions {
+                    on_message: Box::new(move |window, cx| {
+                        close_message.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = RightPaneEvent::OpenDirect {
+                            user_id: message_profile.user_id.clone(),
+                            username: message_profile.username.clone(),
+                            display_name: message_profile.display_name.clone(),
+                        };
+                        message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    }),
+                    on_mention: Box::new(move |window, cx| {
+                        close_mention.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = RightPaneEvent::Mention(mention_profile.username.clone());
+                        mention_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    }),
+                },
+                cx,
+            )
+        })
+    }
+
+    /// "Leave #design?" with the action named in the button.
+    fn leave_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = UiTheme::read(cx).clone();
+        let name: SharedString = match self.content.as_ref() {
+            Some(RightPaneContent::ChannelInfo(channel)) => format!("#{}", channel.name).into(),
+            _ => "this channel".into(),
+        };
+        let popup = dialog_popup("channel.leave.popup", "Leave channel", cx)
+            .child(dialog_title("channel.leave.title", cx).child(format!("Leave {name}?")))
+            .child(
+                dialog_description("channel.leave.description", cx).child(
+                    "You stop receiving its messages and it leaves your sidebar. You can join again later.",
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel("channel.leave.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action("channel.leave.confirm")
+                            .variant(ButtonVariant::Destructive)
+                            .label("Leave"),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog("channel.leave", &self.leave, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |this, cx| {
+                if let Some(RightPaneContent::ChannelInfo(channel)) = this.content.as_ref() {
+                    cx.emit(RightPaneEvent::Leave(channel.id.clone()));
+                }
+            })
+            .ok();
+            true
+        })
     }
 }
 
@@ -930,6 +1271,7 @@ impl Render for RightPaneView {
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .child(self.lightbox(window, cx))
+            .child(self.leave_dialog(window, cx))
             .key_context(actions::RIGHT_PANE)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseRightPane, _, cx| cx.emit(RightPaneEvent::Close)))
@@ -952,8 +1294,13 @@ impl Render for RightPaneView {
                 ))
                 .child(div().flex_1().min_h_0().child(self.thread(&thread, cx))),
             Some(RightPaneContent::ChannelInfo(channel)) => root
-                .child(self.header("Channel info".into(), Some(channel.name.clone()), cx))
-                .child(Self::channel_info(&channel, cx)),
+                .child(self.header("Channel info".into(), None, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.channel_info(&channel, cx)),
+                ),
             Some(RightPaneContent::Pinned {
                 channel_name,
                 posts,

@@ -308,6 +308,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         members: 42,
         pinned: 3,
         favorite: id == "design",
+        muted: id == "random",
         purpose: (id == "release-2026-11").then(|| {
             "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
         }),

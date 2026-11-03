@@ -269,6 +269,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   or emptied body closes the editor with nothing sent. Shift+Up in an
   empty composer still opens the newest post's thread. Focus returns to
   the main composer either way.
+- **Channel info** (PLAN §3 M1 navigation: leave a channel, mute) opens
+  from the header's info button or its members count (`design-26`). The
+  pane starts with the channel name, purpose and header, then one row of
+  Sm chips: Favorite/Favorited and Mute/Muted as Outline that turn
+  Secondary when on, "N pinned" opening the Pinned listing, and Leave as a
+  `destructive` Ghost button on its own line (not for DMs and groups).
+  Leave confirms in an `alert_dialog` naming the channel. "MEMBERS · 42"
+  lists the loaded profiles as 36px rows with a Sm avatar carrying the
+  presence dot, the name and `@handle`; a row opens the same profile card
+  as avatars in the transcript, and "Show all 42 members" asks sync for
+  the rest. The header star and the pane's Favorite chip stay in step.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

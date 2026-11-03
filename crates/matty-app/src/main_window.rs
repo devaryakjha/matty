@@ -231,9 +231,11 @@ impl MainWindow {
             |this, _, event: &ChannelEvent, window, cx| match event {
                 ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
+                ChannelEvent::OpenInfo => this.show_channel_info(cx),
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
+                ChannelEvent::ToggleFavorite(_) => this.refresh_channel_info(cx),
                 // Sync picks these up once it owns the channel model; the view
                 // already shows the change.
                 ChannelEvent::Send { .. }
@@ -260,6 +262,25 @@ impl MainWindow {
                     cx.notify();
                 }
                 RightPaneEvent::Search(query) => this.search(query.clone(), window, cx),
+                RightPaneEvent::OpenPinned => this.show_pinned(cx),
+                RightPaneEvent::OpenDirect { display_name, .. } => {
+                    this.open_direct(display_name.clone(), window, cx)
+                }
+                RightPaneEvent::Mention(username) => {
+                    let text = format!("@{username} ");
+                    this.channel
+                        .update(cx, |channel, cx| channel.insert_text(text, window, cx));
+                }
+                RightPaneEvent::ToggleFavorite { favorite, .. } => {
+                    let favorite = *favorite;
+                    this.channel
+                        .update(cx, |channel, cx| channel.set_favorite(favorite, cx));
+                }
+                RightPaneEvent::ToggleMute { muted, .. } => {
+                    let muted = *muted;
+                    this.channel
+                        .update(cx, |channel, cx| channel.set_muted(muted, cx));
+                }
                 // The post itself scrolls into view once sync can page to it.
                 RightPaneEvent::Jump { channel, .. } => {
                     this.open_channel(channel.clone(), window, cx)
@@ -560,6 +581,17 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Mentions(posts), cx);
+    }
+
+    /// Keeps an open info pane in step with the channel header's star.
+    fn refresh_channel_info(&mut self, cx: &mut Context<Self>) {
+        let showing = matches!(
+            self.right_pane.read(cx).content(),
+            Some(RightPaneContent::ChannelInfo(_))
+        );
+        if showing && self.right_pane_open {
+            self.show_channel_info(cx);
+        }
     }
 
     /// Shows the current channel's info in the right pane.

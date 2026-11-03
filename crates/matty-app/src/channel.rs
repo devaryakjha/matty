@@ -122,6 +122,8 @@ pub struct ChannelModel {
     pub members: usize,
     pub pinned: usize,
     pub favorite: bool,
+    /// Muted channels fade in the sidebar and skip notifications.
+    pub muted: bool,
     /// The channel purpose, shown in the empty state.
     pub purpose: Option<SharedString>,
     /// True while the first page of posts is on its way: skeleton rows
@@ -204,6 +206,11 @@ pub enum ChannelEvent {
     OpenThread(SharedString),
     /// The user asked for the channel's pinned messages.
     OpenPinned,
+    /// The user asked for the channel info pane (header info button or the
+    /// members count).
+    OpenInfo,
+    /// The user starred or unstarred the channel; the header shows it.
+    ToggleFavorite(bool),
     /// The user chose Message on someone's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -472,6 +479,37 @@ impl ChannelView {
         });
         self.model = model;
         cx.notify();
+    }
+
+    /// Sync or the info pane changed the star; the header follows.
+    pub fn set_favorite(&mut self, favorite: bool, cx: &mut Context<Self>) {
+        if let Some(model) = self.model.as_mut() {
+            model.favorite = favorite;
+            cx.notify();
+        }
+    }
+
+    /// Sync or the info pane muted or unmuted the channel.
+    pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
+        if let Some(model) = self.model.as_mut() {
+            model.muted = muted;
+            cx.notify();
+        }
+    }
+
+    /// Puts text at the caret and focuses the composer, for "Mention" on a
+    /// profile card.
+    pub fn insert_text(
+        &mut self,
+        text: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
+        self.composer.update(cx, |composer, cx| {
+            composer.insert(text, window, cx);
+            composer.focus(window, cx);
+        });
     }
 
     fn max_post_size(&self) -> usize {
@@ -1317,6 +1355,11 @@ impl ChannelView {
                             } else {
                                 "Add to favorites"
                             })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let favorite = this.model.as_ref().is_some_and(|m| !m.favorite);
+                                this.set_favorite(favorite, cx);
+                                cx.emit(ChannelEvent::ToggleFavorite(favorite));
+                            }))
                             .child(
                                 lucide(LucideIcon::Star)
                                     .size(scaled(&theme, 14.))
@@ -1345,12 +1388,15 @@ impl ChannelView {
                     .items_center()
                     .flex_shrink_0()
                     .gap(theme.space(0.5))
-                    .child(count(
-                        "channel.members",
-                        format!("{} members", channel.members),
-                        LucideIcon::Users,
-                        channel.members,
-                    ))
+                    .child(
+                        count(
+                            "channel.members",
+                            format!("{} members", channel.members),
+                            LucideIcon::Users,
+                            channel.members,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
+                    )
                     .child(
                         count(
                             "channel.pinned",
@@ -1360,7 +1406,10 @@ impl ChannelView {
                         )
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenPinned))),
                     )
-                    .child(action("channel.info", "Channel info", LucideIcon::Info)),
+                    .child(
+                        action("channel.info", "Channel info", LucideIcon::Info)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
+                    ),
             )
     }
 
@@ -2181,6 +2230,7 @@ mod tests {
             members: 1,
             pinned: 0,
             favorite: false,
+            muted: false,
             posts: vec![
                 post("1", "Yesterday"),
                 post("2", "Yesterday"),
