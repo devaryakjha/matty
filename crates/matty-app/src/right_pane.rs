@@ -12,6 +12,7 @@ use gpui_kit::{
 
 use crate::actions::{self, CloseRightPane};
 use crate::channel::{ChannelModel, Post, PostStatus};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
@@ -107,6 +108,11 @@ impl Focusable for RightPaneView {
 
 impl RightPaneView {
     pub fn new(me: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.subscribe(
+            &SettingsStore::global(cx),
+            |_, _, _: &SettingsChanged, cx| cx.notify(),
+        )
+        .detach();
         let list = cx.new(|cx| MessageListState::new(0, cx));
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
@@ -161,7 +167,7 @@ impl RightPaneView {
         let reply = Post {
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
-            time: "Sending…".into(),
+            time: last.time,
             day: last.day.clone(),
             body: body.clone(),
             reactions: vec![],
@@ -206,14 +212,7 @@ impl RightPaneView {
     }
 
     fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let changed = self.mutate_reply(
-            &id,
-            |post| {
-                post.status = PostStatus::Pending;
-                post.time = "Sending…".into();
-            },
-            cx,
-        );
+        let changed = self.mutate_reply(&id, |post| post.status = PostStatus::Pending, cx);
         if changed {
             cx.emit(RightPaneEvent::Retry(id));
         }
@@ -355,6 +354,11 @@ impl RightPaneView {
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        let time: SharedString = match post.status {
+            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+            PostStatus::Pending => "Sending…".into(),
+            PostStatus::Failed => "Not sent".into(),
+        };
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
         let (retry_view, retry_id) = (view.clone(), id.clone());
@@ -381,8 +385,8 @@ impl RightPaneView {
                     .ok();
             })
             .author(post.author.clone())
-            .timestamp(post.time.clone())
-            .gutter_time(post.time.clone())
+            .timestamp(time.clone())
+            .gutter_time(time)
             .continuation(post.continues && !root)
             .avatar(
                 Avatar::new(gpui_kit::ElementId::Name(

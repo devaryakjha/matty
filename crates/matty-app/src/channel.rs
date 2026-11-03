@@ -11,6 +11,7 @@ use gpui_kit::{
 
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::ChannelKind;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -61,8 +62,8 @@ pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 pub struct Post {
     pub id: SharedString,
     pub author: SharedString,
-    /// `HH:MM` in the user's zone.
-    pub time: SharedString,
+    /// Minutes since midnight in the user's zone; `ClockFormat` prints it.
+    pub time: u16,
     /// The day divider label this post falls under ("Today", "Yesterday", a date).
     pub day: SharedString,
     /// Markdown body.
@@ -88,7 +89,11 @@ pub struct Post {
 pub struct ReplySummary {
     pub count: usize,
     /// `HH:MM` of the newest reply.
-    pub last_time: SharedString,
+    /// Minutes since midnight in the user's zone.
+    pub last_time: u16,
+    /// The day divider label of the last reply ("Today", "Yesterday", a
+    /// date); only a reply from today shows its time.
+    pub last_day: SharedString,
     /// Display names of the people who replied, newest first, at most three.
     pub participants: Vec<SharedString>,
     pub following: bool,
@@ -128,6 +133,17 @@ enum Row {
     Day(SharedString),
     NewMessages,
     Post(usize),
+}
+
+impl ReplySummary {
+    /// "08:13" for a reply from today, otherwise its day.
+    pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
+        if self.last_day.as_ref() == "Today" {
+            clock.format(self.last_time).into()
+        } else {
+            self.last_day.clone()
+        }
+    }
 }
 
 impl ChannelModel {
@@ -223,6 +239,11 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.subscribe(
+            &SettingsStore::global(cx),
+            |_, _, _: &SettingsChanged, cx| cx.notify(),
+        )
+        .detach();
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let composer = cx.new(|cx| ComposerState::new(8, window, cx));
@@ -312,7 +333,7 @@ impl ChannelView {
         let post = Post {
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
-            time: "Sending…".into(),
+            time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
             body: body.clone(),
             reactions: vec![],
@@ -335,14 +356,7 @@ impl ChannelView {
     }
 
     fn retry(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let changed = self.mutate_post(
-            &id,
-            |post| {
-                post.status = PostStatus::Pending;
-                post.time = "Sending…".into();
-            },
-            cx,
-        );
+        let changed = self.mutate_post(&id, |post| post.status = PostStatus::Pending, cx);
         if changed {
             cx.emit(ChannelEvent::Retry(id));
         }
@@ -872,10 +886,15 @@ impl ChannelView {
         let view = cx.entity().downgrade();
         let retry_view = view.clone();
         let retry_id = id.clone();
+        let time: SharedString = match post.status {
+            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+            PostStatus::Pending => "Sending…".into(),
+            PostStatus::Failed => "Not sent".into(),
+        };
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
-            .timestamp(post.time.clone())
-            .gutter_time(post.time.clone())
+            .timestamp(time.clone())
+            .gutter_time(time)
             .continuation(post.continues)
             .highlight(if post.mentions_me {
                 MessageHighlight::Mention
@@ -1007,7 +1026,10 @@ impl ChannelView {
                 div()
                     .type_style(style::META, &theme)
                     .text_color(theme.colors.muted_foreground)
-                    .child(format!("Last reply {}", summary.last_time)),
+                    .child(format!(
+                        "Last reply {}",
+                        summary.last_reply_label(ClockFormat::current(cx))
+                    )),
             )
             .child(
                 Button::new(gpui_kit::ElementId::Name(
@@ -1450,7 +1472,7 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
-            time: "10:00".into(),
+            time: 600,
             day: day.into(),
             body: "hi".into(),
             reactions: vec![],

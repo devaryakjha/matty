@@ -122,7 +122,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
         id: id.into(),
         author: author.into(),
-        time: time.into(),
+        time: hm(time),
         day: day.into(),
         body: body.into(),
         reactions: vec![],
@@ -152,7 +152,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             reactions: vec![reaction("👍", 4, true), reaction("🚀", 2, false)],
             replies: Some(ReplySummary {
                 count: 1,
-                last_time: "10:02".into(),
+                last_time: hm("10:02"),
+                last_day: "Today".into(),
                 participants: vec!["Lena Fischer".into()],
                 following: false,
                 unread: true,
@@ -189,7 +190,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         Post {
             replies: Some(ReplySummary {
                 count: 3,
-                last_time: "08:13".into(),
+                last_time: hm("08:13"),
+                last_day: "Today".into(),
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
                 following: true,
                 unread: false,
@@ -249,7 +251,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         ..post(
             "p9",
             "Arya",
-            "Not sent",
+            "08:40",
             "Today",
             "Also: who owns the Windows build this week?",
         )
@@ -327,7 +329,7 @@ pub fn mentions() -> Vec<ListedPost> {
     let mut lena = listed("design", "p4");
     if let Some(item) = lena.as_mut() {
         item.post.id = "p4m".into();
-        item.post.time = "09:48".into();
+        item.post.time = hm("09:48");
         item.post.day = "Today".into();
         item.post.edited = false;
         item.post.pinned = false;
@@ -339,6 +341,12 @@ pub fn mentions() -> Vec<ListedPost> {
         .into_iter()
         .flatten()
         .collect()
+}
+
+/// "08:02" as minutes since midnight, so fixtures read like a clock.
+fn hm(time: &str) -> u16 {
+    let (hour, minute) = time.split_once(':').expect("HH:MM");
+    hour.parse::<u16>().expect("hour") * 60 + minute.parse::<u16>().expect("minute")
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
@@ -431,9 +439,14 @@ pub fn threads() -> ThreadsModel {
             summary,
         })
     };
-    let summary = |count, last_time: &str, participants: &[&str], unread| ReplySummary {
+    let summary = |count, last: &str, participants: &[&str], unread| ReplySummary {
         count,
-        last_time: last_time.into(),
+        last_time: if last.contains(':') { hm(last) } else { 0 },
+        last_day: if last.contains(':') {
+            "Today".into()
+        } else {
+            last.into()
+        },
         participants: participants.iter().map(|name| (*name).into()).collect(),
         following: true,
         unread,
@@ -480,7 +493,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
     let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
-        time: time.into(),
+        time: hm(time),
         day: root.day.clone(),
         body: body.into(),
         reactions: vec![],
@@ -518,4 +531,35 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         },
         following: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every fixture builds; a bad literal would otherwise only show up
+    /// when someone runs the preview.
+    #[test]
+    fn fixtures_build() {
+        let sidebar = sidebar();
+        let ids: Vec<_> = sidebar
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter().map(|row| row.id.clone()))
+            .collect();
+        assert!(!ids.is_empty());
+        for id in &ids {
+            if let Some(channel) = channel(id) {
+                pinned(&channel);
+                for post in &channel.posts {
+                    thread(id, &post.id);
+                }
+            }
+        }
+        assert!(!saved().is_empty());
+        assert!(!mentions().is_empty());
+        assert!(!profiles().is_empty());
+        assert!(!drafts().drafts.is_empty());
+        assert!(!threads().threads.is_empty());
+    }
 }

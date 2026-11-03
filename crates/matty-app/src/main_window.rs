@@ -23,8 +23,8 @@ use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
-    RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
-    ThemeChoice, WindowGeometry, ZOOM_STEP,
+    ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
+    SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -961,6 +961,32 @@ impl MainWindow {
                 .unwrap_or(1.);
             size_store.update(cx, |store, cx| store.update(cx, |s| s.text_scale = scale));
         });
+        let clock_value: SharedString = match settings.clock {
+            ClockFormat::TwelveHour => "12",
+            ClockFormat::TwentyFourHour => "24",
+        }
+        .into();
+        let clock_store = store.clone();
+        let clock_item = |id: &'static str, value: &'static str, text: &'static str| {
+            ToggleGroupItem::new(id, value)
+                .aria_label(text)
+                .flex_1()
+                .child(text)
+        };
+        let clock_group = ToggleGroup::new("preferences.clock")
+            .aria_label("Clock")
+            .joined(true)
+            .w_full()
+            .value([clock_value])
+            .item(clock_item("preferences.clock.12", "12", "12-hour"))
+            .item(clock_item("preferences.clock.24", "24", "24-hour"))
+            .on_change(move |next, _, cx| {
+                let clock = match next.first().map(|v| v.as_ref()) {
+                    Some("12") => ClockFormat::TwelveHour,
+                    _ => ClockFormat::TwentyFourHour,
+                };
+                clock_store.update(cx, |store, cx| store.update(cx, |s| s.clock = clock));
+            });
         let switch_row =
             |id: &'static str,
              title: &'static str,
@@ -1014,6 +1040,7 @@ impl MainWindow {
                     .pt(theme.space(1.))
                     .child(section("Theme", theme_group.into_any_element()))
                     .child(section("Text size", size_group.into_any_element()))
+                    .child(section("Clock", clock_group.into_any_element()))
                     .child(section(
                         "Window",
                         div()

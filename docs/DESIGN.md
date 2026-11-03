@@ -207,8 +207,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `@username ` into the composer and focuses it. Nothing else lives on the
   card; everything about a person beyond this belongs in the right pane.
 - **Preferences** is a dialog, not a window: sections under `label`
-  headings, a joined toggle group for theme (System, Light, Dark) and text
-  size (90 to 130 percent), switches with a one-line `meta` explanation.
+  headings, joined toggle groups for theme (System, Light, Dark), text
+  size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a
+  one-line `meta` explanation. The clock applies to every time Matty
+  prints: post headers, gutter times, "Last reply", the Threads list
+  (`design-18`); 24-hour is the default. A compact message density waits
+  on gpuicn's `Message` growing one; Matty does not fake it with
+  continuation rows.
   Every change applies behind the dialog as it is made; the only button is
   Done.
 
