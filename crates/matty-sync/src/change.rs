@@ -75,6 +75,15 @@ pub enum ChangeSet {
     },
     /// These users' statuses changed.
     Presence(Arc<[Status]>),
+    /// A channel the user asked to open ([`Command::OpenDirect`] or
+    /// [`Command::JoinChannel`](crate::Command::JoinChannel)) is ready: it is
+    /// in the sidebar, so the view can switch to it.
+    ///
+    /// [`Command::OpenDirect`]: crate::Command::OpenDirect
+    ChannelReady {
+        /// The channel.
+        channel_id: String,
+    },
     /// Someone started typing.
     Typing {
         /// Who.

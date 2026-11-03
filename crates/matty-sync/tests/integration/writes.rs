@@ -250,3 +250,72 @@ async fn status_and_typing_reach_other_users() {
     assert_eq!(notices, 1);
     drop(socket);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_messages_open_and_channels_are_left_and_joined() {
+    let Some(world) = World::new().await else {
+        return;
+    };
+    let engine = Engine::start(&world.me).await;
+    let channel_id = world.channel.id.clone();
+    engine.sidebar(&channel_id, |_| true).await;
+
+    // A direct message is created on the server and lands in the sidebar.
+    engine.send(Command::OpenDirect {
+        user_ids: vec![world.other.id.clone()],
+    });
+    let ready = engine
+        .wait("the direct message", |c| {
+            matches!(c, ChangeSet::ChannelReady { .. })
+        })
+        .await;
+    let ChangeSet::ChannelReady { channel_id: direct } = ready else {
+        unreachable!()
+    };
+    let on_server = world.me.client.channel(&direct).await.unwrap();
+    assert_eq!(on_server.kind, "D");
+    assert!(on_server.name.contains(&world.other.id));
+    engine.sidebar(&direct, |_| true).await;
+
+    // Leaving takes the channel out of the sidebar; joining brings it back.
+    engine.send(Command::LeaveChannel {
+        channel_id: channel_id.clone(),
+    });
+    engine
+        .wait("the channel gone from the sidebar", |change| {
+            matches!(change, ChangeSet::Sidebar { team_id, sections }
+                if *team_id == world.team_id
+                    && sections.iter().all(|s| s.channels.iter().all(|c| c.id != channel_id)))
+        })
+        .await;
+    assert!(
+        world
+            .me
+            .client
+            .my_channel_member(&channel_id)
+            .await
+            .is_err()
+    );
+
+    engine.send(Command::JoinChannel {
+        channel_id: channel_id.clone(),
+    });
+    engine
+        .wait(
+            "the joined channel",
+            |c| matches!(c, ChangeSet::ChannelReady { channel_id: id } if *id == channel_id),
+        )
+        .await;
+    engine
+        .wait("the channel back in the sidebar", |change| {
+            matches!(change, ChangeSet::Sidebar { sections, .. }
+                if sections.iter().any(|s| s.channels.iter().any(|c| c.id == channel_id)))
+        })
+        .await;
+    world
+        .me
+        .client
+        .my_channel_member(&channel_id)
+        .await
+        .unwrap();
+}

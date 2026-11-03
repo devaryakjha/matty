@@ -172,6 +172,24 @@ pub enum Command {
         /// For `dnd` with a duration: when it ends, in seconds since the epoch.
         dnd_end_time: Option<i64>,
     },
+    /// Opens the direct message with one user, or the group message with
+    /// several (3 to 8 people counting the user), creating it if needed.
+    /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
+    OpenDirect {
+        /// The other people.
+        user_ids: Vec<String>,
+    },
+    /// Joins a public channel;
+    /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
+    JoinChannel {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Leaves a channel; it drops out of the sidebar once the server agrees.
+    LeaveChannel {
+        /// The channel.
+        channel_id: String,
+    },
 }
 
 impl std::fmt::Debug for Command {
@@ -272,6 +290,18 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SetStatus")
                 .field("status", status)
                 .finish_non_exhaustive(),
+            Self::OpenDirect { user_ids } => f
+                .debug_struct("OpenDirect")
+                .field("user_ids", user_ids)
+                .finish(),
+            Self::JoinChannel { channel_id } => f
+                .debug_struct("JoinChannel")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::LeaveChannel { channel_id } => f
+                .debug_struct("LeaveChannel")
+                .field("channel_id", channel_id)
+                .finish(),
         }
     }
 }
@@ -619,6 +649,15 @@ impl Engine {
                     status,
                     dnd_end_time,
                 }),
+                Message::Command(Command::OpenDirect { user_ids }) => {
+                    writes.push(Write::OpenDirect { user_ids });
+                }
+                Message::Command(Command::JoinChannel { channel_id }) => {
+                    writes.push(Write::Join { channel_id });
+                }
+                Message::Command(Command::LeaveChannel { channel_id }) => {
+                    writes.push(Write::Leave { channel_id });
+                }
             }
         }
         tx.commit()?;
@@ -902,6 +941,24 @@ impl Engine {
                 posts::insert_posts(&tx, &fetched)?;
                 tx.commit()?;
                 dirty.channels.insert(channel_id);
+            }
+            Loaded::Ready { channel, member } => {
+                let channel_id = channel.id.clone();
+                self.write_loaded(
+                    Loaded::Channel {
+                        channel,
+                        member: Some(member),
+                    },
+                    dirty,
+                )?;
+                dirty.direct.push(ChangeSet::ChannelReady { channel_id });
+            }
+            Loaded::Left { channel_id } => {
+                let tx = self.store.conn_mut().transaction()?;
+                events::touch_channel(&tx, &channel_id, dirty)?;
+                sidebar::delete_channel(&tx, &channel_id)?;
+                tx.commit()?;
+                dirty.unreads = true;
             }
             Loaded::Channel { channel, member } => {
                 let tx = self.store.conn_mut().transaction()?;
