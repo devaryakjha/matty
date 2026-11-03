@@ -10,8 +10,10 @@
 pub mod capabilities;
 mod client;
 mod endpoints;
-mod error;
+pub(crate) mod error;
 pub mod models;
+mod tls;
+pub mod ws;
 
 pub use capabilities::{ServerCapabilities, UnsupportedVersion, Version};
 pub use client::{Client, ClientBuilder, Fetched, RateLimit, Sleeper, TokioSleeper};

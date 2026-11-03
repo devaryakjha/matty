@@ -9,6 +9,7 @@
 use matty_api::{
     ApiError, Client, Credentials, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery,
     models::PostChange,
+    ws::{WsConnection, WsMessage},
 };
 
 fn server() -> Option<(String, String, String)> {
@@ -184,6 +185,71 @@ async fn post_thread_and_read_state_round_trip() {
         })
         .collect();
     assert!(deleted.contains(&root.id.as_str()) && deleted.contains(&reply.id.as_str()));
+}
+
+#[tokio::test]
+async fn websocket_hello_events_and_replies() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        // Signing in revokes other sessions with the same device id.
+        device_id: "matty-live-test-ws".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let (connection, mut events) = WsConnection::connect(&client).await.unwrap();
+    assert!(!connection.hello().connection_id.is_empty());
+    assert!(
+        connection
+            .hello()
+            .server_version
+            .starts_with(char::is_numeric)
+    );
+
+    let team = client.my_teams().await.unwrap().remove(0);
+    let channel = client
+        .my_channels(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "O")
+        .expect("a public channel");
+
+    let typing = connection.user_typing(&channel.id, "").await.unwrap();
+    assert!(typing.is_ok(), "{typing:?}");
+    let statuses = connection.get_statuses_by_ids(&[&me.id]).await.unwrap();
+    assert!(statuses.data.unwrap().get(&me.id).is_some());
+
+    let pending = format!("{}:{}", me.id, web_time_millis());
+    let post = client
+        .create_post(&NewPost::new(&channel.id, "live websocket test", &pending))
+        .await
+        .unwrap();
+    let posted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match events.recv().await {
+                Some(WsMessage::Event(event)) if event.event == "posted" => {
+                    let raw = event.data["post"].as_str().unwrap().to_string();
+                    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                    if value["id"] == post.id.as_str() {
+                        break value;
+                    }
+                }
+                Some(WsMessage::Event(_)) => {}
+                other => panic!("connection ended: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("posted within 10s");
+    assert_eq!(posted["pending_post_id"], pending.as_str());
+    client.delete_post(&post.id).await.unwrap();
+    connection.close();
 }
 
 fn web_time_millis() -> u128 {

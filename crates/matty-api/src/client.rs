@@ -113,6 +113,7 @@ impl ClientBuilder {
             .user_agent(concat!("Matty/", env!("CARGO_PKG_VERSION")))
             .timeout(self.timeout)
             .connect_timeout(CONNECT_TIMEOUT)
+            .tls_backend_preconfigured(crate::tls::client_config(crate::tls::HTTP_ALPN)?)
             .build()
             .map_err(ApiError::from_transport)?;
         Ok(Client {
@@ -215,6 +216,11 @@ impl Client {
     /// The server's base URL, always ending in `/`.
     pub fn base_url(&self) -> &Url {
         &self.base
+    }
+
+    /// The session token, for the WebSocket's authentication challenge.
+    pub(crate) fn token_value(&self) -> Option<&str> {
+        self.token.as_ref().map(|t| t.0.as_str())
     }
 
     /// Whether the client carries a session token.
