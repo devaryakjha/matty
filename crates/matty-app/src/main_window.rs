@@ -14,15 +14,15 @@ use gpui_kit::{
 
 use crate::account::{AccountEvent, AccountView};
 use crate::actions::{
-    self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
-    OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
-    RecentMentions, ResetZoom, SavedMessages, ShowShortcuts, ToggleRightPane, ToggleSidebar,
-    ZoomIn, ZoomOut,
+    self, ChannelInfo, FocusSearch, HistoryBack, HistoryForward, MarkAllRead, NextChannel,
+    NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
+    QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search, ShowShortcuts,
+    ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
-use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
+use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
     ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
     SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
@@ -131,9 +131,9 @@ impl MainWindow {
         cx.subscribe_in(
             &switcher,
             window,
-            |this, _, event: &SwitcherEvent, window, cx| {
-                let SwitcherEvent::Open(id) = event;
-                this.open_channel(id.clone(), window, cx);
+            |this, _, event: &SwitcherEvent, window, cx| match event {
+                SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
+                SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
             },
         )
         .detach();
@@ -249,6 +249,7 @@ impl MainWindow {
                     this.right_pane_open = false;
                     cx.notify();
                 }
+                RightPaneEvent::Search(query) => this.search(query.clone(), window, cx),
                 // The post itself scrolls into view once sync can page to it.
                 RightPaneEvent::Jump { channel, .. } => {
                     this.open_channel(channel.clone(), window, cx)
@@ -477,6 +478,42 @@ impl MainWindow {
             .update(cx, |pane, cx| pane.set_content(Some(content), cx));
         self.right_pane_open = true;
         cx.notify();
+    }
+
+    /// Runs a message search in the right pane. Until sync owns it, the
+    /// preview answers from its fixtures and a live session shows the
+    /// searching state.
+    fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let preview = crate::preview::enabled();
+        let model = SearchModel {
+            results: if preview {
+                crate::preview::search(&query)
+            } else {
+                vec![]
+            },
+            searching: !preview && !query.is_empty(),
+            query,
+        };
+        self.threads_open = false;
+        self.drafts_open = false;
+        self.right_pane
+            .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        self.right_pane_open = true;
+        cx.notify();
+    }
+
+    /// Cmd+F: back to the search field, keeping a search that is open.
+    fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = match self.right_pane.read(cx).content() {
+            Some(RightPaneContent::Search(model)) if self.right_pane_open => Some(model.clone()),
+            _ => None,
+        };
+        match current {
+            Some(model) => self
+                .right_pane
+                .update(cx, |pane, cx| pane.set_search(model, window, cx)),
+            None => self.search("".into(), window, cx),
+        }
     }
 
     fn show_pinned(&mut self, cx: &mut Context<Self>) {
@@ -1251,6 +1288,12 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
             .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
             .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
+            .on_action(
+                cx.listener(|this, _: &Search, window, cx| this.search("".into(), window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
+            )
             .size_full()
             .flex()
             .flex_col()

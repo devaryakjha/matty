@@ -302,6 +302,65 @@ fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
     })
 }
 
+/// Message search over the fixtures: every word must appear in the body,
+/// `from:` matches the author and `in:` the channel, case-insensitively.
+/// Newest first, as the server returns them.
+pub fn search(query: &str) -> Vec<ListedPost> {
+    let mut words = Vec::new();
+    let mut from = None;
+    let mut within = None;
+    for token in query.split_whitespace() {
+        let token = token.to_lowercase();
+        if let Some(name) = token.strip_prefix("from:") {
+            from = Some(name.trim_start_matches('@').to_string());
+        } else if let Some(name) = token.strip_prefix("in:") {
+            within = Some(name.trim_start_matches(['#', '~']).to_string());
+        } else {
+            words.push(
+                token
+                    .trim_matches(['"', '\u{201c}', '\u{201d}'])
+                    .to_string(),
+            );
+        }
+    }
+    let ids: Vec<gpui_kit::SharedString> = sidebar()
+        .categories
+        .iter()
+        .flat_map(|category| category.rows.iter().map(|row| row.id.clone()))
+        .collect();
+    let mut results = Vec::new();
+    for id in ids {
+        let Some(channel) = channel(&id) else {
+            continue;
+        };
+        if within
+            .as_ref()
+            .is_some_and(|name| !channel.name.to_lowercase().contains(name))
+        {
+            continue;
+        }
+        for post in channel.posts.iter().rev() {
+            let author = post.author.to_lowercase();
+            if from.as_ref().is_some_and(|name| !author.contains(name)) {
+                continue;
+            }
+            let body = post.body.to_lowercase();
+            // The fixtures reuse posts across channels; list each once.
+            let seen = results
+                .iter()
+                .any(|found: &ListedPost| found.post.id == post.id);
+            if !seen && words.iter().all(|word| body.contains(word)) {
+                results.push(ListedPost {
+                    channel_id: channel.id.clone(),
+                    channel_name: channel.name.clone(),
+                    post: post.clone(),
+                });
+            }
+        }
+    }
+    results
+}
+
 /// The channel's pinned posts, newest first.
 pub fn pinned(channel: &ChannelModel) -> Vec<ListedPost> {
     channel
@@ -573,5 +632,21 @@ mod tests {
         assert!(!profiles().is_empty());
         assert!(!drafts().drafts.is_empty());
         assert!(!threads().threads.is_empty());
+    }
+
+    #[test]
+    fn search_filters_by_words_author_and_channel() {
+        assert!(!search("title bar").is_empty());
+        assert!(
+            search("title bar from:priya")
+                .iter()
+                .all(|r| r.post.author == "Priya Nair")
+        );
+        assert!(
+            search("in:general")
+                .iter()
+                .all(|r| r.channel_id == "general")
+        );
+        assert!(search("no such words anywhere").is_empty());
     }
 }

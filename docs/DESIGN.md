@@ -206,6 +206,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Message (primary) opens the direct message, Mention (outline) inserts
   `@username ` into the composer and focuses it. Nothing else lives on the
   card; everything about a person beyond this belongs in the right pane.
+- **Search** (PLAN §3 M1 "Search, saved and pinned") starts from the quick
+  switcher: any typed query adds a last row, "Search messages for …", and
+  Cmd+Shift+F opens the pane with an empty field (`design-21`). The right
+  pane shows the query in an `input` with a one-line hint for `from:`,
+  `in:` and quoted phrases under it, then "N results for …" and the same
+  listing as Saved and Mentions (channel and day caption, Jump). While the
+  server answers it says "Searching for …"; no match shows an `Empty`
+  with the hint again. Cmd+F returns to the field without losing the
+  results.
 - **Emoji picker** (PLAN §3 M1 reactions, gpuicn G7) is gpuicn's
   `EmojiPicker` in a popover on the composer's emoji button, borderless on
   a `popover`-colored surface (`design-20`). The catalog is the standard

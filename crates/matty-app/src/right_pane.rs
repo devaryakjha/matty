@@ -7,7 +7,7 @@ use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::actions::{self, CloseRightPane};
@@ -19,6 +19,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+    input::{Input, InputEvent, InputState},
     markdown::markdown,
     message::{Message, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
@@ -42,6 +43,15 @@ pub struct ListedPost {
     pub post: Post,
 }
 
+/// A message search and what came back (PLAN §3 M1 "Search").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchModel {
+    pub query: SharedString,
+    pub results: Vec<ListedPost>,
+    /// True while sync runs the query.
+    pub searching: bool,
+}
+
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
@@ -56,12 +66,16 @@ pub enum RightPaneContent {
     Saved(Vec<ListedPost>),
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
+    Search(SearchModel),
 }
 
 /// What the pane asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// The user submitted a message search; sync runs it and calls
+    /// `set_search` with the results.
+    Search(SharedString),
     /// The user replied under `root`; the pane already shows the reply
     /// pending (PLAN §4.3).
     Reply {
@@ -95,6 +109,8 @@ pub struct RightPaneView {
     me: SharedString,
     draft_len: usize,
     pending_seq: usize,
+    /// The search field at the top of the Search listing.
+    search: Entity<InputState>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -119,18 +135,26 @@ impl RightPaneView {
             state.set_placeholder("Reply…", window, cx);
             state
         });
-        let subscriptions = vec![cx.subscribe_in(
-            &composer,
-            window,
-            |this, composer, event: &ComposerEvent, window, cx| match event {
-                ComposerEvent::Change => {
-                    this.draft_len = composer.read(cx).value(cx).chars().count();
-                    cx.notify();
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, composer, event: &ComposerEvent, window, cx| match event {
+                    ComposerEvent::Change => {
+                        this.draft_len = composer.read(cx).value(cx).chars().count();
+                        cx.notify();
+                    }
+                    ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.submit_search(cx);
                 }
-                ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
-                _ => {}
-            },
-        )];
+            }),
+        ];
         Self {
             content: None,
             list,
@@ -139,6 +163,7 @@ impl RightPaneView {
             me: me.into(),
             draft_len: 0,
             pending_seq: 0,
+            search,
             _subscriptions: subscriptions,
         }
     }
@@ -271,6 +296,35 @@ impl RightPaneView {
     }
 
     /// Replaces what the pane shows and resets the transcript to its end.
+    /// Shows a search: the field takes the query and focus, the listing the
+    /// results. Sync calls this again when results arrive.
+    pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = model.query.is_empty() || model.searching;
+        self.search.update(cx, |input, cx| {
+            if input.value() != model.query {
+                input.set_value(model.query.clone(), window, cx);
+            }
+        });
+        self.set_content(Some(RightPaneContent::Search(model)), cx);
+        if focus {
+            let handle = self.search.read(cx).focus_handle(cx);
+            window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+        }
+    }
+
+    fn submit_search(&mut self, cx: &mut Context<Self>) {
+        let query: SharedString = self.search.read(cx).value().trim().to_string().into();
+        if query.is_empty() {
+            return;
+        }
+        if let Some(RightPaneContent::Search(model)) = self.content.as_mut() {
+            model.query = query.clone();
+            model.searching = true;
+            cx.notify();
+        }
+        cx.emit(RightPaneEvent::Search(query));
+    }
+
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
         let rows = match &content {
             // Root, the replies divider, then replies.
@@ -655,6 +709,89 @@ impl RightPaneView {
             .into_any_element()
     }
 
+    /// The Search listing: the field, a hint about modifiers, then the
+    /// results under a count, or the state the search is in.
+    fn search(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        let body = if model.query.is_empty() {
+            Self::empty_state(
+                LucideIcon::Search,
+                "Search messages",
+                "Words, \u{201c}exact phrases\u{201d}, from:someone and in:channel.",
+                cx,
+            )
+            .into_any_element()
+        } else if model.searching {
+            div()
+                .flex_1()
+                .px(theme.space(4.))
+                .py(theme.space(3.))
+                .type_style(style::META, &theme)
+                .text_color(muted)
+                .child(format!(
+                    "Searching for \u{201c}{}\u{201d}\u{2026}",
+                    model.query
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .when(!model.results.is_empty(), |body| {
+                    body.child(
+                        div()
+                            .px(theme.space(4.))
+                            .pt(theme.space(2.))
+                            .type_style(style::META, &theme)
+                            .text_color(muted)
+                            .child(match model.results.len() {
+                                1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
+                                n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
+                            }),
+                    )
+                })
+                .child(self.listing(
+                    "right-pane.search",
+                    &model.results,
+                    (
+                        LucideIcon::SearchX,
+                        "Nothing matched",
+                        "Try fewer words, or narrow with from: and in:.",
+                    ),
+                    cx,
+                ))
+                .into_any_element()
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px(theme.space(4.))
+                    .pt(theme.space(3.))
+                    .pb(theme.space(2.))
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(1.5))
+                    .border_b(style::hairline())
+                    .border_color(theme.colors.border)
+                    .child(Input::new(&self.search).aria_label("Search messages"))
+                    .child(
+                        div()
+                            .type_style(style::META, &theme)
+                            .text_color(muted)
+                            .child("from:name  in:channel  \u{201c}exact phrase\u{201d}"),
+                    ),
+            )
+            .child(body)
+    }
+
     fn channel_info(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let row = |label: &'static str, value: String| {
@@ -767,6 +904,9 @@ impl Render for RightPaneView {
                     ),
                     cx,
                 )),
+            Some(RightPaneContent::Search(model)) => root
+                .child(self.header("Search".into(), None, cx))
+                .child(self.search(&model, cx)),
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
