@@ -13,16 +13,18 @@ use gpui_kit::{
 };
 
 use crate::actions::{
-    self, ChannelInfo, HistoryBack, HistoryForward, OpenPreferences, Platform, QuickSwitcher,
+    self, ChannelInfo, HistoryBack, HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel,
+    OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher,
     RecentMentions, ResetZoom, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
+use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{
     RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore,
     ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
-use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
+use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::switcher::{Switcher, SwitcherEvent};
 use crate::ui::{
@@ -37,6 +39,18 @@ use crate::ui::{
     toggle_group::{ToggleGroup, ToggleGroupItem},
     tooltip::text_tooltip,
 };
+
+/// Whether Matty can reach the server (PLAN §4.5: network errors become a
+/// banner, never a dialog). Sync sets it; the window only draws it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionState {
+    #[default]
+    Online,
+    /// Trying again on its own; `attempt` counts from 1.
+    Reconnecting { attempt: u32 },
+    /// Gave up until asked; cached content stays usable.
+    Offline,
+}
 
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
@@ -54,6 +68,8 @@ const TEXT_SIZES: &[(&str, f32)] = &[
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
+    /// Shown until a session exists; sync replaces it with the workspace.
+    login: Option<Entity<LoginView>>,
     sidebar: Entity<SidebarView>,
     channel: Entity<ChannelView>,
     switcher: Entity<Switcher>,
@@ -69,6 +85,11 @@ pub struct MainWindow {
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
+    connection: ConnectionState,
+    /// Channels opened in order, for Back and Forward; `history_at` is the
+    /// one shown now.
+    history: Vec<SharedString>,
+    history_at: usize,
 }
 
 impl MainWindow {
@@ -112,6 +133,19 @@ impl MainWindow {
             .and_then(crate::preview::channel);
         let channel = cx.new(|cx| ChannelView::new(initial, window, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(window, cx));
+        // No session store yet: the sign-in card shows unless the preview
+        // fixtures stand in for a signed-in workspace.
+        let login_model = match crate::preview::login() {
+            Some(model) => Some(model),
+            None if crate::preview::enabled() => None,
+            None => Some(LoginModel::default()),
+        };
+        let login = login_model.map(|model| {
+            let view = cx.new(|cx| LoginView::new(model, window, cx));
+            cx.subscribe_in(&view, window, Self::on_login_event)
+                .detach();
+            view
+        });
         cx.subscribe(&channel, |this, _, event: &ChannelEvent, cx| match event {
             ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
             ChannelEvent::Send(_) => {}
@@ -128,22 +162,18 @@ impl MainWindow {
             window,
             |this, _, event: &SidebarEvent, window, cx| {
                 let id = match event {
-                    SidebarEvent::Select(id) => id,
+                    SidebarEvent::Select(id) => id.clone(),
                     // Threads and Drafts views land in M1 with sync.
                     SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts => return,
                 };
-                this.selected_channel = Some(id.clone());
-                if crate::preview::enabled() {
-                    let model = crate::preview::channel(id);
-                    this.channel
-                        .update(cx, |view, cx| view.set_model(model, window, cx));
-                }
-                cx.notify();
+                this.open_channel(id, window, cx);
             },
         )
         .detach();
+        let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         Self {
             settings,
+            login,
             sidebar,
             channel,
             switcher,
@@ -155,12 +185,79 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
+            connection: crate::preview::connection(),
+            history,
+            history_at: 0,
         }
+    }
+
+    /// Until sync lands, the card can only validate locally: a good URL
+    /// moves to the methods step with the preview's methods, and signing in
+    /// says plainly that it is not wired yet.
+    fn on_login_event(
+        this: &mut Self,
+        view: &Entity<LoginView>,
+        event: &LoginEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut model = view.read(cx).model().clone();
+        match event {
+            LoginEvent::CheckServer(url) => {
+                let server_name = url
+                    .split_once("://")
+                    .map_or(url.as_str(), |(_, rest)| rest)
+                    .to_string();
+                model.step = LoginStep::Methods {
+                    server_name: server_name.into(),
+                    methods: SignInMethods {
+                        password: true,
+                        ldap: false,
+                        sso: vec![SsoProvider::GitLab],
+                    },
+                };
+                model.error = None;
+            }
+            LoginEvent::ChangeServer => {
+                model.step = LoginStep::Server;
+                model.error = None;
+            }
+            LoginEvent::SignIn { .. } | LoginEvent::Token(_) => {
+                model.error =
+                    Some("Signing in is not connected yet; it arrives with sync in M1.".into());
+            }
+            LoginEvent::Sso(provider) => {
+                model.error = Some(
+                    format!(
+                        "{} sign-in opens your browser once sync lands in M1.",
+                        provider.label()
+                    )
+                    .into(),
+                );
+            }
+        }
+        view.update(cx, |view, cx| view.set_model(model, window, cx));
+        let _ = this;
     }
 
     /// Shows `id` in the channel view and marks it in the sidebar. Until
     /// sync lands only the preview fixtures have content.
     fn open_channel(
+        &mut self,
+        id: gpui_kit::SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_channel.as_ref() != Some(&id) {
+            self.history.truncate(self.history_at + 1);
+            self.history.push(id.clone());
+            self.history_at = self.history.len() - 1;
+        }
+        self.show_channel(id, window, cx);
+    }
+
+    /// Shows `id` without touching the history: Back and Forward use it.
+    fn show_channel(
         &mut self,
         id: gpui_kit::SharedString,
         window: &mut Window,
@@ -175,6 +272,31 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_model(model, window, cx));
         }
         cx.notify();
+    }
+
+    fn go_history(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.history_at.checked_add_signed(delta) else {
+            return;
+        };
+        let Some(id) = self.history.get(at).cloned() else {
+            return;
+        };
+        self.history_at = at;
+        self.show_channel(id, window, cx);
+    }
+
+    /// Alt+Up/Down and Alt+Shift+Up/Down from PLAN §4.4.
+    fn step_channel(
+        &mut self,
+        step: Step,
+        unread_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = self.sidebar.read(cx).model().neighbor(step, unread_only);
+        if let Some(id) = next {
+            self.open_channel(id, window, cx);
+        }
     }
 
     /// Opens the thread under `post_id` in the right pane. Until sync lands
@@ -319,6 +441,10 @@ impl MainWindow {
     /// DESIGN.md §4: navigation on the left, the quick switcher as a search
     /// pill in the middle, mentions, saved, help and the user on the right.
     fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Signed out there is nothing to navigate: window controls only.
+        if self.login.is_some() {
+            return TitleBar::new().into_any_element();
+        }
         let theme = UiTheme::read(cx).clone();
         let palette = Palette::read(cx);
         let platform = Platform::current();
@@ -376,7 +502,7 @@ impl MainWindow {
                         "Back",
                         LucideIcon::ChevronLeft,
                         Box::new(HistoryBack),
-                        false,
+                        self.history_at > 0,
                         cx,
                     ))
                     .child(Self::icon_button(
@@ -384,7 +510,7 @@ impl MainWindow {
                         "Forward",
                         LucideIcon::ChevronRight,
                         Box::new(HistoryForward),
-                        false,
+                        self.history_at + 1 < self.history.len(),
                         cx,
                     )),
             )
@@ -422,6 +548,86 @@ impl MainWindow {
                     ))
                     .child(div().pl(theme.space(1.)).child(me)),
             )
+            .into_any_element()
+    }
+
+    /// Replaces the connection state; sync calls this as it goes.
+    pub fn set_connection(&mut self, state: ConnectionState, cx: &mut Context<Self>) {
+        if self.connection != state {
+            self.connection = state;
+            cx.notify();
+        }
+    }
+
+    /// A 32px strip under the title bar: `muted` while reconnecting with a
+    /// spinner, `destructive`-tinted once offline with a Retry button.
+    fn connection_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let theme = UiTheme::read(cx).clone();
+        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) =
+            match &self.connection {
+                ConnectionState::Online => return None,
+                ConnectionState::Reconnecting { attempt } => (
+                    crate::ui::spinner::Spinner::new("banner.spinner")
+                        .color(theme.colors.muted_foreground)
+                        .into_any_element(),
+                    if *attempt <= 1 {
+                        "Connection lost. Reconnecting…".into()
+                    } else {
+                        format!("Connection lost. Reconnecting (attempt {attempt})…").into()
+                    },
+                    false,
+                ),
+                ConnectionState::Offline => (
+                    lucide(LucideIcon::WifiOff)
+                        .size(scaled(&theme, 14.))
+                        .text_color(theme.colors.destructive)
+                        .into_any_element(),
+                    "You're offline. Matty shows what it has and sends when you're back.".into(),
+                    true,
+                ),
+            };
+        let foreground = if offline {
+            theme.colors.destructive
+        } else {
+            theme.colors.foreground
+        };
+        Some(
+            div()
+                .flex_shrink_0()
+                .h(theme.space(8.))
+                .px(scaled(&theme, metrics::GUTTER))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(theme.space(2.))
+                .bg(if offline {
+                    theme.colors.destructive.opacity(0.1)
+                } else {
+                    theme.colors.muted
+                })
+                .border_b(style::hairline())
+                .border_color(theme.colors.border)
+                .type_style(style::UI, &theme)
+                .text_color(foreground)
+                .child(icon)
+                .child(text)
+                .when(offline, |row| {
+                    row.child(
+                        Button::new("banner.retry")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Xs)
+                            .aria_label("Retry now")
+                            .text_color(theme.colors.destructive)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_connection(
+                                    ConnectionState::Reconnecting { attempt: 1 },
+                                    cx,
+                                )
+                            }))
+                            .child("Retry now"),
+                    )
+                }),
+        )
     }
 
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -777,6 +983,28 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(Some(-ZOOM_STEP), cx)))
             .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
             .on_action(move |_: &ShowShortcuts, window, cx| shortcuts.open(window, cx))
+            .on_action(
+                cx.listener(|this, _: &HistoryBack, window, cx| this.go_history(-1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &HistoryForward, window, cx| this.go_history(1, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousChannel, window, cx| {
+                this.step_channel(Step::Previous, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextChannel, window, cx| {
+                this.step_channel(Step::Next, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousUnreadChannel, window, cx| {
+                this.step_channel(Step::Previous, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
+                this.step_channel(Step::Next, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| {
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.mark_all_read(cx))
+            }))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
@@ -794,15 +1022,27 @@ impl Render for MainWindow {
             .font_family(theme.fonts.body.clone())
             .type_style(style::UI, &theme)
             .child(self.title_bar(cx))
-            .child(
-                div()
+            .children(if self.login.is_none() {
+                self.connection_banner(cx)
+            } else {
+                None
+            })
+            .child(match &self.login {
+                Some(login) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(login.clone())
+                    .into_any_element(),
+                None => div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
                     .flex()
                     .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
-                    .child(div().flex_1().min_w_0().h_full().child(frame)),
-            )
+                    .child(div().flex_1().min_w_0().h_full().child(frame))
+                    .into_any_element(),
+            })
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
             .child(switcher_element)

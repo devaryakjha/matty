@@ -5,6 +5,7 @@
 //! or is reachable without the variable, and the screenshots in
 //! `docs/screenshots/design-*` are taken this way (DESIGN.md §6).
 
+use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
 
 /// Whether the preview fixtures are on for this process.
@@ -13,6 +14,39 @@ pub fn enabled() -> bool {
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
+/// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
+/// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
+pub fn login() -> Option<LoginModel> {
+    let value = std::env::var("MATTY_PREVIEW").ok()?;
+    let error = match value.as_str() {
+        "login" => None,
+        "login-error" => Some("That password is not right. Check it and try again.".into()),
+        _ => return None,
+    };
+    Some(LoginModel {
+        step: LoginStep::Methods {
+            server_name: "chat.example.com".into(),
+            methods: SignInMethods {
+                password: true,
+                ldap: false,
+                sso: vec![SsoProvider::GitLab, SsoProvider::Google],
+            },
+        },
+        busy: false,
+        error,
+    })
+}
+
+/// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
+pub fn connection() -> crate::main_window::ConnectionState {
+    use crate::main_window::ConnectionState;
+    match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+        Some("offline") => ConnectionState::Offline,
+        Some("reconnecting") => ConnectionState::Reconnecting { attempt: 3 },
+        _ => ConnectionState::Online,
+    }
+}
+
 /// The teams in the rail: name and whether it is the current one.
 pub fn teams() -> Vec<(&'static str, bool)> {
     vec![
@@ -170,6 +204,13 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "On it. Code blocks render like this now:\n\n```rust\nlet theme = UiTheme::read(cx);\n```",
         ),
     ];
+    // Two channels show the states PLAN §4.5 asks for: one still loading,
+    // one with nothing posted yet.
+    let (posts, loading, first_unread) = match id {
+        "gpui" => (vec![], true, None),
+        "release-2026-11" => (vec![], false, None),
+        _ => (posts, false, Some(5)),
+    };
     Some(ChannelModel {
         id: row.id.clone(),
         name: row.name.clone(),
@@ -179,8 +220,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         members: 42,
         pinned: 3,
         favorite: id == "design",
+        purpose: (id == "release-2026-11").then(|| {
+            "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
+        }),
+        loading,
         posts,
-        first_unread: Some(5),
+        first_unread,
     })
 }
 

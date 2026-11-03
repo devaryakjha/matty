@@ -118,6 +118,13 @@ pub struct SidebarModel {
     pub categories: Vec<Category>,
 }
 
+/// Which way Alt+Up/Down walks the sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Previous,
+    Next,
+}
+
 impl SidebarModel {
     /// The model before anything has loaded.
     pub fn loading() -> Self {
@@ -125,6 +132,65 @@ impl SidebarModel {
             loading: true,
             ..Self::default()
         }
+    }
+
+    /// Every row in sidebar order, collapsed categories included, as
+    /// Mattermost's Alt+Up/Down does.
+    fn rows(&self) -> impl Iterator<Item = &ChannelRow> {
+        self.categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+    }
+
+    /// The row one `step` away from the selection, wrapping at the ends;
+    /// with `unread_only`, the nearest unread row in that direction, or
+    /// `None` when nothing is unread. Muted channels never count as unread.
+    pub fn neighbor(&self, step: Step, unread_only: bool) -> Option<SharedString> {
+        let rows: Vec<&ChannelRow> = self
+            .rows()
+            .filter(|row| !unread_only || (row.unread && !row.muted))
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.rows().position(|row| &row.id == id));
+        let order: Vec<SharedString> = self.rows().map(|row| row.id.clone()).collect();
+        let candidates: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| order.iter().position(|id| id == &row.id))
+            .collect();
+        let next = match (current, step) {
+            (None, Step::Next) => candidates[0],
+            (None, Step::Previous) => candidates[candidates.len() - 1],
+            (Some(at), Step::Next) => candidates
+                .iter()
+                .copied()
+                .find(|&index| index > at)
+                .unwrap_or(candidates[0]),
+            (Some(at), Step::Previous) => candidates
+                .iter()
+                .rev()
+                .copied()
+                .find(|&index| index < at)
+                .unwrap_or(candidates[candidates.len() - 1]),
+        };
+        Some(order[next].clone())
+    }
+
+    /// Clears every unread mark and mention count.
+    pub fn mark_all_read(&mut self) {
+        for row in self
+            .categories
+            .iter_mut()
+            .flat_map(|category| category.rows.iter_mut())
+        {
+            row.unread = false;
+            row.mentions = 0;
+        }
+        self.unread_threads = 0;
     }
 }
 
@@ -174,8 +240,25 @@ impl SidebarView {
         cx.notify();
     }
 
+    /// Selects `id` and clears its unread mark, as viewing a channel does;
+    /// sync confirms the view with the server.
     pub fn select(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
+        if let Some(row) = id.as_ref().and_then(|id| {
+            self.model
+                .categories
+                .iter_mut()
+                .flat_map(|category| category.rows.iter_mut())
+                .find(|row| &row.id == id)
+        }) {
+            row.unread = false;
+            row.mentions = 0;
+        }
         self.model.selected = id;
+        cx.notify();
+    }
+
+    pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        self.model.mark_all_read();
         cx.notify();
     }
 
@@ -514,6 +597,63 @@ impl Render for SidebarView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model(selected: &str) -> SidebarModel {
+        SidebarModel {
+            loading: false,
+            selected: Some(selected.into()),
+            unread_threads: 0,
+            drafts: 0,
+            categories: vec![
+                Category::new(
+                    "fav",
+                    "Favorites",
+                    vec![
+                        ChannelRow::new("a", "a", ChannelKind::Public),
+                        ChannelRow::new("b", "b", ChannelKind::Public).unread(),
+                    ],
+                ),
+                Category::new(
+                    "ch",
+                    "Channels",
+                    vec![
+                        ChannelRow::new("c", "c", ChannelKind::Public)
+                            .unread()
+                            .muted(),
+                        ChannelRow::new("d", "d", ChannelKind::Public),
+                        ChannelRow::new("e", "e", ChannelKind::Public).mentions(1),
+                    ],
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn neighbor_walks_across_categories_and_wraps() {
+        let m = model("b");
+        assert_eq!(m.neighbor(Step::Next, false).as_deref(), Some("c"));
+        assert_eq!(m.neighbor(Step::Previous, false).as_deref(), Some("a"));
+        assert_eq!(model("e").neighbor(Step::Next, false).as_deref(), Some("a"));
+        assert_eq!(
+            model("a").neighbor(Step::Previous, false).as_deref(),
+            Some("e")
+        );
+    }
+
+    #[test]
+    fn unread_neighbor_skips_read_and_muted_rows() {
+        let m = model("a");
+        assert_eq!(m.neighbor(Step::Next, true).as_deref(), Some("b"));
+        assert_eq!(model("b").neighbor(Step::Next, true).as_deref(), Some("e"));
+        assert_eq!(
+            model("b").neighbor(Step::Previous, true).as_deref(),
+            Some("e")
+        );
+        let mut read = model("a");
+        read.mark_all_read();
+        assert_eq!(read.neighbor(Step::Next, true), None);
+        assert_eq!(read.neighbor(Step::Next, false).as_deref(), Some("b"));
+    }
 
     #[test]
     fn mentions_imply_unread_and_set_model_keeps_collapse() {
