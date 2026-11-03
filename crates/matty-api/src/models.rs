@@ -269,6 +269,19 @@ pub struct ChannelStats {
     pub files_count: i64,
 }
 
+/// `users/autocomplete`: users matching a typed name.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UserAutocomplete {
+    /// Matches: in the channel when one was given, otherwise in the team (or
+    /// anywhere).
+    #[serde(deserialize_with = "null_as_default")]
+    pub users: Vec<User>,
+    /// Matches in the team but not the channel; only when a channel was given.
+    #[serde(deserialize_with = "null_as_default")]
+    pub out_of_channel: Vec<User>,
+}
+
 mod posts;
 pub use posts::*;
 

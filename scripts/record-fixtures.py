@@ -63,6 +63,8 @@ class Session:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--version", help="fixture directory label, such as 10.5 (default: the server's)")
+    parser.add_argument("--only", nargs="+", metavar="NAME",
+                        help="write only these fixtures, leaving the others as they are")
     args = parser.parse_args()
 
     seed = json.loads(SEED.read_text())
@@ -82,6 +84,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     def save(name: str, value) -> None:
+        if args.only and name not in args.only:
+            return
         (out / f"{name}.json").write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
         print(f"recorded {name}")
 
@@ -174,6 +178,30 @@ def main() -> None:
     # Read state.
     save("channel_viewed", tester.call("POST", "channels/members/me/view", {
         "channel_id": busy["id"], "prev_channel_id": random_ch, "collapsed_threads_supported": True}))
+    # M1 features: search, saved and pinned posts, browsing, DMs, autocomplete.
+    users = {u["username"]: u["id"] for u in seed["users"]}
+    findable = tester.call("POST", "posts", {"channel_id": random_ch,
+                                             "message": "The recorder hides a zebrafish here"})
+    save("search_posts", tester.call("POST", f"teams/{team}/posts/search", {
+        "terms": "zebrafish", "is_or_search": False, "time_zone_offset": 0, "page": 0, "per_page": 20,
+        "include_deleted_channels": False}))
+    get("saved_posts", f"users/{me}/posts/flagged?page=0&per_page=20")
+    get("pinned_posts", f"channels/{busy['id']}/pinned")
+    tester.call("POST", f"posts/{findable['id']}/pin", {})
+    tester.call("POST", f"posts/{findable['id']}/unpin", {})
+    get("reactions", f"posts/{post['id']}/reactions")
+    get("public_channels", f"teams/{team}/channels?page=0&per_page=60")
+    save("search_channels", tester.call("POST", f"teams/{team}/channels/search", {"term": "des"}))
+    get("autocomplete_channels", f"teams/{team}/channels/autocomplete?name=eng")
+    empty = channels[("dev", "empty")]["id"]
+    tester.call("DELETE", f"channels/{empty}/members/{me}")
+    save("channel_member_added", tester.call("POST", f"channels/{empty}/members", {"user_id": me}))
+    save("direct_channel", tester.call("POST", "channels/direct", [me, users["ada.lovelace"]]))
+    save("group_channel", tester.call("POST", "channels/group",
+                                      [me, users["ada.lovelace"], users["alan.allen"]]))
+    get("users_autocomplete", f"users/autocomplete?name=a&in_team={team}")
+    get("users_autocomplete_in_channel", f"users/autocomplete?name=a&in_team={team}&in_channel={design}")
+
     save("channel_unread_at", tester.call("POST", f"users/{me}/posts/{busy['pinned_posts'][0]}/set_unread",
                                           {"collapsed_threads_supported": True}))
 
