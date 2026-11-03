@@ -6689,6 +6689,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-s1"
+version = "0.0.1"
+dependencies = [
+ "gpui-icons",
+ "gpui-kit",
+ "gpui-pre-platform",
+ "gpuicn",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
