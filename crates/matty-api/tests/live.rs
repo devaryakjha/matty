@@ -6,9 +6,12 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::sync::{Arc, Mutex};
+
 use matty_api::{
-    ApiError, Client, Credentials, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery,
-    models::PostChange,
+    ApiError, Client, Credentials, Fetched, NewPost, PostPatch, PostsQuery, SearchQuery,
+    ThreadQuery, ThreadsQuery, Upload,
+    models::{PostChange, Preference},
     ws::{ConnectionState, WsClient, WsConnection, WsMessage, WsSignal},
 };
 
@@ -187,6 +190,160 @@ async fn post_thread_and_read_state_round_trip() {
         })
         .collect();
     assert!(deleted.contains(&root.id.as_str()) && deleted.contains(&reply.id.as_str()));
+}
+
+#[tokio::test]
+async fn search_pin_save_and_direct_messages() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "matty-live-test-m1".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let team = client.my_teams().await.unwrap().remove(0);
+    let channel = client
+        .my_channels(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "O")
+        .expect("a public channel");
+
+    // Search finds a post by a word only it has.
+    let word = format!("needle{}", web_time_millis());
+    let pending = format!("{}:{}", me.id, web_time_millis());
+    let post = client
+        .create_post(&NewPost::new(
+            &channel.id,
+            format!("live search {word}"),
+            &pending,
+        ))
+        .await
+        .unwrap();
+    let found = client
+        .search_posts(&team.id, &SearchQuery::new(&word))
+        .await
+        .unwrap();
+    assert_eq!(found.list.order, std::slice::from_ref(&post.id));
+
+    // Pinning shows in the channel's pinned list, and unpinning removes it.
+    client.pin_post(&post.id).await.unwrap();
+    assert!(client.get_post(&post.id).await.unwrap().is_pinned);
+    let pinned = client.pinned_posts(&channel.id).await.unwrap();
+    assert!(pinned.order.contains(&post.id));
+    client.unpin_post(&post.id).await.unwrap();
+    let pinned = client.pinned_posts(&channel.id).await.unwrap();
+    assert!(!pinned.order.contains(&post.id));
+
+    // Saving is a `flagged_post` preference.
+    let flag = Preference {
+        user_id: me.id.clone(),
+        category: "flagged_post".into(),
+        name: post.id.clone(),
+        value: "true".into(),
+    };
+    client
+        .save_preferences(&me.id, std::slice::from_ref(&flag))
+        .await
+        .unwrap();
+    let saved = client.saved_posts(&me.id, 0, 200).await.unwrap();
+    assert!(saved.order.contains(&post.id));
+    client.delete_preferences(&me.id, &[flag]).await.unwrap();
+    let saved = client.saved_posts(&me.id, 0, 200).await.unwrap();
+    assert!(!saved.order.contains(&post.id));
+
+    // A direct message with another team member, found again on a second ask.
+    let others = client
+        .autocomplete_users("", Some(&team.id), None)
+        .await
+        .unwrap();
+    let other = others
+        .users
+        .iter()
+        .find(|u| u.id != me.id)
+        .expect("another user in the team");
+    let direct = client.direct_channel(&me.id, &other.id).await.unwrap();
+    assert_eq!(direct.kind, "D");
+    assert_eq!(
+        client.direct_channel(&me.id, &other.id).await.unwrap().id,
+        direct.id
+    );
+}
+
+#[tokio::test]
+async fn upload_an_image_and_fetch_its_thumbnail_and_preview() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "matty-live-test-files".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let team = client.my_teams().await.unwrap().remove(0);
+    let channel = client
+        .my_channels(&team.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.kind == "O")
+        .expect("a public channel");
+    // The server's own PNG of the user's avatar is a real image to upload.
+    let Fetched::Fresh { bytes: png, .. } = client.avatar(&me.id, None).await.unwrap() else {
+        panic!("no avatar")
+    };
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let log = reports.clone();
+    let uploaded = client
+        .upload_file(
+            Upload {
+                channel_id: channel.id.clone(),
+                client_id: "live-upload".into(),
+                file_name: "avatar.png".into(),
+                bytes: png.clone(),
+            },
+            Arc::new(move |sent, total| log.lock().unwrap().push((sent, total))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.client_ids, ["live-upload"]);
+    let info = &uploaded.file_infos[0];
+    assert_eq!(info.name, "avatar.png");
+    assert_eq!(info.size, i64::try_from(png.len()).unwrap());
+    assert!(info.width > 0 && info.has_preview_image);
+    let total = png.len() as u64;
+    assert_eq!(reports.lock().unwrap().last(), Some(&(total, total)));
+
+    for fetched in [
+        client.file_thumbnail(&info.id, None).await.unwrap(),
+        client.file_preview(&info.id, None).await.unwrap(),
+    ] {
+        let Fetched::Fresh {
+            bytes,
+            content_type,
+            ..
+        } = fetched
+        else {
+            panic!("not modified")
+        };
+        assert!(!bytes.is_empty());
+        assert!(content_type.unwrap().starts_with("image/"));
+    }
+    let Fetched::Fresh { bytes, .. } = client.file(&info.id, None).await.unwrap() else {
+        panic!("not modified")
+    };
+    assert_eq!(bytes, png);
+    assert_eq!(client.file_info(&info.id).await.unwrap().id, info.id);
 }
 
 #[tokio::test]

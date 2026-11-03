@@ -1,0 +1,25 @@
+[
+  {
+    "id": "gudoxuk53ibm3rg1o51yq6ri3w",
+    "create_at": 1793728208484,
+    "update_at": 1793728208484,
+    "delete_at": 0,
+    "team_id": "twi9esnyqidym8upn6muio4x9h",
+    "type": "O",
+    "display_name": "Engineering",
+    "name": "engineering",
+    "header": "Header for **Engineering** with a [link](https://mattermost.com)",
+    "purpose": "Seeded engineering channel",
+    "last_post_at": 1793728219388,
+    "total_msg_count": 34,
+    "extra_update_at": 0,
+    "creator_id": "bkr5t3gqiigy5yn34xjb6rwmna",
+    "scheme_id": null,
+    "props": null,
+    "group_constrained": null,
+    "shared": null,
+    "total_msg_count_root": 24,
+    "policy_id": null,
+    "last_root_post_at": 1793728219388
+  }
+]

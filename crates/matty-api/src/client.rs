@@ -21,6 +21,11 @@ pub const MAX_TRIES: u32 = 3;
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an upload may take in all; the usual timeout is for requests
+/// that send little.
+pub(crate) const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Redirects followed within the server's own host, at most.
+const MAX_REDIRECTS: usize = 5;
 
 /// Waits between retries. Swapped for a fake in tests.
 pub trait Sleeper: Send + Sync + 'static {
@@ -113,6 +118,7 @@ impl ClientBuilder {
             .user_agent(concat!("Matty/", env!("CARGO_PKG_VERSION")))
             .timeout(self.timeout)
             .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(same_host_redirects())
             .tls_backend_preconfigured(crate::tls::client_config(crate::tls::HTTP_ALPN)?)
             .build()
             .map_err(ApiError::from_transport)?;
@@ -124,6 +130,24 @@ impl ClientBuilder {
             rate_limit: Arc::new(Mutex::new(RateLimit::default())),
         })
     }
+}
+
+/// Follows a redirect only to the host (and port) it came from: the session
+/// token and requests stay on the server. Another host's redirect comes back
+/// as the 3xx response, which [`Client::send`] turns into
+/// [`ApiError::Redirected`].
+fn same_host_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let same = attempt.previous().first().is_some_and(|first| {
+            first.host_str() == attempt.url().host_str()
+                && first.port_or_known_default() == attempt.url().port_or_known_default()
+        });
+        if same && attempt.previous().len() <= MAX_REDIRECTS {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
 }
 
 fn normalize_base(input: &str) -> Result<Url, ApiError> {
@@ -314,12 +338,22 @@ impl Client {
     /// `GET` raw bytes, such as an avatar or emoji image. With `etag`, sends
     /// `If-None-Match` and returns [`Fetched::NotModified`] on a 304.
     pub async fn get_bytes(&self, path: &str, etag: Option<&str>) -> Result<Fetched, ApiError> {
+        self.get_bytes_query(path, &[], etag).await
+    }
+
+    /// [`Client::get_bytes`] with query parameters.
+    pub async fn get_bytes_query(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        etag: Option<&str>,
+    ) -> Result<Fetched, ApiError> {
         let headers: Vec<(header::HeaderName, String)> = etag
             .map(|etag| (header::IF_NONE_MATCH, etag.to_string()))
             .into_iter()
             .collect();
         let response = self
-            .send_with(Method::GET, path, &[], None, &headers)
+            .send_with(Method::GET, path, query, None, &headers)
             .await?;
         if response.status() == StatusCode::NOT_MODIFIED {
             return Ok(Fetched::NotModified);
@@ -373,10 +407,7 @@ impl Client {
                     .body(body.clone());
             }
             let response = request.send().await.map_err(ApiError::from_transport)?;
-            let limit = RateLimit::from_headers(response.headers());
-            if let Some(limit) = limit {
-                *self.rate_limit.lock().unwrap_or_else(|p| p.into_inner()) = limit;
-            }
+            let limit = self.note_rate_limit(&response);
             let status = response.status();
             if status == StatusCode::TOO_MANY_REQUESTS {
                 if attempt >= MAX_TRIES {
@@ -387,17 +418,65 @@ impl Client {
                     .await;
                 continue;
             }
-            if !status.is_success() && status != StatusCode::NOT_MODIFIED {
-                let request_id = response
-                    .headers()
-                    .get("x-request-id")
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_string);
-                let bytes = response.bytes().await.unwrap_or_default();
-                return Err(ApiError::from_response(status, request_id, &bytes));
-            }
+            return Self::checked(response).await;
+        }
+    }
+
+    fn note_rate_limit(&self, response: &reqwest::Response) -> Option<RateLimit> {
+        let limit = RateLimit::from_headers(response.headers());
+        if let Some(limit) = limit {
+            *self.rate_limit.lock().unwrap_or_else(|p| p.into_inner()) = limit;
+        }
+        limit
+    }
+
+    /// The response if it succeeded (or is a 304), otherwise its error.
+    async fn checked(response: reqwest::Response) -> Result<reqwest::Response, ApiError> {
+        let status = response.status();
+        if status.is_success() || status == StatusCode::NOT_MODIFIED {
             return Ok(response);
         }
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            return Err(ApiError::Redirected { location });
+        }
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = response.bytes().await.unwrap_or_default();
+        Err(ApiError::from_response(status, request_id, &bytes))
+    }
+
+    /// Sends a multipart form once: a streamed body cannot be replayed, so a
+    /// 429 is [`ApiError::RateLimited`] at once. Allows [`UPLOAD_TIMEOUT`].
+    pub(crate) async fn send_multipart(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<reqwest::Response, ApiError> {
+        let mut request = self
+            .http
+            .post(self.api_url(path)?)
+            .header(header::ACCEPT, "application/json")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .timeout(UPLOAD_TIMEOUT)
+            .multipart(form);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(&token.0);
+        }
+        let response = request.send().await.map_err(ApiError::from_transport)?;
+        self.note_rate_limit(&response);
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(ApiError::RateLimited);
+        }
+        Self::checked(response).await
     }
 }
 
