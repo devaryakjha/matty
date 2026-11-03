@@ -14,6 +14,6 @@ mod error;
 pub mod models;
 
 pub use capabilities::{ServerCapabilities, UnsupportedVersion, Version};
-pub use client::{Client, ClientBuilder, RateLimit, Sleeper, TokioSleeper};
+pub use client::{Client, ClientBuilder, Fetched, RateLimit, Sleeper, TokioSleeper};
 pub use endpoints::users::{Credentials, MFA_REQUIRED_ID, SignedIn};
 pub use error::ApiError;

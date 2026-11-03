@@ -1,0 +1,21 @@
+[
+  {
+    "id": "rdr6mgdtjpf7pne4pyijsp8c6w",
+    "create_at": 1793727180174,
+    "update_at": 1793727180174,
+    "delete_at": 0,
+    "display_name": "Matty Dev",
+    "name": "matty",
+    "description": "",
+    "email": "",
+    "type": "O",
+    "company_name": "",
+    "allowed_domains": "",
+    "invite_id": "ukwiwp69obyimm5fb636u58bar",
+    "allow_open_invite": true,
+    "scheme_id": null,
+    "group_constrained": null,
+    "policy_id": null,
+    "cloud_limits_archived": false
+  }
+]

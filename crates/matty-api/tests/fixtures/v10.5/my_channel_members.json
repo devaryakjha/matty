@@ -1,0 +1,74 @@
+[
+  {
+    "channel_id": "cndbzeaohpgkf8ggz4o71hku5c",
+    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "roles": "channel_user",
+    "last_viewed_at": 0,
+    "msg_count": 0,
+    "mention_count": 0,
+    "mention_count_root": 0,
+    "urgent_mention_count": 0,
+    "msg_count_root": 0,
+    "notify_props": {
+      "channel_auto_follow_threads": "off",
+      "desktop": "default",
+      "email": "default",
+      "ignore_channel_mentions": "default",
+      "mark_unread": "all",
+      "push": "default"
+    },
+    "last_update_at": 1793727180365,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  },
+  {
+    "channel_id": "ju4pdhqxcig7mxxyhezyoz76ye",
+    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "roles": "channel_user",
+    "last_viewed_at": 0,
+    "msg_count": 0,
+    "mention_count": 0,
+    "mention_count_root": 0,
+    "urgent_mention_count": 0,
+    "msg_count_root": 0,
+    "notify_props": {
+      "channel_auto_follow_threads": "off",
+      "desktop": "default",
+      "email": "default",
+      "ignore_channel_mentions": "default",
+      "mark_unread": "all",
+      "push": "default"
+    },
+    "last_update_at": 1793727180341,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  },
+  {
+    "channel_id": "m8r74r1tntrpzjwh8a6bxyepgr",
+    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "roles": "channel_user",
+    "last_viewed_at": 0,
+    "msg_count": 0,
+    "mention_count": 1,
+    "mention_count_root": 1,
+    "urgent_mention_count": 0,
+    "msg_count_root": 0,
+    "notify_props": {
+      "channel_auto_follow_threads": "off",
+      "desktop": "default",
+      "email": "default",
+      "ignore_channel_mentions": "default",
+      "mark_unread": "all",
+      "push": "default"
+    },
+    "last_update_at": 1793727189836,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  }
+]

@@ -153,6 +153,22 @@ fn normalize_base(input: &str) -> Result<Url, ApiError> {
     Ok(url)
 }
 
+/// The answer to a conditional bytes request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    /// The cached copy is still current (HTTP 304).
+    NotModified,
+    /// New content.
+    Fresh {
+        /// The body.
+        bytes: Vec<u8>,
+        /// The `ETag` to send next time.
+        etag: Option<String>,
+        /// The `Content-Type`.
+        content_type: Option<String>,
+    },
+}
+
 /// A Mattermost REST v4 client for one server and, optionally, one session.
 #[derive(Clone)]
 pub struct Client {
@@ -286,6 +302,47 @@ impl Client {
         query: &[(&str, String)],
         body: Option<Vec<u8>>,
     ) -> Result<reqwest::Response, ApiError> {
+        self.send_with(method, path, query, body, &[]).await
+    }
+
+    /// `GET` raw bytes, such as an avatar or emoji image. With `etag`, sends
+    /// `If-None-Match` and returns [`Fetched::NotModified`] on a 304.
+    pub async fn get_bytes(&self, path: &str, etag: Option<&str>) -> Result<Fetched, ApiError> {
+        let headers: Vec<(header::HeaderName, String)> = etag
+            .map(|etag| (header::IF_NONE_MATCH, etag.to_string()))
+            .into_iter()
+            .collect();
+        let response = self
+            .send_with(Method::GET, path, &[], None, &headers)
+            .await?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Fetched::NotModified);
+        }
+        let text = |name: header::HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        let etag = text(header::ETAG);
+        let content_type = text(header::CONTENT_TYPE);
+        let bytes = response.bytes().await.map_err(ApiError::from_transport)?;
+        Ok(Fetched::Fresh {
+            bytes: bytes.to_vec(),
+            etag,
+            content_type,
+        })
+    }
+
+    async fn send_with(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Vec<u8>>,
+        extra_headers: &[(header::HeaderName, String)],
+    ) -> Result<reqwest::Response, ApiError> {
         let url = self.api_url(path)?;
         let mut attempt = 0;
         loop {
@@ -300,6 +357,9 @@ impl Client {
             }
             if let Some(token) = &self.token {
                 request = request.bearer_auth(&token.0);
+            }
+            for (name, value) in extra_headers {
+                request = request.header(name, value);
             }
             if let Some(body) = &body {
                 request = request
@@ -321,7 +381,7 @@ impl Client {
                     .await;
                 continue;
             }
-            if !status.is_success() {
+            if !status.is_success() && status != StatusCode::NOT_MODIFIED {
                 let request_id = response
                     .headers()
                     .get("x-request-id")

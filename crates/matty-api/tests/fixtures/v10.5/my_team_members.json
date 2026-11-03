@@ -1,0 +1,12 @@
+[
+  {
+    "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
+    "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+    "roles": "team_user",
+    "delete_at": 0,
+    "scheme_guest": false,
+    "scheme_user": true,
+    "scheme_admin": false,
+    "explicit_roles": ""
+  }
+]

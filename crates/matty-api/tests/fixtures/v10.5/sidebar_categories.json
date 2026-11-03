@@ -1,0 +1,49 @@
+{
+  "categories": [
+    {
+      "id": "favorites_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w",
+      "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+      "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
+      "sort_order": 0,
+      "sorting": "",
+      "type": "favorites",
+      "display_name": "Favorites",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": []
+    },
+    {
+      "id": "channels_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w",
+      "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+      "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
+      "sort_order": 10,
+      "sorting": "",
+      "type": "channels",
+      "display_name": "Channels",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": [
+        "m8r74r1tntrpzjwh8a6bxyepgr",
+        "cndbzeaohpgkf8ggz4o71hku5c",
+        "ju4pdhqxcig7mxxyhezyoz76ye"
+      ]
+    },
+    {
+      "id": "direct_messages_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w",
+      "user_id": "3dip7ntf3jy7ugfb8yrzwbxihw",
+      "team_id": "rdr6mgdtjpf7pne4pyijsp8c6w",
+      "sort_order": 20,
+      "sorting": "recent",
+      "type": "direct_messages",
+      "display_name": "Direct Messages",
+      "muted": false,
+      "collapsed": false,
+      "channel_ids": []
+    }
+  ],
+  "order": [
+    "favorites_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w",
+    "channels_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w",
+    "direct_messages_3dip7ntf3jy7ugfb8yrzwbxihw_rdr6mgdtjpf7pne4pyijsp8c6w"
+  ]
+}
