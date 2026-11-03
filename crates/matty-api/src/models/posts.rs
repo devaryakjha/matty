@@ -352,6 +352,19 @@ impl PostList {
     }
 }
 
+/// `teams/{id}/posts/search`: matching posts, newest first, and the words
+/// that matched in each.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SearchResults {
+    /// The posts, in [`PostList`] form.
+    #[serde(flatten)]
+    pub list: PostList,
+    /// The terms that matched, by post id, for highlighting.
+    #[serde(deserialize_with = "null_as_default")]
+    pub matches: HashMap<String, Vec<String>>,
+}
+
 /// One entry of [`PostList::changes`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PostChange<'a> {
