@@ -274,7 +274,7 @@ async fn a_new_connection_id_requires_one_resync_per_reconnect() {
                 Some(connection_id.clone())
             }
             WsSignal::Event(e) => Some(e.seq.to_string()),
-            WsSignal::State(_) => None,
+            WsSignal::State(_) | WsSignal::Gap { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -438,4 +438,23 @@ proptest! {
         prop_assert!(delay <= bound, "attempt {attempt}: {delay} > {bound}");
         prop_assert!(backoff.ceiling(attempt) <= backoff.ceiling(attempt + 1));
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_client_reports_gaps_and_drops_late_and_duplicate_events() {
+    let dialer = ScriptedDialer::new(vec![accept("conn-a", |mut socket| async move {
+        events(&mut socket, [1, 2, 2, 5, 4, 3, 6, 9]).await;
+        while next_json(&mut socket).await.is_some() {}
+    })]);
+    let (_client, mut signals) = WsClient::start(dialer, Backoff::default(), Max);
+    let seen = collect(&mut signals, |s| seqs(s).last() == Some(&9)).await;
+    let stream: Vec<String> = seen
+        .iter()
+        .filter_map(|s| match s {
+            WsSignal::Event(e) => Some(e.seq.to_string()),
+            WsSignal::Gap { missing } => Some(format!("gap {}..{}", missing.start, missing.end)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stream, ["1", "2", "gap 3..5", "5", "6", "gap 7..9", "9"]);
 }

@@ -17,7 +17,10 @@ use std::{
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::{DisconnectReason, RawEvent, Resume, WsConfig, WsConnection, WsMessage, WsReply};
+use super::{
+    DisconnectReason, RawEvent, Resume, SeqTracker, SeqVerdict, WsConfig, WsConnection, WsMessage,
+    WsReply,
+};
 use crate::{ApiError, Client};
 
 /// Exponential backoff with full jitter: before reconnect attempt `n`
@@ -143,8 +146,14 @@ pub enum ConnectionState {
 pub enum WsSignal {
     /// The connection state changed.
     State(ConnectionState),
-    /// A server event, each delivered at most once.
+    /// A server event, each delivered at most once and in `seq` order.
     Event(RawEvent),
+    /// Events with these `seq`s never arrived; sent just before the event
+    /// that followed them. The sync engine decides whether to resync.
+    Gap {
+        /// The missing `seq`s.
+        missing: std::ops::Range<i64>,
+    },
     /// The server started a new connection instead of resuming, so events
     /// were missed: the sync engine must catch up over REST (PLAN §6.5).
     ///
@@ -331,9 +340,9 @@ impl Supervisor {
             None => false,
         };
         // A new connection's events count from 1 (`hello` is 0).
-        let mut next_seq = match resume.as_ref() {
-            Some(previous) if resumed => previous.sequence_number,
-            _ => 1,
+        let mut seq = match resume.as_ref() {
+            Some(previous) if resumed => SeqTracker::starting_at(previous.sequence_number),
+            _ => SeqTracker::default(),
         };
         let connection = Arc::new(connection);
         self.set_current(Some(connection.clone()));
@@ -344,19 +353,21 @@ impl Supervisor {
         let ended = loop {
             tokio::select! {
                 message = events.recv() => match message {
-                    Some(WsMessage::Event(event)) => {
-                        // Replayed events the client already has are dropped.
-                        if event.seq < next_seq {
-                            continue;
+                    Some(WsMessage::Event(event)) => match seq.accept(event.seq) {
+                        // Replays and late arrivals the client is past.
+                        SeqVerdict::Stale => {}
+                        SeqVerdict::Deliver { gap } => {
+                            if let Some(missing) = gap {
+                                self.emit(WsSignal::Gap { missing });
+                            }
+                            self.emit(WsSignal::Event(event));
                         }
-                        next_seq = event.seq + 1;
-                        self.emit(WsSignal::Event(event));
-                    }
+                    },
                     // The server could not resume and started over.
                     Some(WsMessage::Hello(hello)) if hello.connection_id != connection_id => {
                         self.emit(WsSignal::ResyncRequired);
                         connection_id = hello.connection_id;
-                        next_seq = 1;
+                        seq = SeqTracker::default();
                         self.emit(WsSignal::State(ConnectionState::Connected {
                             connection_id: connection_id.clone(),
                         }));
@@ -375,7 +386,7 @@ impl Supervisor {
         connection.close();
         *resume = Some(Resume {
             connection_id,
-            sequence_number: next_seq,
+            sequence_number: seq.next(),
         });
         ended
     }

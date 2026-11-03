@@ -28,10 +28,12 @@ use crate::{ApiError, Client, models::null_as_default, tls};
 
 mod events;
 mod reconnect;
+mod seq;
 pub use events::{Event, PostUnread, Posted, ThreadReadChanged, WsEvent};
 pub use reconnect::{
     Backoff, ClientDialer, ConnectionState, Dialed, Dialer, Jitter, WsClient, WsSignal,
 };
+pub use seq::{SeqTracker, SeqVerdict};
 
 /// Where to pick up a connection's event stream after a reconnect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
