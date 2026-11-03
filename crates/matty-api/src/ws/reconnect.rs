@@ -221,6 +221,15 @@ impl WsClient {
         let _ = self.control.send(Control::ReconnectNow);
     }
 
+    /// The current connection, to send on from another task; `None` while
+    /// reconnecting.
+    pub fn connection(&self) -> Option<Arc<WsConnection>> {
+        self.current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// Sends a request on the current connection.
     pub async fn send(&self, action: &str, data: Value) -> Result<WsReply, ApiError> {
         let connection = self
