@@ -37,6 +37,16 @@ pub fn login() -> Option<LoginModel> {
     })
 }
 
+/// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
+pub fn connection() -> crate::main_window::ConnectionState {
+    use crate::main_window::ConnectionState;
+    match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+        Some("offline") => ConnectionState::Offline,
+        Some("reconnecting") => ConnectionState::Reconnecting { attempt: 3 },
+        _ => ConnectionState::Online,
+    }
+}
+
 /// The teams in the rail: name and whether it is the current one.
 pub fn teams() -> Vec<(&'static str, bool)> {
     vec![
@@ -194,6 +204,13 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "On it. Code blocks render like this now:\n\n```rust\nlet theme = UiTheme::read(cx);\n```",
         ),
     ];
+    // Two channels show the states PLAN §4.5 asks for: one still loading,
+    // one with nothing posted yet.
+    let (posts, loading, first_unread) = match id {
+        "gpui" => (vec![], true, None),
+        "release-2026-11" => (vec![], false, None),
+        _ => (posts, false, Some(5)),
+    };
     Some(ChannelModel {
         id: row.id.clone(),
         name: row.name.clone(),
@@ -203,8 +220,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         members: 42,
         pinned: 3,
         favorite: id == "design",
+        purpose: (id == "release-2026-11").then(|| {
+            "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
+        }),
+        loading,
         posts,
-        first_unread: Some(5),
+        first_unread,
     })
 }
 

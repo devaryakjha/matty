@@ -122,7 +122,16 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - **Right pane** (default 400px, 320 to 560) shares the header height and
   separates from the channel with a hairline.
 - **Empty and loading states** center a 40px icon in a tinted circle, a
-  `title` line and one `meta` sentence; never more.
+  `title` line and one `meta` sentence; never more, plus at most one
+  outline button. A channel still loading shows four skeleton rows shaped
+  like grouped posts, bottom-aligned where the posts will land, never a
+  spinner. A channel with nothing posted shows its purpose and Add members,
+  sitting low over the composer. The right pane with nothing open says how
+  to get a thread there.
+- **Connection banner** is a 32px strip between the title bar and the
+  workspace, never a dialog: `muted` with a spinner while reconnecting,
+  `destructive` at 10% with a Retry button once offline. The app stays
+  usable under it.
 
 - **Sign in** (PLAN §4.5) is one 400px card on the `sidebar` surface under
   the wordmark, never a wizard. Step one asks only for the server address

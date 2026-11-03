@@ -39,6 +39,18 @@ use crate::ui::{
     tooltip::text_tooltip,
 };
 
+/// Whether Matty can reach the server (PLAN §4.5: network errors become a
+/// banner, never a dialog). Sync sets it; the window only draws it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionState {
+    #[default]
+    Online,
+    /// Trying again on its own; `attempt` counts from 1.
+    Reconnecting { attempt: u32 },
+    /// Gave up until asked; cached content stays usable.
+    Offline,
+}
+
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
 /// The width of gpuicn's Resizable handle, counted when turning the
@@ -72,6 +84,7 @@ pub struct MainWindow {
     rail_visible: bool,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
+    connection: ConnectionState,
 }
 
 impl MainWindow {
@@ -172,6 +185,7 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             rail_visible: crate::preview::enabled(),
             right_pane_open: false,
+            connection: crate::preview::connection(),
         }
     }
 
@@ -493,6 +507,85 @@ impl MainWindow {
                     .child(div().pl(theme.space(1.)).child(me)),
             )
             .into_any_element()
+    }
+
+    /// Replaces the connection state; sync calls this as it goes.
+    pub fn set_connection(&mut self, state: ConnectionState, cx: &mut Context<Self>) {
+        if self.connection != state {
+            self.connection = state;
+            cx.notify();
+        }
+    }
+
+    /// A 32px strip under the title bar: `muted` while reconnecting with a
+    /// spinner, `destructive`-tinted once offline with a Retry button.
+    fn connection_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let theme = UiTheme::read(cx).clone();
+        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) =
+            match &self.connection {
+                ConnectionState::Online => return None,
+                ConnectionState::Reconnecting { attempt } => (
+                    crate::ui::spinner::Spinner::new("banner.spinner")
+                        .color(theme.colors.muted_foreground)
+                        .into_any_element(),
+                    if *attempt <= 1 {
+                        "Connection lost. Reconnecting…".into()
+                    } else {
+                        format!("Connection lost. Reconnecting (attempt {attempt})…").into()
+                    },
+                    false,
+                ),
+                ConnectionState::Offline => (
+                    lucide(LucideIcon::WifiOff)
+                        .size(scaled(&theme, 14.))
+                        .text_color(theme.colors.destructive)
+                        .into_any_element(),
+                    "You're offline. Matty shows what it has and sends when you're back.".into(),
+                    true,
+                ),
+            };
+        let foreground = if offline {
+            theme.colors.destructive
+        } else {
+            theme.colors.foreground
+        };
+        Some(
+            div()
+                .flex_shrink_0()
+                .h(theme.space(8.))
+                .px(scaled(&theme, metrics::GUTTER))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(theme.space(2.))
+                .bg(if offline {
+                    theme.colors.destructive.opacity(0.1)
+                } else {
+                    theme.colors.muted
+                })
+                .border_b(style::hairline())
+                .border_color(theme.colors.border)
+                .type_style(style::UI, &theme)
+                .text_color(foreground)
+                .child(icon)
+                .child(text)
+                .when(offline, |row| {
+                    row.child(
+                        Button::new("banner.retry")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Xs)
+                            .aria_label("Retry now")
+                            .text_color(theme.colors.destructive)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_connection(
+                                    ConnectionState::Reconnecting { attempt: 1 },
+                                    cx,
+                                )
+                            }))
+                            .child("Retry now"),
+                    )
+                }),
+        )
     }
 
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -865,6 +958,11 @@ impl Render for MainWindow {
             .font_family(theme.fonts.body.clone())
             .type_style(style::UI, &theme)
             .child(self.title_bar(cx))
+            .children(if self.login.is_none() {
+                self.connection_banner(cx)
+            } else {
+                None
+            })
             .child(match &self.login {
                 Some(login) => div()
                     .flex_1()

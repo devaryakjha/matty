@@ -18,6 +18,7 @@ use crate::ui::{
     badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerState},
+    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
     message::{Message, Reaction},
     message_list::{MessageList, MessageListState},
@@ -284,6 +285,50 @@ impl RightPaneView {
             )
     }
 
+    /// Nothing open: one line on how to get a thread here.
+    fn empty(cx: &App) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let media = div()
+            .size(theme.space(10.))
+            .rounded_full()
+            .bg(theme.colors.muted)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                lucide(LucideIcon::MessageSquareReply)
+                    .size(scaled(&theme, metrics::ICON_LARGE))
+                    .text_color(theme.colors.muted_foreground),
+            );
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(theme.space(6.))
+            .child(
+                Empty::new().header(
+                    EmptyHeader::new()
+                        .media(EmptyMedia::new().child(media))
+                        .title(
+                            EmptyTitle::new()
+                                .type_style(style::TITLE, &theme)
+                                .text_center()
+                                .child("No thread open"),
+                        )
+                        .description(
+                            EmptyDescription::new()
+                                .type_style(style::META, &theme)
+                                .text_center()
+                                .child(
+                                    "Hover a message and choose Reply in thread to follow it here.",
+                                ),
+                        ),
+                ),
+            )
+    }
+
     fn channel_info(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let row = |label: &'static str, value: String| {
@@ -350,7 +395,9 @@ impl Render for RightPaneView {
             Some(RightPaneContent::ChannelInfo(channel)) => root
                 .child(self.header("Channel info".into(), Some(channel.name.clone()), cx))
                 .child(Self::channel_info(&channel, cx)),
-            None => root.child(self.header("Thread".into(), None, cx)),
+            None => root
+                .child(self.header("Thread".into(), None, cx))
+                .child(Self::empty(cx)),
         }
     }
 }

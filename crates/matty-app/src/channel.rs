@@ -14,13 +14,14 @@ use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerState},
-    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+    empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     markdown::markdown,
     message::{
         Message, MessageHighlight, Reaction, day_divider, message_action, message_actions,
         new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
+    skeleton::Skeleton,
     theme::UiTheme,
 };
 
@@ -64,6 +65,11 @@ pub struct ChannelModel {
     pub members: usize,
     pub pinned: usize,
     pub favorite: bool,
+    /// The channel purpose, shown in the empty state.
+    pub purpose: Option<SharedString>,
+    /// True while the first page of posts is on its way: skeleton rows
+    /// instead of the empty state (PLAN §4.5).
+    pub loading: bool,
     pub posts: Vec<Post>,
     /// Index of the first post after the user's last view, for the
     /// "New messages" line.
@@ -437,6 +443,140 @@ impl ChannelView {
             )
     }
 
+    /// Skeleton rows shaped like grouped posts, in place of a spinner.
+    fn loading(cx: &App) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let gutter = scaled(&theme, metrics::GUTTER);
+        let row = |index: usize, lines: &[f32]| {
+            let avatar = scaled(&theme, metrics::AVATAR);
+            div()
+                .flex()
+                .gap(theme.space(3.))
+                .px(gutter)
+                .py(theme.space(2.))
+                .child(
+                    Skeleton::new(gpui_kit::ElementId::Name(
+                        format!("channel.loading.{index}.avatar").into(),
+                    ))
+                    .size(avatar)
+                    .rounded_full(),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(theme.space(2.))
+                        .pt(theme.space(1.))
+                        .child(
+                            Skeleton::new(gpui_kit::ElementId::Name(
+                                format!("channel.loading.{index}.author").into(),
+                            ))
+                            .w(theme.space(28.))
+                            .h(theme.space(3.)),
+                        )
+                        .children(lines.iter().enumerate().map(|(line, fraction)| {
+                            Skeleton::new(gpui_kit::ElementId::Name(
+                                format!("channel.loading.{index}.{line}").into(),
+                            ))
+                            .w(gpui_kit::relative(*fraction))
+                            .h(theme.space(3.))
+                        })),
+                )
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_end()
+            .pb(theme.space(2.))
+            .child(row(0, &[0.72, 0.4]))
+            .child(row(1, &[0.55]))
+            .child(row(2, &[0.8, 0.64, 0.3]))
+            .child(row(3, &[0.46]))
+    }
+
+    /// A channel with no posts yet: its purpose and a way to bring people in.
+    fn empty_channel(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let direct = matches!(channel.kind, ChannelKind::Direct { .. });
+        let media = div()
+            .size(theme.space(10.))
+            .rounded_full()
+            .bg(theme.colors.muted)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                lucide(if direct {
+                    LucideIcon::MessageSquare
+                } else {
+                    LucideIcon::Hash
+                })
+                .size(scaled(&theme, metrics::ICON_LARGE))
+                .text_color(theme.colors.muted_foreground),
+            );
+        let title: SharedString = if direct {
+            format!(
+                "This is the start of your conversation with {}",
+                channel.name
+            )
+            .into()
+        } else {
+            format!("Welcome to #{}", channel.name).into()
+        };
+        let description: SharedString = channel
+            .purpose
+            .clone()
+            .unwrap_or_else(|| {
+                if direct {
+                    "Messages here stay between the two of you.".into()
+                } else {
+                    "Nothing has been posted yet. Say hello, or set a purpose so people know what belongs here.".into()
+                }
+            });
+        let mut header = EmptyHeader::new()
+            .media(EmptyMedia::new().child(media))
+            .title(
+                EmptyTitle::new()
+                    .type_style(style::TITLE, &theme)
+                    .text_center()
+                    .child(title),
+            )
+            .description(
+                EmptyDescription::new()
+                    .type_style(style::META, &theme)
+                    .text_center()
+                    .child(description),
+            );
+        let _ = &mut header;
+        let mut empty = Empty::new().header(header);
+        if !direct {
+            empty = empty.content(
+                EmptyContent::new().child(
+                    Button::new("channel.empty.add-members")
+                        .variant(ButtonVariant::Outline)
+                        .size(ButtonSize::Sm)
+                        .aria_label("Add members")
+                        .child(
+                            lucide(LucideIcon::UserPlus)
+                                .size(scaled(&theme, 14.))
+                                .text_color(theme.colors.muted_foreground),
+                        )
+                        .child("Add members"),
+                ),
+            );
+        }
+        div()
+            .size_full()
+            .flex()
+            .items_end()
+            .justify_center()
+            .p(theme.space(6.))
+            .pb(theme.space(8.))
+            .child(div().max_w(scaled(&theme, 420.)).child(empty))
+    }
+
     fn empty(cx: &App) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let header = div()
@@ -513,13 +653,15 @@ impl Render for ChannelView {
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };
+        let body = if channel.loading && channel.posts.is_empty() {
+            Self::loading(cx).into_any_element()
+        } else if channel.posts.is_empty() {
+            Self::empty_channel(&channel, cx).into_any_element()
+        } else {
+            self.transcript(&channel, cx).into_any_element()
+        };
         root.child(self.header(&channel, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.transcript(&channel, cx)),
-            )
+            .child(div().flex_1().min_h_0().child(body))
             .child(self.composer(cx))
     }
 }
@@ -545,6 +687,8 @@ mod tests {
     #[test]
     fn rows_interleave_day_and_new_message_dividers() {
         let channel = ChannelModel {
+            purpose: None,
+            loading: false,
             id: "c".into(),
             name: "c".into(),
             kind: ChannelKind::Public,

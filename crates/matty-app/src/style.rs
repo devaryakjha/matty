@@ -174,6 +174,8 @@ pub mod metrics {
     pub const ICON: f32 = 16.;
     /// Icons in empty states.
     pub const ICON_LARGE: f32 = 20.;
+    /// Post avatars in the channel view and threads.
+    pub const AVATAR: f32 = 32.;
 }
 
 /// Scales a px metric by the theme's spacing unit (4px at zoom 1).
