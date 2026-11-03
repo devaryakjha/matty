@@ -15,9 +15,11 @@ use rusqlite::Connection as Db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::change::{ChangeSet, Connection, POSTS_WINDOW};
+use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
+use crate::outbox;
+use matty_store::outbox::{self as queue, Outgoing};
 
 /// Followed threads in a team's Threads list snapshot.
 const THREAD_LIST: usize = 200;
@@ -79,6 +81,45 @@ pub enum Command {
     /// Catch up with the server now, as after a reconnect: memberships,
     /// each cached channel since its cursor, and thread lists.
     Resync,
+    /// Sends a post: an optimistic row shows at once, the outbox keeps the
+    /// send until the server has it, and a failure keeps the text for
+    /// [`Command::Retry`] (#38).
+    SendPost {
+        /// The client's id for the post; empty to have one made
+        /// (`{user_id}:{millis}`, as Mattermost clients do).
+        pending_post_id: String,
+        /// Channel.
+        channel_id: String,
+        /// Thread root for a reply, or empty.
+        root_id: String,
+        /// Message text.
+        message: String,
+        /// Uploaded file ids.
+        file_ids: Vec<String>,
+    },
+    /// Sends a failed post again.
+    Retry {
+        /// Its pending id.
+        pending_post_id: String,
+    },
+    /// Drops an unsent post.
+    Discard {
+        /// Its pending id.
+        pending_post_id: String,
+    },
+    /// Changes a sent post's text. A post still in the outbox is refused
+    /// with [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
+    EditPost {
+        /// The post.
+        post_id: String,
+        /// The new text.
+        message: String,
+    },
+    /// Deletes a sent post; refused like [`Command::EditPost`] while unsent.
+    DeletePost {
+        /// The post.
+        post_id: String,
+    },
 }
 
 impl std::fmt::Debug for Command {
@@ -111,8 +152,41 @@ impl std::fmt::Debug for Command {
                 .field("team_id", team_id)
                 .finish(),
             Self::Resync => f.write_str("Resync"),
+            Self::SendPost {
+                pending_post_id,
+                channel_id,
+                root_id,
+                ..
+            } => f
+                .debug_struct("SendPost")
+                .field("pending_post_id", pending_post_id)
+                .field("channel_id", channel_id)
+                .field("root_id", root_id)
+                .finish_non_exhaustive(),
+            Self::Retry { pending_post_id } => f
+                .debug_struct("Retry")
+                .field("pending_post_id", pending_post_id)
+                .finish(),
+            Self::Discard { pending_post_id } => f
+                .debug_struct("Discard")
+                .field("pending_post_id", pending_post_id)
+                .finish(),
+            Self::EditPost { post_id, .. } => f
+                .debug_struct("EditPost")
+                .field("post_id", post_id)
+                .finish_non_exhaustive(),
+            Self::DeletePost { post_id } => f
+                .debug_struct("DeletePost")
+                .field("post_id", post_id)
+                .finish(),
         }
     }
+}
+
+/// A server write a command asked for.
+enum Write {
+    Edit { post_id: String, message: String },
+    Delete { post_id: String },
 }
 
 pub(crate) enum Message {
@@ -129,6 +203,8 @@ pub(crate) struct Dirty {
     pub(crate) threads: BTreeSet<String>,
     /// Teams whose Threads list changed.
     pub(crate) thread_lists: BTreeSet<String>,
+    /// Channels whose outbox changed.
+    pub(crate) outbox: BTreeSet<String>,
     /// Teams whose sidebar changed.
     pub(crate) teams: BTreeSet<String>,
     /// Every team's sidebar changed (a direct message, a user's name).
@@ -234,6 +310,8 @@ impl Engine {
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
         let mut fetches = Vec::new();
+        let mut sends = Vec::new();
+        let mut writes = Vec::new();
         let tx = self.store.conn_mut().transaction()?;
         for message in messages {
             match message {
@@ -298,6 +376,61 @@ impl Engine {
                     events::apply(&tx, *event, self.me.as_deref(), dirty, &mut fetches)?;
                 }
                 Message::Command(Command::Resync) => dirty.resync = true,
+                Message::Command(Command::SendPost {
+                    pending_post_id,
+                    channel_id,
+                    root_id,
+                    message,
+                    file_ids,
+                }) => {
+                    let Some(me) = self.me.clone() else {
+                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
+                        continue;
+                    };
+                    let now = posts::now_ms();
+                    let pending_post_id = if pending_post_id.is_empty() {
+                        format!("{me}:{now}")
+                    } else {
+                        pending_post_id
+                    };
+                    let outgoing = Outgoing {
+                        pending_post_id,
+                        channel_id,
+                        root_id,
+                        message,
+                        file_ids,
+                        created_at: now,
+                        ..Outgoing::default()
+                    };
+                    outbox::queue(&tx, &outgoing, &me, dirty)?;
+                    sends.push(outgoing.pending_post_id);
+                }
+                Message::Command(Command::Retry { pending_post_id }) => {
+                    if queue::get(&tx, &pending_post_id)?.is_some() {
+                        sends.push(pending_post_id);
+                    }
+                }
+                Message::Command(Command::Discard { pending_post_id }) => {
+                    outbox::discard(&tx, &pending_post_id, dirty)?;
+                }
+                Message::Command(Command::EditPost { post_id, message }) => {
+                    if queue::get(&tx, &post_id)?.is_some() {
+                        dirty
+                            .direct
+                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                    } else {
+                        writes.push(Write::Edit { post_id, message });
+                    }
+                }
+                Message::Command(Command::DeletePost { post_id }) => {
+                    if queue::get(&tx, &post_id)?.is_some() {
+                        dirty
+                            .direct
+                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                    } else {
+                        writes.push(Write::Delete { post_id });
+                    }
+                }
             }
         }
         tx.commit()?;
@@ -308,7 +441,70 @@ impl Engine {
         for what in fetches {
             self.fetch(what);
         }
+        for pending_post_id in sends {
+            self.send(&pending_post_id, dirty)?;
+        }
+        for write in writes {
+            self.write(write, dirty);
+        }
         Ok(())
+    }
+
+    /// Starts sending a queued post, or fails it when offline.
+    fn send(&mut self, pending_post_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
+        let conn = self.store.conn();
+        let Some(outgoing) = queue::get(conn, pending_post_id)? else {
+            return Ok(());
+        };
+        let Some(session) = &self.session else {
+            return outbox::fail(conn, pending_post_id, "not connected", dirty);
+        };
+        queue::attempt(conn, pending_post_id)?;
+        dirty.outbox.insert(outgoing.channel_id.clone());
+        tokio::spawn(outbox::send(
+            session.client.clone(),
+            outgoing,
+            self.loaded.clone(),
+        ));
+        Ok(())
+    }
+
+    /// Calls the server for an edit or delete; the result comes back as a
+    /// [`Loaded`] and is applied like the matching event.
+    fn write(&self, write: Write, dirty: &mut Dirty) {
+        let Some(session) = &self.session else {
+            dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
+            return;
+        };
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let message = match write {
+                Write::Edit { post_id, message } => {
+                    let patch = matty_api::PostPatch {
+                        message: Some(message),
+                        ..matty_api::PostPatch::default()
+                    };
+                    match client.patch_post(&post_id, &patch).await {
+                        Ok(post) => Loaded::Edited(Box::new(post)),
+                        Err(error) => Loaded::WriteFailed {
+                            action: "edit",
+                            target: post_id,
+                            error: error.to_string(),
+                        },
+                    }
+                }
+                Write::Delete { post_id } => match client.delete_post(&post_id).await {
+                    Ok(()) => Loaded::Deleted { post_id },
+                    Err(error) => Loaded::WriteFailed {
+                        action: "delete",
+                        target: post_id,
+                        error: error.to_string(),
+                    },
+                },
+            };
+            let _ = results.send(message);
+        });
     }
 
     /// Fetches an open channel's posts once per session, after the account
@@ -652,6 +848,52 @@ impl Engine {
                 tx.commit()?;
                 dirty.thread_lists.insert(team_id);
             }
+            Loaded::Sent {
+                pending_post_id,
+                post,
+            } => {
+                let tx = self.store.conn_mut().transaction()?;
+                outbox::confirm(&tx, &pending_post_id, &post, self.me.as_deref(), dirty)?;
+                tx.commit()?;
+            }
+            Loaded::SendFailed {
+                pending_post_id,
+                error,
+            } => {
+                tracing::warn!(%pending_post_id, %error, "a send failed");
+                outbox::fail(self.store.conn(), &pending_post_id, &error, dirty)?;
+            }
+            Loaded::Edited(post) => {
+                let mut fetches = Vec::new();
+                events::apply(
+                    self.store.conn(),
+                    WsEvent::PostEdited(post),
+                    self.me.as_deref(),
+                    dirty,
+                    &mut fetches,
+                )?;
+            }
+            Loaded::Deleted { post_id } => {
+                if let Some(post) = posts::post(self.store.conn(), &post_id)? {
+                    let mut fetches = Vec::new();
+                    events::apply(
+                        self.store.conn(),
+                        WsEvent::PostDeleted(Box::new(post)),
+                        self.me.as_deref(),
+                        dirty,
+                        &mut fetches,
+                    )?;
+                }
+            }
+            Loaded::WriteFailed {
+                action,
+                target,
+                error,
+            } => dirty.direct.push(ChangeSet::Failed(CommandError::Server {
+                action,
+                target,
+                error,
+            })),
             Loaded::Resynced => {
                 dirty
                     .direct
@@ -738,6 +980,15 @@ impl Engine {
                     threads: Arc::from(threads),
                 }),
                 Err(error) => tracing::error!(%error, "could not read a thread list"),
+            }
+        }
+        for channel_id in dirty.outbox {
+            match queue::for_channel(conn, &channel_id) {
+                Ok(sends) => changes.push(ChangeSet::Outbox {
+                    channel_id,
+                    sends: Arc::from(sends),
+                }),
+                Err(error) => tracing::error!(%error, "could not read the outbox"),
             }
         }
         let roots_only = mode == UnreadMode::CollapsedThreads;

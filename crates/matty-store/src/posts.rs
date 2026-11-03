@@ -16,7 +16,7 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// The local clock in ms, for `touched_at`.
-pub(crate) fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
@@ -703,4 +703,22 @@ pub fn note_seen(conn: &Connection, post: &Post) -> Result<()> {
         advance_since(conn, &channel_since_key(&post.channel_id), at)?;
     }
     Ok(())
+}
+
+/// Removes a post outright, as when the user discards an unsent message.
+/// Unlike [`mark_deleted`], nothing is kept.
+pub fn remove_post(conn: &Connection, post_id: &str) -> Result<bool> {
+    let removed = conn
+        .prepare_cached("DELETE FROM posts WHERE id = ?1")?
+        .execute([post_id])?;
+    conn.prepare_cached("DELETE FROM files WHERE post_id = ?1")?
+        .execute([post_id])?;
+    Ok(removed > 0)
+}
+
+/// The newest `create_at` among a channel's cached posts, or 0.
+pub fn newest_create_at(conn: &Connection, channel_id: &str) -> Result<i64> {
+    Ok(conn
+        .prepare_cached("SELECT COALESCE(MAX(create_at), 0) FROM posts WHERE channel_id = ?1")?
+        .query_row([channel_id], |row| row.get(0))?)
 }

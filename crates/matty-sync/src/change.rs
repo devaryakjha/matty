@@ -5,6 +5,7 @@ use std::sync::Arc;
 use matty_api::ServerCapabilities;
 use matty_api::models::{Draft, Post, Status};
 use matty_api::ws::ConnectionState;
+use matty_store::outbox::Outgoing;
 use matty_store::posts::ThreadSummary;
 use matty_store::sidebar::{SidebarSection, TeamWithUnreads};
 
@@ -52,6 +53,17 @@ pub enum ChangeSet {
         /// The draft now.
         draft: Option<Arc<Draft>>,
     },
+    /// A channel's unsent messages changed. Their rows are in the posts
+    /// snapshot with `id == pending_post_id`; this says which are still
+    /// sending and which failed (`last_error`).
+    Outbox {
+        /// The channel.
+        channel_id: String,
+        /// Queued sends, oldest first.
+        sends: Arc<[Outgoing]>,
+    },
+    /// A command could not be carried out.
+    Failed(CommandError),
     /// A post only this user sees, such as a slash command's reply. It is
     /// never stored; the view shows it until the channel is left.
     Ephemeral(Arc<Post>),
@@ -108,6 +120,28 @@ pub enum Connection {
         /// The channel.
         channel_id: String,
         /// What went wrong.
+        error: String,
+    },
+}
+
+/// Why a command was not carried out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandError {
+    /// The post is still in the outbox: it can be retried or discarded, but
+    /// not edited or deleted until the server has it.
+    NotSentYet {
+        /// The post's pending id.
+        post_id: String,
+    },
+    /// The command needs a connection and there is none.
+    Offline,
+    /// The server refused or failed.
+    Server {
+        /// What was asked, such as `edit`.
+        action: &'static str,
+        /// The post, channel or user it was about.
+        target: String,
+        /// What the server said.
         error: String,
     },
 }

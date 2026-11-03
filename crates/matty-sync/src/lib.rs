@@ -15,7 +15,9 @@ mod change;
 mod engine;
 mod events;
 mod load;
+mod outbox;
 
 pub use bridge::{SyncHandle, spawn};
-pub use change::{ChangeSet, Connection, POSTS_WINDOW};
+pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
 pub use engine::Command;
+pub use matty_store::outbox::Outgoing;

@@ -77,6 +77,26 @@ pub(crate) enum Loaded {
     },
     /// A resync finished.
     Resynced,
+    /// The server has a queued post.
+    Sent {
+        pending_post_id: String,
+        post: Box<matty_api::models::Post>,
+    },
+    /// A queued post could not be sent.
+    SendFailed {
+        pending_post_id: String,
+        error: String,
+    },
+    /// An edit the user made, as the server stored it.
+    Edited(Box<matty_api::models::Post>),
+    /// A delete the user made went through.
+    Deleted { post_id: String },
+    /// An edit or delete failed.
+    WriteFailed {
+        action: &'static str,
+        target: String,
+        error: String,
+    },
 }
 
 /// Runs a fetch an event asked for. Failures are logged: the next resync

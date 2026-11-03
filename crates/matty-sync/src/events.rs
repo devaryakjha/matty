@@ -8,7 +8,7 @@ use std::sync::Arc;
 use matty_api::models::{Post, Status};
 use matty_api::ws::WsEvent;
 use matty_store::sidebar::{self, NewPost, ReadState};
-use matty_store::{StoreError, posts};
+use matty_store::{StoreError, outbox, posts};
 use rusqlite::Connection;
 
 use crate::change::ChangeSet;
@@ -322,6 +322,10 @@ fn new_post(
     fetches: &mut Vec<Fetch>,
 ) -> Result<(), StoreError> {
     posts::insert_posts(conn, std::slice::from_ref(post))?;
+    // Our own send, echoed before the REST response: it is delivered.
+    if !post.pending_post_id.is_empty() && outbox::remove(conn, &post.pending_post_id)? {
+        dirty.outbox.insert(post.channel_id.clone());
+    }
     let is_root = post.root_id.is_empty();
     if !is_root {
         posts::add_replies(conn, &post.root_id, 1)?;
