@@ -9,7 +9,9 @@
 pub mod actions;
 pub mod logging;
 mod main_window;
+pub mod preview;
 pub mod settings;
+pub mod sidebar;
 pub mod style;
 mod ui;
 

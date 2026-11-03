@@ -7,9 +7,9 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    Action, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    Action, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::actions::{
@@ -19,6 +19,7 @@ use crate::actions::{
 use crate::settings::{
     SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
+use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
@@ -27,7 +28,6 @@ use crate::ui::{
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     kbd::{Kbd, format_shortcut},
     resizable::{PaneLimits, Resizable},
-    sidebar::{Sidebar, sidebar_group_label, sidebar_menu_skeleton},
     theme::UiTheme,
     title_bar::TitleBar,
     tooltip::text_tooltip,
@@ -38,7 +38,10 @@ const CONTENT_MIN: f32 = 260.;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
+    sidebar: Entity<SidebarView>,
     focus: FocusHandle,
+    /// The channel the sidebar selected; the channel view follows it in M1.
+    selected_channel: Option<gpui_kit::SharedString>,
     /// Cmd+Shift+D hides the sidebar for this session.
     sidebar_visible: bool,
     shortcuts: DialogHandle,
@@ -67,9 +70,23 @@ impl MainWindow {
             .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let model = if crate::preview::enabled() {
+            crate::preview::sidebar()
+        } else {
+            SidebarModel::loading()
+        };
+        let sidebar = cx.new(|_| SidebarView::new("Matty", model));
+        cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| {
+            let SidebarEvent::Select(id) = event;
+            this.selected_channel = Some(id.clone());
+            cx.notify();
+        })
+        .detach();
         Self {
             settings,
+            sidebar,
             focus,
+            selected_channel: None,
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
@@ -340,61 +357,6 @@ impl MainWindow {
             )
     }
 
-    /// DESIGN.md §4: a 48px header with the team as a menu button and a
-    /// compose button, then the category list. Until sync lands the list
-    /// shows its loading rows.
-    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let header_inner = scaled(&theme, metrics::HEADER_HEIGHT) - theme.space(4.);
-        let team = Button::new("sidebar.team")
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::Sm)
-            .aria_label("Team menu")
-            .px(theme.space(2.))
-            .type_style(style::TITLE, &theme)
-            .text_color(theme.colors.sidebar_foreground)
-            .child("Matty")
-            .child(
-                lucide(LucideIcon::ChevronDown)
-                    .size(scaled(&theme, 14.))
-                    .text_color(theme.colors.muted_foreground),
-            );
-        let compose = Button::new("sidebar.compose")
-            .variant(ButtonVariant::Ghost)
-            .size(ButtonSize::IconSm)
-            .aria_label("New message")
-            .disabled(true)
-            .child(
-                lucide(LucideIcon::SquarePen)
-                    .size(scaled(&theme, metrics::ICON))
-                    .text_color(theme.colors.muted_foreground),
-            );
-        let mut sidebar = Sidebar::new("sidebar", "Channels").header(
-            div()
-                .h(header_inner)
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(team)
-                .child(compose),
-        );
-        for (label, rows) in [("Favorites", 2), ("Channels", 4), ("Direct messages", 3)] {
-            sidebar = sidebar.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .pb(theme.space(2.))
-                    .child(
-                        sidebar_group_label(label.to_uppercase(), cx)
-                            .type_style(style::LABEL, &theme)
-                            .h(theme.space(6.)),
-                    )
-                    .children((0..rows).map(|row| sidebar_menu_skeleton(row % 2 == 0, cx))),
-            );
-        }
-        sidebar
-    }
-
     /// DESIGN.md §4: a 48px header over the channel's content. With nothing
     /// open, the header names the state and the body is an empty state.
     fn channel_view(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -511,7 +473,7 @@ impl Render for MainWindow {
         let settings = self.settings.clone();
         let frame = if self.sidebar_visible {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
-                .first(self.sidebar(cx))
+                .first(self.sidebar.clone())
                 .second(self.channel_view(cx))
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))

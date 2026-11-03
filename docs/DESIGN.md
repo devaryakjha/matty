@@ -132,3 +132,8 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 Screenshots live in `docs/screenshots/`; the `design-*` files are the
 reference for each pull request in this series. A change that moves away
 from them needs a reason in its pull request.
+
+To look at the design before sync exists, run the app with
+`MATTY_PREVIEW=1`: the views render the fixtures in
+`crates/matty-app/src/preview.rs` instead of their loading and empty
+states. The `design-*` screenshots are taken this way.
