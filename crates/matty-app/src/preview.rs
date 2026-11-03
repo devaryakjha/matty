@@ -286,6 +286,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             DEFAULT_MAX_POST_SIZE
         },
         profiles: profiles(),
+        typing: match id {
+            "general" => vec!["Priya Nair".into()],
+            "design" => vec!["Sam Okafor".into(), "Lena Fischer".into()],
+            _ => vec![],
+        },
     })
 }
 

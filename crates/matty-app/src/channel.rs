@@ -12,13 +12,13 @@ use gpui_kit::{
 use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
-use crate::sidebar::ChannelKind;
+use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerEvent, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
@@ -124,8 +124,12 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
-    /// Profiles of the people who posted, for the avatar card.
+    /// Profiles of the people who posted, for the avatar card and `@`
+    /// autocomplete.
     pub profiles: Vec<UserProfile>,
+    /// Display names of the people typing right now, for the line under
+    /// the transcript.
+    pub typing: Vec<SharedString>,
 }
 
 /// A row in the transcript: posts interleaved with dividers.
@@ -228,6 +232,8 @@ pub struct ChannelView {
     /// Shortcodes picked this session, newest first, for the picker's
     /// Recent row; sync persists them later.
     recent_emoji: Vec<SharedString>,
+    /// The sidebar's channels, for `~` autocomplete.
+    directory: Vec<ChannelRow>,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -256,7 +262,30 @@ impl ChannelView {
         .detach();
         let rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
-        let composer = cx.new(|cx| ComposerState::new(8, window, cx));
+        let composer = cx.new(|cx| {
+            let mut state = ComposerState::new(8, window, cx);
+            state.set_triggers(['@', '~', ':'], cx);
+            // People get their avatar, emoji their glyph; channels keep the
+            // suggestion's icon.
+            state.set_suggestion_leading(|suggestion, _, _| {
+                if let Some(username) = suggestion.value.strip_prefix('@') {
+                    let initial: String = suggestion.label.chars().take(1).collect();
+                    Some(
+                        Avatar::new(gpui_kit::ElementId::Name(
+                            format!("suggest.{username}").into(),
+                        ))
+                        .size(AvatarSize::Sm)
+                        .fallback(initial)
+                        .into_any_element(),
+                    )
+                } else if suggestion.value.starts_with('~') {
+                    None
+                } else {
+                    Some(div().child(suggestion.value.clone()).into_any_element())
+                }
+            });
+            state
+        });
         let menu = cx.new(|cx| MenuState::new([], cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let subscriptions = vec![
@@ -269,6 +298,11 @@ impl ChannelView {
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete { trigger, query } => {
+                        let suggestions = this.suggestions(*trigger, query);
+                        composer
+                            .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+                    }
                     _ => {}
                 },
             ),
@@ -292,6 +326,7 @@ impl ChannelView {
             picker_open: false,
             picker_target: None,
             recent_emoji: Vec::new(),
+            directory: Vec::new(),
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -424,6 +459,79 @@ impl ChannelView {
 
     /// Flips the user's reaction locally and tells sync. A chip that drops
     /// to zero disappears, as on the server.
+    /// The channels `~` can complete; the window passes the sidebar's rows.
+    pub fn set_directory(&mut self, rows: Vec<ChannelRow>, cx: &mut Context<Self>) {
+        self.directory = rows;
+        cx.notify();
+    }
+
+    /// Suggestions for a composer trigger (PLAN §4.3): `@` people from the
+    /// channel's profiles, `~` channels from the sidebar, `:` emoji from the
+    /// catalog once two characters narrow it.
+    fn suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+        const LIMIT: usize = 8;
+        let query = query.to_lowercase();
+        match trigger {
+            '@' => self
+                .model
+                .iter()
+                .flat_map(|model| model.profiles.iter())
+                .filter(|profile| {
+                    profile.username.to_lowercase().starts_with(&query)
+                        || profile.display_name.to_lowercase().contains(&query)
+                })
+                .take(LIMIT)
+                .map(|profile| {
+                    ComposerSuggestion::new(
+                        format!("@{}", profile.username),
+                        profile.display_name.clone(),
+                    )
+                    .description(format!("@{}", profile.username))
+                })
+                .collect(),
+            '~' => self
+                .directory
+                .iter()
+                .filter(|row| matches!(row.kind, ChannelKind::Public | ChannelKind::Private))
+                .filter(|row| row.name.to_lowercase().contains(&query))
+                .take(LIMIT)
+                .map(|row| {
+                    ComposerSuggestion::new(format!("~{}", row.name), row.name.clone()).icon(
+                        match row.kind {
+                            ChannelKind::Private => LucideIcon::Lock,
+                            _ => LucideIcon::Hash,
+                        },
+                    )
+                })
+                .collect(),
+            ':' => crate::emoji::suggest(&query, LIMIT)
+                .into_iter()
+                .map(|(name, glyph)| ComposerSuggestion::new(glyph, format!(":{name}:")))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// "Priya is typing…" under the transcript; the row keeps its height
+    /// when nobody is, so the transcript does not jump.
+    fn typing_line(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
+        let text = match channel.typing.as_slice() {
+            [] => String::new(),
+            [one] => format!("{} is typing\u{2026}", first(one)),
+            [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
+            _ => "Several people are typing\u{2026}".to_string(),
+        };
+        div()
+            .flex_shrink_0()
+            .h(scaled(&theme, 20.))
+            .px(theme.space(4.))
+            .type_style(style::META, &theme)
+            .text_color(theme.colors.muted_foreground)
+            .child(text)
+    }
+
     /// Opens the picker for `target` (a post to react to, or the composer).
     fn open_picker(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
         self.picker_target = target;
@@ -1527,6 +1635,7 @@ impl Render for ChannelView {
         };
         root.child(self.header(&channel, cx))
             .child(div().flex_1().min_h_0().child(body))
+            .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))
             // Zero-size host for the shared post menu; it opens at the pointer.
             .child(Menu::new(&self.menu, "Message actions").context_area(div()))
@@ -1578,6 +1687,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
+            typing: vec![],
             id: "c".into(),
             name: "c".into(),
             kind: ChannelKind::Public,

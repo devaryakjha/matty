@@ -230,6 +230,16 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   field and Clear, Cancel, Done, then Preferences and "Sign out…". Signing
   out confirms in an `alert_dialog` with the destructive button named for
   the action, and returns to the sign-in card.
+- **Composer autocomplete and typing** (PLAN §4.3; §3 M1 typing) use
+  gpuicn's `Composer` triggers (`design-22`). `@` lists channel members by
+  username prefix or display name (avatar, name, `@username`), `~` lists
+  public and private channels with their Hash or Lock icon, and `:` lists
+  emoji by shortcode from two characters with the glyph in front, eight
+  rows at most. Picking inserts `@username `, `~channel ` or the glyph.
+  Who is typing shows as one `meta` line between the post list and the
+  composer ("Priya is typing…", "Sam and Lena are typing…", "Several
+  people are typing…" beyond two), first names only, so the composer
+  never jumps.
 - **Preferences** is a dialog, not a window: sections under `label`
   headings, joined toggle groups for theme (System, Light, Dark), text
   size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a

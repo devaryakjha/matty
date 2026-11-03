@@ -137,6 +137,11 @@ impl MainWindow {
             },
         )
         .detach();
+        let directory: Vec<_> = model
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter().cloned())
+            .collect();
         let sidebar = cx.new(|_| SidebarView::new("Matty", model));
         let initial = selected_channel
             .as_deref()
@@ -149,6 +154,7 @@ impl MainWindow {
             "You"
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
+        channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         cx.subscribe_in(
