@@ -332,6 +332,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 29);
+        assert_eq!(count, 30);
     }
 }
