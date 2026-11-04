@@ -43,6 +43,7 @@ use crate::ui::{
     message_list::{MessageList, MessageListState},
     popover::popover,
     skeleton::Skeleton,
+    spinner::Spinner,
     theme::UiTheme,
     tooltip::text_tooltip,
 };
@@ -288,9 +289,23 @@ pub struct ChannelNotifications {
 /// A row in the transcript: posts interleaved with dividers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Row {
+    /// The top row: loading older messages, the start of the channel, or a
+    /// failed page with Retry (PLAN §4.2 history).
+    History,
     Day(SharedString),
     NewMessages,
     Post(usize),
+}
+
+/// Where the transcript stands in the channel's history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct History {
+    /// The oldest post is loaded; nothing more to ask for.
+    pub at_start: bool,
+    /// An older page is on its way.
+    pub loading: bool,
+    /// The last page failed; the top row offers Retry.
+    pub failed: bool,
 }
 
 impl ReplySummary {
@@ -307,6 +322,7 @@ impl ReplySummary {
 impl ChannelModel {
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(self.posts.len() + 4);
+        rows.push(Row::History);
         let mut day: Option<&SharedString> = None;
         for (index, post) in self.posts.iter().enumerate() {
             if day != Some(&post.day) {
@@ -319,6 +335,24 @@ impl ChannelModel {
             rows.push(Row::Post(index));
         }
         rows
+    }
+
+    /// Puts an older page before the loaded posts, skipping ids already
+    /// shown, and returns how many were added. The unread marker moves with
+    /// the post it sits on.
+    fn prepend_posts(&mut self, posts: Vec<Post>) -> usize {
+        let older: Vec<Post> = posts
+            .into_iter()
+            .filter(|post| !self.posts.iter().any(|known| known.id == post.id))
+            .collect();
+        let added = older.len();
+        if added > 0 {
+            self.posts.splice(0..0, older);
+            if let Some(first_unread) = self.first_unread.as_mut() {
+                *first_unread += added;
+            }
+        }
+        added
     }
 }
 
@@ -355,6 +389,10 @@ pub enum ChannelEvent {
     /// U on a selected post: unread from this post on (PLAN §4.2); sync
     /// tells the server.
     MarkUnread(SharedString),
+    /// The transcript showed its top row and wants an older page; sync
+    /// answers with `prepend_posts` and `set_history`. Fired once per page:
+    /// the view marks itself loading until one of those arrives.
+    NearTop,
     /// The user asked for the channel's pinned messages.
     OpenPinned,
     /// The user asked for the channel info pane (header info button or the
@@ -421,7 +459,7 @@ type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<Channel
 
 /// The reactions one click away, as Mattermost's recent-emoji row. The full
 /// picker arrives with the emoji data from sync.
-const QUICK_REACTIONS: [(&str, &str); 6] = [
+pub(crate) const QUICK_REACTIONS: [(&str, &str); 6] = [
     ("👍", "Thumbs up"),
     ("❤️", "Heart"),
     ("😂", "Joy"),
@@ -479,6 +517,8 @@ pub struct ChannelView {
     pending_jump: Option<SharedString>,
     /// The row chosen with the keyboard (PLAN §4.2); single keys act on it.
     selection: Option<usize>,
+    /// The top row's state: loading, at the start, or failed.
+    history: History,
     list_focus: gpui_kit::FocusHandle,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
@@ -709,6 +749,7 @@ impl ChannelView {
             _permalink_task: None,
             pending_jump: None,
             selection: None,
+            history: History::default(),
             list_focus: cx.focus_handle(),
             delete: DialogHandle::new(false),
             deleting: None,
@@ -747,6 +788,11 @@ impl ChannelView {
         }
         self.permalink = None;
         self.selection = None;
+        // Preview has no server to page from, so it starts at the beginning.
+        self.history = History {
+            at_start: crate::preview::enabled(),
+            ..History::default()
+        };
         if crate::preview::enabled() {
             self.schedule_preview_arrivals(model.as_ref(), cx);
         }
@@ -826,6 +872,121 @@ impl ChannelView {
         }
         self.apply_pending_jump(cx);
         cx.notify();
+    }
+
+    /// Puts an older page above the loaded posts, keeping the reader's place:
+    /// gpuicn's list anchors the scroll on the row that was at the top.
+    pub fn prepend_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
+        self.history.loading = false;
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        let before = self.rows.len();
+        if model.prepend_posts(posts) == 0 {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(0..1, cx));
+            cx.notify();
+            return;
+        }
+        self.rows = model.rows();
+        let added = self.rows.len().saturating_sub(before);
+        self.selection = self.selection.map(|row| row + added);
+        self.list.update(cx, |list, cx| {
+            list.prepend(added, cx);
+            // The old top row may have been the History row or a day divider
+            // that merged into the new page.
+            list.remeasure_items(0..added + 1, cx);
+        });
+        self.apply_pending_jump(cx);
+        cx.notify();
+    }
+
+    /// Sync reports where the history stands after a page: at the start, or
+    /// failed. Either clears the loading state.
+    pub fn set_history(&mut self, at_start: bool, failed: bool, cx: &mut Context<Self>) {
+        self.history = History {
+            at_start,
+            loading: false,
+            failed,
+        };
+        self.list
+            .update(cx, |list, cx| list.remeasure_items(0..1, cx));
+        cx.notify();
+    }
+
+    /// Asks for an older page when the top row shows and nothing stops it.
+    fn request_older(&mut self, cx: &mut Context<Self>) {
+        if self.model.is_none()
+            || self.history.at_start
+            || self.history.loading
+            || self.history.failed
+        {
+            return;
+        }
+        self.history.loading = true;
+        cx.emit(ChannelEvent::NearTop);
+        // This runs while the list lays out its top row, so the remeasure
+        // waits until the list has let go of its state.
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                this.list
+                    .update(cx, |list, cx| list.remeasure_items(0..1, cx));
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The top row of the transcript.
+    fn history_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .px(scaled(&theme, metrics::GUTTER))
+            .py(theme.space(3.))
+            .text_size(theme.text(12.))
+            .text_color(theme.colors.muted_foreground);
+        if self.history.loading {
+            row.child(
+                Spinner::new("channel.history.spinner")
+                    .label("Loading older messages")
+                    .size(gpui_kit::px(14.)),
+            )
+            .child("Loading older messages…")
+            .into_any_element()
+        } else if self.history.failed {
+            row.child("Couldn't load older messages.")
+                .child(
+                    Button::new("channel.history.retry")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.history.failed = false;
+                            this.request_older(cx);
+                        })),
+                )
+                .into_any_element()
+        } else if self.history.at_start {
+            let name: SharedString = match self.model.as_ref() {
+                Some(channel) => match channel.kind {
+                    ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
+                        "this conversation".into()
+                    }
+                    _ => format!("#{}", channel.name).into(),
+                },
+                None => "the channel".into(),
+            };
+            row.child(format!("This is the start of {name}."))
+                .into_any_element()
+        } else {
+            // Nothing to show yet; the request goes out as the row renders.
+            div().h(theme.space(2.)).into_any_element()
+        }
     }
 
     /// Replaces a post the server changed (edit, reaction, pin) in place.
@@ -1723,6 +1884,65 @@ impl ChannelView {
         items
     }
 
+    /// The right-click menu: reply and react first, then everything the
+    /// "More" button offers, with "Mark as unread" after Save.
+    fn context_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        let act = |name: &'static str, label: &'static str, run: MenuAction| {
+            let view = view.clone();
+            MenuItem::new(
+                gpui_kit::ElementId::Name(format!("post.context.{name}").into()),
+                label,
+            )
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| run(this, window, cx)).ok();
+            })
+        };
+        let reply_id = id.clone();
+        let react_id = id.clone();
+        let unread_id = id.clone();
+        let mut items = vec![
+            act(
+                "reply",
+                "Reply in thread",
+                Box::new(move |_, _, cx| cx.emit(ChannelEvent::OpenThread(reply_id.clone()))),
+            ),
+            act(
+                "react",
+                "Add reaction…",
+                Box::new(move |this, _, cx| this.open_picker(Some(react_id.clone()), cx)),
+            ),
+            MenuItem::separator(),
+        ];
+        let more = Self::more_items_for(post, cx);
+        // `more` is copy, pin, save, then the owner's edit and delete.
+        let (keep, own) = more.split_at(3.min(more.len()));
+        items.extend(keep.iter().cloned());
+        items.push(act(
+            "unread",
+            "Mark as unread",
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::MarkUnread(unread_id.clone()))),
+        ));
+        items.extend(own.iter().cloned());
+        items
+    }
+
+    /// Selects the row that shows `id`, if it is in the transcript.
+    fn select_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(posts) = self.model.as_ref().map(|model| &model.posts) else {
+            return;
+        };
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index) if posts.get(*index).is_some_and(|post| &post.id == id))
+        });
+        if row.is_some() {
+            self.selection = row;
+            window.focus(&self.list_focus, cx);
+            cx.notify();
+        }
+    }
+
     /// "Delete message?" with the action named in the button (PLAN §4.5).
     fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
@@ -2344,7 +2564,18 @@ impl ChannelView {
         if let Some(summary) = &post.replies {
             row = row.child(Self::reply_footer(&id, summary, cx));
         }
-        row
+        // Right-click selects the row and opens the same actions as the
+        // toolbar's "More" button, plus reply and react (PLAN §4.2).
+        let context_items = Self::context_items_for(post, cx);
+        div()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    this.select_post(&id, window, cx);
+                    this.open_menu(context_items.clone(), event.position, window, cx);
+                }),
+            )
+            .child(row)
     }
 
     /// The thread line under a post with replies: who replied, how many,
@@ -2474,6 +2705,10 @@ impl ChannelView {
             "channel.transcript",
             &self.list,
             move |index, _, cx| match rows.get(index) {
+                Some(Row::History) => view.update(cx, |this, cx| {
+                    this.request_older(cx);
+                    this.history_row(cx).into_any_element()
+                }),
                 Some(Row::Day(label)) => day_divider(
                     gpui_kit::ElementId::Name(format!("day.{label}").into()),
                     label.clone(),
@@ -3089,6 +3324,7 @@ mod tests {
         assert_eq!(
             channel.rows(),
             vec![
+                Row::History,
                 Row::Day("Yesterday".into()),
                 Row::Post(0),
                 Row::Post(1),
@@ -3097,5 +3333,38 @@ mod tests {
                 Row::Post(2),
             ]
         );
+    }
+
+    #[test]
+    fn prepending_history_keeps_the_unread_marker_and_skips_known_posts() {
+        let mut channel = ChannelModel {
+            purpose: None,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![post("3", "Today"), post("4", "Today")],
+            first_unread: Some(1),
+        };
+        let added = channel.prepend_posts(vec![
+            post("1", "Yesterday"),
+            post("2", "Yesterday"),
+            post("3", "Today"),
+        ]);
+        assert_eq!(added, 2);
+        let ids: Vec<&str> = channel.posts.iter().map(|p| p.id.as_ref()).collect();
+        assert_eq!(ids, ["1", "2", "3", "4"]);
+        assert_eq!(channel.first_unread, Some(3));
+        assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
+        assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
     }
 }

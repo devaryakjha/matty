@@ -405,6 +405,28 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   the emoji picker, P pins, S saves, U marks unread from there. Keys with a
   modifier stay with the keymap, and nothing fires while no post is
   selected, so ordinary typing is never stolen.
+- **Message context menu** (PLAN §4.2): right-clicking a message selects it
+  and opens a gpuicn `Menu` at the pointer with Reply in thread and Add
+  reaction, then the toolbar's More items (Copy text, Pin, Save) plus Mark
+  as unread, and Edit and Delete on your own posts (`design-41`). The menu
+  returns focus to the transcript when it closes, so the selection keys
+  keep working, and Escape then hands focus back to the composer.
+- **Thread pane selection** (PLAN §4.3): the thread transcript takes the
+  same keyboard selection as the channel. Shift+Tab from the reply composer
+  selects the newest reply, Up and Down move over the root and replies and
+  skip the replies divider, and Escape returns to the composer. A
+  right-click selects the row and opens a smaller menu: an Add reaction
+  submenu with the quick reactions, Copy text, and Retry and Delete on a
+  reply that never reached the server (`design-42`). Pin and Save stay on
+  the channel row until sync can act on a thread post.
+- **Older messages** (PLAN §4.2): the transcript's first row belongs to the
+  channel's history. When it scrolls into view the channel asks sync for an
+  older page (`ChannelEvent::NearTop`, once per page) and shows a spinner
+  with "Loading older messages…"; the page arrives through
+  `ChannelView::prepend_posts`, which keeps the reader's place because
+  gpuicn's list anchors the scroll on the row that was at the top. At the
+  oldest post the row reads "This is the start of #channel."; a failed page
+  says so and offers Retry (`design-43`). Preview starts at the beginning.
 
 ## 5. Components
 
