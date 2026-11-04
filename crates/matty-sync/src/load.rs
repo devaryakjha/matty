@@ -136,10 +136,10 @@ pub(crate) enum Loaded {
         url: String,
         image: Option<(Vec<u8>, String)>,
     },
-    /// A profile picture at a `last_picture_update`, or `None` when the
-    /// server gave none.
-    Avatar {
-        user_id: String,
+    /// A picture at a version, or `None` when the server gave none.
+    Picture {
+        picture: crate::Picture,
+        id: String,
         version: i64,
         image: Option<(Vec<u8>, String)>,
     },

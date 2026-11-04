@@ -35,7 +35,7 @@ use crate::ui::{
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     menu::{Menu, MenuItem, MenuState},
-    message::{Message, MessageHighlight, MessageStatus, Reaction},
+    message::{Message, MessageHighlight, MessageStatus},
     message_list::{MessageList, MessageListState},
     popover::popover,
     spinner::Spinner,
@@ -1946,16 +1946,10 @@ impl RightPaneView {
             return avatar.aria_label(post.author.clone()).into_any_element();
         };
         let theme = UiTheme::read(cx);
-        div()
-            .relative()
-            .child(avatar.aria_label(style::presence_name(&post.author, presence)))
-            .child(style::presence_dot(
-                presence,
-                scaled(theme, 10.),
-                theme.colors.background,
-                theme,
-                &Palette::read(cx),
-            ))
+        avatar
+            .aria_label(post.author.clone())
+            .status(style::avatar_status(presence, &Palette::read(cx)))
+            .ring_color(theme.colors.background)
             .into_any_element()
     }
 
@@ -2014,7 +2008,7 @@ impl RightPaneView {
             .highlight(highlight)
             .avatar(Self::avatar(&id, post, presence, initial, cx))
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))
@@ -2933,19 +2927,11 @@ impl RightPaneView {
                             ))
                             .size(AvatarSize::Sm)
                             .fallback(initial.clone())
-                            .aria_label(style::presence_name(
-                                &row_profile.display_name,
-                                row_profile.presence,
-                            )),
+                            .aria_label(row_profile.display_name.clone())
+                            .status(style::avatar_status(row_profile.presence, &palette))
+                            .ring_color(theme.colors.background),
                             &row_profile.user_id,
                             cx,
-                        ))
-                        .child(style::presence_dot(
-                            row_profile.presence,
-                            scaled(&theme, 9.),
-                            theme.colors.background,
-                            &theme,
-                            &palette,
                         )),
                 )
                 .child(

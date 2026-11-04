@@ -160,6 +160,12 @@ impl Client {
             .await
     }
 
+    /// `GET teams/{team_id}/image`: a team's icon.
+    pub async fn team_icon(&self, team_id: &str, etag: Option<&str>) -> Result<Fetched, ApiError> {
+        self.get_bytes(&format!("teams/{team_id}/image"), etag)
+            .await
+    }
+
     /// `GET image?url=`: an outside image through the server's proxy. When
     /// the server's proxy is off it redirects to the image, which is
     /// [`ApiError::Redirected`] with the image's own URL.

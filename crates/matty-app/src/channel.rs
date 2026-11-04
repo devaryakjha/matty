@@ -45,7 +45,7 @@ use crate::ui::{
         message_action, message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
-    popover::popover,
+    popover::{hover_popover, popover},
     skeleton::Skeleton,
     spinner::Spinner,
     theme::UiTheme,
@@ -1148,8 +1148,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
-    /// Posts whose preview images the user collapsed (#187), as the web
-    /// app's per-post toggle; they expand again with the toggle.
+    /// Part of every profile card's id: bumping it after a card's action
+    /// closes the card, since a new id starts closed.
+    profile_cards: usize,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1428,6 +1429,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            profile_cards: 0,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -3587,6 +3589,7 @@ impl ChannelView {
         id: SharedString,
         post: &Post,
         profile: Option<&UserProfile>,
+        card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let initial: String = post.author.chars().take(1).collect();
@@ -3604,55 +3607,55 @@ impl ChannelView {
         };
         // The author's presence on the avatar (#135).
         let theme = UiTheme::read(cx);
-        let avatar = div()
-            .relative()
-            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
-            .child(crate::style::presence_dot(
+        let avatar = avatar
+            .aria_label(post.author.clone())
+            .status(crate::style::avatar_status(
                 profile.presence,
-                scaled(theme, 10.),
-                theme.colors.background,
-                theme,
                 &crate::style::Palette::read(cx),
-            ));
+            ))
+            .ring_color(theme.colors.background);
         let view = cx.entity().downgrade();
         let card_id = id.clone();
-        popover(gpui_kit::ElementId::Name(
-            format!("post.{id}.profile").into(),
-        ))
-        .offset(px(4.))
-        .trigger_with(move |_, _, _| {
-            div()
-                .id(gpui_kit::ElementId::Name(
-                    format!("post.{id}.avatar.trigger").into(),
-                ))
-                .cursor_pointer()
-                .child(avatar)
-                .into_any_element()
-        })
-        .content(move |_, _, cx| {
-            let (message_view, mention_view) = (view.clone(), view.clone());
-            let (message_profile, mention_profile) = (profile.clone(), profile.clone());
-            let (close_message, close_mention, close_view) =
-                (cx.entity(), cx.entity(), cx.entity());
-            let (view_view, view_profile) = (view.clone(), profile.clone());
+        let label = crate::style::presence_name(&post.author, profile.presence);
+        // Resting on the avatar opens the card; a click or Enter pins it
+        // (gpuicn's hover popover, #118).
+        hover_popover(
+            gpui_kit::ElementId::Name(format!("post.{id}.profile.{card}").into()),
+            label,
+        )
+        .trigger(avatar)
+        .content(move |_, cx| {
+            let (message_view, mention_view, view_view) =
+                (view.clone(), view.clone(), view.clone());
+            let (message_profile, mention_profile, view_profile) =
+                (profile.clone(), profile.clone(), profile.clone());
+            // Each action closes the card by giving it a fresh id.
+            let close = |this: &mut Self, cx: &mut Context<Self>| {
+                this.profile_cards += 1;
+                cx.notify();
+            };
             profile_card(
                 &card_id,
                 &profile,
                 ProfileActions {
-                    on_message: Box::new(move |window, cx| {
-                        close_message.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_message: Box::new(move |_, cx| {
                         let event = ChannelEvent::OpenDirect {
                             user_id: message_profile.user_id.clone(),
                             username: message_profile.username.clone(),
                             display_name: message_profile.display_name.clone(),
                         };
-                        message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        message_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     }),
                     on_mention: Box::new(move |window, cx| {
-                        close_mention.update(cx, |state, cx| state.dismiss(window, cx));
                         let text = format!("@{} ", mention_profile.username);
                         mention_view
                             .update(cx, |this, cx| {
+                                close(this, cx);
                                 this.composer.update(cx, |composer, cx| {
                                     composer.insert(text, window, cx);
                                     composer.focus(window, cx);
@@ -3660,10 +3663,14 @@ impl ChannelView {
                             })
                             .ok();
                     }),
-                    on_view: Some(Box::new(move |window, cx| {
-                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_view: Some(Box::new(move |_, cx| {
                         let event = ChannelEvent::ViewProfile(view_profile.clone());
-                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        view_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     })),
                 },
                 cx,
@@ -3677,12 +3684,18 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed, delete_others): (bool, bool, bool, bool),
+        (menu_open, away, previews_collapsed, delete_others, profile_card): (
+            bool,
+            bool,
+            bool,
+            bool,
+            usize,
+        ),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
-        let avatar = Self::avatar(id.clone(), post, profile, cx);
+        let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
@@ -3786,7 +3799,7 @@ impl ChannelView {
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .on_reaction(move |emoji, _, cx| {
@@ -4224,7 +4237,13 @@ impl ChannelView {
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away, previews_collapsed, delete_others),
+                            (
+                                menu_open,
+                                away,
+                                previews_collapsed,
+                                delete_others,
+                                this.profile_cards,
+                            ),
                             cx,
                         )
                         .into_any_element()

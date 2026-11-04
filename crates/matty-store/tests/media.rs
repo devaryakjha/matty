@@ -30,7 +30,8 @@ fn keys_name_the_kind_and_version() {
         "file/f1/preview"
     );
     assert_eq!(media::file_key("f1", FileVariant::Full), "file/f1/full");
-    assert_eq!(media::emoji_key("e1"), "emoji/e1");
+    assert_eq!(media::emoji_key("e1", 5), "emoji/e1/5");
+    assert_eq!(media::team_icon_key("t1", 7), "team/t1/7");
 }
 
 #[test]
@@ -61,7 +62,7 @@ fn get_updates_last_access() {
     let store = Store::open_in_memory().unwrap();
     let conn = store.conn();
     let cache = MediaCache::new(dir.path());
-    let (a, b) = (media::emoji_key("a"), media::emoji_key("b"));
+    let (a, b) = (media::emoji_key("a", 0), media::emoji_key("b", 0));
     cache.put(conn, &a, b"a", "image/png").unwrap();
     cache.put(conn, &b, b"b", "image/png").unwrap();
     assert!(accessed(conn, &a) < accessed(conn, &b));

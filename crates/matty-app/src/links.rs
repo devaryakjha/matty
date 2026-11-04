@@ -11,7 +11,7 @@ use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     button::ButtonVariant,
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
-    markdown::{EntityLinks, MarkdownView, markdown},
+    markdown::{CustomEmoji as CustomEmojiImages, EntityLinks, MarkdownView, markdown},
     theme::UiTheme,
 };
 
@@ -112,9 +112,17 @@ pub fn message_body(
     on_link: impl Fn(&SharedString, &mut Window, &mut App) + Clone + Send + Sync + 'static,
     cx: &App,
 ) -> MarkdownView {
-    let source = matty_markdown::link_entities_in_source(body, &|_| false);
+    let custom = cx.try_global::<crate::emoji::CustomEmoji>().cloned();
+    let is_custom = |name: &str| custom.as_ref().is_some_and(|known| known.contains(name));
+    let source = matty_markdown::link_entities_in_source(body, &is_custom);
     let chip = on_link.clone();
     markdown(id, source, cx)
+        // Custom emoji as images sized to the text, from sync's media cache
+        // (#153); until one lands, and for names the server does not know,
+        // the text stays `:name:`.
+        .plugin(CustomEmojiImages::new("emoji", |name, _, cx| {
+            crate::emoji::custom_source(name, cx)
+        }))
         .plugin(
             EntityLinks::new("matty").on_click(move |target, window, cx| {
                 chip(&format!("matty:{target}").into(), window, cx)

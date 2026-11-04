@@ -512,3 +512,36 @@ fn links_find_channels_by_team_and_name_and_users_by_username() {
     assert_eq!(alice.id, "u1");
     assert_eq!(sidebar::user_by_username(conn, "carol").unwrap(), None);
 }
+
+#[test]
+fn custom_emoji_lists_the_live_ones_by_name() {
+    let store = Store::open_in_memory().unwrap();
+    let emoji = |id: &str, name: &str, delete_at| Emoji {
+        id: id.into(),
+        name: name.into(),
+        update_at: 5,
+        delete_at,
+        ..Emoji::default()
+    };
+    sidebar::upsert_emoji(
+        store.conn(),
+        &[
+            emoji("e1", "zebra", 0),
+            emoji("e2", "gone", 9),
+            emoji("e3", "apple", 0),
+        ],
+    )
+    .unwrap();
+    let names: Vec<(String, String, i64)> = sidebar::custom_emoji(store.conn())
+        .unwrap()
+        .into_iter()
+        .map(|one| (one.id, one.name, one.update_at))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("e3".into(), "apple".into(), 5),
+            ("e1".into(), "zebra".into(), 5)
+        ]
+    );
+}

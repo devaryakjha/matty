@@ -289,23 +289,18 @@ fn display_post(
             .files
             .iter()
             .filter(|file| file.delete_at == 0)
-            .map(|file| PostFile {
-                id: file.id.clone().into(),
-                name: file.name.clone().into(),
-                size: u64::try_from(file.size).unwrap_or(0),
-                preview: None,
-                width: u32::try_from(file.width).unwrap_or(0),
-                height: u32::try_from(file.height).unwrap_or(0),
-            })
+            .map(PostFile::from_info)
             .collect(),
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
             .map(|mut embed| {
-                if let crate::embeds::Embed::Permalink(quoted) = &mut embed
-                    && let Some(user) = users.get(&quoted.author_id)
-                {
-                    quoted.author = display_name(user).into();
+                if let crate::embeds::Embed::Permalink(quoted) = &mut embed {
+                    if let Some(user) = users.get(&quoted.author_id) {
+                        quoted.author = display_name_as(user, viewer.names).into();
+                    }
+                    let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+                    (quoted.time, quoted.day, _) = when(quoted.create_at, viewer.zone, today);
                 }
                 embed
             })

@@ -132,7 +132,9 @@ pub fn queued() -> usize {
 pub fn teams() -> Vec<Team> {
     vec![
         Team::new("matty", "Matty"),
-        Team::new("design-guild", "Design Guild").mentions(3),
+        Team::new("design-guild", "Design Guild")
+            .mentions(3)
+            .icon(1),
         Team::new("open-source", "Open Source").unread(),
     ]
 }
@@ -320,6 +322,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     &["Sam Okafor", "Lena Fischer", "Jonas Weber"],
                 ),
                 reaction("🚀", 2, false, &["Sam Okafor", "Priya Nair"]),
+                reaction(
+                    ":shipit:",
+                    3,
+                    false,
+                    &["Lena Fischer", "Priya Nair", "Jonas Weber"],
+                ),
             ],
             replies: Some(ReplySummary {
                 count: 1,
@@ -336,7 +344,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "Sam Okafor",
                 "09:14",
                 "Yesterday",
-                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there.",
+                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there. :shipit:",
             )
         },
         Post {
@@ -1145,6 +1153,35 @@ pub fn avatars() -> crate::avatars::Avatars {
         }
     }
     avatars
+}
+
+/// The fixtures' custom emoji (`:shipit:`) and team icon (Design Guild),
+/// as sync would hand them over (#153).
+pub fn share_pictures(cx: &mut gpui_kit::App) {
+    let custom = crate::emoji::CustomEmoji::default();
+    custom.set(&[matty_api::models::Emoji {
+        id: "e-shipit".into(),
+        name: "shipit".into(),
+        update_at: 1,
+        ..Default::default()
+    }]);
+    let emoji = crate::avatars::EmojiImages::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/emoji-shipit.png"),
+        "image/png",
+    ) {
+        emoji.landed("e-shipit", 1, Some(image));
+    }
+    let icons = crate::avatars::TeamIcons::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/team-design-guild.png"),
+        "image/png",
+    ) {
+        icons.landed("design-guild", 1, Some(image));
+    }
+    cx.set_global(custom);
+    cx.set_global(emoji);
+    cx.set_global(icons);
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
