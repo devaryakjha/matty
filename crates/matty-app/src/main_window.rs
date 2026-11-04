@@ -14,10 +14,10 @@ use gpui_kit::{
 
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
-    self, ChannelInfo, FocusSearch, HistoryBack, HistoryForward, MarkAllRead, NextChannel,
-    NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
-    QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search, ShowShortcuts,
-    ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
+    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
+    HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel, OpenPreferences, Platform,
+    PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
+    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -450,23 +450,8 @@ impl MainWindow {
                     SidebarEvent::OpenThreads => return this.show_threads(cx),
                     SidebarEvent::OpenDrafts => return this.show_drafts(cx),
                     SidebarEvent::BrowseChannels => return this.browse_channels(window, cx),
-                    SidebarEvent::NewMessage => {
-                        if let Some(live) = &this.live
-                            && let Some(team_id) = live.team()
-                        {
-                            live.send(matty_sync::Command::FindPeople {
-                                team_id: team_id.to_string(),
-                            });
-                        }
-                        return this
-                            .new_message
-                            .update(cx, |view, cx| view.open(window, cx));
-                    }
-                    SidebarEvent::CreateChannel => {
-                        return this
-                            .create_channel
-                            .update(cx, |view, cx| view.open(window, cx));
-                    }
+                    SidebarEvent::NewMessage => return this.new_message(window, cx),
+                    SidebarEvent::CreateChannel => return this.open_create_channel(window, cx),
                 };
                 this.open_channel(id, window, cx);
             },
@@ -1131,6 +1116,26 @@ impl MainWindow {
     }
 
     /// Opens the Browse channels dialog (PLAN §3 M1).
+    /// Opens the New message people picker, asking sync for the team's
+    /// people first when connected.
+    fn new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live
+            && let Some(team_id) = live.team()
+        {
+            live.send(matty_sync::Command::FindPeople {
+                team_id: team_id.to_string(),
+            });
+        }
+        self.new_message
+            .update(cx, |view, cx| view.open(window, cx));
+    }
+
+    /// Opens the Create channel dialog.
+    fn open_create_channel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.create_channel
+            .update(cx, |view, cx| view.open(window, cx));
+    }
+
     fn browse_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(live) = &self.live
             && let Some(team_id) = live.team()
@@ -2160,6 +2165,19 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
             .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
             .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
+            .on_action(
+                cx.listener(|this, _: &DirectMessagesMenu, window, cx| {
+                    this.new_message(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &BrowseChannels, window, cx| {
+                    this.browse_channels(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &CreateChannel, window, cx| {
+                this.open_create_channel(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &Search, window, cx| this.search("".into(), window, cx)),
             )

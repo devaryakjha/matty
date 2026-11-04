@@ -14,6 +14,10 @@ gpui_kit::actions!(
         QuickSwitcher,
         /// Open the direct messages menu. (MM)
         DirectMessagesMenu,
+        /// Browse the team's channels. (Matty)
+        BrowseChannels,
+        /// Create a channel. (Matty)
+        CreateChannel,
         /// Open search. (MM)
         Search,
         /// Focus search when focus is not in a text field. (Slack)
@@ -140,6 +144,20 @@ pub fn bindings() -> Vec<Binding> {
             main,
             "cmd-shift-k",
             "ctrl-shift-k"
+        ),
+        row!(
+            "Browse channels",
+            BrowseChannels,
+            main,
+            "cmd-shift-j",
+            "ctrl-shift-j"
+        ),
+        row!(
+            "Create channel",
+            CreateChannel,
+            main,
+            "cmd-shift-n",
+            "ctrl-shift-n"
         ),
         row!("Search", Search, main, "cmd-shift-f", "ctrl-shift-f"),
         row!(
@@ -332,6 +350,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 30);
+        assert_eq!(count, 32);
     }
 }
