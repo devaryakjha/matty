@@ -43,3 +43,22 @@ async fn a_link_is_asked_about_once() {
     }
     // The mock's expect(1) checks there was one request when it drops.
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn previews_follow_the_servers_setting() {
+    for (setting, shown) in [("true", true), ("false", false)] {
+        let server = common::server_with_config(json!({"EnableLinkPreviews": setting})).await;
+        let sync = matty_sync::spawn(matty_store::Store::open_in_memory().unwrap()).unwrap();
+        let changes = sync.subscribe();
+        sync.send(Command::Connect {
+            client: matty_api::Client::new(server.uri())
+                .unwrap()
+                .with_token("token"),
+        });
+        next(
+            &changes,
+            |c| matches!(c, ChangeSet::LinkPreviews(on) if *on == shown),
+        )
+        .await;
+    }
+}

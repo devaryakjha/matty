@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use matty_api::Client;
 use matty_api::models::Post;
+use matty_store::outbox::{self, Outgoing};
 use matty_store::posts::{self, Window};
 use matty_store::{Store, sidebar};
 use matty_sync::{ChangeSet, Command, Connection};
@@ -225,5 +226,125 @@ async fn a_huge_since_response_reloads_the_channel_instead() {
     let dir = tempfile::tempdir().unwrap();
     let store = resync(&server, &cache(dir.path())).await;
     assert_eq!(window(&store), ["p9"]);
+    server.verify().await;
+}
+
+/// A failed send in c1's cache: its optimistic row at 2500 and its outbox
+/// entry, waiting for Retry.
+fn failed_send(path: &Path) {
+    let store = Store::open(path).unwrap();
+    let outgoing = Outgoing {
+        pending_post_id: "me:9".into(),
+        channel_id: "c1".into(),
+        message: "not sent".into(),
+        created_at: 2500,
+        attempts: 1,
+        last_error: Some("Bad post.".into()),
+        ..Outgoing::default()
+    };
+    outbox::push(store.conn(), &outgoing).unwrap();
+    let row = Post {
+        id: "me:9".into(),
+        pending_post_id: "me:9".into(),
+        channel_id: "c1".into(),
+        user_id: ME.into(),
+        message: "not sent".into(),
+        create_at: 2500,
+        ..Post::default()
+    };
+    posts::insert_posts(store.conn(), &[row]).unwrap();
+}
+
+/// Fifty posts written during the gap land once each, in order after the
+/// cached ones, with the gap's edit and reaction; the failed send stays
+/// failed and is not sent (#164).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backfill_adds_the_gap_and_leaves_a_failed_send_alone() {
+    let server = server(10_000).await;
+    let mut changed: Vec<Value> = (0..50)
+        .map(|i| post_json(&format!("gap{i:02}"), 2100 + i * 100, 0))
+        .collect();
+    let mut edited = post_json("p1", 1000, 0);
+    edited["message"] = json!("post p1, edited");
+    edited["edit_at"] = json!(3000);
+    edited["update_at"] = json!(3000);
+    changed.push(edited);
+    let mut reacted = post_json("p2", 2000, 0);
+    reacted["update_at"] = json!(3100);
+    reacted["metadata"] = json!({"reactions": [{
+        "user_id": "u2", "post_id": "p2", "emoji_name": "tada", "create_at": 3100
+    }]});
+    changed.push(reacted);
+    // The server lists newest first; the order must not matter.
+    changed.reverse();
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/posts"))
+        .and(query_param("since", "2000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list(&changed)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = cache(dir.path());
+    failed_send(&path);
+    let store = resync(&server, &path).await;
+
+    let mut expected = vec!["p1".to_owned(), "p2".to_owned()];
+    // The failed send keeps its place by its time, between gap04 and gap05.
+    for i in 0..50 {
+        if i == 5 {
+            expected.push("me:9".into());
+        }
+        expected.push(format!("gap{i:02}"));
+    }
+    assert_eq!(window(&store), expected);
+
+    let p1 = posts::post(store.conn(), "p1").unwrap().unwrap();
+    assert_eq!(p1.message, "post p1, edited");
+    assert_eq!(p1.edit_at, 3000);
+    let p2 = posts::post(store.conn(), "p2").unwrap().unwrap();
+    let emoji: Vec<&str> = p2
+        .metadata
+        .reactions
+        .iter()
+        .map(|r| r.emoji_name.as_str())
+        .collect();
+    assert_eq!(emoji, ["tada"]);
+
+    let queued = outbox::get(store.conn(), "me:9").unwrap().unwrap();
+    assert_eq!(queued.last_error.as_deref(), Some("Bad post."));
+    assert_eq!(queued.attempts, 1);
+    server.verify().await;
+}
+
+/// A gap too long to backfill starts the channel over, and a failed send
+/// survives that too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_send_survives_a_channel_reset() {
+    let server = server(2000 + 7 * HOUR).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/posts"))
+        .and(query_param("per_page", "60"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list(&[post_json(
+            "p9",
+            2000 + 7 * HOUR,
+            0,
+        )])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = cache(dir.path());
+    failed_send(&path);
+    let store = resync(&server, &path).await;
+    assert_eq!(window(&store), ["me:9", "p9"]);
+    let queued = outbox::get(store.conn(), "me:9").unwrap().unwrap();
+    assert!(queued.last_error.is_some());
     server.verify().await;
 }
