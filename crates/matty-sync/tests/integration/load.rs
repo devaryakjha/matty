@@ -83,6 +83,18 @@ async fn opening_a_channel_starts_at_the_first_unread() {
         posts.push(world.post(&world.other, &format!("unread {n}"), "").await);
     }
     let first_unread = &posts[70];
+    // The server, not the engine, picks the first unread: the first post
+    // created after the member's last_viewed_at. Check that it is the one
+    // this test expects before the engine asks, so a read position the
+    // setup did not leave fails here with the times, not as a wait for a
+    // window that cannot come.
+    let viewed = world.last_viewed_at(&world.me).await;
+    assert!(
+        posts[69].create_at <= viewed && viewed < first_unread.create_at,
+        "the server's read position {viewed} is not between the last read post ({}) and the first unread ({})",
+        posts[69].create_at,
+        first_unread.create_at
+    );
 
     let engine = Engine::start(&world.me).await;
     let window = engine

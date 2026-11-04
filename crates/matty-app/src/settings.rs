@@ -232,6 +232,8 @@ pub struct Settings {
     pub account: Option<SavedAccount>,
     /// Servers whose check went through, newest first.
     pub recent_servers: Vec<RecentServer>,
+    /// The last searches, newest first, at most [`RECENT_SEARCHES`] (#129).
+    pub recent_searches: Vec<String>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -260,12 +262,28 @@ impl Default for Settings {
             reduce_motion: false,
             account: None,
             recent_servers: Vec::new(),
+            recent_searches: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }
 }
 
+/// How many searches the Search pane offers again.
+pub const RECENT_SEARCHES: usize = 10;
+
 impl Settings {
+    /// Puts `query` first among the recent searches, once, ignoring case.
+    pub fn remember_search(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+        self.recent_searches
+            .retain(|seen| !seen.eq_ignore_ascii_case(query));
+        self.recent_searches.insert(0, query.to_owned());
+        self.recent_searches.truncate(RECENT_SEARCHES);
+    }
+
     /// Puts `url` first among the recent servers under `name`, dropping
     /// its older entry and any past [`RECENT_SERVERS`].
     pub fn remember_server(&mut self, url: &str, name: &str) {
@@ -456,6 +474,20 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_searches_put_the_newest_first_once_and_keep_ten() {
+        let mut settings = Settings::default();
+        for query in ["a", "b", "  ", "A"] {
+            settings.remember_search(query);
+        }
+        assert_eq!(settings.recent_searches, ["A", "b"]);
+        for n in 0..12 {
+            settings.remember_search(&format!("q{n}"));
+        }
+        assert_eq!(settings.recent_searches.len(), RECENT_SEARCHES);
+        assert_eq!(settings.recent_searches[0], "q11");
+    }
 
     #[test]
     fn recent_servers_keep_the_newest_three_once_each() {

@@ -251,6 +251,9 @@ pub struct MainWindow {
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
+    /// "Forward to …" with an optional comment, once the switcher picked
+    /// where (#213).
+    forward: Entity<crate::forward::ForwardView>,
     link_join_offer: Option<crate::links::JoinOffer>,
     /// A permalink's post to show once its channel, just joined, opens.
     link_jump: Option<(SharedString, SharedString)>,
@@ -301,6 +304,9 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
+                SwitcherEvent::Forward { post, channel } => {
+                    this.ask_forward(post.clone(), channel.clone(), window, cx)
+                }
                 SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
             },
         )
@@ -325,8 +331,14 @@ impl MainWindow {
             crate::preview::seed_drafts(cx);
         }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
-        channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
-        let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        channel.update(cx, |channel, cx| {
+            channel.set_directory(directory.clone(), cx)
+        });
+        let right_pane = cx.new(|cx| {
+            let mut pane = RightPaneView::new(me, window, cx);
+            pane.set_directory(directory.clone());
+            pane
+        });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
         }
@@ -554,6 +566,15 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::SuggestPeople(term) => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SuggestPeople {
+                            term: term.to_string(),
+                            team_id: live.team().map(str::to_string),
+                            channel_id: Some(channel.to_string()),
+                        });
+                    }
+                }
                 ChannelEvent::SaveEdit { post, text } => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::EditPost {
@@ -643,19 +664,7 @@ impl MainWindow {
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
                 ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
-                ChannelEvent::MarkUnread(post) => {
-                    if let Some(live) = &this.live {
-                        live.send(matty_sync::Command::MarkUnread {
-                            post_id: post.to_string(),
-                        });
-                    }
-                    if let Some(id) = this.selected_channel.clone() {
-                        this.sidebar
-                            .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
-                        // Stays unread until the user leaves and comes back.
-                        this.kept_unread = Some(id);
-                    }
-                }
+                ChannelEvent::MarkUnread(post) => this.mark_unread(post, cx),
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
@@ -721,9 +730,47 @@ impl MainWindow {
                         });
                     }
                 }
-                ChannelEvent::ToggleSave(_)
-                | ChannelEvent::TogglePin(_)
-                | ChannelEvent::ToggleFollow { .. } => {}
+                ChannelEvent::ToggleSave(post) => {
+                    if let Some(live) = this.live.as_mut() {
+                        let saved = !live.is_saved(post);
+                        live.set_saved(post, saved);
+                    }
+                }
+                ChannelEvent::TogglePin(post) => {
+                    // The view has already flipped the post.
+                    let pinned = this
+                        .channel
+                        .read(cx)
+                        .model()
+                        .and_then(|model| model.posts.iter().find(|shown| shown.id == *post))
+                        .map(|shown| shown.pinned);
+                    if let Some(live) = &mut this.live
+                        && let Some(pinned) = pinned
+                    {
+                        live.set_pinned(post, pinned);
+                    }
+                }
+                ChannelEvent::ToggleFollow { post, following } => {
+                    if let Some(live) = &this.live {
+                        live.follow_thread(post, *following);
+                    }
+                }
+                ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
+                ChannelEvent::OpenPermalink { channel, post } => {
+                    this.open_channel(channel.clone(), window, cx);
+                    let post = post.clone();
+                    this.channel
+                        .update(cx, |channel, cx| channel.jump_to(post, cx));
+                }
+                ChannelEvent::Forward(post) => {
+                    // After the menu has closed and handed focus back, so
+                    // the switcher's field keeps it.
+                    let post = post.clone();
+                    let switcher = this.switcher.clone();
+                    window.on_next_frame(move |window, cx| {
+                        switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                    });
+                }
             },
         )
         .detach();
@@ -822,6 +869,14 @@ impl MainWindow {
                     }
                 };
                 this.open_channel(id, window, cx);
+            },
+        )
+        .detach();
+        let forward = cx.new(|cx| crate::forward::ForwardView::new(window, cx));
+        cx.subscribe(
+            &forward,
+            |this, _, event: &crate::forward::ForwardEvent, cx| {
+                this.forward(&event.post, &event.to, &event.comment, cx)
             },
         )
         .detach();
@@ -934,6 +989,7 @@ impl MainWindow {
             kept_unread: None,
             link_asked: None,
             link_join: DialogHandle::new(false),
+            forward,
             link_join_offer: None,
             link_jump: None,
             login_server: None,
@@ -1164,11 +1220,143 @@ impl MainWindow {
         });
     }
 
+    /// Forwards a post from the open channel as a new post holding its
+    /// permalink, which the server and the webapp show as the quoted post.
+    fn forward(&mut self, post_id: &str, to: &SharedString, comment: &str, cx: &mut Context<Self>) {
+        let link = self
+            .permalink(post_id)
+            .map(|link| crate::forward::message(comment, &link));
+        let (Some(live), Some(link)) = (&self.live, link) else {
+            self.push_error(
+                "Couldn't forward the message. Try again once you're connected.",
+                cx,
+            );
+            return;
+        };
+        live.send(matty_sync::Command::SendPost {
+            pending_post_id: String::new(),
+            channel_id: to.to_string(),
+            root_id: String::new(),
+            message: link,
+            file_ids: Vec::new(),
+            props: crate::embeds::send_props(true),
+        });
+        let name = self.channel_name(to, cx);
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "forward",
+                Notice::new(format!("Forwarded to {name}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
+    /// The sidebar's name for `channel`, or "the channel".
+    fn channel_name(&self, channel: &SharedString, cx: &gpui_kit::App) -> SharedString {
+        self.sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| row.id == *channel)
+            .map_or_else(|| "the channel".into(), |row| row.name.clone())
+    }
+
+    /// Asks for an optional comment before forwarding `post` to `to`.
+    fn ask_forward(
+        &mut self,
+        post: SharedString,
+        to: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.channel_name(&to, cx);
+        let forward = self.forward.clone();
+        // After the switcher has closed and handed focus back.
+        cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(200))
+                .await;
+            forward
+                .update_in(cx, |view, window, cx| view.open(post, to, name, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn forward_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.forward.read(cx).handle().clone();
+        let popup =
+            dialog_popup("forward.popup", "Forward message", cx).child(self.forward.clone());
+        dialog("forward", &handle, popup, window, cx)
+    }
+
+    /// Marks the channel unread from `post` on, here and on the server.
+    fn mark_unread(&mut self, post: &str, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::MarkUnread {
+                post_id: post.to_string(),
+            });
+        }
+        // A reply in the thread pane may be from another channel than the
+        // open one.
+        let channel = self
+            .live
+            .as_ref()
+            .and_then(|live| live.post_channel(post))
+            .map(SharedString::from)
+            .or_else(|| self.selected_channel.clone());
+        if let Some(id) = channel {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+            // The open channel stays unread until the user leaves and comes
+            // back.
+            if self.selected_channel.as_ref() == Some(&id) {
+                self.kept_unread = Some(id);
+            }
+        }
+    }
+
+    /// Asks the server to remind the user of a post, and says when.
+    fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            if !crate::preview::enabled() {
+                self.push_error(
+                    "Couldn't set the reminder. Try again once you're connected.",
+                    cx,
+                );
+                return;
+            }
+            return self.reminder_set(at, cx);
+        };
+        live.remind(post_id, at);
+        self.reminder_set(at, cx);
+    }
+
+    fn reminder_set(&mut self, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let when = match at {
+            crate::channel::RemindAt::Tomorrow => "tomorrow at 9:00".to_string(),
+            other => other.label().to_lowercase(),
+        };
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "reminder",
+                Notice::new(format!("Reminder set for {when}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
     /// A post's permalink in the open channel, or the preview's stand-in.
     fn permalink(&self, post_id: &str) -> Option<String> {
         let link = self.live.as_ref().and_then(|live| {
-            let channel = self.selected_channel.as_ref()?;
-            live.permalink(channel, post_id)
+            let channel = live
+                .post_channel(post_id)
+                .or_else(|| self.selected_channel.as_ref().map(|id| id.to_string()))?;
+            live.permalink(&channel, post_id)
         });
         link.or_else(|| {
             crate::preview::enabled().then(|| format!("{PREVIEW_SERVER}/matty/pl/{post_id}"))
@@ -1288,9 +1476,31 @@ impl MainWindow {
             self.browse
                 .update(cx, |browse, cx| browse.set_channels(channels, cx));
         }
+        if let Some((term, people)) = update.suggested {
+            self.channel.update(cx, |channel, cx| {
+                channel.set_suggested(term.clone(), people.clone(), cx)
+            });
+            // The Threads view's thread has a reply composer of its own.
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, cx| {
+                pane.set_suggested(term.clone(), people.clone(), cx)
+            });
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_suggested(term, people, cx));
+        }
         if let Some(people) = update.people {
             self.new_message
                 .update(cx, |view, cx| view.set_profiles(people, cx));
+        }
+        // Only while the pane still shows that kind of listing.
+        if let Some(listing) = update.listing
+            && self.right_pane_open
+            && self.right_pane.read(cx).content().is_some_and(|shown| {
+                std::mem::discriminant(shown) == std::mem::discriminant(&listing)
+            })
+        {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_content(Some(listing), cx));
         }
         // Only while the pane still shows that search.
         if let Some(model) = update.search
@@ -1321,6 +1531,18 @@ impl MainWindow {
             });
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
+            // `~` completes from the sidebar's channels in both composers.
+            let directory: Vec<_> = model
+                .categories
+                .iter()
+                .flat_map(|category| category.rows.iter().cloned())
+                .collect();
+            self.right_pane
+                .update(cx, |pane, _| pane.set_directory(directory.clone()));
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, _| pane.set_directory(directory.clone()));
+            self.channel
+                .update(cx, |channel, cx| channel.set_directory(directory, cx));
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -2277,6 +2499,41 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::CopyLink(post) => self.copy_link(post, cx),
+            RightPaneEvent::SetSaved { post, saved } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_saved(post, *saved);
+                }
+            }
+            RightPaneEvent::SetPinned { post, pinned } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_pinned(post, *pinned);
+                }
+            }
+            RightPaneEvent::MarkUnread(post) => self.mark_unread(post, cx),
+            RightPaneEvent::SuggestPeople(term) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::SuggestPeople {
+                        term: term.to_string(),
+                        team_id: live.team().map(str::to_string),
+                        channel_id: live.thread_channel(),
+                    });
+                }
+            }
+            RightPaneEvent::Forward(post) => {
+                let post = post.clone();
+                let switcher = self.switcher.clone();
+                window.on_next_frame(move |window, cx| {
+                    switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                });
+            }
+            RightPaneEvent::Remind { post, at } => self.remind(post, *at, cx),
+            RightPaneEvent::SearchMore => {
+                if let Some(model) = self.live.as_mut().and_then(|live| live.search_more()) {
+                    self.right_pane
+                        .update(cx, |pane, cx| pane.set_search(model, window, cx));
+                }
+            }
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::RemoveMember { user_id } => {
@@ -2421,9 +2678,11 @@ impl MainWindow {
         }
     }
 
+    /// The right pane moves on: sync stops keeping its thread or listing.
     fn leave_thread(&mut self) {
         if let Some(live) = &mut self.live {
             live.close_thread();
+            live.close_listing();
         }
     }
 
@@ -2442,6 +2701,11 @@ impl MainWindow {
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_thread();
+        if !query.trim().is_empty() {
+            SettingsStore::global(cx).update(cx, |store, cx| {
+                store.update(cx, |settings| settings.remember_search(&query))
+            });
+        }
         if let Some(live) = self.live.as_mut()
             && !query.is_empty()
         {
@@ -2449,6 +2713,8 @@ impl MainWindow {
         }
         let preview = crate::preview::enabled();
         let model = SearchModel {
+            more: false,
+            loading_more: false,
             results: if preview {
                 crate::preview::search(&query)
             } else {
@@ -2459,8 +2725,15 @@ impl MainWindow {
         };
         self.threads_open = false;
         self.drafts_open = false;
-        self.right_pane
-            .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        let hints = self
+            .live
+            .as_ref()
+            .map(|live| live.search_hints())
+            .unwrap_or_default();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_search_hints(hints);
+            pane.set_search(model, window, cx)
+        });
         self.right_pane_open = true;
         cx.notify();
     }
@@ -2495,6 +2768,11 @@ impl MainWindow {
             },
             cx,
         );
+        if let Some(live) = self.live.as_mut() {
+            live.show_pinned(&channel.id);
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_saved(&mut self, cx: &mut Context<Self>) {
@@ -2504,6 +2782,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Saved(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_saved();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_mentions(&mut self, cx: &mut Context<Self>) {
@@ -2513,6 +2796,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Mentions(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_mentions();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     /// Keeps an open info pane in step with the channel header's star.
@@ -3712,6 +4000,7 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(self.link_join_dialog(window, cx))
+            .child(self.forward_dialog(window, cx))
             .child(switcher_element)
             .child(self.toasts.clone())
     }

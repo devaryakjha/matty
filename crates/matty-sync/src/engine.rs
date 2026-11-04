@@ -307,6 +307,16 @@ pub enum Command {
         /// What the link names.
         query: crate::LinkQuery,
     },
+    /// Asks the server who matches a typed `@name`, channel members first;
+    /// [`ChangeSet::Suggested`](crate::ChangeSet::Suggested) answers.
+    SuggestPeople {
+        /// What follows the `@`.
+        term: String,
+        /// The team to look in.
+        team_id: Option<String>,
+        /// The channel whose members come first.
+        channel_id: Option<String>,
+    },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
         /// The channel.
@@ -513,6 +523,35 @@ pub enum Command {
         terms: String,
         /// The user's offset from UTC in seconds, for `on:` and the like.
         time_zone_offset: i32,
+        /// Which page of results, from 0.
+        page: u32,
+    },
+    /// Asks the server to remind the user of a post at `target_time`
+    /// (Unix seconds); only a failure answers.
+    SetReminder {
+        /// The post.
+        post_id: String,
+        /// When, in Unix seconds.
+        target_time: i64,
+    },
+    /// Loads a listing; [`ChangeSet::Listing`](crate::ChangeSet::Listing)
+    /// answers.
+    LoadListing(crate::Listing),
+    /// Saves or unsaves a post for the user (a `flagged_post` preference);
+    /// [`ChangeSet::Saved`](crate::ChangeSet::Saved) follows at once.
+    SetSaved {
+        /// The post.
+        post_id: String,
+        /// Save it, or unsave it.
+        saved: bool,
+    },
+    /// Pins or unpins a post in its channel; the post comes back edited
+    /// over the WebSocket.
+    SetPinned {
+        /// The post.
+        post_id: String,
+        /// Pin it, or unpin it.
+        pinned: bool,
     },
     /// Creates a channel the user is then in;
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -714,6 +753,8 @@ impl std::fmt::Debug for Command {
             Self::ResolveLink { query } => {
                 f.debug_struct("ResolveLink").field("query", query).finish()
             }
+            // A half-typed name is the user's own words: keep it out of logs.
+            Self::SuggestPeople { .. } => f.write_str("SuggestPeople"),
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -820,6 +861,25 @@ impl std::fmt::Debug for Command {
                 .debug_struct("Search")
                 .field("team_id", team_id)
                 .finish_non_exhaustive(),
+            Self::SetReminder {
+                post_id,
+                target_time,
+            } => f
+                .debug_struct("SetReminder")
+                .field("post_id", post_id)
+                .field("target_time", target_time)
+                .finish(),
+            Self::LoadListing(listing) => f.debug_tuple("LoadListing").field(listing).finish(),
+            Self::SetSaved { post_id, saved } => f
+                .debug_struct("SetSaved")
+                .field("post_id", post_id)
+                .field("saved", saved)
+                .finish(),
+            Self::SetPinned { post_id, pinned } => f
+                .debug_struct("SetPinned")
+                .field("post_id", post_id)
+                .field("pinned", pinned)
+                .finish(),
             Self::FindPeople { team_id } => f
                 .debug_struct("FindPeople")
                 .field("team_id", team_id)
@@ -864,6 +924,8 @@ pub(crate) struct Dirty {
     pub(crate) unreads: bool,
     /// Preferences changed.
     pub(crate) preferences: bool,
+    /// The saved posts may have changed.
+    pub(crate) saved: bool,
     /// The cache lost track of the server and must catch up (#37).
     pub(crate) resync: bool,
     /// Change sets that carry their own data.
@@ -1080,6 +1142,7 @@ impl Engine {
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;
+                    dirty.saved = true;
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                     publish_drafts(&tx, dirty)?;
@@ -1505,6 +1568,17 @@ impl Engine {
                         None => writes.push(Write::Resolve(query)),
                     }
                 }
+                Message::Command(Command::SuggestPeople {
+                    term,
+                    team_id,
+                    channel_id,
+                }) => {
+                    writes.push(Write::Suggest {
+                        term,
+                        team_id,
+                        channel_id,
+                    });
+                }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
@@ -1641,9 +1715,11 @@ impl Engine {
                     team_id,
                     terms,
                     time_zone_offset,
+                    page,
                 }) => {
                     let mut query = matty_api::SearchQuery::new(terms);
                     query.time_zone_offset = time_zone_offset;
+                    query.page = page;
                     query.per_page = SEARCH_PAGE;
                     writes.push(Write::Search {
                         team_id,
@@ -1652,6 +1728,38 @@ impl Engine {
                 }
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
+                }
+                Message::Command(Command::SetReminder {
+                    post_id,
+                    target_time,
+                }) => writes.push(Write::Reminder {
+                    post_id,
+                    target_time,
+                }),
+                Message::Command(Command::LoadListing(listing)) => {
+                    writes.push(Write::Listing(listing));
+                }
+                Message::Command(Command::SetSaved { post_id, saved }) => {
+                    if let Some(me) = &self.me {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: SAVED_CATEGORY.into(),
+                            name: post_id,
+                            value: "true".into(),
+                        };
+                        let preferences = vec![preference];
+                        if saved {
+                            sidebar::upsert_preferences(&tx, &preferences)?;
+                            writes.push(Write::Preferences(preferences));
+                        } else {
+                            sidebar::delete_preferences(&tx, &preferences)?;
+                            writes.push(Write::DeletePreferences(preferences));
+                        }
+                        dirty.saved = true;
+                    }
+                }
+                Message::Command(Command::SetPinned { post_id, pinned }) => {
+                    writes.push(Write::Pin { post_id, pinned });
                 }
                 Message::Command(Command::CreateChannel {
                     team_id,
@@ -2508,6 +2616,7 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
                 dirty.direct.push(ChangeSet::Preferences);
+                dirty.saved = true;
                 dirty
                     .direct
                     .push(ChangeSet::AccountPreferences(account_preferences(
@@ -2769,11 +2878,31 @@ impl Engine {
                     image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
                 });
             }
+            Loaded::Suggested { term, users } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                self.sent_users.extend(users.iter().map(|u| u.id.clone()));
+                let users: Arc<[matty_api::models::User]> = Arc::from(users);
+                if !users.is_empty() {
+                    dirty.direct.push(ChangeSet::Users(users.clone()));
+                }
+                dirty.direct.push(ChangeSet::Suggested { term, users });
+            }
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
-            Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
+            Loaded::Search {
                 terms,
+                page,
+                posts,
+                more,
+            } => dirty.direct.push(ChangeSet::Search {
+                terms,
+                page,
+                posts: Arc::from(posts),
+                more,
+            }),
+            Loaded::Listing { listing, posts } => dirty.direct.push(ChangeSet::Listing {
+                listing,
                 posts: Arc::from(posts),
             }),
             Loaded::People { team_id, users } => {
@@ -3103,6 +3232,11 @@ impl Engine {
     }
 
     fn publish(&mut self, mut dirty: Dirty) {
+        if (dirty.saved || dirty.preferences)
+            && let Ok(saved) = saved_post_ids(self.store.conn())
+        {
+            dirty.direct.push(ChangeSet::Saved(Arc::from(saved)));
+        }
         if dirty.preferences {
             self.preferences_changed(&mut dirty);
         }
@@ -3283,8 +3417,11 @@ impl Engine {
                 ChangeSet::Posts { posts, .. }
                 | ChangeSet::ReplyRoots { roots: posts, .. }
                 | ChangeSet::Thread { posts, .. }
-                | ChangeSet::Search { posts, .. } => {
+                | ChangeSet::Search { posts, .. }
+                | ChangeSet::Listing { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
+                    // Forwards quote another post, named by its author.
+                    ids.extend(posts.iter().flat_map(quoted_authors));
                 }
                 // The Threads view names each root's author and who replied.
                 ChangeSet::ThreadList { threads, roots, .. } => {
@@ -3456,6 +3593,30 @@ impl Engine {
             });
         }
     }
+}
+
+/// The authors of the posts a post quotes through permalinks.
+fn quoted_authors(post: &matty_api::models::Post) -> impl Iterator<Item = String> + '_ {
+    post.metadata
+        .embeds
+        .iter()
+        .filter(|embed| embed.kind == matty_api::models::EmbedKind::Permalink)
+        .filter_map(|embed| {
+            let id = embed.data.as_ref()?.get("post")?.get("user_id")?.as_str()?;
+            (!id.is_empty()).then(|| id.to_owned())
+        })
+}
+
+/// The preference category Mattermost keeps saved ("flagged") posts in.
+const SAVED_CATEGORY: &str = "flagged_post";
+
+/// The posts the user saved, as the cache knows them.
+fn saved_post_ids(conn: &Db) -> Result<Vec<String>, StoreError> {
+    Ok(all_preferences(conn)?
+        .into_iter()
+        .filter(|preference| preference.category == SAVED_CATEGORY && preference.value == "true")
+        .map(|preference| preference.name)
+        .collect())
 }
 
 fn all_preferences(conn: &Db) -> Result<Vec<Preference>, StoreError> {
