@@ -928,24 +928,32 @@ impl Engine {
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                 }
-                Message::Command(Command::SignOut) => match self.session.take() {
-                    Some(old) => {
-                        old.load.abort();
-                        // Dropping the session closes the WebSocket.
-                        let client = old.client.clone();
-                        drop(old);
-                        let loaded = self.loaded.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = client.logout().await {
-                                tracing::warn!(%error, "the server did not end the session");
-                            }
-                            let _ = loaded.send(Loaded::SignedOut);
-                        });
+                Message::Command(Command::SignOut) => {
+                    // Nothing queued in this session may go out under the
+                    // next, even if the cache outlives the sign out (#194).
+                    let dropped = queue::clear(&tx)?;
+                    if dropped > 0 {
+                        tracing::info!(dropped, "dropped queued sends at sign out");
                     }
-                    None => dirty
-                        .direct
-                        .push(ChangeSet::Connection(Connection::SignedOut)),
-                },
+                    match self.session.take() {
+                        Some(old) => {
+                            old.load.abort();
+                            // Dropping the session closes the WebSocket.
+                            let client = old.client.clone();
+                            drop(old);
+                            let loaded = self.loaded.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = client.logout().await {
+                                    tracing::warn!(%error, "the server did not end the session");
+                                }
+                                let _ = loaded.send(Loaded::SignedOut);
+                            });
+                        }
+                        None => dirty
+                            .direct
+                            .push(ChangeSet::Connection(Connection::SignedOut)),
+                    }
+                }
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
                     to_fetch.push(channel_id.clone());

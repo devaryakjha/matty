@@ -141,6 +141,192 @@ pub fn waiting_to_send(post: &Post, away: bool) -> bool {
         }
 }
 
+/// Whether the post waits for the connection to come back (#195). It
+/// never folds under the post before it, so its clock and "Will send
+/// when back online" show even in a run of the user's own posts.
+pub fn queued(post: &Post, away: bool) -> bool {
+    post.status == PostStatus::Pending && away
+}
+
+/// The clock in a queued post's header (#195).
+pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
+    lucide(LucideIcon::Clock)
+        .size(scaled(theme, metrics::ICON_TINY))
+        .text_color(theme.colors.muted_foreground)
+}
+
+/// A post's header time, or where it is on its way to the server.
+pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
+    match post.status {
+        PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+        PostStatus::Pending if away => "Will send when back online".into(),
+        PostStatus::Pending => "Sending…".into(),
+        PostStatus::Failed => "Not sent".into(),
+    }
+}
+
+/// Edit and Discard… for a post waiting to send (#195), after a
+/// separator; nothing for any other post. `prefix` scopes the item ids.
+pub(crate) fn waiting_items(
+    prefix: &str,
+    post: &Post,
+    away: bool,
+    edit: impl Fn(&mut Window, &mut App) + 'static,
+    discard: impl Fn(&mut Window, &mut App) + 'static,
+) -> Vec<MenuItem> {
+    if !waiting_to_send(post, away) {
+        return Vec::new();
+    }
+    vec![
+        MenuItem::separator(),
+        MenuItem::new(
+            gpui_kit::ElementId::Name(format!("{prefix}.edit").into()),
+            "Edit",
+        )
+        .on_click(move |_, window, cx| edit(window, cx)),
+        MenuItem::new(
+            gpui_kit::ElementId::Name(format!("{prefix}.discard").into()),
+            "Discard…",
+        )
+        .on_click(move |_, window, cx| discard(window, cx)),
+    ]
+}
+
+/// A composer holding `body` to edit a post in place: the format
+/// shortcuts apply and Escape runs `cancel`.
+pub(crate) fn edit_composer(
+    body: SharedString,
+    cancel: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ComposerState> {
+    let composer = cx.new(|cx| {
+        let this = cx.weak_entity();
+        let mut state = ComposerState::new(12, window, cx);
+        state.set_value(body, window, cx);
+        state.set_on_key(move |keystroke, window, cx| {
+            if keystroke.key == "escape" {
+                cancel(window, cx);
+                return true;
+            }
+            this.upgrade()
+                .is_some_and(|editor| apply_format(&editor, keystroke, window, cx))
+        });
+        state
+    });
+    let focus = composer.clone();
+    window.on_next_frame(move |window, cx| {
+        focus.update(cx, |composer, cx| {
+            let end = composer.value(cx).len();
+            composer.set_selection(end..end, cx);
+            composer.focus(window, cx);
+        });
+    });
+    composer
+}
+
+/// The in-place editor for a post: its composer, the key hint and the
+/// Cancel and Save buttons. `prefix` scopes the button ids.
+pub(crate) fn post_editor(
+    prefix: &str,
+    composer: &Entity<ComposerState>,
+    cap: Pixels,
+    cancel: impl Fn(&mut Window, &mut App) + 'static,
+    save: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx).clone();
+    let text = composer.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme.space(2.))
+        .pt(theme.space(1.))
+        .child(
+            Composer::new(composer)
+                .max_height(cap)
+                .rounded(theme.radius.md),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(theme.space(2.))
+                .child(
+                    div()
+                        .flex_1()
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child("Enter to save · Escape to cancel"),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(format!("{prefix}.cancel").into()))
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label("Cancel")
+                        .on_click(move |_, window, cx| cancel(window, cx)),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(format!("{prefix}.save").into()))
+                        .variant(ButtonVariant::Default)
+                        .size(ButtonSize::Sm)
+                        .label("Save")
+                        .on_click(move |_, window, cx| {
+                            let value = text.read(cx).value(cx);
+                            save(value, window, cx)
+                        }),
+                ),
+        )
+}
+
+/// "Delete this message?", or "Discard this message?" for one the server
+/// never got (#195), naming `place` it is removed from. `prefix` scopes
+/// the ids.
+pub(crate) fn delete_popup(
+    prefix: &str,
+    unsent: bool,
+    place: &str,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let theme = UiTheme::read(cx).clone();
+    let id = |part: &str| gpui_kit::ElementId::Name(format!("{prefix}.{part}").into());
+    let (label, title, description, action): (_, _, SharedString, _) = if unsent {
+        (
+            "Discard message",
+            "Discard this message?",
+            "It has not been sent, so nobody else has seen it. This cannot be undone.".into(),
+            "Discard",
+        )
+    } else {
+        (
+            "Delete message",
+            "Delete this message?",
+            format!("It is removed for everyone in {place}. This cannot be undone.").into(),
+            "Delete",
+        )
+    };
+    dialog_popup(id("popup"), label, cx)
+        .child(dialog_title(id("title"), cx).child(title))
+        .child(dialog_description(id("description"), cx).child(description))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(theme.space(2.))
+                .pt(theme.space(2.))
+                .child(
+                    alert_dialog_cancel(id("cancel"))
+                        .variant(ButtonVariant::Outline)
+                        .label("Cancel"),
+                )
+                .child(
+                    alert_dialog_action(id("confirm"))
+                        .variant(ButtonVariant::Destructive)
+                        .label(action),
+                ),
+        )
+}
+
 /// The tooltip builder for a message's reaction chips, looking each chip
 /// up in `reactions` by emoji.
 pub fn reaction_tooltip(
@@ -1888,25 +2074,15 @@ impl ChannelView {
         };
         let body = post.body.clone();
         let view = cx.weak_entity();
-        let composer = cx.new(|cx| {
-            let mut state = ComposerState::new(12, window, cx);
-            state.set_value(body, window, cx);
-            state.set_on_key(move |keystroke, window, cx| {
-                if keystroke.key == "escape" {
-                    view.update(cx, |this, cx| this.cancel_edit(window, cx))
-                        .ok();
-                    return true;
-                }
-                let editor = view.upgrade().and_then(|view| {
-                    view.read(cx)
-                        .editing
-                        .as_ref()
-                        .map(|editing| editing.composer.clone())
-                });
-                editor.is_some_and(|editor| apply_format(&editor, keystroke, window, cx))
-            });
-            state
-        });
+        let composer = edit_composer(
+            body,
+            move |window, cx| {
+                view.update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
         let subscription = cx.subscribe_in(
             &composer,
             window,
@@ -1916,14 +2092,6 @@ impl ChannelView {
                 }
             },
         );
-        let focus = composer.clone();
-        window.on_next_frame(move |window, cx| {
-            focus.update(cx, |composer, cx| {
-                let end = composer.value(cx).len();
-                composer.set_selection(end..end, cx);
-                composer.focus(window, cx);
-            });
-        });
         let row = self.rows.iter().position(|row| match row {
             Row::Post(index) => self
                 .model
@@ -1994,50 +2162,22 @@ impl ChannelView {
         cap: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let save = composer.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .pt(theme.space(1.))
-            .child(
-                Composer::new(composer)
-                    .max_height(cap)
-                    .rounded(theme.radius.md),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme.space(2.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .type_style(style::META, &theme)
-                            .text_color(theme.colors.muted_foreground)
-                            .child("Enter to save · Escape to cancel"),
-                    )
-                    .child(
-                        Button::new("post.edit.cancel")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .label("Cancel")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.cancel_edit(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("post.edit.save")
-                            .variant(ButtonVariant::Default)
-                            .size(ButtonSize::Sm)
-                            .label("Save")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let text = save.read(cx).value(cx);
-                                this.save_edit(text, window, cx)
-                            })),
-                    ),
-            )
+        let (cancel, save) = (cx.weak_entity(), cx.weak_entity());
+        post_editor(
+            "post.edit",
+            composer,
+            cap,
+            move |window, cx| {
+                cancel
+                    .update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            move |text, window, cx| {
+                save.update(cx, |this, cx| this.save_edit(text, window, cx))
+                    .ok();
+            },
+            cx,
+        )
     }
 
     /// Applies `change` to the post with `id`, if it is loaded, and redraws.
@@ -2075,23 +2215,11 @@ impl ChannelView {
         const LIMIT: usize = 8;
         let query = query.to_lowercase();
         match trigger {
-            '@' => self
-                .model
-                .iter()
-                .flat_map(|model| model.profiles.iter())
-                .filter(|profile| {
-                    profile.username.to_lowercase().starts_with(&query)
-                        || profile.display_name.to_lowercase().contains(&query)
-                })
-                .take(LIMIT)
-                .map(|profile| {
-                    ComposerSuggestion::new(
-                        format!("@{}", profile.username),
-                        profile.display_name.clone(),
-                    )
-                    .description(format!("@{}", profile.username))
-                })
-                .collect(),
+            '@' => people_suggestions(
+                self.model.iter().flat_map(|model| model.profiles.iter()),
+                &query,
+                LIMIT,
+            ),
             '~' => self
                 .directory
                 .iter()
@@ -2358,23 +2486,25 @@ impl ChannelView {
             ),
         ];
         if post.status != PostStatus::Sent {
-            if waiting_to_send(post, away) {
-                let edit_id = id.clone();
-                let discard_id = id.clone();
-                items.push(MenuItem::separator());
-                items.push(act(
-                    "edit",
-                    "Edit".into(),
-                    Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
-                ));
-                items.push(act(
-                    "discard",
-                    "Discard…".into(),
-                    Box::new(move |this, window, cx| {
-                        this.ask_delete(discard_id.clone(), window, cx)
-                    }),
-                ));
-            }
+            let (edit_view, edit_id) = (view.clone(), id.clone());
+            let (discard_view, discard_id) = (view.clone(), id.clone());
+            items.extend(waiting_items(
+                "post.menu",
+                post,
+                away,
+                move |window, cx| {
+                    edit_view
+                        .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                        .ok();
+                },
+                move |window, cx| {
+                    discard_view
+                        .update(cx, |this, cx| {
+                            this.ask_delete(discard_id.clone(), window, cx)
+                        })
+                        .ok();
+                },
+            ));
             return items;
         }
         items.extend([
@@ -2495,7 +2625,6 @@ impl ChannelView {
 
     /// "Delete message?" with the action named in the button (PLAN §4.5).
     fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = UiTheme::read(cx).clone();
         let channel: SharedString = match self.model.as_ref() {
             Some(channel) => match channel.kind {
                 ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
@@ -2514,41 +2643,7 @@ impl ChannelView {
                     .any(|post| &post.id == id && post.status != PostStatus::Sent)
             })
         });
-        let (label, title, description, action): (_, _, SharedString, _) = if unsent {
-            (
-                "Discard message",
-                "Discard this message?",
-                "It has not been sent, so nobody else has seen it. This cannot be undone.".into(),
-                "Discard",
-            )
-        } else {
-            (
-                "Delete message",
-                "Delete this message?",
-                format!("It is removed for everyone in {channel}. This cannot be undone.").into(),
-                "Delete",
-            )
-        };
-        let popup = dialog_popup("post.delete.popup", label, cx)
-            .child(dialog_title("post.delete.title", cx).child(title))
-            .child(dialog_description("post.delete.description", cx).child(description))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(theme.space(2.))
-                    .pt(theme.space(2.))
-                    .child(
-                        alert_dialog_cancel("post.delete.cancel")
-                            .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
-                    )
-                    .child(
-                        alert_dialog_action("post.delete.confirm")
-                            .variant(ButtonVariant::Destructive)
-                            .label(action),
-                    ),
-            );
+        let popup = delete_popup("post.delete", unsent, &channel, cx);
         let view = cx.entity().downgrade();
         alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
             view.update(cx, |this, cx| {
@@ -3080,12 +3175,7 @@ impl ChannelView {
         let add_view = view.clone();
         let retry_view = view.clone();
         let retry_id = id.clone();
-        let time: SharedString = match post.status {
-            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
-            PostStatus::Pending if away => "Will send when back online".into(),
-            PostStatus::Pending => "Sending…".into(),
-            PostStatus::Failed => "Not sent".into(),
-        };
+        let time = post_time(post, away, cx);
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
             .timestamp(time.clone())
@@ -3101,7 +3191,7 @@ impl ChannelView {
                         .ok();
                 }
             })
-            .continuation(post.continues)
+            .continuation(post.continues && !queued(post, away))
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
@@ -3155,13 +3245,9 @@ impl ChannelView {
                     }
                 },
             });
-        if post.status == PostStatus::Pending && away {
+        if queued(post, away) {
             // Queued: a clock marks "Will send when back online" (#195).
-            row = row.header_child(
-                lucide(LucideIcon::Clock)
-                    .size(scaled(&theme, metrics::ICON_TINY))
-                    .text_color(theme.colors.muted_foreground),
-            );
+            row = row.header_child(queued_marker(&theme));
         }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
@@ -4035,9 +4121,81 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .child(picker)
 }
 
+/// `@` suggestions from `profiles` for `query` (lowercase): a person
+/// matches by username prefix or anywhere in the name the user's format
+/// shows (#156). The row reads that name, with the username under it
+/// when it says something more.
+fn people_suggestions<'a>(
+    profiles: impl Iterator<Item = &'a UserProfile>,
+    query: &str,
+    limit: usize,
+) -> Vec<ComposerSuggestion> {
+    profiles
+        .filter(|profile| {
+            profile.username.to_lowercase().starts_with(query)
+                || profile.display_name.to_lowercase().contains(query)
+        })
+        .take(limit)
+        .map(|profile| {
+            let suggestion = ComposerSuggestion::new(
+                format!("@{}", profile.username),
+                profile.display_name.clone(),
+            );
+            if profile.display_name == profile.username {
+                suggestion
+            } else {
+                suggestion.description(format!("@{}", profile.username))
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mention_suggestions_name_people_in_the_users_format() {
+        use crate::settings::NameFormat;
+        let user = matty_api::models::User {
+            id: "u1".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            nickname: "Countess".into(),
+            ..Default::default()
+        };
+        let profile = |format| UserProfile {
+            user_id: "u1".into(),
+            username: "ada".into(),
+            display_name: crate::transcript::display_name_as(&user, format).into(),
+            position: None,
+            presence: crate::sidebar::Presence::Offline,
+            status_text: None,
+            local_time: None,
+        };
+        let shown = |format, query: &str| {
+            people_suggestions(std::iter::once(&profile(format)), query, 8)
+                .into_iter()
+                .map(|s| (s.value, s.label, s.description))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shown(NameFormat::FullName, "love"),
+            vec![("@ada".into(), "Ada Lovelace".into(), Some("@ada".into()))]
+        );
+        assert_eq!(
+            shown(NameFormat::NicknameFullName, "ad"),
+            vec![("@ada".into(), "Countess".into(), Some("@ada".into()))]
+        );
+        // The username alone needs no second line saying it again.
+        assert_eq!(
+            shown(NameFormat::Username, "ad"),
+            vec![("@ada".into(), "ada".into(), None)]
+        );
+        // A name the format hides no longer matches.
+        assert!(shown(NameFormat::Username, "love").is_empty());
+    }
 
     #[test]
     fn reaction_summaries_read_like_a_sentence() {

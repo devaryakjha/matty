@@ -435,3 +435,53 @@ async fn a_posts_properties_reach_the_server() {
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body["props"]["remove_link_preview"], "true");
 }
+
+/// Signing out drops what is still queued, so a later sign in to the same
+/// cache sends nothing written in this session (#194).
+#[tokio::test(flavor = "multi_thread")]
+async fn sign_out_clears_the_outbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let path_on_disk = dir.path().join("account.sqlite");
+    let down = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+            "id": "app.busy", "message": "Busy.", "status_code": 503
+        })))
+        .mount(&down)
+        .await;
+    let sync = matty_sync::spawn(Store::open(&path_on_disk).unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(down.uri()).unwrap().with_token("token"),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Connection(Connection::Loaded))
+    })
+    .await;
+    sync.send(post_in("c1", "me:1", "one"));
+    sync.send(post_in("c2", "me:2", "two"));
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Outbox { channel_id, sends } if channel_id == "c2" && sends.len() == 1)
+    })
+    .await;
+    sync.send(Command::SignOut);
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Connection(Connection::SignedOut))
+    })
+    .await;
+    drop(changes);
+    drop(sync);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let store = Store::open(&path_on_disk).unwrap();
+    assert!(
+        matty_store::outbox::channels(store.conn())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        matty_store::posts::post(store.conn(), "me:1")
+            .unwrap()
+            .is_none()
+    );
+}

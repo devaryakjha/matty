@@ -376,6 +376,10 @@ pub struct SidebarChannel {
     pub display_name: String,
     /// For a direct message, the other person's id.
     pub dm_user_id: Option<String>,
+    /// For a direct message, the other person's names as stored (id,
+    /// username, first and last name, nickname), so the app can name the
+    /// row in the user's name format (#156). `None` until the user is known.
+    pub dm_user: Option<User>,
     /// Unread and mention counts in the requested mode.
     pub unreads: Unreads,
     /// Muted: the member's `mark_unread` is `mention`, or the category is muted.
@@ -410,7 +414,7 @@ const SNAPSHOT: &str = "
            ch.total_msg_count, ch.total_msg_count_root,
            m.msg_count, m.mention_count, m.msg_count_root, m.mention_count_root,
            m.urgent_mention_count, m.notify_props,
-           u.username
+           u.username, u.first_name, u.last_name, u.nickname
     FROM categories cat
     LEFT JOIN category_channels cc ON cc.category_id = cat.id
     LEFT JOIN channels ch ON ch.id = cc.channel_id AND ch.delete_at = 0
@@ -505,7 +509,19 @@ pub fn sidebar_snapshot(
             ..ChannelMember::default()
         };
         let dm_user_id = (kind == "D").then(|| dm_partner(&name, user_id)).flatten();
-        let display_name = match row.get::<_, Option<String>>(19)? {
+        let username = row.get::<_, Option<String>>(19)?;
+        let dm_user = match (&dm_user_id, &username) {
+            (Some(id), Some(username)) => Some(User {
+                id: id.clone(),
+                username: username.clone(),
+                first_name: row.get(20)?,
+                last_name: row.get(21)?,
+                nickname: row.get(22)?,
+                ..User::default()
+            }),
+            _ => None,
+        };
+        let display_name = match username {
             Some(username) => username,
             None => row.get(9)?,
         };
@@ -516,6 +532,7 @@ pub fn sidebar_snapshot(
             kind,
             display_name,
             dm_user_id,
+            dm_user,
             last_post_at: row.get(10)?,
         });
     }

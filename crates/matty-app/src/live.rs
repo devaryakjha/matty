@@ -11,8 +11,8 @@ use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ProbeError, ServerCapabilities};
 use matty_sync::{
-    ChangeSet, Command, Connection, ImageSize, SidebarSection, SyncHandle, TeamWithUnreads,
-    UploadState,
+    ChangeSet, Command, Connection, ImageSize, SidebarChannel, SidebarSection, SyncHandle,
+    TeamWithUnreads, UploadState,
 };
 
 use crate::channel::{ChannelModel, Post};
@@ -715,7 +715,7 @@ impl Live {
             .map(|(user_id, _)| {
                 self.users
                     .get(user_id)
-                    .map(crate::transcript::display_name)
+                    .map(|user| crate::transcript::display_name_as(user, self.names))
                     .unwrap_or_else(|| "Someone".into())
                     .into()
             })
@@ -799,6 +799,7 @@ impl Live {
             update.threads = Some(self.threads_model());
         }
         update.search = self.search_model();
+        update.categories = self.shown_categories();
         update
     }
 
@@ -948,7 +949,16 @@ impl Live {
             .flat_map(|sections| sections.iter())
             .flat_map(|section| section.channels.iter())
             .find(|channel| channel.id == channel_id)
-            .map(|channel| channel.display_name.clone().into())
+            .map(|channel| self.sidebar_name(channel).into())
+    }
+
+    /// A sidebar channel's name: a direct message's in the user's name
+    /// format (#156), any other channel's as the server names it.
+    fn sidebar_name(&self, channel: &SidebarChannel) -> String {
+        match &channel.dm_user {
+            Some(person) => crate::transcript::display_name_as(person, self.names),
+            None => channel.display_name.clone(),
+        }
     }
 
     /// The team on screen.
@@ -1481,11 +1491,14 @@ impl Live {
                             _ => ChannelKind::Public,
                         };
                         let mut row =
-                            ChannelRow::new(channel.id.clone(), channel.display_name.clone(), kind);
+                            ChannelRow::new(channel.id.clone(), self.sidebar_name(channel), kind);
                         if channel.kind == "D"
                             && let Some(user_id) = &channel.dm_user_id
                         {
                             row = row.person(user_id.clone());
+                        }
+                        if let Some(person) = &channel.dm_user {
+                            row = row.handle(person.username.clone());
                         }
                         if channel.unreads.messages > 0 {
                             row = row.unread();
@@ -1789,6 +1802,7 @@ mod tests {
             kind: kind.into(),
             display_name: id.into(),
             dm_user_id: (kind == "D").then(|| format!("{id}-user")),
+            dm_user: None,
             unreads: Unreads {
                 messages,
                 mentions,
@@ -1976,6 +1990,41 @@ mod tests {
         );
         // Another team's sidebar changing leaves the shown one alone.
         assert_eq!(live.apply(&t2).categories, None);
+    }
+
+    #[test]
+    fn a_dm_row_follows_the_name_format_and_keeps_the_username_to_find_it() {
+        use crate::settings::NameFormat;
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let mut dm = channel("dm", "D", 0, 0);
+        dm.display_name = "ada".into();
+        dm.dm_user = Some(User {
+            id: "dm-user".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            nickname: "Countess".into(),
+            ..User::default()
+        });
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![dm])]),
+        });
+        let row = &update.categories.unwrap()[0].rows[0];
+        assert_eq!(row.name.as_ref(), "Countess");
+        assert_eq!(row.handle.as_deref(), Some("ada"));
+        // A new format renames the sidebar (and so the switcher) at once.
+        let update = live.set_names(NameFormat::FullName);
+        assert_eq!(
+            update.categories.unwrap()[0].rows[0].name.as_ref(),
+            "Ada Lovelace"
+        );
+        let update = live.set_names(NameFormat::Username);
+        assert_eq!(update.categories.unwrap()[0].rows[0].name.as_ref(), "ada");
+        assert_eq!(live.channel_name("dm").as_deref(), Some("ada"));
     }
 
     #[test]

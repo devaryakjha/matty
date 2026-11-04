@@ -161,3 +161,18 @@ pub fn remove(conn: &Connection, pending_post_id: &str) -> Result<bool> {
         .execute([pending_post_id])?;
     Ok(removed > 0)
 }
+
+/// Drops every queued send with its optimistic post and files, and says
+/// how many there were. Sign out calls it so nothing written in this
+/// session goes out under the next one (#194).
+pub fn clear(conn: &Connection) -> Result<usize> {
+    let ids: Vec<String> = conn
+        .prepare_cached("SELECT pending_post_id FROM outbox")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in &ids {
+        crate::posts::remove_post(conn, id)?;
+    }
+    conn.prepare_cached("DELETE FROM outbox")?.execute([])?;
+    Ok(ids.len())
+}
