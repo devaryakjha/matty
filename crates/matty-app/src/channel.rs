@@ -3917,6 +3917,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
