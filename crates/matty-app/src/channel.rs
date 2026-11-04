@@ -1339,7 +1339,7 @@ impl ChannelView {
                         )
                         .into_any_element(),
                     )
-                } else if suggestion.value.starts_with('~') {
+                } else if suggestion.value.starts_with(['~', '/']) {
                     None
                 } else {
                     Some(div().child(suggestion.value.clone()).into_any_element())
