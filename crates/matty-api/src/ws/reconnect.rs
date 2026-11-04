@@ -5,13 +5,11 @@
 
 use std::{
     fmt,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use serde_json::Value;
@@ -71,8 +69,8 @@ struct XorShift(AtomicU64);
 
 impl XorShift {
     fn seeded() -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let nanos = crate::rt::SystemTime::now()
+            .duration_since(crate::rt::UNIX_EPOCH)
             .map_or(0x9e37_79b9_7f4a_7c15, |d| d.as_nanos() as u64);
         Self(AtomicU64::new(nanos | 1))
     }
@@ -96,7 +94,7 @@ pub type Dialed = Result<(WsConnection, mpsc::UnboundedReceiver<WsMessage>), Api
 /// the real one; tests dial in-memory servers.
 pub trait Dialer: Send + Sync + 'static {
     /// Opens one connection.
-    fn dial(&self, resume: Option<Resume>) -> Pin<Box<dyn Future<Output = Dialed> + Send>>;
+    fn dial(&self, resume: Option<Resume>) -> crate::rt::BoxFuture<'static, Dialed>;
 }
 
 /// Dials the server a [`Client`] points at, with its session token.
@@ -109,7 +107,7 @@ pub struct ClientDialer {
 }
 
 impl Dialer for ClientDialer {
-    fn dial(&self, resume: Option<Resume>) -> Pin<Box<dyn Future<Output = Dialed> + Send>> {
+    fn dial(&self, resume: Option<Resume>) -> crate::rt::BoxFuture<'static, Dialed> {
         let (client, config) = (self.client.clone(), self.config);
         Box::pin(async move { WsConnection::resume(&client, config, resume.as_ref()).await })
     }
@@ -211,7 +209,7 @@ impl WsClient {
             control: control_rx,
             current: current.clone(),
         };
-        tokio::spawn(supervisor.run());
+        crate::rt::spawn(supervisor.run());
         (Self { control, current }, signal_rx)
     }
 
@@ -275,24 +273,22 @@ const WAKE_CHECK: Duration = Duration::from_secs(5);
 /// Wall-clock time beyond the monotonic clock's that counts as a sleep.
 pub(crate) const SLEPT_AFTER: Duration = Duration::from_secs(10);
 
-fn wake_checks() -> tokio::time::Interval {
-    let mut checks = tokio::time::interval(WAKE_CHECK);
-    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    checks
+fn wake_checks() -> crate::rt::Interval {
+    crate::rt::interval(WAKE_CHECK)
 }
 
 /// Notices a sleep: the monotonic clock stops while the computer sleeps
 /// and the wall clock does not, on macOS, Linux and Windows alike.
 struct SleepWatch {
-    wall: SystemTime,
-    mono: tokio::time::Instant,
+    wall: crate::rt::SystemTime,
+    mono: crate::rt::Instant,
 }
 
 impl SleepWatch {
     fn new() -> Self {
         Self {
-            wall: SystemTime::now(),
-            mono: tokio::time::Instant::now(),
+            wall: crate::rt::SystemTime::now(),
+            mono: crate::rt::Instant::now(),
         }
     }
 
@@ -376,7 +372,7 @@ impl Supervisor {
                 attempt,
                 reason,
             }));
-            let wait = tokio::time::sleep(self.backoff.delay(attempt, self.jitter.unit()));
+            let wait = crate::rt::sleep(self.backoff.delay(attempt, self.jitter.unit()));
             tokio::pin!(wait);
             let mut sleep_watch = SleepWatch::new();
             let mut checks = wake_checks();

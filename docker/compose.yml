@@ -42,6 +42,11 @@ services:
       # scripts/record-fixtures.py uses to record embeds offline.
       MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "localhost 127.0.0.1"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
+      # The web build (scripts/web serve) calls the server from another
+      # origin. It reads the session from the `Token` header, which a
+      # browser only shows a page when the server exposes it.
+      MM_SERVICESETTINGS_ALLOWCORSFROM: ${MATTY_MM_CORS:-http://127.0.0.1:8080 http://localhost:8080}
+      MM_SERVICESETTINGS_CORSEXPOSEDHEADERS: "Token ETag X-Request-Id X-Ratelimit-Limit X-Ratelimit-Remaining X-Ratelimit-Reset"
       # disabled, default_off, default_on or always_on.
       MM_SERVICESETTINGS_COLLAPSEDTHREADS: ${MATTY_CRT:-default_on}
       MM_SERVICESETTINGS_ENABLEPOSTPRIORITY: "true"

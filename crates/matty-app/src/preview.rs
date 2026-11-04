@@ -8,6 +8,21 @@
 use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, CategoryKind, ChannelKind, ChannelRow, Presence, SidebarModel};
 
+static WEB_VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the preview value where there is no environment (the web build reads
+/// it from the page's `?preview=` query).
+pub fn set(value: String) {
+    let _ = WEB_VALUE.set(value);
+}
+
+fn value() -> Option<String> {
+    WEB_VALUE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("MATTY_PREVIEW").ok())
+}
+
 /// Whether the preview fixtures are on for this process.
 /// Who is typing a reply in any preview thread.
 pub fn thread_typing() -> Vec<SharedString> {
@@ -15,7 +30,7 @@ pub fn thread_typing() -> Vec<SharedString> {
 }
 
 pub fn enabled() -> bool {
-    std::env::var_os("MATTY_PREVIEW").is_some_and(|value| !value.is_empty() && value != "0")
+    value().is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
@@ -28,7 +43,7 @@ pub fn enabled() -> bool {
 /// waiting for the browser after GitLab, and `sso-expired` the same after
 /// the three minutes ran out.
 pub fn login() -> Option<LoginModel> {
-    let value = std::env::var("MATTY_PREVIEW").ok()?;
+    let value = value()?;
     let methods = SignInMethods {
         password: true,
         ldap: value == "login-ldap",
@@ -92,10 +107,16 @@ pub fn login() -> Option<LoginModel> {
     })
 }
 
+/// `MATTY_PREVIEW=thumbnails-loading` shows Lena's images before their
+/// thumbnails arrive (#105).
+fn thumbnails_arrived() -> bool {
+    std::env::var("MATTY_PREVIEW").as_deref() != Ok("thumbnails-loading")
+}
+
 /// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
 pub fn connection() -> crate::main_window::ConnectionState {
     use crate::main_window::ConnectionState;
-    match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+    match value().as_deref() {
         Some("offline") => ConnectionState::Offline,
         Some("reconnecting") => ConnectionState::Reconnecting { attempt: 3 },
         _ => ConnectionState::Online,
@@ -124,7 +145,10 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
-        unread_threads: 2,
+        // What `threads()` holds; it reads the channels, so it cannot be
+        // asked here.
+        unread_threads: 3,
+        thread_mentions: 1,
         drafts: 2,
         drafted: ["design".into()].into_iter().collect(),
         categories: preview_kinds(vec![
@@ -285,7 +309,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Lena Fischer".into()],
                 participant_ids: vec![person("Lena Fischer")],
                 following: false,
-                unread: true,
+                unread_replies: 1,
+                unread_mentions: 0,
             }),
             ..post(
                 "p2",
@@ -393,7 +418,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
                 participant_ids: vec![person("Arya"), person("Jonas Weber")],
                 following: true,
-                unread: false,
+                unread_replies: 0,
+                unread_mentions: 0,
             }),
             ..post(
                 "p5",
@@ -450,9 +476,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup".into(),
                 name: "sidebar-mockup.png".into(),
                 size: 48_312,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },
@@ -460,9 +488,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup-dark".into(),
                 name: "sidebar-mockup-dark.png".into(),
                 size: 51_904,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup-dark.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup-dark.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },
@@ -668,14 +698,16 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         ),
     ];
     let keys = matty_notify::MentionKeys::username("arya");
+    let saved = std::collections::HashSet::new();
     let zone = jiff::tz::TimeZone::UTC;
     let viewer = crate::transcript::Viewer {
         user_id: "arya",
         keys: &keys,
+        saved: &saved,
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
-        collapsed_threads: std::env::var("MATTY_PREVIEW").as_deref() != Ok("crt-off"),
+        collapsed_threads: value().as_deref() != Some("crt-off"),
         names: crate::settings::NameFormat::default(),
     };
     crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None, &[]).posts
@@ -1035,6 +1067,7 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
     [
         ("desktop", "mention"),
         ("mention_keys", "arya,@arya,release,design review"),
+        ("highlight_keys", "incident"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -1201,40 +1234,43 @@ pub fn threads() -> ThreadsModel {
             summary,
         })
     };
-    let summary = |count, last: &str, participants: &[&str], unread| ReplySummary {
-        count,
-        last_time: if last.contains(':') { hm(last) } else { 0 },
-        last_day: if last.contains(':') {
-            "Today".into()
-        } else {
-            last.into()
-        },
-        participants: participants.iter().map(|name| (*name).into()).collect(),
-        participant_ids: participants.iter().map(|name| person(name)).collect(),
-        following: true,
-        unread,
+    let summary = |count, last: &str, participants: &[&str], (unread_replies, unread_mentions)| {
+        ReplySummary {
+            count,
+            last_time: if last.contains(':') { hm(last) } else { 0 },
+            last_day: if last.contains(':') {
+                "Today".into()
+            } else {
+                last.into()
+            },
+            participants: participants.iter().map(|name| (*name).into()).collect(),
+            participant_ids: participants.iter().map(|name| person(name)).collect(),
+            following: true,
+            unread_replies,
+            unread_mentions,
+        }
     };
     ThreadsModel {
         threads: [
             row(
                 "general",
                 "p2",
-                summary(1, "10:02", &["Lena Fischer"], true),
+                summary(1, "10:02", &["Lena Fischer"], (1, 0)),
             ),
             row(
                 "design",
                 "p6",
-                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], true),
+                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], (2, 1)),
             ),
             row(
                 "general",
                 "p5",
-                summary(12, "08:13", &["Arya", "Jonas Weber"], false),
+                summary(12, "08:13", &["Arya", "Jonas Weber"], (3, 0)),
             ),
             row(
                 "help-desk",
                 "p8",
-                summary(3, "Yesterday", &["Arya", "Sam Okafor"], false),
+                summary(3, "Yesterday", &["Arya", "Sam Okafor"], (0, 0)),
             ),
         ]
         .into_iter()
@@ -1358,6 +1394,13 @@ mod tests {
         assert!(!profiles().is_empty());
         assert!(!drafts().drafts.is_empty());
         assert!(!threads().threads.is_empty());
+    }
+
+    #[test]
+    fn the_sidebar_counts_the_preview_threads() {
+        let (sidebar, threads) = (sidebar(), threads());
+        assert_eq!(sidebar.unread_threads, threads.unread());
+        assert_eq!(sidebar.thread_mentions, threads.mentions());
     }
 
     #[test]

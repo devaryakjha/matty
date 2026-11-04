@@ -23,6 +23,7 @@ pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod forward;
 pub mod links;
 pub mod live;
 pub mod logging;
@@ -43,7 +44,13 @@ pub mod switcher;
 pub mod threads;
 pub mod transcript;
 mod ui;
+#[cfg(not(target_family = "wasm"))]
 mod updater;
+#[cfg(target_family = "wasm")]
+#[path = "updater_web.rs"]
+mod updater;
+#[cfg(target_family = "wasm")]
+pub mod web_storage;
 
 use std::borrow::Cow;
 
@@ -72,6 +79,7 @@ pub fn offline() -> bool {
 }
 
 /// [`run`] with the cache of the last account and no network.
+#[cfg(not(target_family = "wasm"))]
 pub fn run_offline() {
     OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
     run();
@@ -79,6 +87,7 @@ pub fn run_offline() {
 
 /// Starts the GPUI application and opens the main window. Blocks until the
 /// app quits.
+#[cfg(not(target_family = "wasm"))]
 pub fn run() {
     run_with_links(Vec::new());
 }
@@ -87,6 +96,7 @@ pub fn run() {
 /// line) as if the OS had opened them. Links the OS opens later arrive the
 /// same way. A second launch on Linux and Windows does not forward its link
 /// to the first yet (#84).
+#[cfg(not(target_family = "wasm"))]
 pub fn run_with_links(links: Vec<String>) {
     let (links_tx, links_rx) = async_channel::unbounded::<String>();
     for link in links {
@@ -101,22 +111,59 @@ pub fn run_with_links(links: Vec<String>) {
         }
     });
     app.run(move |cx: &mut App| {
-        // Settings load after this, so their level applies just below.
-        let logs = logging::init(logging::default_dir().as_deref(), Default::default());
-        tracing::info!(version = VERSION, "matty starting");
-        ui::theme::init(cx);
-        style::install(ThemeMode::Light, cx);
-        load_fonts(cx);
-        let settings = SettingsStore::init(settings::default_path(), cx);
-        if let Some(logs) = logs {
-            follow_log_level(&settings, logs, cx);
-        }
-        actions::bind(cx);
-        menu::init(cx);
-        cx.set_global(deeplink::Incoming(links_rx));
-        open_main_window(cx);
-        cx.activate(true);
+        launch(links_rx, cx);
     });
+}
+
+/// The web build's entry point: the same app on GPUI's browser platform,
+/// drawn into the page's canvas. Returns at once; the browser drives it.
+///
+/// GPUI's web text system has no system fonts and falls back to IBM Plex
+/// Sans for `.SystemUIFont`, which inputs use before the first render sets
+/// Geist, so the page passes that font in. `webgl` skips WebGPU.
+#[cfg(target_family = "wasm")]
+pub fn run_web(fallback_font: &'static [u8], webgl: bool) {
+    gpui_kit::platform::web_init();
+    let backend = if webgl {
+        gpui_kit::platform::WebBackendPreference::WebGl
+    } else {
+        gpui_kit::platform::WebBackendPreference::Auto
+    };
+    let platform = gpui_kit::web::WebPlatform::new_with_backend(true, backend);
+    // Image URLs load through the browser's fetch.
+    let http_client = std::sync::Arc::new(platform.fetch_http_client());
+    let app = gpui_kit::Application::with_platform(std::rc::Rc::new(platform))
+        .with_http_client(http_client)
+        .with_assets(LucideAssetSource);
+    std::mem::forget(app.run_embedded(move |cx: &mut App| {
+        cx.text_system()
+            .add_fonts(vec![Cow::Borrowed(fallback_font)])
+            .expect("load the fallback font");
+        // The browser opens no `mattermost://` links.
+        let (_, links_rx) = async_channel::unbounded::<String>();
+        launch(links_rx, cx);
+    }));
+}
+
+/// Sets the app up and opens the main window, on either platform. `links`
+/// are the `mattermost://` URLs to open.
+fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
+    // Settings load after this, so their level applies just below.
+    let logs = logging::init(logging::default_dir().as_deref(), Default::default());
+    tracing::info!(version = VERSION, "matty starting");
+    ui::theme::init(cx);
+    style::install(ThemeMode::Light, cx);
+    load_fonts(cx);
+    let settings = SettingsStore::init(settings::default_path(), cx);
+    if let Some(logs) = logs {
+        follow_log_level(&settings, logs, cx);
+    }
+    actions::bind(cx);
+    #[cfg(not(target_family = "wasm"))]
+    menu::init(cx);
+    cx.set_global(deeplink::Incoming(links));
+    open_main_window(cx);
+    cx.activate(true);
 }
 
 /// Keeps the logger's level in step with the `log_level` setting.

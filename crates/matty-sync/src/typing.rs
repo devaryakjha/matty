@@ -1,7 +1,9 @@
 //! How often the user's typing is announced.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 /// The shortest gap between two typing notices for one place.
 pub(crate) const TYPING_INTERVAL: Duration = Duration::from_secs(5);

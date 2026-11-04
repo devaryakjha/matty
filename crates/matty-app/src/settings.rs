@@ -10,7 +10,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
@@ -229,9 +229,18 @@ pub struct Settings {
     /// Turns off the eases on panes, banners and disclosures (DESIGN.md §1);
     /// the OS reduced-motion setting does the same on its own.
     pub reduce_motion: bool,
+    /// Link previews start collapsed: the account's `collapse_previews`
+    /// display setting (#187).
+    pub collapse_previews: bool,
+    /// Posts whose previews the user opened or closed against
+    /// [`collapse_previews`](Self::collapse_previews), oldest first, at most
+    /// [`PREVIEW_CHOICES`].
+    pub preview_choices: Vec<PreviewChoice>,
     pub account: Option<SavedAccount>,
     /// Servers whose check went through, newest first.
     pub recent_servers: Vec<RecentServer>,
+    /// The last searches, newest first, at most [`RECENT_SEARCHES`] (#129).
+    pub recent_searches: Vec<String>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -258,14 +267,32 @@ impl Default for Settings {
             display: MessageDisplay::Standard,
             name_format: NameFormat::NicknameFullName,
             reduce_motion: false,
+            collapse_previews: false,
+            preview_choices: Vec::new(),
             account: None,
             recent_servers: Vec::new(),
+            recent_searches: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }
 }
 
+/// How many searches the Search pane offers again.
+pub const RECENT_SEARCHES: usize = 10;
+
 impl Settings {
+    /// Puts `query` first among the recent searches, once, ignoring case.
+    pub fn remember_search(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+        self.recent_searches
+            .retain(|seen| !seen.eq_ignore_ascii_case(query));
+        self.recent_searches.insert(0, query.to_owned());
+        self.recent_searches.truncate(RECENT_SEARCHES);
+    }
+
     /// Puts `url` first among the recent servers under `name`, dropping
     /// its older entry and any past [`RECENT_SERVERS`].
     pub fn remember_server(&mut self, url: &str, name: &str) {
@@ -305,8 +332,43 @@ impl Settings {
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
         self.recent_servers.truncate(RECENT_SERVERS);
+        let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
+        self.preview_choices.drain(..extra);
         self
     }
+
+    /// Whether `post_id`'s link previews show collapsed.
+    pub fn previews_collapsed(&self, post_id: &str) -> bool {
+        self.preview_choices
+            .iter()
+            .find(|choice| choice.post_id == post_id)
+            .map_or(self.collapse_previews, |choice| choice.collapsed)
+    }
+
+    /// Remembers that the user collapsed or expanded `post_id`'s previews.
+    /// A choice that matches the default is forgotten.
+    pub fn choose_previews(&mut self, post_id: &str, collapsed: bool) {
+        self.preview_choices
+            .retain(|choice| choice.post_id != post_id);
+        if collapsed != self.collapse_previews {
+            self.preview_choices.push(PreviewChoice {
+                post_id: post_id.to_string(),
+                collapsed,
+            });
+        }
+        let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
+        self.preview_choices.drain(..extra);
+    }
+}
+
+/// How many posts' preview choices are kept; the oldest go first.
+pub const PREVIEW_CHOICES: usize = 500;
+
+/// One post's previews, opened or closed by the user.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewChoice {
+    pub post_id: String,
+    pub collapsed: bool,
 }
 
 /// What [`load`] found on disk.
@@ -322,13 +384,21 @@ pub enum Loaded {
 
 /// The default settings file: `<config dir>/Matty/settings.json`.
 pub fn default_path() -> Option<PathBuf> {
+    // On the web this names the `localStorage` entry instead.
+    #[cfg(target_family = "wasm")]
+    return Some(PathBuf::from("Matty/settings.json"));
+    #[cfg(not(target_family = "wasm"))]
     dirs::config_dir().map(|dir| dir.join("Matty").join("settings.json"))
 }
 
 /// Reads settings from `path`. A file that does not parse is renamed to
 /// `settings.json.corrupt-<unix seconds>` so the user's data is not lost.
 pub fn load(path: &Path) -> (Settings, Loaded) {
-    let bytes = match std::fs::read(path) {
+    #[cfg(target_family = "wasm")]
+    let bytes = crate::web_storage::get(&path.to_string_lossy()).map(String::into_bytes);
+    #[cfg(not(target_family = "wasm"))]
+    let bytes = std::fs::read(path);
+    let bytes = match bytes {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return (Settings::default(), Loaded::Missing);
@@ -341,8 +411,8 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
     match serde_json::from_slice::<Settings>(&bytes) {
         Ok(settings) => (settings.sanitize(), Loaded::Read),
         Err(error) => {
-            let stamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            let stamp = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
             let mut aside = path.as_os_str().to_owned();
             aside.push(format!(".corrupt-{stamp}"));
@@ -353,7 +423,13 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
                 %error,
                 "settings file is not valid; using defaults"
             );
-            if let Err(error) = std::fs::rename(path, &aside) {
+            #[cfg(target_family = "wasm")]
+            let moved =
+                crate::web_storage::set(&aside.to_string_lossy(), &String::from_utf8_lossy(&bytes))
+                    .and_then(|()| crate::web_storage::remove(&path.to_string_lossy()));
+            #[cfg(not(target_family = "wasm"))]
+            let moved = std::fs::rename(path, &aside);
+            if let Err(error) = moved {
                 tracing::warn!(%error, "could not move the corrupt settings aside");
             }
             (Settings::default(), Loaded::Corrupt(aside))
@@ -363,6 +439,17 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
 
 /// Writes settings atomically: a temporary file in the same directory, then a rename.
 pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
+    #[cfg(target_family = "wasm")]
+    {
+        let json = serde_json::to_string_pretty(settings).map_err(io::Error::other)?;
+        crate::web_storage::set(&path.to_string_lossy(), &json)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    save_file(path, settings)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn save_file(path: &Path, settings: &Settings) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent")
     })?;
@@ -442,6 +529,10 @@ impl SettingsStore {
             let settings = self.settings.clone();
             self.save = Some(cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(SAVE_DELAY).await;
+                // localStorage lives on the page, not in a worker.
+                #[cfg(target_family = "wasm")]
+                let written = save(&path, &settings).map_err(|e| (path, e));
+                #[cfg(not(target_family = "wasm"))]
                 let written = cx
                     .background_spawn(async move { save(&path, &settings).map_err(|e| (path, e)) })
                     .await;
@@ -456,6 +547,20 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_searches_put_the_newest_first_once_and_keep_ten() {
+        let mut settings = Settings::default();
+        for query in ["a", "b", "  ", "A"] {
+            settings.remember_search(query);
+        }
+        assert_eq!(settings.recent_searches, ["A", "b"]);
+        for n in 0..12 {
+            settings.remember_search(&format!("q{n}"));
+        }
+        assert_eq!(settings.recent_searches.len(), RECENT_SEARCHES);
+        assert_eq!(settings.recent_searches[0], "q11");
+    }
 
     #[test]
     fn recent_servers_keep_the_newest_three_once_each() {
@@ -502,6 +607,36 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn a_post_remembers_its_previews_against_the_default() {
+        let mut settings = Settings::default();
+        assert!(!settings.previews_collapsed("p1"));
+        settings.choose_previews("p1", true);
+        assert!(settings.previews_collapsed("p1"));
+        assert!(!settings.previews_collapsed("p2"));
+        // Collapsing everything by default keeps p1's choice and leaves
+        // the rest closed; opening p2 is remembered.
+        settings.collapse_previews = true;
+        settings.choose_previews("p2", false);
+        assert!(!settings.previews_collapsed("p2"));
+        assert!(settings.previews_collapsed("p3"));
+        // A choice that matches the default is forgotten.
+        settings.choose_previews("p1", true);
+        assert_eq!(settings.preview_choices.len(), 1);
+        // The oldest choices go first.
+        settings.collapse_previews = false;
+        for n in 0..PREVIEW_CHOICES + 5 {
+            settings.choose_previews(&format!("q{n}"), true);
+        }
+        assert_eq!(settings.preview_choices.len(), PREVIEW_CHOICES);
+        assert!(!settings.previews_collapsed("q0"));
+        assert!(settings.previews_collapsed(&format!("q{}", PREVIEW_CHOICES + 4)));
+        // They survive a restart.
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.preview_choices, settings.preview_choices);
     }
 
     #[test]
