@@ -47,6 +47,11 @@ pub fn connection() -> crate::main_window::ConnectionState {
     }
 }
 
+/// Messages waiting to send in the offline fixtures: Arya's last one.
+pub fn queued() -> usize {
+    usize::from(connection() != crate::main_window::ConnectionState::Online)
+}
+
 /// The teams in the rail: name and whether it is the current one.
 pub fn teams() -> Vec<Team> {
     vec![
@@ -313,6 +318,19 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             "Sidebar mockups for the review, light and dark, and my notes.",
         )
     });
+    if queued() > 0 {
+        posts.push(Post {
+            mine: true,
+            status: PostStatus::Pending,
+            ..post(
+                "p8c",
+                "Arya",
+                "08:38",
+                "Today",
+                "Pushing the title bar fix now.",
+            )
+        });
+    }
     posts.push(Post {
         mine: true,
         status: PostStatus::Failed,

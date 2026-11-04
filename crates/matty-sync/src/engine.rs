@@ -772,6 +772,8 @@ impl Engine {
                         resyncing: false,
                         resync_again: false,
                     });
+                    // Tell the app what is still waiting from an earlier run.
+                    dirty.outbox.extend(queue::channels(&tx)?);
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;

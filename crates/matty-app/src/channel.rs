@@ -627,6 +627,8 @@ pub struct ChannelView {
     open_at_end: bool,
     /// `style::composer_cap` as of the last render.
     composer_cap: Pixels,
+    /// The connection is down: sends wait, and their rows say so.
+    away: bool,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -864,6 +866,7 @@ impl ChannelView {
             pending_seq: 0,
             open_at_end: false,
             composer_cap: px(320.),
+            away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1055,6 +1058,16 @@ impl ChannelView {
             }
         });
         cx.notify();
+    }
+
+    /// The connection went down or came back: waiting sends read "Will
+    /// send when back online" meanwhile (#195).
+    pub fn set_away(&mut self, away: bool, cx: &mut Context<Self>) {
+        if self.away != away {
+            self.away = away;
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
     }
 
     /// The jump pill while the newest posts are not loaded: asks sync for
@@ -2660,7 +2673,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        menu_open: bool,
+        (menu_open, away): (bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2741,6 +2754,7 @@ impl ChannelView {
         let retry_id = id.clone();
         let time: SharedString = match post.status {
             PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+            PostStatus::Pending if away => "Will send when back online".into(),
             PostStatus::Pending => "Sending…".into(),
             PostStatus::Failed => "Not sent".into(),
         };
@@ -3014,8 +3028,16 @@ impl ChannelView {
                             .map(|editing| (editing.composer.clone(), this.composer_cap));
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
-                        Self::post_row(&post, profile, editor.as_ref(), highlight, menu_open, cx)
-                            .into_any_element()
+                        let away = this.away;
+                        Self::post_row(
+                            &post,
+                            profile,
+                            editor.as_ref(),
+                            highlight,
+                            (menu_open, away),
+                            cx,
+                        )
+                        .into_any_element()
                     })
                 }
                 None => div().into_any_element(),

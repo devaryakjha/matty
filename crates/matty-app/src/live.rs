@@ -45,6 +45,8 @@ pub struct Live {
     /// The open channel's sends that failed and wait for Retry or Delete;
     /// their rows read "Not sent".
     failed: std::collections::HashSet<String>,
+    /// Per channel, sends still waiting to go.
+    queued: HashMap<String, usize>,
     /// The open channel as stored, the user's membership, and its counts
     /// once fetched.
     channel: Option<Arc<Channel>>,
@@ -118,6 +120,9 @@ pub struct Update {
     /// Who is typing in the open channel now; the window checks again
     /// after [`TYPING_FOR`].
     pub typing: Option<Vec<SharedString>>,
+    /// Messages waiting to send across every channel, failed ones left
+    /// out, for the connection banner (#195).
+    pub queued: Option<usize>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
     /// The shown team's public channels, for Browse channels.
@@ -322,6 +327,7 @@ impl Live {
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
+                queued: HashMap::new(),
                 channel: None,
                 member: None,
                 stats: None,
@@ -812,7 +818,24 @@ impl Live {
                 self.typing.push((user_id.clone(), Instant::now()));
                 update.typing = Some(self.typing_names());
             }
-            ChangeSet::Outbox { channel_id, sends } if self.is_open(channel_id) => {
+            ChangeSet::Outbox { channel_id, sends } => {
+                let waiting = sends
+                    .iter()
+                    .filter(|send| send.last_error.is_none())
+                    .count();
+                let before: usize = self.queued.values().sum();
+                if waiting == 0 {
+                    self.queued.remove(channel_id);
+                } else {
+                    self.queued.insert(channel_id.clone(), waiting);
+                }
+                let now: usize = self.queued.values().sum();
+                if now != before {
+                    update.queued = Some(now);
+                }
+                if !self.is_open(channel_id) {
+                    return update;
+                }
                 let failed = sends
                     .iter()
                     .filter(|send| send.last_error.is_some())
@@ -1335,6 +1358,32 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn the_banner_counts_waiting_sends_across_channels() {
+        let mut live = live();
+        let outbox = |channel: &str, errors: &[Option<&str>]| ChangeSet::Outbox {
+            channel_id: channel.into(),
+            sends: errors
+                .iter()
+                .enumerate()
+                .map(|(at, error)| matty_sync::Outgoing {
+                    pending_post_id: format!("{channel}:{at}"),
+                    channel_id: channel.into(),
+                    last_error: error.map(str::to_owned),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        assert_eq!(live.apply(&outbox("c1", &[None, None])).queued, Some(2));
+        // A failed send waits for the user, not the connection.
+        assert_eq!(
+            live.apply(&outbox("c2", &[None, Some("no")])).queued,
+            Some(3)
+        );
+        assert_eq!(live.apply(&outbox("c1", &[None, None])).queued, None);
+        assert_eq!(live.apply(&outbox("c1", &[])).queued, Some(1));
     }
 
     #[test]

@@ -153,6 +153,8 @@ pub struct MainWindow {
     connection: ConnectionState,
     /// What the banner last said, kept while it slides away after reconnecting.
     banner_last: ConnectionState,
+    /// Messages waiting to send, for the banner (#195).
+    queued: usize,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
     history: Vec<SharedString>,
@@ -674,6 +676,7 @@ impl MainWindow {
             drafts_open: false,
             connection: crate::preview::connection(),
             banner_last: crate::preview::connection(),
+            queued: crate::preview::queued(),
             history,
             history_at: 0,
             live: None,
@@ -1083,6 +1086,10 @@ impl MainWindow {
             if someone {
                 self.expire_typing_later(cx);
             }
+        }
+        if let Some(queued) = update.queued {
+            self.queued = queued;
+            cx.notify();
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
@@ -2177,6 +2184,8 @@ impl MainWindow {
                 self.banner_last = state.clone();
             }
             self.connection = state;
+            let away = self.connection != ConnectionState::Online;
+            self.channel.update(cx, |view, cx| view.set_away(away, cx));
             cx.notify();
         }
     }
@@ -2229,6 +2238,12 @@ impl MainWindow {
                 "You're offline. Matty shows what it has and sends when you're back.".into(),
                 true,
             ),
+        };
+        // What is waiting goes when the connection is back (#195).
+        let text: SharedString = match self.queued {
+            0 => text,
+            1 => format!("{text} 1 message waiting to send.").into(),
+            n => format!("{text} {n} messages waiting to send.").into(),
         };
         let foreground = if offline {
             theme.colors.destructive
