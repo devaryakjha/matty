@@ -143,6 +143,8 @@ const TEXT_SIZES: &[(&str, f32)] = &[
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod sso;
+
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     /// Shown until a session exists; sync replaces it with the workspace.
@@ -232,6 +234,8 @@ pub struct MainWindow {
     kept_unread: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
+    /// The browser sign-in the card waits on (#75).
+    sso: Option<sso::PendingSso>,
     sidebar_shown: bool,
 }
 
@@ -796,8 +800,10 @@ impl MainWindow {
             _view_task: None,
             kept_unread: None,
             login_server: None,
+            sso: None,
             sidebar_shown: false,
         };
+        this.follow_links(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
@@ -1383,14 +1389,16 @@ impl MainWindow {
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Sso(provider) => {
-                // The browser flow is #75.
-                model.error = Some(
-                    format!(
-                        "{} sign-in is not in Matty yet. Use a password or a personal access token.",
-                        provider.label()
-                    )
-                    .into(),
-                );
+                let Some(server) = this.login_server.clone() else {
+                    model.step = LoginStep::Server;
+                    return view.update(cx, |view, cx| view.set_model(model, window, cx));
+                };
+                model.step = model.step.to_browser(*provider);
+                this.start_sso(server, *provider, view, window, cx);
+            }
+            LoginEvent::CancelSso => {
+                this.cancel_sso();
+                model.step = model.step.back_to_methods();
             }
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
@@ -1466,7 +1474,15 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 model.error = None;
             }
-            LoginEvent::SignIn { .. } | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
+            LoginEvent::Sso(provider) => {
+                model.step = model.step.to_browser(*provider);
+                model.error = None;
+            }
+            LoginEvent::CancelSso => {
+                model.step = model.step.back_to_methods();
+                model.error = None;
+            }
+            LoginEvent::SignIn { .. } | LoginEvent::Token(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());
             }
         }
