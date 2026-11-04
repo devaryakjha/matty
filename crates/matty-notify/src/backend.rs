@@ -59,7 +59,7 @@ impl Notifier for Logged {
             channel = %notification.channel_id,
             post = %notification.post_id,
             mention = notification.mention,
-            sound = notification.sound,
+            sound = ?notification.sound,
             "notification"
         );
     }

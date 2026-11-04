@@ -146,6 +146,7 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod sounds;
 mod sso;
 
 pub struct MainWindow {
@@ -170,6 +171,8 @@ pub struct MainWindow {
     keywords: Entity<InputState>,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
+    /// Preferences' notification sound picker (#142).
+    sound: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
     notify_props: Option<std::collections::HashMap<String, String>>,
     /// Whether the user may choose collapsed reply threads, and whether
@@ -757,6 +760,7 @@ impl MainWindow {
             }
         })
         .detach();
+        let sound = sounds::picker(preview_props.as_ref(), window, cx);
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         // A click on a notification opens its channel at its post (#139).
         let (clicked_tx, clicked) = async_channel::bounded(8);
@@ -786,6 +790,7 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             keywords,
             log_level,
+            sound,
             notifier: matty_notify::backend::platform(clicked_tx),
             badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
@@ -1302,6 +1307,7 @@ impl MainWindow {
                 }
             });
             self.notify_props = Some(props);
+            self.show_sound(window, cx);
         }
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
@@ -3099,6 +3105,7 @@ impl MainWindow {
                         "desktop_sound",
                         ("true", "false"),
                     ))
+                    .child(self.sound_row(user.desktop_sound, labelled_row, cx))
                     .into_any_element(),
             ))
             .child(section(
@@ -3594,6 +3601,19 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.go_to_link(&url, true, window, cx);
+    }
+
+    /// Opens where `url` goes; anywhere outside Matty only when `external`,
+    /// since a link from the OS that Matty cannot show should not bounce
+    /// to the browser (#84).
+    fn go_to_link(
+        &mut self,
+        url: &str,
+        external: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::links::LinkTarget;
         let (server, teams, team) = if let Some(live) = &self.live {
             (
@@ -3612,8 +3632,11 @@ impl MainWindow {
             (None, Vec::new(), None)
         };
         let names: Vec<&str> = teams.iter().map(|(_, name)| name.as_str()).collect();
-        match crate::links::route(&url, server.as_deref(), &names) {
-            LinkTarget::External(url) => cx.open_url(&url),
+        match crate::links::route(url, server.as_deref(), &names) {
+            LinkTarget::External(url) if external => cx.open_url(&url),
+            LinkTarget::External(url) => {
+                tracing::info!(link = %crate::deeplink::redacted(&url), "ignored a link Matty cannot show");
+            }
             LinkTarget::Nothing => {}
             LinkTarget::Hashtag(tag) => self.search(format!("#{tag}").into(), window, cx),
             LinkTarget::User(username) => self.open_user(username, window, cx),

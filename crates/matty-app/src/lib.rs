@@ -20,6 +20,7 @@ pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod instance;
 pub mod links;
 pub mod live;
 pub mod logging;
@@ -74,15 +75,16 @@ pub fn run() {
     run_with_links(Vec::new());
 }
 
-/// [`run`], then handles `links` (a `mattermost://` URL given on the command
-/// line) as if the OS had opened them. Links the OS opens later arrive the
-/// same way. A second launch on Linux and Windows does not forward its link
-/// to the first yet (#84).
+/// [`run`], then handles `links` (a `mattermost://` or `matty://` URL given
+/// on the command line) as if the OS had opened them. Links the OS opens
+/// later arrive the same way, and so do later launches' links, through
+/// [`instance`] (#84).
 pub fn run_with_links(links: Vec<String>) {
     let (links_tx, links_rx) = async_channel::unbounded::<String>();
     for link in links {
         let _ = links_tx.try_send(link);
     }
+    instance::listen(links_tx.clone());
     let app = gpui_kit::platform::application().with_assets(LucideAssetSource);
     // macOS calls this for a URL-scheme open, at launch or while running.
     app.on_open_urls(move |urls| {

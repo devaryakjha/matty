@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::mention::MentionKeys;
+use crate::sound::Sound;
 
 /// How much a user or channel notifies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,8 @@ pub struct UserPrefs {
     pub desktop_threads: Level,
     /// `desktop_sound`: on unless turned off.
     pub desktop_sound: bool,
+    /// `desktop_notification_sound`: which sound plays, Bing by default.
+    pub sound: Sound,
     /// What counts as a mention.
     pub keys: MentionKeys,
 }
@@ -54,6 +57,7 @@ impl UserPrefs {
             desktop_sound: props
                 .get("desktop_sound")
                 .is_none_or(|value| value != "false"),
+            sound: Sound::from_prop(props.get("desktop_notification_sound").map(String::as_str)),
             keys: MentionKeys::from_props(username, first_name, props),
         }
     }
@@ -161,8 +165,8 @@ pub struct Notification {
     pub root_id: String,
     /// It mentions the user or is a direct message.
     pub mention: bool,
-    /// Play the notification sound.
-    pub sound: bool,
+    /// The sound to play with it, if any.
+    pub sound: Option<Sound>,
 }
 
 /// Whether `event` notifies, and how.
@@ -221,7 +225,7 @@ pub fn decide(
         post_id: event.post_id.clone(),
         root_id: event.root_id.clone(),
         mention,
-        sound: user.desktop_sound && (mention || app.sound_for_all),
+        sound: (user.desktop_sound && (mention || app.sound_for_all)).then_some(user.sound),
     })
 }
 
@@ -250,6 +254,7 @@ mod tests {
             desktop,
             desktop_threads: Level::All,
             desktop_sound: true,
+            sound: Sound::Bing,
             keys: MentionKeys {
                 username: "arya".into(),
                 channel_wide: true,
@@ -575,26 +580,62 @@ mod tests {
     fn sounds_are_for_mentions_unless_turned_on_for_all() {
         let all = user(Level::All);
         let plain = decide(&event("hi"), &all, &ChannelPrefs::default(), &app()).unwrap();
-        assert!(!plain.sound);
+        assert_eq!(plain.sound, None);
         let loud = AppState {
             sound_for_all: true,
             ..app()
         };
-        assert!(
+        assert_eq!(
             decide(&event("hi"), &all, &ChannelPrefs::default(), &loud)
                 .unwrap()
-                .sound
+                .sound,
+            Some(Sound::Bing)
         );
         let mention = decide(&event("@arya"), &all, &ChannelPrefs::default(), &app()).unwrap();
-        assert!(mention.sound && mention.mention);
+        assert!(mention.sound.is_some() && mention.mention);
         let quiet = UserPrefs {
             desktop_sound: false,
             ..all
         };
-        assert!(
-            !decide(&event("@arya"), &quiet, &ChannelPrefs::default(), &app())
+        assert_eq!(
+            decide(&event("@arya"), &quiet, &ChannelPrefs::default(), &app())
                 .unwrap()
-                .sound
+                .sound,
+            None
+        );
+    }
+
+    #[test]
+    fn the_chosen_sound_plays_unless_the_channel_is_on_screen() {
+        let ripple = UserPrefs {
+            sound: Sound::Ripple,
+            ..user(Level::Mention)
+        };
+        let mention = event("@arya look");
+        let elsewhere = AppState {
+            focused: true,
+            visible_channel: Some("other".into()),
+            ..app()
+        };
+        let shown = decide(&mention, &ripple, &ChannelPrefs::default(), &elsewhere).unwrap();
+        assert_eq!(shown.sound, Some(Sound::Ripple));
+        // The focused window shows the channel: no banner, so no sound.
+        let watching = AppState {
+            visible_channel: Some("town".into()),
+            ..elsewhere.clone()
+        };
+        assert_eq!(
+            decide(&mention, &ripple, &ChannelPrefs::default(), &watching),
+            None
+        );
+        // The same channel in a window without focus still sounds.
+        let away = AppState {
+            focused: false,
+            ..watching
+        };
+        assert_eq!(
+            decide(&mention, &ripple, &ChannelPrefs::default(), &away).and_then(|n| n.sound),
+            Some(Sound::Ripple)
         );
     }
 
@@ -604,6 +645,7 @@ mod tests {
             ("desktop", "all"),
             ("desktop_threads", "mention"),
             ("desktop_sound", "false"),
+            ("desktop_notification_sound", "Upstairs"),
             ("mention_keys", "arya,@arya,deploy"),
         ]
         .into_iter()
@@ -613,10 +655,12 @@ mod tests {
         assert_eq!(prefs.desktop, Level::All);
         assert_eq!(prefs.desktop_threads, Level::Mention);
         assert!(!prefs.desktop_sound);
+        assert_eq!(prefs.sound, Sound::Upstairs);
         assert_eq!(prefs.keys.keywords, vec!["deploy"]);
         let defaults = UserPrefs::from_props("arya", "", &HashMap::new());
         assert_eq!(defaults.desktop, Level::Mention);
         assert!(defaults.desktop_sound);
+        assert_eq!(defaults.sound, Sound::Bing);
 
         let member: HashMap<String, String> = [
             ("desktop", "default"),
