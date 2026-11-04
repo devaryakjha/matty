@@ -155,20 +155,21 @@ pub enum Opening {
     Open,
     /// A public channel the user is not in: offer to join.
     Join,
-    /// A channel of a team other than the one on screen, which Matty
-    /// cannot switch to yet.
+    /// A channel of a team the user is not on.
     OtherTeam,
     /// Private, archived, or otherwise not the user's to open.
     Closed,
 }
 
 /// Whether the user can open `channel` from a link: `member` says it is
-/// in the shown sidebar, `team` is the team on screen.
-pub fn opening(channel: &matty_api::models::Channel, member: bool, team: Option<&str>) -> Opening {
+/// in one of the user's teams' sidebars, `on_team` that the user is on its
+/// team. A channel of another of the user's teams opens there, its team
+/// shown first (#89).
+pub fn opening(channel: &matty_api::models::Channel, member: bool, on_team: bool) -> Opening {
     if member {
         return Opening::Open;
     }
-    if !channel.team_id.is_empty() && Some(channel.team_id.as_str()) != team {
+    if !on_team {
         return Opening::OtherTeam;
     }
     if channel.kind == "O" && channel.delete_at == 0 {
@@ -350,11 +351,14 @@ mod tests {
             delete_at,
             ..Default::default()
         };
-        let shown = Some("t1");
+        let shown = true;
         assert_eq!(opening(&channel("O", "t1", 0), true, shown), Opening::Open);
         assert_eq!(opening(&channel("O", "t1", 0), false, shown), Opening::Join);
+        // Another of the user's teams: open or join there.
+        assert_eq!(opening(&channel("O", "t2", 0), true, shown), Opening::Open);
+        assert_eq!(opening(&channel("O", "t2", 0), false, shown), Opening::Join);
         assert_eq!(
-            opening(&channel("O", "t2", 0), false, shown),
+            opening(&channel("O", "t3", 0), false, false),
             Opening::OtherTeam
         );
         assert_eq!(

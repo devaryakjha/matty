@@ -25,7 +25,7 @@ use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessage
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::live::{ChannelUpdate, Live};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
-use crate::rail::{RailView, Team};
+use crate::rail::RailView;
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
     LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, RemoteImages, SIDEBAR_MAX, SIDEBAR_MIN,
@@ -182,6 +182,7 @@ mod preferences;
 mod servers;
 mod sounds;
 mod sso;
+mod teams;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
@@ -235,6 +236,9 @@ pub struct MainWindow {
     joined: Vec<crate::channel::ChannelModel>,
     /// The team rail, shown when the user belongs to more than one team.
     rail: Entity<RailView>,
+    /// Where the user last was in each team they left, by its sidebar id,
+    /// to go back there when they switch back (#89).
+    team_places: std::collections::HashMap<SharedString, SharedString>,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
     /// In a narrow window the right pane is this drawer over the channel;
@@ -453,10 +457,11 @@ impl MainWindow {
         )
         .detach();
         let rail = cx.new(|cx| {
+            // Sync fills the teams once it has them (#89).
             let teams = if crate::preview::enabled() {
                 crate::preview::teams()
             } else {
-                vec![Team::new("team", "Matty")]
+                Vec::new()
             };
             let current = teams.first().map(|team| team.id.clone());
             RailView::new(teams, current, cx)
@@ -1068,6 +1073,7 @@ impl MainWindow {
             profile_editor,
             joined: Vec::new(),
             rail,
+            team_places: Default::default(),
             right_pane_open: false,
             right_drawer: DrawerHandle::new(false),
             right_drawer_shown: false,
@@ -1723,10 +1729,13 @@ impl MainWindow {
     /// Shows what sync's latest change means for the window.
     fn apply_update(
         &mut self,
-        update: crate::live::Update,
+        mut update: crate::live::Update,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((teams, current)) = update.teams.take() {
+            self.show_rail_teams(teams, current, window, cx);
+        }
         if let Some(name) = update.team_name {
             self.browse
                 .update(cx, |browse, cx| browse.set_team_name(name.clone(), cx));
@@ -2283,6 +2292,8 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A notification, link, draft or Back may name another team's channel.
+        self.show_team_of(&id, window, cx);
         if std::mem::take(&mut self.threads_open) {
             self.leave_thread();
         }
@@ -4036,20 +4047,26 @@ impl MainWindow {
             }
             Some(matty_sync::LinkAnswer::Channel(channel)) => {
                 use crate::links::Opening;
-                let member = live.row(&channel.id).is_some();
-                match crate::links::opening(&channel, member, live.team()) {
+                // Opening it shows its team first (#89).
+                let member = live.team_of(&channel.id).is_some();
+                let on_team = channel.team_id.is_empty() || live.on_team(&channel.team_id);
+                match crate::links::opening(&channel, member, on_team) {
                     Opening::Open => self.open_at(channel.id.clone().into(), post, window, cx),
-                    Opening::Join => self.offer_join(
-                        channel.id.clone().into(),
-                        channel.name.clone().into(),
-                        post,
-                        window,
-                        cx,
-                    ),
-                    Opening::OtherTeam => self.push_error(
-                        "That channel is in another team, and Matty can't switch teams yet.",
-                        cx,
-                    ),
+                    Opening::Join => {
+                        if !channel.team_id.is_empty() {
+                            self.show_team(channel.team_id.clone().into(), window, cx);
+                        }
+                        self.offer_join(
+                            channel.id.clone().into(),
+                            channel.name.clone().into(),
+                            post,
+                            window,
+                            cx,
+                        )
+                    }
+                    Opening::OtherTeam => {
+                        self.push_error("That channel is in a team you're not on.", cx)
+                    }
                     Opening::Closed => {
                         self.push_error("You can't open that channel. Ask a member to add you.", cx)
                     }
@@ -4209,6 +4226,7 @@ impl Render for MainWindow {
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
             .map(|root| Self::on_server_actions(root, cx))
+            .map(|root| Self::on_team_actions(root, cx))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 if Self::narrow_sidebar(window) {
                     this.sidebar_drawer_open = !this.sidebar_drawer_open;

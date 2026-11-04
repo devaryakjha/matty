@@ -396,6 +396,8 @@ conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 | Search | Cmd+Shift+F (MM); Cmd+F also focuses search when not in a text field |
 | Previous / next channel | Alt+Up / Alt+Down (MM) |
 | Previous / next unread channel | Alt+Shift+Up / Alt+Shift+Down (MM) |
+| Previous / next team | Cmd+Alt+Up / Cmd+Alt+Down (MM) |
+| Switch to team n | Cmd+Alt+1…9 (MM) |
 | Back / forward in history | Cmd+[ / Cmd+] on macOS, Alt+Left / Alt+Right on Windows and Linux (MM) |
 | Switch server n (M2) | Cmd+1…9 |
 | Unreads filter | Cmd+Shift+U (MM) |

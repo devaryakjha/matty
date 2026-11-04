@@ -417,6 +417,7 @@ mod tests {
                 display_name: "One".into(),
                 has_unreads: true,
                 mentions: 0,
+                icon: 0,
             }]),
         };
         watch.apply(&t1);
