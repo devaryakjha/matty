@@ -176,6 +176,10 @@ pub enum RightPaneContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// "Remove from channel" on a member in the channel info (#208).
+    RemoveMember {
+        user_id: SharedString,
+    },
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
@@ -305,6 +309,11 @@ pub struct RightPaneView {
     menu: Entity<MenuState>,
     /// The current user's display name, for optimistic rows.
     me: SharedString,
+    /// People the thread's authors are looked up in for their presence
+    /// dots (#135); the window keeps it in step with the channel's.
+    profiles: Vec<UserProfile>,
+    /// Who is typing a reply in the thread (#137).
+    typing: Vec<SharedString>,
     draft_len: usize,
     /// The preview above the reply composer (#188).
     link: crate::draft_link::DraftLink,
@@ -486,6 +495,8 @@ impl RightPaneView {
             loading_older: false,
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
+            profiles: Vec::new(),
+            typing: Vec::new(),
             draft_len: 0,
             link: Default::default(),
             tray: UploadTray::new(UPLOAD_PREFIX),
@@ -1516,6 +1527,57 @@ impl RightPaneView {
             )
     }
 
+    /// Who is typing a reply in the open thread.
+    pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
+        if self.typing != names {
+            self.typing = names;
+            cx.notify();
+        }
+    }
+
+    /// Keeps the people whose presence the thread's avatars show.
+    pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
+        if self.profiles != profiles {
+            self.profiles = profiles;
+            cx.notify();
+        }
+    }
+
+    /// A post's avatar, with the author's presence dot when the author is
+    /// a known person (#135).
+    fn avatar(
+        id: &str,
+        post: &Post,
+        presence: Option<Presence>,
+        initial: String,
+        cx: &App,
+    ) -> gpui_kit::AnyElement {
+        let avatar = crate::avatars::with_picture(
+            Avatar::new(gpui_kit::ElementId::Name(
+                format!("thread.{id}.avatar").into(),
+            ))
+            .size(AvatarSize::Default)
+            .fallback(initial),
+            &post.author_id,
+            cx,
+        );
+        let Some(presence) = presence else {
+            return avatar.aria_label(post.author.clone()).into_any_element();
+        };
+        let theme = UiTheme::read(cx);
+        div()
+            .relative()
+            .child(avatar.aria_label(style::presence_name(&post.author, presence)))
+            .child(style::presence_dot(
+                presence,
+                scaled(theme, 10.),
+                theme.colors.background,
+                theme,
+                &Palette::read(cx),
+            ))
+            .into_any_element()
+    }
+
     fn post_row(
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
@@ -1525,6 +1587,13 @@ impl RightPaneView {
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        let presence = view.upgrade().and_then(|pane| {
+            pane.read(cx)
+                .profiles
+                .iter()
+                .find(|profile| profile.display_name == post.author)
+                .map(|profile| profile.presence)
+        });
         let time = post_time(post, away, cx);
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
@@ -1562,16 +1631,7 @@ impl RightPaneView {
             .continuation(post.continues && !root && !queued(post, away))
             .density(message_density(cx))
             .highlight(highlight)
-            .avatar(crate::avatars::with_picture(
-                Avatar::new(gpui_kit::ElementId::Name(
-                    format!("thread.{id}.avatar").into(),
-                ))
-                .size(AvatarSize::Default)
-                .fallback(initial)
-                .aria_label(post.author.clone()),
-                &post.author_id,
-                cx,
-            ))
+            .avatar(Self::avatar(&id, post, presence, initial, cx))
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
@@ -1822,6 +1882,7 @@ impl RightPaneView {
                 this.add_sources(paths.paths().iter().cloned().map(UploadSource::Path), cx)
             }))
             .child(div().flex_1().min_h_0().child(transcript))
+            .child(crate::channel::typing_line(&self.typing, cx))
             .child(
                 div()
                     .flex_shrink_0()
@@ -2365,17 +2426,17 @@ impl RightPaneView {
                 )
             });
         let view = cx.entity().downgrade();
+        let me = self.me.clone();
+        let can_manage = channel.can_manage;
         let members = div()
             .flex()
             .flex_col()
             .gap(theme.space(1.))
             .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
-            .children(
-                channel
-                    .profiles
-                    .iter()
-                    .map(|profile| Self::member_row(profile, &view, cx)),
-            )
+            .children(channel.profiles.iter().map(|profile| {
+                let removable = can_manage && profile.display_name != me;
+                Self::member_row(profile, removable, &view, cx)
+            }))
             .when(channel.profiles.len() < channel.members, |members| {
                 members.child(
                     Button::new("info.members.all")
@@ -2403,19 +2464,30 @@ impl RightPaneView {
 
     /// One member: avatar with presence, name and handle, opening the
     /// profile card.
+    /// The right-click menu of a member the user may remove.
+    fn member_items(view: &gpui_kit::WeakEntity<Self>, profile: &UserProfile) -> Vec<MenuItem> {
+        let (view, user_id) = (view.clone(), profile.user_id.clone());
+        vec![
+            MenuItem::new("info.member.remove", "Remove from channel").on_click(move |_, _, cx| {
+                let event = RightPaneEvent::RemoveMember {
+                    user_id: user_id.clone(),
+                };
+                view.update(cx, |_, cx| cx.emit(event)).ok();
+            }),
+        ]
+    }
+
+    /// One member; `removable` adds a right-click "Remove from channel".
     fn member_row(
         profile: &UserProfile,
+        removable: bool,
         view: &gpui_kit::WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
+        let menu_view = view.clone();
+        let menu_profile = profile.clone();
         let theme = UiTheme::read(cx).clone();
         let palette = Palette::read(cx);
-        let dot = match profile.presence {
-            Presence::Online => palette.online,
-            Presence::Away => palette.away,
-            Presence::Dnd => palette.dnd,
-            Presence::Offline => theme.colors.muted_foreground,
-        };
         let initial: String = profile.display_name.chars().take(1).collect();
         let username = profile.username.clone();
         let (row_profile, card_profile) = (profile.clone(), profile.clone());
@@ -2425,10 +2497,23 @@ impl RightPaneView {
         ))
         .offset(px(4.))
         .trigger_with(move |_, _, cx| {
+            let (menu_view, menu_profile) = (menu_view.clone(), menu_profile.clone());
             div()
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
                 ))
+                .when(removable, |row| {
+                    row.on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        move |event: &gpui_kit::MouseDownEvent, window, cx| {
+                            let items = Self::member_items(&menu_view, &menu_profile);
+                            let at = event.position;
+                            menu_view
+                                .update(cx, |this, cx| this.open_menu(items, at, window, cx))
+                                .ok();
+                        },
+                    )
+                })
                 .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
                 .px(theme.space(2.))
                 .mx(theme.space(-2.))
@@ -2448,21 +2533,20 @@ impl RightPaneView {
                             ))
                             .size(AvatarSize::Sm)
                             .fallback(initial.clone())
-                            .aria_label(row_profile.display_name.clone()),
+                            .aria_label(style::presence_name(
+                                &row_profile.display_name,
+                                row_profile.presence,
+                            )),
                             &row_profile.user_id,
                             cx,
                         ))
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom(px(-1.))
-                                .right(px(-1.))
-                                .size(px(9.))
-                                .rounded_full()
-                                .bg(dot)
-                                .border_2()
-                                .border_color(theme.colors.background),
-                        ),
+                        .child(style::presence_dot(
+                            row_profile.presence,
+                            scaled(&theme, 9.),
+                            theme.colors.background,
+                            &theme,
+                            &palette,
+                        )),
                 )
                 .child(
                     div()
