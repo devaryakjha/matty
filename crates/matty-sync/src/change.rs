@@ -163,6 +163,10 @@ pub enum ChangeSet {
     Me(Arc<User>),
     /// These users' statuses changed.
     Presence(Arc<[Status]>),
+    /// Someone else's post just arrived over the socket, with what the
+    /// notification policy needs (#141). Posts loaded by a fetch or a
+    /// catch-up never come this way, so they never notify.
+    Arrived(Arc<Arrived>),
     /// A channel the user asked to open ([`Command::OpenDirect`] or
     /// [`Command::JoinChannel`](crate::Command::JoinChannel)) is ready: it is
     /// in the sidebar, so the view can switch to it.
@@ -187,6 +191,27 @@ pub enum ChangeSet {
     Preferences,
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
+}
+
+/// A post that just arrived from someone else.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Arrived {
+    /// The post.
+    pub post: Post,
+    /// The channel's kind: `O`, `P`, `D` or `G`.
+    pub channel_type: String,
+    /// The channel's display name, as the server sent it.
+    pub channel_display_name: String,
+    /// The author's name, as the server formats it.
+    pub sender_name: String,
+    /// The server listed the user among those the post mentions.
+    pub mentioned: bool,
+    /// The server listed the user among the thread's followers.
+    pub followed: bool,
+    /// The user's channel member `notify_props`, empty when not cached.
+    pub channel_props: std::collections::HashMap<String, String>,
+    /// Collapsed reply threads are on.
+    pub collapsed_threads: bool,
 }
 
 /// Where syncing with the server stands.

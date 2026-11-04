@@ -203,6 +203,29 @@ async fn my_own_post_counts_as_read() {
 }
 
 #[tokio::test]
+async fn posts_from_others_arrive_for_notifications_once() {
+    let p2 = post("p2", "c1", "", "u2", 20);
+    let (seen, _store, _dir) = run(vec![
+        posted(p2.clone(), &[ME]),
+        posted(p2, &[ME]),
+        posted(post("mine", "c1", "", ME, 30), &[]),
+    ])
+    .await;
+    let arrived: Vec<_> = seen
+        .iter()
+        .filter_map(|c| match c {
+            ChangeSet::Arrived(arrived) => Some(arrived),
+            _ => None,
+        })
+        .collect();
+    // The duplicate and the user's own post do not arrive.
+    assert_eq!(arrived.len(), 1);
+    assert_eq!(arrived[0].post.id, "p2");
+    assert!(arrived[0].mentioned);
+    assert!(!arrived[0].followed);
+}
+
+#[tokio::test]
 async fn a_duplicate_posted_is_a_no_op() {
     let p2 = post("p2", "c1", "", "u2", 20);
     let (_, store, _dir) = run(vec![posted(p2.clone(), &[ME]), posted(p2, &[ME])]).await;

@@ -11,7 +11,7 @@ use matty_store::sidebar::{self, NewPost, ReadState};
 use matty_store::{StoreError, outbox, posts};
 use rusqlite::Connection;
 
-use crate::change::ChangeSet;
+use crate::change::{Arrived, ChangeSet};
 use crate::engine::Dirty;
 
 /// What an event needs from the server before the cache is right again.
@@ -45,6 +45,21 @@ pub(crate) fn apply(
             }
             let mentions_me = me.is_some_and(|me| posted.mentions.iter().any(|id| id == me));
             new_post(conn, &post, me, mentions_me, dirty, fetches)?;
+            if let Some(me) = me.filter(|me| post.user_id != *me) {
+                let channel_props = sidebar::channel_member(conn, &post.channel_id, me)?
+                    .map(|member| member.notify_props)
+                    .unwrap_or_default();
+                dirty.direct.push(ChangeSet::Arrived(Arc::new(Arrived {
+                    followed: posted.followers.iter().any(|id| id == me),
+                    post,
+                    channel_type: posted.channel_type,
+                    channel_display_name: posted.channel_display_name,
+                    sender_name: posted.sender_name,
+                    mentioned: mentions_me,
+                    channel_props,
+                    collapsed_threads: crate::engine::cached_crt(conn)?,
+                })));
+            }
         }
         WsEvent::PostEdited(post) => {
             let known = posts::post(conn, &post.id)?.is_some();

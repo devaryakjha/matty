@@ -35,8 +35,9 @@ pub struct Live {
     presence: HashMap<String, Presence>,
     /// The signed-in user's id and username.
     me: (String, String),
-    /// What counts as mentioning the user, from their `notify_props`.
-    keys: matty_notify::MentionKeys,
+    /// The user's notification preferences and what counts as mentioning
+    /// them, from their `notify_props`.
+    prefs: matty_notify::UserPrefs,
     /// The user's own `notify_props`, the whole map, for Preferences to
     /// edit and send back.
     notify_props: HashMap<String, String>,
@@ -135,6 +136,9 @@ pub struct Update {
     pub own_presence: Option<(Presence, Option<i64>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// Someone else's post that just arrived, for the window to notify
+    /// about if the policy says so (#141).
+    pub arrived: Option<Arrival>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
     /// The shown team's public channels, for Browse channels.
@@ -164,6 +168,59 @@ pub struct Update {
     /// The server refused the saved session; the window asks the user to
     /// sign in again.
     pub expired: bool,
+}
+
+/// A post that just arrived, with the preferences that decide whether it
+/// notifies. Only the window knows what is on screen, so it decides.
+#[derive(Debug, PartialEq)]
+pub struct Arrival {
+    pub me: String,
+    pub event: matty_notify::Event,
+    pub user: matty_notify::UserPrefs,
+    pub channel: matty_notify::ChannelPrefs,
+    pub collapsed_threads: bool,
+}
+
+impl Arrival {
+    fn new(arrived: &matty_sync::Arrived, me: &str, user: &matty_notify::UserPrefs) -> Self {
+        use matty_notify::ChannelKind;
+        let post = &arrived.post;
+        let channel_kind = match arrived.channel_type.as_str() {
+            "P" => ChannelKind::Private,
+            "D" => ChannelKind::Direct,
+            "G" => ChannelKind::Group,
+            _ => ChannelKind::Public,
+        };
+        Self {
+            me: me.to_owned(),
+            event: matty_notify::Event {
+                post_id: post.id.clone(),
+                channel_id: post.channel_id.clone(),
+                root_id: post.root_id.clone(),
+                author_id: post.user_id.clone(),
+                author_name: arrived.sender_name.trim_start_matches('@').to_owned(),
+                channel_name: arrived.channel_display_name.clone(),
+                channel_kind,
+                message: post.message.clone(),
+                system: post.kind.starts_with("system_"),
+                server_mentioned: arrived.mentioned,
+                followed_thread: arrived.followed,
+            },
+            user: user.clone(),
+            channel: matty_notify::ChannelPrefs::from_props(&arrived.channel_props),
+            collapsed_threads: arrived.collapsed_threads,
+        }
+    }
+
+    /// The notification to show, if any, given what the window shows.
+    pub fn decide(&self, app: matty_notify::AppState) -> Option<matty_notify::Notification> {
+        let app = matty_notify::AppState {
+            me: self.me.clone(),
+            collapsed_threads: self.collapsed_threads,
+            ..app
+        };
+        matty_notify::decide(&self.event, &self.user, &self.channel, &app)
+    }
 }
 
 /// A change to the open channel's view.
@@ -333,7 +390,7 @@ impl Live {
                 sections: HashMap::new(),
                 presence: HashMap::new(),
                 me: (account.user_id.clone(), account.username.clone()),
-                keys: matty_notify::MentionKeys::username(account.username.clone()),
+                prefs: matty_notify::UserPrefs::from_props(&account.username, "", &HashMap::new()),
                 notify_props: HashMap::new(),
                 users: HashMap::new(),
                 open: None,
@@ -433,7 +490,7 @@ impl Live {
     /// the user leave the map out, so an empty one changes nothing.
     fn take_notify_props(&mut self, user: &User, update: &mut Update) {
         if user.id == self.me.0 && !user.notify_props.is_empty() {
-            self.keys = matty_notify::MentionKeys::from_props(
+            self.prefs = matty_notify::UserPrefs::from_props(
                 &user.username,
                 &user.first_name,
                 &user.notify_props,
@@ -447,7 +504,7 @@ impl Live {
         let row = self.open.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            keys: &self.keys,
+            keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -601,7 +658,7 @@ impl Live {
         let (terms, posts) = self.search.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            keys: &self.keys,
+            keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -896,6 +953,9 @@ impl Live {
                     update.channel = self.channel_update();
                     update.profiles = self.shown.is_some().then(|| self.profiles());
                 }
+            }
+            ChangeSet::Arrived(arrived) => {
+                update.arrived = Some(Arrival::new(arrived, &self.me.0, &self.prefs));
             }
             ChangeSet::Me(user) => {
                 self.take_notify_props(user, &mut update);
@@ -1352,7 +1412,7 @@ mod tests {
         };
         let update = live.apply(&ChangeSet::Me(Arc::new(me.clone())));
         assert_eq!(update.notify_props.as_ref().map(|p| p.len()), Some(1));
-        assert!(live.keys.mentioned("the deploy is out"));
+        assert!(live.prefs.keys.mentioned("the deploy is out"));
         // A later fetch without the map keeps the keywords.
         let bare = User {
             notify_props: Default::default(),
@@ -1360,7 +1420,70 @@ mod tests {
         };
         let update = live.apply(&ChangeSet::Users(Arc::from(vec![bare])));
         assert_eq!(update.notify_props, None);
-        assert!(live.keys.mentioned("the deploy is out"));
+        assert!(live.prefs.keys.mentioned("the deploy is out"));
+    }
+
+    #[test]
+    fn an_arriving_post_notifies_with_the_users_keywords() {
+        let mut live = live();
+        let me = User {
+            id: live.me.0.clone(),
+            username: "me".into(),
+            notify_props: [("mention_keys".to_string(), "deploy".to_string())]
+                .into_iter()
+                .collect(),
+            ..User::default()
+        };
+        live.apply(&ChangeSet::Me(Arc::new(me)));
+        let arrived = |message: &str, channel_props: &[(&str, &str)]| matty_sync::Arrived {
+            post: matty_api::models::Post {
+                id: "p9".into(),
+                channel_id: "c2".into(),
+                user_id: "u2".into(),
+                message: message.into(),
+                ..Default::default()
+            },
+            channel_type: "O".into(),
+            channel_display_name: "Town Square".into(),
+            sender_name: "@sam".into(),
+            mentioned: false,
+            followed: false,
+            channel_props: channel_props
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            collapsed_threads: false,
+        };
+        let away = matty_notify::AppState::default();
+        let update = live.apply(&ChangeSet::Arrived(Arc::new(arrived(
+            "the deploy is out",
+            &[],
+        ))));
+        let arrival = update.arrived.unwrap();
+        assert_eq!(arrival.event.author_name, "sam");
+        let shown = arrival.decide(away.clone()).unwrap();
+        assert_eq!(
+            (shown.channel_id.as_str(), shown.post_id.as_str()),
+            ("c2", "p9")
+        );
+        // No keyword, and the user's default is mentions only.
+        let update = live.apply(&ChangeSet::Arrived(Arc::new(arrived("lunch?", &[]))));
+        assert_eq!(update.arrived.unwrap().decide(away.clone()), None);
+        // A muted channel stays quiet even on a keyword.
+        let muted = arrived("the deploy is out", &[("mark_unread", "mention")]);
+        let update = live.apply(&ChangeSet::Arrived(Arc::new(muted)));
+        assert_eq!(update.arrived.unwrap().decide(away.clone()), None);
+        // The channel on screen in a focused window does not notify.
+        let update = live.apply(&ChangeSet::Arrived(Arc::new(arrived(
+            "the deploy is out",
+            &[],
+        ))));
+        let watching = matty_notify::AppState {
+            focused: true,
+            visible_channel: Some("c2".into()),
+            ..away
+        };
+        assert_eq!(update.arrived.unwrap().decide(watching), None);
     }
 
     #[test]
