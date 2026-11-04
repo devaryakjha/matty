@@ -270,13 +270,23 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `attachment_group` directly above the composer card (`design-23`):
   gpuicn `Attachment` thumbnails for images and cards with a type icon,
   the name and "PDF · 2.4 MB" for anything else. Files arrive from the
-  Attach button or Cmd+U (the platform file dialog), from dropping onto
-  the composer, which tints it `accent` while hovering, and from pasting
-  an image, which becomes "Pasted image.png". A chip shows "Uploading…
+  Attach button, Cmd+U or File > Upload files (the platform file dialog),
+  from dropping anywhere on the channel view or the thread pane, and from
+  pasting an image, which becomes "Pasted image.png". While files are
+  dragged over either, gpuicn's empty state covers it, dashed in `ring` on
+  `accent`: "Drop to upload to #general" over "Files go into the message
+  you are writing." (or "your reply"); the thread pane's drop goes to the
+  reply. A file over the server's `MaxFileSize` or past the tenth never
+  starts uploading: the tray says so in one `meta` line in `destructive`
+  with an icon ("demo.mov is 240 MB. Files must be under 100 MB.").
+  A chip shows "Uploading…
   60%" with a progress bar, then its meta line; a failed one turns
   `destructive`, says "Upload failed" and gets Retry. Each has a remove
   button. Send stays disabled while any file is uploading or failed, and
-  a post may be files alone; the tray clears on send.
+  a post may be files alone; the tray clears on send. Enter while files
+  upload queues the send: the Send button spins, a muted line says
+  "Sends when the uploads finish…", and the post goes when the last one
+  is up; a failure drops the queued send and says so.
 - **Files on posts and the lightbox** (PLAN §4.6 Files, gpuicn G8) put a
   post's files under its text as the same `Attachment` chips: image
   thumbnails in one row, then cards with the type icon, name and

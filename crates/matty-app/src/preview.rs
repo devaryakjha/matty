@@ -910,6 +910,18 @@ pub fn uploads() -> Vec<Upload> {
     ]
 }
 
+/// A screen recording over the default 100 MB limit, which the tray
+/// refuses when the fixtures go in.
+pub fn oversize_upload() -> Upload {
+    Upload {
+        id: "u-recording".into(),
+        name: "screen-recording.mov".into(),
+        size: 251_658_240,
+        source: UploadSource::Path("screen-recording.mov".into()),
+        status: AttachmentStatus::Uploading(0.),
+    }
+}
+
 /// The preview user's notification preferences, with two keywords.
 /// A link preview for a draft's link: GitHub links have one, others none.
 pub fn link_card(url: &str) -> Option<crate::embeds::LinkCard> {

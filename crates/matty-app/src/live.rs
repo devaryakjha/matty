@@ -196,6 +196,8 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// The server's `MaxFileSize`, for the trays to check files against.
+    pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
@@ -1355,6 +1357,7 @@ impl Live {
             }
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);
+                update.max_file_size = Some(capabilities.max_file_size);
                 self.threads_choice = Some(matches!(
                     capabilities.collapsed_threads,
                     matty_api::capabilities::CollapsedThreads::DefaultOn

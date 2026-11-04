@@ -17,7 +17,9 @@ use gpui_kit::{
 use crate::actions::{
     self, EditLastMessage, FocusComposer, MarkChannelRead, ReplyToLastMessage, UploadFiles,
 };
-use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
+use crate::attachments::{
+    AttachmentStatus, PostFile, SendGate, Upload, UploadSource, UploadTray, post_files,
+};
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
 };
@@ -28,7 +30,7 @@ use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
-    attachment::{Attachment, attachment_group},
+    attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant, style_button},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
@@ -698,9 +700,8 @@ pub struct ChannelView {
     recent_emoji: Vec<SharedString>,
     /// The sidebar's channels, for `~` autocomplete.
     directory: Vec<ChannelRow>,
-    /// Files waiting in the composer tray.
-    uploads: Vec<Upload>,
-    upload_seq: usize,
+    /// Files waiting in the composer tray, and a send waiting on them.
+    tray: UploadTray,
     /// The image viewer over the clicked post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -871,12 +872,8 @@ impl ChannelView {
                 if sources.is_empty() {
                     return false;
                 }
-                view.update(cx, |this, cx| {
-                    for source in sources {
-                        this.add_upload(source, cx);
-                    }
-                })
-                .is_ok()
+                view.update(cx, |this, cx| this.add_sources(sources, cx))
+                    .is_ok()
             });
             // People get their avatar, emoji their glyph; channels keep the
             // suggestion's icon.
@@ -998,8 +995,7 @@ impl ChannelView {
             picker_target: None,
             recent_emoji: Vec::new(),
             directory: Vec::new(),
-            uploads: Vec::new(),
-            upload_seq: 0,
+            tray: UploadTray::new("upload"),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -1551,16 +1547,23 @@ impl ChannelView {
     }
 
     fn can_send(&self) -> bool {
-        let files_ready = self.uploads.iter().all(Upload::is_ready);
-        let something = self.draft_len > 0 || !self.uploads.is_empty();
-        self.model.is_some() && something && files_ready && self.draft_len <= self.max_post_size()
+        self.model.is_some()
+            && self.tray.gate(self.draft_len > 0) == SendGate::Now
+            && self.draft_len <= self.max_post_size()
+    }
+
+    /// The server's `MaxFileSize`, for checking files before they upload.
+    pub fn set_max_file_size(&mut self, bytes: u64) {
+        self.tray.set_max_file_size(bytes);
     }
 
     /// Opens the file picker; in preview it fills the tray with fixtures
-    /// instead, since no dialog can open there.
-    fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// instead, since no dialog can open there, and offers one file over
+    /// the limit so the tray says why it stayed out.
+    pub fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::preview::enabled() {
-            self.uploads.extend(crate::preview::uploads());
+            self.tray.extend(crate::preview::uploads());
+            self.tray.admit(vec![crate::preview::oversize_upload()]);
             cx.notify();
             return;
         }
@@ -1580,53 +1583,60 @@ impl ChannelView {
 
     /// Adds files to the tray and asks sync to upload them.
     pub fn add_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
-        for path in paths {
-            self.add_upload(UploadSource::Path(path), cx);
-        }
+        self.add_sources(paths.into_iter().map(UploadSource::Path), cx);
     }
 
-    fn add_upload(&mut self, source: UploadSource, cx: &mut Context<Self>) {
-        self.upload_seq += 1;
-        let id: SharedString = format!("upload-{}", self.upload_seq).into();
-        let upload = match source {
-            UploadSource::Path(path) => Upload::from_path(id.clone(), path),
-            UploadSource::Image(image) => Upload::from_image(id.clone(), image),
-        };
-        cx.emit(ChannelEvent::Upload {
-            id,
-            name: upload.name.clone(),
-            source: upload.source.clone(),
-        });
-        self.uploads.push(upload);
+    /// Adds what passes the size and count checks to the tray and asks
+    /// sync to upload it; the tray says why the rest stayed out.
+    fn add_sources(
+        &mut self,
+        sources: impl IntoIterator<Item = UploadSource>,
+        cx: &mut Context<Self>,
+    ) {
+        for upload in self.tray.add(sources) {
+            cx.emit(ChannelEvent::Upload {
+                id: upload.id,
+                name: upload.name,
+                source: upload.source,
+            });
+        }
         cx.notify();
     }
 
-    /// Sync reports progress, completion or failure for a tray file.
+    /// Sync reports progress, completion or failure for a tray file; a
+    /// send that waited on it goes once the last one is up.
     pub fn set_upload_status(
         &mut self,
         id: &str,
         status: AttachmentStatus,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(upload) = self
-            .uploads
-            .iter_mut()
-            .find(|upload| upload.id.as_ref() == id)
-        {
-            upload.status = status;
-            cx.notify();
+        if self.tray.set_status(id, status) {
+            self.send_queued(window, cx);
         }
+        cx.notify();
     }
 
-    fn remove_upload(&mut self, id: &SharedString, cx: &mut Context<Self>) {
-        self.uploads.retain(|upload| &upload.id != id);
+    fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let due = self.tray.remove(id);
         cx.emit(ChannelEvent::CancelUpload(id.clone()));
+        if due {
+            self.send_queued(window, cx);
+        }
         cx.notify();
     }
 
     fn retry_upload(&mut self, id: &SharedString, cx: &mut Context<Self>) {
-        self.set_upload_status(id, AttachmentStatus::Uploading(0.), cx);
+        self.tray.set_status(id, AttachmentStatus::Uploading(0.));
         cx.emit(ChannelEvent::RetryUpload(id.clone()));
+        cx.notify();
+    }
+
+    /// Sends what the composer holds now, for a send that waited on uploads.
+    fn send_queued(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value(cx);
+        self.send(text, window, cx);
     }
 
     /// Opens the lightbox over the images of `post`, at image `index`.
@@ -1738,25 +1748,14 @@ impl ChannelView {
         )
     }
 
-    /// A tray chip: a thumbnail for images, a card for anything else.
+    /// A tray chip with its remove and Retry wired to this view.
     fn upload_chip(&self, upload: &Upload, cx: &mut Context<Self>) -> Attachment {
-        let id = upload.id.clone();
-        let remove = id.clone();
-        let mut chip = Attachment::new(
-            gpui_kit::ElementId::Name(format!("upload.{id}").into()),
-            upload.name.clone(),
+        let (remove, retry) = (upload.id.clone(), upload.id.clone());
+        upload.chip(
+            "upload",
+            cx.listener(move |this, _, window, cx| this.remove_upload(&remove, window, cx)),
+            cx.listener(move |this, _, _, cx| this.retry_upload(&retry, cx)),
         )
-        .meta(upload.meta())
-        .icon(upload.icon())
-        .status(upload.status)
-        .on_remove(cx.listener(move |this, _, _, cx| this.remove_upload(&remove, cx)));
-        if let Some(image) = upload.image() {
-            chip = chip.image(image);
-        }
-        if upload.status == AttachmentStatus::Failed {
-            chip = chip.on_retry(cx.listener(move |this, _, _, cx| this.retry_upload(&id, cx)));
-        }
-        chip
     }
 
     /// Follows the draft's first link: a new one is asked about after a
@@ -1795,13 +1794,20 @@ impl ChannelView {
     /// outbox). Blank text and text over the limit stay in the composer.
     fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let body: SharedString = text.trim().to_string().into();
-        if (body.is_empty() && self.uploads.is_empty())
-            || body.chars().count() > self.max_post_size()
-            || !self.uploads.iter().all(Upload::is_ready)
-        {
+        if body.chars().count() > self.max_post_size() {
             return;
         }
-        let files: Vec<PostFile> = self.uploads.drain(..).map(PostFile::from_upload).collect();
+        // Enter while files upload waits for them (#149).
+        if self.tray.request_send(!body.is_empty()) != SendGate::Now {
+            cx.notify();
+            return;
+        }
+        let files: Vec<PostFile> = self
+            .tray
+            .take()
+            .into_iter()
+            .map(PostFile::from_upload)
+            .collect();
         let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
         let Some(mut model) = self.model.clone() else {
             return;
@@ -3656,14 +3662,13 @@ impl ChannelView {
                 cx.notify();
             }),
         );
-        let tray = (!self.uploads.is_empty()).then(|| {
-            let chips: Vec<Attachment> = self
-                .uploads
-                .iter()
-                .map(|upload| self.upload_chip(upload, cx))
-                .collect();
-            attachment_group("composer.uploads", chips, cx).pb(theme.space(2.))
-        });
+        let chips: Vec<Attachment> = self
+            .tray
+            .uploads()
+            .iter()
+            .map(|upload| self.upload_chip(upload, cx))
+            .collect();
+        let tray = crate::attachments::upload_tray("composer", &self.tray, chips, cx);
         let mut key = gpui_kit::KeyContext::new_with_defaults(cx.platform_info().os);
         key.add("Composer");
         if self.draft_len == 0 {
@@ -3684,13 +3689,6 @@ impl ChannelView {
             .on_action(
                 cx.listener(|this, _: &UploadFiles, window, cx| this.choose_files(window, cx)),
             )
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.add_paths(paths.paths().iter().cloned(), cx)
-            }))
-            .drag_over::<ExternalPaths>({
-                let accent = theme.colors.accent;
-                move |style, _, _, _| style.bg(accent)
-            })
             .flex_shrink_0()
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
@@ -3756,11 +3754,16 @@ impl ChannelView {
                                 let text = this.composer.read(cx).value(cx);
                                 this.send(text, window, cx)
                             }))
-                            .child(
+                            .child(if self.tray.is_queued() {
+                                Spinner::new("composer.send.spinner")
+                                    .color(theme.colors.primary_foreground)
+                                    .into_any_element()
+                            } else {
                                 lucide(LucideIcon::SendHorizontal)
                                     .size(scaled(&theme, metrics::ICON))
-                                    .text_color(theme.colors.primary_foreground),
-                            ),
+                                    .text_color(theme.colors.primary_foreground)
+                                    .into_any_element()
+                            }),
                     )),
             )
     }
@@ -3985,10 +3988,23 @@ impl Render for ChannelView {
         } else {
             self.transcript(&channel, cx).into_any_element()
         };
-        root.child(self.header(&channel, cx))
+        // Files dropped anywhere on the view go to its composer (#150).
+        let overlay = crate::attachments::drop_overlay(
+            "channel.drop",
+            crate::attachments::drop_title(&channel.name),
+            "Files go into the message you are writing.",
+            crate::attachments::preview_drop(),
+            cx,
+        );
+        root.relative()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.add_paths(paths.paths().iter().cloned(), cx)
+            }))
+            .child(self.header(&channel, cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))
+            .children(overlay)
             // Zero-size host for the shared post menu; it opens at the pointer.
             // Disabled so the empty host is not a tab stop.
             .child(
