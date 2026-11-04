@@ -165,9 +165,13 @@ pub struct MainWindow {
     preferences: DialogHandle,
     /// The section Preferences shows (#155).
     preferences_section: preferences::Section,
-    /// Preferences' mention keywords, saved to the server on Enter or when
-    /// the field loses focus (#192).
+    /// Preferences' field for a new mention keyword, added on Enter or
+    /// when the field loses focus (#192).
     keywords: Entity<InputState>,
+    /// Preferences' field for a new highlight-only keyword (#192).
+    highlight_keywords: Entity<InputState>,
+    /// The server takes `highlight_keys`: it is licensed (#192).
+    highlight_keys: bool,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
@@ -892,20 +896,23 @@ impl MainWindow {
         )
         .detach();
         let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
-        let keywords = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
-            if let Some(props) = &preview_props {
-                let text = matty_notify::mention::keywords_text("arya", props);
-                input.set_value(text, window, cx);
-            }
-            input
-        });
-        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                this.save_keywords(cx);
-            }
-        })
-        .detach();
+        let keyword_input =
+            |list: matty_notify::KeywordList, window: &mut Window, cx: &mut Context<Self>| {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a keyword"));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                            this.add_keywords(list, window, cx);
+                        }
+                    },
+                )
+                .detach();
+                input
+            };
+        let keywords = keyword_input(matty_notify::KeywordList::Mention, window, cx);
+        let highlight_keywords = keyword_input(matty_notify::KeywordList::Highlight, window, cx);
         let level = settings.read(cx).get().log_level;
         let log_level = cx.new(|cx| {
             let mut state = SelectState::new(
@@ -962,6 +969,8 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             preferences_section: preferences::Section::default(),
             keywords,
+            highlight_keywords,
+            highlight_keys: crate::preview::enabled(),
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
             badge: matty_notify::Badge::Clear,
@@ -1694,13 +1703,12 @@ impl MainWindow {
             self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
-            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
-            self.keywords.update(cx, |input, cx| {
-                if input.value() != text.as_str() {
-                    input.set_value(text, window, cx);
-                }
-            });
             self.notify_props = Some(props);
+            cx.notify();
+        }
+        if let Some(on) = update.highlight_keys {
+            self.highlight_keys = on;
+            cx.notify();
         }
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
@@ -3469,7 +3477,11 @@ impl MainWindow {
             })
             .flatten();
         let app = matty_notify::AppState {
-            dnd: self.account.read(cx).account().presence == crate::sidebar::Presence::Dnd,
+            dnd: {
+                let account = self.account.read(cx).account();
+                account.presence == crate::sidebar::Presence::Dnd
+                    && matty_notify::dnd_active(account.dnd_end, jiff::Timestamp::now().as_second())
+            },
             focused: window.is_window_active(),
             visible_channel: (!self.threads_open && !self.drafts_open)
                 .then(|| self.selected_channel.as_ref().map(|id| id.to_string()))

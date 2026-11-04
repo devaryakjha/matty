@@ -198,6 +198,9 @@ pub struct Update {
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
+    /// Whether the server takes highlight-only keywords, for Preferences
+    /// (#192).
+    pub highlight_keys: Option<bool>,
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
@@ -1871,6 +1874,9 @@ impl Live {
                         | matty_api::capabilities::CollapsedThreads::DefaultOff
                 ));
                 update.collapsed_threads = self.threads();
+                // `highlight_keys` came in 9.3 (below Matty's floor) for
+                // licensed servers; an unlicensed one drops the prop.
+                update.highlight_keys = Some(capabilities.licensed);
             }
             ChangeSet::CollapsedThreads(on) => {
                 let changed = self.threads_on != Some(*on);
@@ -3491,6 +3497,7 @@ mod tests {
             first_name: Some("Ada".into()),
             channel_wide: true,
             keywords: vec!["deploy".into()],
+            ..Default::default()
         };
         assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }

@@ -30,6 +30,7 @@ use crate::ui::{
     select::Select,
     sidebar::{Sidebar, SidebarItem},
     switch::Switch,
+    tag::Tag,
     theme::UiTheme,
     toggle_group::{ToggleGroup, ToggleGroupItem},
 };
@@ -269,19 +270,41 @@ impl MainWindow {
         }
     }
 
-    /// Sends the typed keywords when they differ from the server's.
-    pub(super) fn save_keywords(&mut self, cx: &mut Context<Self>) {
-        let (Some(live), Some(props)) = (&self.live, &self.notify_props) else {
+    /// Adds the keywords typed in `list`'s field, then empties it (#192).
+    pub(super) fn add_keywords(
+        &mut self,
+        list: matty_notify::KeywordList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = match list {
+            matty_notify::KeywordList::Mention => self.keywords.clone(),
+            matty_notify::KeywordList::Highlight => self.highlight_keywords.clone(),
+        };
+        let typed = input.read(cx).value().to_string();
+        if typed.trim().is_empty() {
+            return;
+        }
+        let Some(props) = &self.notify_props else {
             return;
         };
-        let typed = self.keywords.read(cx).value().to_string();
-        let next = matty_notify::mention::with_keywords(&self.username(cx), props, &typed);
-        if next != *props {
-            live.send(matty_sync::Command::SetNotifyProps {
-                notify_props: next.clone(),
-            });
-            self.notify_props = Some(next);
-        }
+        let next = matty_notify::mention::add_keywords(&self.username(cx), props, list, &typed);
+        input.update(cx, |input, cx| input.set_value("", window, cx));
+        self.write_notify_props(next, cx);
+    }
+
+    /// Takes `keyword` out of `list` (#192).
+    fn remove_keyword(
+        &mut self,
+        list: matty_notify::KeywordList,
+        keyword: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(props) = &self.notify_props else {
+            return;
+        };
+        let next = matty_notify::mention::remove_keyword(props, list, keyword);
+        self.write_notify_props(next, cx);
     }
 
     /// Writes one of the user's `notify_props` to the server (#158). The
@@ -295,6 +318,18 @@ impl MainWindow {
         }
         let mut next = props.clone();
         next.insert(key.to_owned(), value.to_owned());
+        self.write_notify_props(next, cx);
+    }
+
+    /// Sends `next` as the user's `notify_props` when it changes them.
+    fn write_notify_props(
+        &mut self,
+        next: std::collections::HashMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.notify_props.as_ref() == Some(&next) {
+            return;
+        }
         if let Some(live) = &self.live {
             live.send(matty_sync::Command::SetNotifyProps {
                 notify_props: next.clone(),
@@ -963,18 +998,64 @@ impl MainWindow {
                         "channel",
                         ("true", "false"),
                     ))
-                    .child(
-                        Field::new("preferences.keywords", &self.keywords)
-                            .label("Keywords")
-                            .description(
-                                "Words that count as mentioning you, separated by commas. \
-                                 @username always does.",
-                            ),
-                    ),
+                    .child(self.keyword_editor(matty_notify::KeywordList::Mention, props, cx)),
                 true,
                 &theme,
             ))
+            .when(self.highlight_keys, |page| {
+                page.child(group(
+                    "Highlights",
+                    stack(&theme).child(self.keyword_editor(
+                        matty_notify::KeywordList::Highlight,
+                        props,
+                        cx,
+                    )),
+                    true,
+                    &theme,
+                ))
+            })
             .into_any_element()
+    }
+
+    /// A keyword list in Preferences: its field and its tags (#192).
+    fn keyword_editor(
+        &self,
+        list: matty_notify::KeywordList,
+        props: &std::collections::HashMap<String, String>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = UiTheme::read(cx).clone();
+        let keywords = matty_notify::mention::keywords(&self.username(cx), props, list);
+        let (id, label, description, input) = match list {
+            matty_notify::KeywordList::Mention => (
+                "preferences.keywords",
+                "Keywords",
+                "Words that count as mentioning you and notify. Press Enter to add; \
+                 commas add several. @username always counts.",
+                &self.keywords,
+            ),
+            matty_notify::KeywordList::Highlight => (
+                "preferences.highlight-keywords",
+                "Highlight keywords",
+                "Words that highlight a message without notifying you.",
+                &self.highlight_keywords,
+            ),
+        };
+        let view = cx.entity().downgrade();
+        keyword_editor(
+            KeywordEditor {
+                id,
+                label,
+                description,
+            },
+            input,
+            keywords,
+            move |keyword, cx| {
+                view.update(cx, |this, cx| this.remove_keyword(list, keyword, cx))
+                    .ok();
+            },
+            &theme,
+        )
     }
 
     fn advanced(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1078,6 +1159,50 @@ impl MainWindow {
 const SECTION_LIST_WIDTH: f32 = 184.;
 /// The sheet's width, in px at zoom 1, within the window.
 const SHEET_WIDTH: f32 = 760.;
+
+/// What a keyword editor says about its list.
+struct KeywordEditor {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+}
+
+/// A keyword list as removable tags under the field that adds more
+/// (#192). Each tag's remove button calls `on_remove` with its keyword.
+fn keyword_editor(
+    editor: KeywordEditor,
+    input: &gpui_kit::Entity<crate::ui::input::InputState>,
+    keywords: Vec<String>,
+    on_remove: impl Fn(&str, &mut App) + 'static,
+    theme: &UiTheme,
+) -> Div {
+    let on_remove = std::rc::Rc::new(on_remove);
+    let tags = keywords.into_iter().map(|keyword| {
+        let on_remove = on_remove.clone();
+        // Keywords are unique ignoring case, so the keyword names its tag.
+        let tag_id: SharedString = format!("{}.{}", editor.id, keyword.to_lowercase()).into();
+        let removed = keyword.clone();
+        div()
+            .debug_selector({
+                let tag_id = tag_id.clone();
+                move || tag_id.to_string()
+            })
+            .child(Tag::new(tag_id, keyword).on_remove(move |_, _, cx| on_remove(&removed, cx)))
+    });
+    stack(theme)
+        .child(
+            Field::new(editor.id, input)
+                .label(editor.label)
+                .description(editor.description),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(theme.space(1.5))
+                .children(tags),
+        )
+}
 
 fn stack(theme: &UiTheme) -> Div {
     div().flex().flex_col().gap(theme.space(3.))
@@ -1432,5 +1557,70 @@ mod tests {
         assert_eq!(press("down down enter"), Section::Notifications);
         // Up from the first row wraps to the last.
         assert_eq!(press("home up enter"), Section::Advanced);
+    }
+
+    /// Hosts a keyword editor the way the Notifications section does.
+    struct Keywords {
+        input: gpui_kit::Entity<crate::ui::input::InputState>,
+        keywords: Vec<String>,
+    }
+
+    impl gpui_kit::Render for Keywords {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = UiTheme::read(cx).clone();
+            let view = cx.entity().downgrade();
+            div().w(gpui_kit::px(600.)).child(keyword_editor(
+                KeywordEditor {
+                    id: "preferences.keywords",
+                    label: "Keywords",
+                    description: "Words that count as mentioning you.",
+                },
+                &self.input,
+                self.keywords.clone(),
+                move |keyword, cx| {
+                    let keyword = keyword.to_owned();
+                    view.update(cx, |this, cx| {
+                        this.keywords.retain(|k| *k != keyword);
+                        cx.notify();
+                    })
+                    .ok();
+                },
+                &theme,
+            ))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_keyword_tag_removes_its_keyword(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let window = cx.add_window(|window, cx| Keywords {
+            input: gpui_kit::AppContext::new(cx, |cx| {
+                crate::ui::input::InputState::new(window, cx)
+            }),
+            keywords: vec!["Deploy".into(), "on-call".into()],
+        });
+        let probe = window.root(cx).unwrap();
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let deploy = cx
+            .debug_bounds("preferences.keywords.deploy")
+            .expect("a tag per keyword");
+        let on_call = cx.debug_bounds("preferences.keywords.on-call").unwrap();
+        assert!(deploy.origin.x < on_call.origin.x, "in the list's order");
+        // The remove button ends the tag.
+        let remove = gpui_kit::point(
+            deploy.origin.x + deploy.size.width - gpui_kit::px(8.),
+            deploy.center().y,
+        );
+        cx.simulate_click(remove, Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            cx.update(|_, cx| probe.read(cx).keywords.clone()),
+            ["on-call"]
+        );
+        assert!(cx.debug_bounds("preferences.keywords.deploy").is_none());
     }
 }

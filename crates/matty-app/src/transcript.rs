@@ -266,7 +266,7 @@ fn display_post(
         date,
         body,
         reactions: reactions(post, viewer.user_id, users, viewer.names),
-        mentions_me: mention.mentioned(&post.message),
+        mentions_me: mention.mentioned(&post.message) || mention.highlighted(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
