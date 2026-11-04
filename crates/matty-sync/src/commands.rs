@@ -15,6 +15,8 @@ const PAGE: u32 = 200;
 /// users; search covers the rest.
 const BROWSE_PAGES: u32 = 5;
 const PEOPLE_PAGES: u32 = 5;
+/// Saved posts and recent mentions show this many, newest first.
+const LISTING_PAGE: u32 = 60;
 
 /// A server write a command asked for.
 #[derive(Debug)]
@@ -72,6 +74,12 @@ pub(crate) enum Write {
         team_id: String,
         query: Box<SearchQuery>,
     },
+    Listing(crate::Listing),
+    Pin {
+        post_id: String,
+        pinned: bool,
+    },
+    DeletePreferences(Vec<matty_api::models::Preference>),
     Create(Box<NewChannel>),
     Patch {
         channel_id: String,
@@ -125,6 +133,12 @@ impl Write {
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
             Self::Search { .. } => "search",
+            Self::Listing(crate::Listing::Saved) => "load saved messages",
+            Self::Listing(crate::Listing::Pinned { .. }) => "load pinned messages",
+            Self::Listing(crate::Listing::Mentions { .. }) => "load recent mentions",
+            Self::Pin { pinned: true, .. } => "pin message",
+            Self::Pin { pinned: false, .. } => "unpin message",
+            Self::DeletePreferences(_) => "delete preferences",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -141,6 +155,7 @@ impl Write {
     fn target(&self, user_id: &str) -> String {
         match self {
             Self::Edit { post_id, .. }
+            | Self::Pin { post_id, .. }
             | Self::Delete { post_id }
             | Self::Unread { post_id, .. } => post_id.clone(),
             Self::React { reaction, .. } => reaction.post_id.clone(),
@@ -155,7 +170,10 @@ impl Write {
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
-            Self::Browse { team_id }
+            Self::Listing(crate::Listing::Saved) => user_id.to_owned(),
+            Self::Listing(crate::Listing::Pinned { channel_id }) => channel_id.clone(),
+            Self::Listing(crate::Listing::Mentions { team_id, .. })
+            | Self::Browse { team_id }
             | Self::People { team_id }
             | Self::Search { team_id, .. }
             | Self::ReadAllThreads { team_id } => team_id.clone(),
@@ -163,7 +181,7 @@ impl Write {
                 thread_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
-            Self::Preferences(preferences) => preferences
+            Self::Preferences(preferences) | Self::DeletePreferences(preferences) => preferences
                 .iter()
                 .map(|preference| preference.name.as_str())
                 .collect::<Vec<_>>()
@@ -410,6 +428,35 @@ pub(crate) async fn run(
             Write::Preferences(preferences) => {
                 client.save_preferences(&user_id, &preferences).await?;
                 None
+            }
+            Write::DeletePreferences(preferences) => {
+                client.delete_preferences(&user_id, &preferences).await?;
+                None
+            }
+            Write::Pin { post_id, pinned } => {
+                if pinned {
+                    client.pin_post(&post_id).await?;
+                } else {
+                    client.unpin_post(&post_id).await?;
+                }
+                None
+            }
+            Write::Listing(listing) => {
+                let list = match &listing {
+                    crate::Listing::Saved => client.saved_posts(&user_id, 0, LISTING_PAGE).await?,
+                    crate::Listing::Pinned { channel_id } => {
+                        client.pinned_posts(channel_id).await?
+                    }
+                    crate::Listing::Mentions { team_id, terms } => {
+                        let mut query = SearchQuery::new(terms.clone());
+                        query.is_or_search = true;
+                        query.per_page = LISTING_PAGE;
+                        client.search_posts(team_id, &query).await?.list
+                    }
+                };
+                let mut posts: Vec<_> = list.ordered().cloned().collect();
+                posts.sort_by_key(|post| std::cmp::Reverse(post.create_at));
+                Some(Loaded::Listing { listing, posts })
             }
             Write::AddMembers {
                 channel_id,

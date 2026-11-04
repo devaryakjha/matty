@@ -23,7 +23,7 @@ mod typing;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{
-    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW,
+    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, Listing, POSTS_WINDOW,
     UploadState,
 };
 pub use engine::Command;

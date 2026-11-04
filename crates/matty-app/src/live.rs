@@ -77,6 +77,11 @@ pub struct Live {
     ready: Option<String>,
     /// The search on screen and its results once they come.
     search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The saved, pinned or mentions listing on screen and its posts once
+    /// they come (#130–#132).
+    listing: Option<(matty_sync::Listing, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The ids of the posts the user saved.
+    saved: std::collections::HashSet<String>,
     /// The composer's files, by the tray's id: where each goes and its
     /// server id once up.
     uploads: HashMap<String, UploadJob>,
@@ -178,6 +183,9 @@ pub struct Update {
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
+    /// The saved, pinned or mentions listing on screen, once loaded or
+    /// changed.
+    pub listing: Option<crate::right_pane::RightPaneContent>,
     /// A file's full-size image, for the lightbox.
     pub full_image: Option<(SharedString, Arc<gpui_kit::Image>)>,
     /// A file saved to the download folder, or the failure.
@@ -432,6 +440,8 @@ impl Live {
                 typing: Vec::new(),
                 ready: None,
                 search: None,
+                listing: None,
+                saved: Default::default(),
                 uploads: HashMap::new(),
                 thumbnails: HashMap::new(),
                 asked_thumbnails: std::collections::HashSet::new(),
@@ -540,6 +550,7 @@ impl Live {
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
             keys: &self.prefs.keys,
+            saved: &self.saved,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -711,6 +722,114 @@ impl Live {
         });
     }
 
+    /// Loads the user's saved posts; they come as [`Update::listing`].
+    pub fn show_saved(&mut self) {
+        self.show_listing(matty_sync::Listing::Saved);
+    }
+
+    /// Loads a channel's pinned posts; they come as [`Update::listing`].
+    pub fn show_pinned(&mut self, channel_id: &str) {
+        self.show_listing(matty_sync::Listing::Pinned {
+            channel_id: channel_id.to_owned(),
+        });
+    }
+
+    /// Loads the shown team's recent mentions of the user: an "or" search
+    /// for their mention keys, as the webapp does. They come as
+    /// [`Update::listing`].
+    pub fn show_mentions(&mut self) {
+        let Some(team_id) = self.team.clone() else {
+            return;
+        };
+        self.show_listing(matty_sync::Listing::Mentions {
+            team_id,
+            terms: mention_terms(&self.prefs.keys),
+        });
+    }
+
+    fn show_listing(&mut self, listing: matty_sync::Listing) {
+        self.listing = Some((listing.clone(), None));
+        self.send(Command::LoadListing(listing));
+    }
+
+    /// The right pane moved on from the listing.
+    pub fn close_listing(&mut self) {
+        self.listing = None;
+    }
+
+    /// Whether the user saved the post.
+    pub fn is_saved(&self, post_id: &str) -> bool {
+        self.saved.contains(post_id)
+    }
+
+    /// Saves or unsaves a post: shown at once, sent to the server.
+    pub fn set_saved(&mut self, post_id: &str, saved: bool) {
+        self.send(Command::SetSaved {
+            post_id: post_id.to_owned(),
+            saved,
+        });
+    }
+
+    /// Pins or unpins a post; the edited post comes back over the socket.
+    pub fn set_pinned(&mut self, post_id: &str, pinned: bool) {
+        self.send(Command::SetPinned {
+            post_id: post_id.to_owned(),
+            pinned,
+        });
+    }
+
+    /// Whether a channel's new posts pin or unpin one against the open
+    /// Pinned listing, which then loads again.
+    fn pins_changed(&self, channel_id: &str, posts: &[matty_api::models::Post]) -> bool {
+        let Some((matty_sync::Listing::Pinned { channel_id: shown }, Some(listed))) = &self.listing
+        else {
+            return false;
+        };
+        shown == channel_id
+            && posts.iter().any(|post| {
+                let listed = listed.iter().any(|pinned| pinned.id == post.id);
+                post.is_pinned != listed && post.delete_at == 0 || listed && post.delete_at != 0
+            })
+    }
+
+    /// The listing as the pane shows it, once its posts have come.
+    fn listing_content(&self) -> Option<crate::right_pane::RightPaneContent> {
+        use crate::right_pane::RightPaneContent;
+        let (listing, Some(posts)) = self.listing.as_ref()? else {
+            return None;
+        };
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            keys: &self.prefs.keys,
+            saved: &self.saved,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+        };
+        let listed: Vec<_> = posts
+            .iter()
+            .filter(|post| post.delete_at == 0)
+            // An unsaved post leaves the Saved listing at once.
+            .filter(|post| {
+                !matches!(listing, matty_sync::Listing::Saved) || self.saved.contains(&post.id)
+            })
+            .map(|post| crate::right_pane::ListedPost {
+                channel_id: post.channel_id.clone().into(),
+                channel_name: self
+                    .channel_name(&post.channel_id)
+                    .unwrap_or_else(|| "Another channel".into()),
+                post: crate::transcript::listed_post(post, &self.users, &viewer),
+            })
+            .collect();
+        Some(match listing {
+            matty_sync::Listing::Saved => RightPaneContent::Saved(listed),
+            matty_sync::Listing::Mentions { .. } => RightPaneContent::Mentions(listed),
+            matty_sync::Listing::Pinned { channel_id } => RightPaneContent::Pinned {
+                channel_name: self.channel_name(channel_id).unwrap_or_default(),
+                posts: listed,
+            },
+        })
+    }
+
     /// Shows the thread under `root_id` in the right pane; its posts come
     /// as [`Update::thread`] now and whenever they change.
     pub fn open_thread(&mut self, root_id: &str) {
@@ -778,6 +897,7 @@ impl Live {
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
             keys: &self.prefs.keys,
+            saved: &self.saved,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -811,6 +931,7 @@ impl Live {
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
             keys: &self.prefs.keys,
+            saved: &self.saved,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -843,6 +964,7 @@ impl Live {
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
             keys: &self.prefs.keys,
+            saved: &self.saved,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -1079,6 +1201,41 @@ impl Live {
                     update.search = self.search_model();
                 }
             }
+            ChangeSet::Listing { listing, posts } => {
+                if let Some((asked, shown)) = self.listing.as_mut()
+                    && asked == listing
+                {
+                    *shown = Some(posts.clone());
+                    update.listing = self.listing_content();
+                }
+            }
+            ChangeSet::Saved(ids) => {
+                let saved: std::collections::HashSet<String> = ids.iter().cloned().collect();
+                if saved != self.saved {
+                    self.saved = saved;
+                    if self.posts.is_some() {
+                        update.channel = self.channel_update();
+                    }
+                    if self
+                        .thread
+                        .as_ref()
+                        .is_some_and(|(_, posts)| posts.is_some())
+                    {
+                        update.thread = self.thread_model();
+                    }
+                    update.listing = self.listing_content();
+                }
+            }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "load saved messages" | "load pinned messages" | "load recent mentions",
+                ..
+            }) => {
+                // Shown as an empty listing rather than loading forever.
+                if let Some((_, shown)) = self.listing.as_mut() {
+                    *shown = Some(Arc::from(Vec::new()));
+                    update.listing = self.listing_content();
+                }
+            }
             ChangeSet::Failed(matty_sync::CommandError::Server {
                 action: "search", ..
             }) => {
@@ -1148,6 +1305,11 @@ impl Live {
                 }
             }
             ChangeSet::Posts { channel_id, posts } => {
+                if self.pins_changed(channel_id, posts) {
+                    self.send(Command::LoadListing(matty_sync::Listing::Pinned {
+                        channel_id: channel_id.clone(),
+                    }));
+                }
                 if self
                     .open
                     .as_ref()
@@ -1166,6 +1328,14 @@ impl Live {
                 }
             }
             ChangeSet::Arrived(arrived) => {
+                // A new mention refreshes an open Recent mentions pane.
+                if let Some((listing @ matty_sync::Listing::Mentions { .. }, Some(_))) =
+                    &self.listing
+                    && arrived.post.user_id != self.me.0
+                    && (arrived.mentioned || self.prefs.keys.mentioned(&arrived.post.message))
+                {
+                    self.send(Command::LoadListing(listing.clone()));
+                }
                 update.arrived = Some(Arrival::new(arrived, &self.me.0, &self.prefs));
             }
             ChangeSet::Me(user) => {
@@ -1211,6 +1381,13 @@ impl Live {
                     .is_some_and(|(_, posts)| posts.is_some())
                 {
                     update.search = self.search_model();
+                }
+                if self
+                    .listing
+                    .as_ref()
+                    .is_some_and(|(_, posts)| posts.is_some())
+                {
+                    update.listing = self.listing_content();
                 }
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
@@ -1465,6 +1642,17 @@ pub fn methods(capabilities: &ServerCapabilities) -> SignInMethods {
 }
 
 /// The account to remember after `user` signs in to `server`.
+/// The search terms for the user's recent mentions: `@username`, the first
+/// name and keywords, leaving out `@channel`, `@all` and `@here` as the
+/// webapp does.
+fn mention_terms(keys: &matty_notify::MentionKeys) -> String {
+    std::iter::once(format!("@{}", keys.username))
+        .chain(keys.first_name.clone())
+        .chain(keys.keywords.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn saved_account(server: &str, user: &User) -> SavedAccount {
     let display_name = crate::transcript::display_name(user);
     SavedAccount {
@@ -2197,6 +2385,90 @@ mod tests {
             .map(|p| p.username.to_string())
             .collect();
         assert_eq!(names, ["ada", "zed"]);
+    }
+
+    #[test]
+    fn listings_show_once_loaded_and_unsaving_drops_a_saved_post() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let post = |id: &str| matty_api::models::Post {
+            id: id.into(),
+            channel_id: "elsewhere".into(),
+            user_id: "ada".into(),
+            message: "keep this".into(),
+            ..Default::default()
+        };
+        live.apply(&ChangeSet::Saved(Arc::from(vec![
+            "p1".to_string(),
+            "p2".to_string(),
+        ])));
+        assert!(live.is_saved("p1"));
+        live.show_saved();
+        // A listing the pane no longer asks for is ignored.
+        let other = live.apply(&ChangeSet::Listing {
+            listing: matty_sync::Listing::Pinned {
+                channel_id: "town".into(),
+            },
+            posts: Arc::from(vec![post("p9")]),
+        });
+        assert_eq!(other.listing, None);
+        let shown = live
+            .apply(&ChangeSet::Listing {
+                listing: matty_sync::Listing::Saved,
+                posts: Arc::from(vec![post("p1"), post("p2")]),
+            })
+            .listing;
+        let Some(crate::right_pane::RightPaneContent::Saved(posts)) = shown else {
+            panic!("expected the saved listing, got {shown:?}");
+        };
+        assert_eq!(posts.len(), 2);
+        assert!(posts[0].post.saved);
+        let shown = live
+            .apply(&ChangeSet::Saved(Arc::from(vec!["p2".to_string()])))
+            .listing;
+        let Some(crate::right_pane::RightPaneContent::Saved(posts)) = shown else {
+            panic!("expected the saved listing, got {shown:?}");
+        };
+        assert_eq!(
+            posts.iter().map(|p| p.post.id.as_ref()).collect::<Vec<_>>(),
+            ["p2"]
+        );
+    }
+
+    #[test]
+    fn unpinning_a_listed_post_reloads_the_pinned_listing() {
+        let mut live = live();
+        let post = |id: &str, pinned: bool| matty_api::models::Post {
+            id: id.into(),
+            channel_id: "c1".into(),
+            is_pinned: pinned,
+            ..Default::default()
+        };
+        live.show_pinned("c1");
+        let pinned = matty_sync::Listing::Pinned {
+            channel_id: "c1".into(),
+        };
+        live.apply(&ChangeSet::Listing {
+            listing: pinned,
+            posts: Arc::from(vec![post("p1", true)]),
+        });
+        assert!(!live.pins_changed("c1", &[post("p1", true), post("p2", false)]));
+        assert!(live.pins_changed("c1", &[post("p1", false)]));
+        assert!(live.pins_changed("c1", &[post("p2", true)]));
+        assert!(!live.pins_changed("c2", &[post("p2", true)]));
+    }
+
+    #[test]
+    fn mention_terms_leave_out_channel_wide_mentions() {
+        let keys = matty_notify::MentionKeys {
+            username: "ada".into(),
+            first_name: Some("Ada".into()),
+            channel_wide: true,
+            keywords: vec!["deploy".into()],
+        };
+        assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }
 
     #[test]

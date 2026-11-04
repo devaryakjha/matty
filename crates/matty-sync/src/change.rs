@@ -170,6 +170,17 @@ pub enum ChangeSet {
         /// The posts that matched.
         posts: Arc<[Post]>,
     },
+    /// A listing of posts outside their channel: the answer to
+    /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors
+    /// come ahead in [`ChangeSet::Users`].
+    Listing {
+        /// Which listing.
+        listing: Listing,
+        /// Its posts, newest first.
+        posts: Arc<[Post]>,
+    },
+    /// The ids of the posts the user saved, whenever they may have changed.
+    Saved(Arc<[String]>),
     /// A team's active people: the answer to
     /// [`Command::FindPeople`](crate::Command::FindPeople).
     People {
@@ -326,5 +337,25 @@ pub enum CommandError {
         target: String,
         /// What the server said.
         error: String,
+    },
+}
+
+/// A list of posts the right pane shows outside their channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    /// The user's saved posts across teams.
+    Saved,
+    /// A channel's pinned posts.
+    Pinned {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Recent posts mentioning the user in a team: an "or" search for the
+    /// user's mention keys.
+    Mentions {
+        /// The team.
+        team_id: String,
+        /// The mention keys, space separated, such as `@ada ada deploy`.
+        terms: String,
     },
 }

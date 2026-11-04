@@ -391,6 +391,25 @@ pub enum Command {
         /// The user's offset from UTC in seconds, for `on:` and the like.
         time_zone_offset: i32,
     },
+    /// Loads a listing; [`ChangeSet::Listing`](crate::ChangeSet::Listing)
+    /// answers.
+    LoadListing(crate::Listing),
+    /// Saves or unsaves a post for the user (a `flagged_post` preference);
+    /// [`ChangeSet::Saved`](crate::ChangeSet::Saved) follows at once.
+    SetSaved {
+        /// The post.
+        post_id: String,
+        /// Save it, or unsave it.
+        saved: bool,
+    },
+    /// Pins or unpins a post in its channel; the post comes back edited
+    /// over the WebSocket.
+    SetPinned {
+        /// The post.
+        post_id: String,
+        /// Pin it, or unpin it.
+        pinned: bool,
+    },
     /// Creates a channel the user is then in;
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
     CreateChannel {
@@ -630,6 +649,17 @@ impl std::fmt::Debug for Command {
                 .debug_struct("Search")
                 .field("team_id", team_id)
                 .finish_non_exhaustive(),
+            Self::LoadListing(listing) => f.debug_tuple("LoadListing").field(listing).finish(),
+            Self::SetSaved { post_id, saved } => f
+                .debug_struct("SetSaved")
+                .field("post_id", post_id)
+                .field("saved", saved)
+                .finish(),
+            Self::SetPinned { post_id, pinned } => f
+                .debug_struct("SetPinned")
+                .field("post_id", post_id)
+                .field("pinned", pinned)
+                .finish(),
             Self::FindPeople { team_id } => f
                 .debug_struct("FindPeople")
                 .field("team_id", team_id)
@@ -674,6 +704,8 @@ pub(crate) struct Dirty {
     pub(crate) unreads: bool,
     /// Preferences changed.
     pub(crate) preferences: bool,
+    /// The saved posts may have changed.
+    pub(crate) saved: bool,
     /// The cache lost track of the server and must catch up (#37).
     pub(crate) resync: bool,
     /// Change sets that carry their own data.
@@ -877,6 +909,7 @@ impl Engine {
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;
+                    dirty.saved = true;
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                 }
@@ -1280,6 +1313,31 @@ impl Engine {
                 }
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
+                }
+                Message::Command(Command::LoadListing(listing)) => {
+                    writes.push(Write::Listing(listing));
+                }
+                Message::Command(Command::SetSaved { post_id, saved }) => {
+                    if let Some(me) = &self.me {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: SAVED_CATEGORY.into(),
+                            name: post_id,
+                            value: "true".into(),
+                        };
+                        let preferences = vec![preference];
+                        if saved {
+                            sidebar::upsert_preferences(&tx, &preferences)?;
+                            writes.push(Write::Preferences(preferences));
+                        } else {
+                            sidebar::delete_preferences(&tx, &preferences)?;
+                            writes.push(Write::DeletePreferences(preferences));
+                        }
+                        dirty.saved = true;
+                    }
+                }
+                Message::Command(Command::SetPinned { post_id, pinned }) => {
+                    writes.push(Write::Pin { post_id, pinned });
                 }
                 Message::Command(Command::CreateChannel {
                     team_id,
@@ -2025,6 +2083,7 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
                 dirty.direct.push(ChangeSet::Preferences);
+                dirty.saved = true;
                 dirty.unreads = true;
                 let open: Vec<String> = self.open_channels.iter().cloned().collect();
                 for channel_id in open {
@@ -2211,6 +2270,10 @@ impl Engine {
             }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
+                posts: Arc::from(posts),
+            }),
+            Loaded::Listing { listing, posts } => dirty.direct.push(ChangeSet::Listing {
+                listing,
                 posts: Arc::from(posts),
             }),
             Loaded::People { team_id, users } => {
@@ -2510,6 +2573,11 @@ impl Engine {
     }
 
     fn publish(&mut self, mut dirty: Dirty) {
+        if (dirty.saved || dirty.preferences)
+            && let Ok(saved) = saved_post_ids(self.store.conn())
+        {
+            dirty.direct.push(ChangeSet::Saved(Arc::from(saved)));
+        }
         if dirty.preferences {
             self.preferences_changed(&mut dirty);
         }
@@ -2649,7 +2717,8 @@ impl Engine {
             match change {
                 ChangeSet::Posts { posts, .. }
                 | ChangeSet::Thread { posts, .. }
-                | ChangeSet::Search { posts, .. } => {
+                | ChangeSet::Search { posts, .. }
+                | ChangeSet::Listing { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
                 }
                 // The Threads view names each root's author and who replied.
@@ -2720,6 +2789,18 @@ impl Engine {
         dirty.unreads = true;
         dirty.channels.extend(self.open_channels.iter().cloned());
     }
+}
+
+/// The preference category Mattermost keeps saved ("flagged") posts in.
+const SAVED_CATEGORY: &str = "flagged_post";
+
+/// The posts the user saved, as the cache knows them.
+fn saved_post_ids(conn: &Db) -> Result<Vec<String>, StoreError> {
+    Ok(all_preferences(conn)?
+        .into_iter()
+        .filter(|preference| preference.category == SAVED_CATEGORY && preference.value == "true")
+        .map(|preference| preference.name)
+        .collect())
 }
 
 fn all_preferences(conn: &Db) -> Result<Vec<Preference>, StoreError> {

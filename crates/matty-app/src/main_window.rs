@@ -639,9 +639,27 @@ impl MainWindow {
                         });
                     }
                 }
-                ChannelEvent::ToggleSave(_)
-                | ChannelEvent::TogglePin(_)
-                | ChannelEvent::ToggleFollow { .. } => {}
+                ChannelEvent::ToggleSave(post) => {
+                    if let Some(live) = this.live.as_mut() {
+                        let saved = !live.is_saved(post);
+                        live.set_saved(post, saved);
+                    }
+                }
+                ChannelEvent::TogglePin(post) => {
+                    // The view has already flipped the post.
+                    let pinned = this
+                        .channel
+                        .read(cx)
+                        .model()
+                        .and_then(|model| model.posts.iter().find(|shown| shown.id == *post))
+                        .map(|shown| shown.pinned);
+                    if let Some(live) = &mut this.live
+                        && let Some(pinned) = pinned
+                    {
+                        live.set_pinned(post, pinned);
+                    }
+                }
+                ChannelEvent::ToggleFollow { .. } => {}
             },
         )
         .detach();
@@ -1078,6 +1096,16 @@ impl MainWindow {
         if let Some(people) = update.people {
             self.new_message
                 .update(cx, |view, cx| view.set_profiles(people, cx));
+        }
+        // Only while the pane still shows that kind of listing.
+        if let Some(listing) = update.listing
+            && self.right_pane_open
+            && self.right_pane.read(cx).content().is_some_and(|shown| {
+                std::mem::discriminant(shown) == std::mem::discriminant(&listing)
+            })
+        {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_content(Some(listing), cx));
         }
         // Only while the pane still shows that search.
         if let Some(model) = update.search
@@ -2044,9 +2072,11 @@ impl MainWindow {
         }
     }
 
+    /// The right pane moves on: sync stops keeping its thread or listing.
     fn leave_thread(&mut self) {
         if let Some(live) = &mut self.live {
             live.close_thread();
+            live.close_listing();
         }
     }
 
@@ -2118,6 +2148,11 @@ impl MainWindow {
             },
             cx,
         );
+        if let Some(live) = self.live.as_mut() {
+            live.show_pinned(&channel.id);
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_saved(&mut self, cx: &mut Context<Self>) {
@@ -2127,6 +2162,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Saved(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_saved();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_mentions(&mut self, cx: &mut Context<Self>) {
@@ -2136,6 +2176,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Mentions(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_mentions();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     /// Keeps an open info pane in step with the channel header's star.

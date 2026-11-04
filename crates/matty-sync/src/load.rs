@@ -117,6 +117,11 @@ pub(crate) enum Loaded {
         terms: String,
         posts: Vec<matty_api::models::Post>,
     },
+    /// A listing's posts, newest first.
+    Listing {
+        listing: crate::Listing,
+        posts: Vec<matty_api::models::Post>,
+    },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
     /// An opened channel's posts could not load.

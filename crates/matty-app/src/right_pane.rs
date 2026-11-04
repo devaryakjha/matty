@@ -167,6 +167,8 @@ pub struct RightPaneView {
     pending_seq: usize,
     /// The search field at the top of the Search listing.
     search: Entity<InputState>,
+    /// The saved, pinned or mentions listing has yet to come from sync.
+    loading: bool,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -273,6 +275,7 @@ impl RightPaneView {
             _link_task: None,
             pending_seq: 0,
             search,
+            loading: false,
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -539,6 +542,13 @@ impl RightPaneView {
     }
 
     /// Replaces what the pane shows and resets the transcript to its end.
+    /// Marks the listing on screen as still loading, so an empty one reads
+    /// "Loading…" rather than its empty state.
+    pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        self.loading = loading;
+        cx.notify();
+    }
+
     /// Shows a search: the field takes the query and focus, the listing the
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
@@ -569,6 +579,7 @@ impl RightPaneView {
     }
 
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
+        self.loading = false;
         let rows = match &content {
             // Root, the replies divider, then replies.
             Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
@@ -1085,10 +1096,20 @@ impl RightPaneView {
         empty: (LucideIcon, &'static str, &'static str),
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let theme = UiTheme::read(cx).clone();
+        if items.is_empty() && self.loading {
+            return div()
+                .flex_1()
+                .px(theme.space(4.))
+                .py(theme.space(3.))
+                .type_style(style::META, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child("Loading\u{2026}")
+                .into_any_element();
+        }
         if items.is_empty() {
             return style::centered_empty(empty.0, empty.1, empty.2, cx).into_any_element();
         }
-        let theme = UiTheme::read(cx).clone();
         let view = cx.entity().downgrade();
         div()
             .id(id)
