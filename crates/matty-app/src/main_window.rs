@@ -349,6 +349,17 @@ impl MainWindow {
         let profile_editor = cx.new(|cx| crate::profile_editor::ProfileEditor::new(window, cx));
         cx.subscribe(
             &profile_editor,
+            |this, _, chosen: &crate::profile_editor::PictureChosen, _| {
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::SetPicture {
+                        picture: chosen.0.clone(),
+                    });
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &profile_editor,
             |this, _, saved: &crate::profile_editor::ProfileSaved, _| {
                 if let Some(live) = &this.live {
                     live.send(matty_sync::Command::UpdateProfile {
@@ -3211,6 +3222,7 @@ impl MainWindow {
                     first_name: names.next().unwrap_or_default().to_string(),
                     last_name: names.next().unwrap_or_default().to_string(),
                     username: account.username.to_string(),
+                    user_id: account.user_id.to_string(),
                     ..Default::default()
                 }
             }

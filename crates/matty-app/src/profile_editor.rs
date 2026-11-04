@@ -1,15 +1,19 @@
 //! "Edit profile" (#212): the user's own names, nickname, position and
 //! username, saved with `PUT users/{id}/patch`. Only changed fields are
-//! sent.
+//! sent. The picture changes at once, apart from Save.
 
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, Focusable as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Window,
+    div,
 };
 use matty_api::ProfilePatch;
 
+use crate::style::TypeStyleExt as _;
+
 use crate::ui::{
-    button::{Button, ButtonVariant},
+    avatar::{Avatar, AvatarSize},
+    button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     field::Field,
     input::{InputEvent, InputState},
@@ -24,11 +28,18 @@ pub struct ProfileFields {
     pub nickname: String,
     pub position: String,
     pub username: String,
+    /// Whose profile it is, for the picture.
+    pub user_id: String,
+    /// True when the user uploaded a picture, rather than the generated one.
+    pub custom_picture: bool,
 }
 
 impl ProfileFields {
     pub fn of(user: &matty_api::models::User) -> Self {
         Self {
+            user_id: user.id.clone(),
+            // Mattermost marks a reset picture with a negative time.
+            custom_picture: user.last_picture_update > 0,
             first_name: user.first_name.clone(),
             last_name: user.last_name.clone(),
             nickname: user.nickname.clone(),
@@ -83,6 +94,25 @@ pub fn username_problem(username: &str) -> Option<&'static str> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileSaved(pub ProfilePatch);
 
+/// The user picked a new picture (its bytes and file name), or removed it
+/// with `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PictureChosen(pub Option<(Vec<u8>, String)>);
+
+/// The image types the server takes for a profile picture.
+const PICTURE_TYPES: [&str; 5] = ["jpg", "jpeg", "png", "gif", "bmp"];
+
+/// Why `path` can't be a profile picture, or `None` when it can.
+pub fn picture_problem(path: &std::path::Path) -> Option<&'static str> {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    (!PICTURE_TYPES.contains(&extension.as_str()))
+        .then_some("Choose a JPEG, PNG, GIF or BMP image.")
+}
+
 struct Inputs {
     first_name: Entity<InputState>,
     last_name: Entity<InputState>,
@@ -97,10 +127,13 @@ pub struct ProfileEditor {
     /// The fields when the dialog opened.
     before: ProfileFields,
     focus_first: bool,
+    /// Why the last picked picture was refused.
+    picture_error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<ProfileSaved> for ProfileEditor {}
+impl EventEmitter<PictureChosen> for ProfileEditor {}
 
 impl ProfileEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -135,6 +168,7 @@ impl ProfileEditor {
             inputs,
             before: ProfileFields::default(),
             focus_first: false,
+            picture_error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -150,14 +184,138 @@ impl ProfileEditor {
             input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         }
         self.before = fields;
+        self.picture_error = None;
         self.dialog.open(window, cx);
         self.focus_first = true;
         cx.notify();
     }
 
+    /// Asks for an image file and sends it as the new picture.
+    fn pick_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose picture".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            if let Some(problem) = picture_problem(&path) {
+                this.update(cx, |this, cx| {
+                    this.picture_error = Some(problem.into());
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+            let read = path.clone();
+            let bytes = cx
+                .background_executor()
+                .spawn(async move { std::fs::read(read) })
+                .await;
+            this.update(cx, |this, cx| {
+                match bytes {
+                    Ok(bytes) => {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "picture".into());
+                        this.picture_error = None;
+                        this.before.custom_picture = true;
+                        cx.emit(PictureChosen(Some((bytes, name))));
+                    }
+                    Err(_) => this.picture_error = Some("Couldn't read that file.".into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn remove_picture(&mut self, cx: &mut Context<Self>) {
+        self.before.custom_picture = false;
+        self.picture_error = None;
+        cx.emit(PictureChosen(None));
+        cx.notify();
+    }
+
+    fn picture_row(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let typed = self.typed(cx);
+        let name = format!("{} {}", typed.first_name.trim(), typed.last_name.trim());
+        let initial: String = name
+            .trim()
+            .chars()
+            .next()
+            .or_else(|| typed.username.chars().next())
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_default();
+        let avatar = crate::avatars::with_picture(
+            Avatar::new("profile.edit.avatar")
+                .size(AvatarSize::Lg)
+                .fallback(initial)
+                .aria_label("Your picture"),
+            &self.before.user_id,
+            cx,
+        );
+        div()
+            .flex()
+            .items_center()
+            .gap(theme.space(3.))
+            .child(avatar)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(1.))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(theme.space(2.))
+                            .child(
+                                Button::new("profile.edit.picture")
+                                    .variant(ButtonVariant::Outline)
+                                    .size(ButtonSize::Sm)
+                                    .label("Upload picture…")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.pick_picture(window, cx)
+                                    })),
+                            )
+                            .children(self.before.custom_picture.then(|| {
+                                Button::new("profile.edit.picture.remove")
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::Sm)
+                                    .label("Remove")
+                                    .on_click(cx.listener(|this, _, _, cx| this.remove_picture(cx)))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .type_style(crate::style::META, &theme)
+                            .text_color(match self.picture_error {
+                                Some(_) => theme.colors.destructive,
+                                None => theme.colors.muted_foreground,
+                            })
+                            .child(
+                                self.picture_error
+                                    .clone()
+                                    .unwrap_or_else(|| "JPEG, PNG, GIF or BMP.".into()),
+                            ),
+                    ),
+            )
+    }
+
     fn typed(&self, cx: &gpui_kit::App) -> ProfileFields {
         let value = |input: &Entity<InputState>| input.read(cx).value().to_string();
         ProfileFields {
+            user_id: self.before.user_id.clone(),
+            custom_picture: self.before.custom_picture,
             first_name: value(&self.inputs.first_name),
             last_name: value(&self.inputs.last_name),
             nickname: value(&self.inputs.nickname),
@@ -214,6 +372,7 @@ impl Render for ProfileEditor {
             .unwrap_or("Others mention you with @ and this name.")
             .into();
         let usable = self.patch(cx).is_some();
+        let picture = self.picture_row(cx);
         let popup = dialog_popup("profile.edit.popup", "Edit profile", cx)
             .child(dialog_title("profile.edit.title", cx).child("Edit profile"))
             .child(
@@ -226,6 +385,7 @@ impl Render for ProfileEditor {
                     .flex()
                     .flex_col()
                     .gap(theme.space(3.))
+                    .child(picture)
                     .child(
                         div()
                             .flex()
@@ -299,6 +459,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pictures_are_images_the_server_takes() {
+        use std::path::Path;
+        assert_eq!(picture_problem(Path::new("me.PNG")), None);
+        assert_eq!(picture_problem(Path::new("/a/b/me.jpeg")), None);
+        assert!(picture_problem(Path::new("me.svg")).is_some());
+        assert!(picture_problem(Path::new("me")).is_some());
+    }
+
+    #[test]
     fn usernames_follow_the_server_rules() {
         assert_eq!(username_problem("ada.l"), None);
         assert_eq!(username_problem(" ada "), None);
@@ -317,6 +486,7 @@ mod tests {
             nickname: String::new(),
             position: String::new(),
             username: "ada".into(),
+            ..Default::default()
         };
         let mut after = before.clone();
         assert!(after.patch_from(&before).is_empty());
