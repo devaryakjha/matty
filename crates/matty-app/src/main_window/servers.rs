@@ -241,9 +241,9 @@ impl MainWindow {
             RailEvent::SelectServer(index) => self.switch_server(*index, window, cx),
             RailEvent::AddServer => self.add_server(None, window, cx),
             RailEvent::RemoveServer(index) => self.remove_server(*index, window, cx),
-            // Switching teams and joining one are sync's (PLAN §3 M2); the
-            // rail already shows the pick.
-            RailEvent::Select(_) | RailEvent::Join => cx.notify(),
+            RailEvent::Select(team) => self.switch_team(team.clone(), window, cx),
+            // Joining a team is sync's (PLAN §3 M2).
+            RailEvent::Join => cx.notify(),
         }
     }
 

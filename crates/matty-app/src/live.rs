@@ -25,6 +25,8 @@ use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence};
 
+mod teams;
+
 /// A running sync engine and what the window last heard from it.
 pub struct Live {
     sync: SyncHandle,
@@ -174,6 +176,9 @@ pub struct Update {
     pub categories: Option<Vec<Category>>,
     /// The shown team's display name, for the sidebar header.
     pub team_name: Option<SharedString>,
+    /// The user's teams with their badges, for the rail, and the one on
+    /// screen (#89).
+    pub teams: Option<(Vec<crate::rail::Team>, Option<SharedString>)>,
     pub connection: Option<ConnectionState>,
     /// What changed in the open channel's view.
     pub channel: Option<ChannelUpdate>,
@@ -1519,16 +1524,10 @@ impl Live {
                     .cloned();
                 let team = shown.or_else(|| self.teams.first().map(|team| team.id.clone()));
                 if team != self.team {
-                    if let Some(old) = std::mem::replace(&mut self.team, team) {
-                        self.send(Command::CloseThreadList { team_id: old });
-                    }
-                    self.thread_list = None;
-                    if let Some(team_id) = self.team.clone() {
-                        self.send(Command::OpenThreadList { team_id });
-                    }
-                    update.categories = self.shown_categories();
+                    self.show_team(team, &mut update);
                 }
                 update.team_name = self.team_name();
+                update.teams = Some(self.rail_teams());
             }
             ChangeSet::Presence(statuses) => {
                 for status in statuses.iter() {
@@ -2464,7 +2463,7 @@ mod tests {
     use matty_api::models::Status;
     use matty_sync::{SidebarChannel, Unreads};
 
-    fn channel(id: &str, kind: &str, messages: i64, mentions: i64) -> SidebarChannel {
+    pub(super) fn channel(id: &str, kind: &str, messages: i64, mentions: i64) -> SidebarChannel {
         SidebarChannel {
             id: id.into(),
             kind: kind.into(),
@@ -2482,7 +2481,7 @@ mod tests {
         }
     }
 
-    fn section(id: &str, channels: Vec<SidebarChannel>) -> SidebarSection {
+    pub(super) fn section(id: &str, channels: Vec<SidebarChannel>) -> SidebarSection {
         SidebarSection {
             id: id.into(),
             kind: "custom".into(),
@@ -2494,17 +2493,18 @@ mod tests {
         }
     }
 
-    fn team(id: &str) -> TeamWithUnreads {
+    pub(super) fn team(id: &str) -> TeamWithUnreads {
         TeamWithUnreads {
             id: id.into(),
             name: id.into(),
             display_name: format!("Team {id}"),
             has_unreads: false,
             mentions: 0,
+            icon: 0,
         }
     }
 
-    fn live() -> Live {
+    pub(super) fn live() -> Live {
         let dir = tempfile::tempdir().unwrap();
         let account = SavedAccount {
             server: "http://localhost".into(),
@@ -2790,6 +2790,7 @@ mod tests {
             display_name: name.into(),
             has_unreads: false,
             mentions: 0,
+            icon: 0,
         };
         live.teams = vec![team("t1", "core"), team("t2", "design")];
         live.sections.insert(

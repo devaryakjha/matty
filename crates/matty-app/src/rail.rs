@@ -103,11 +103,23 @@ impl Team {
     pub fn initials(&self) -> String {
         initials(&self.name)
     }
+
+    /// The square's accessible name: the team's name and what is unread
+    /// in it, as the badge shows (#89).
+    pub fn label(&self) -> SharedString {
+        match (self.mentions, self.unread) {
+            (0, false) => self.name.clone(),
+            (0, true) => format!("{}, unread messages", self.name).into(),
+            (1, _) => format!("{}, 1 mention", self.name).into(),
+            (n, _) => format!("{}, {n} mentions", self.name).into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RailEvent {
-    /// The user picked a team; the view already shows it as current.
+    /// The user picked a team; the window switches to it and marks it
+    /// current (#89).
     Select(SharedString),
     /// The user pressed the dashed square to join another team.
     Join,
@@ -215,16 +227,22 @@ impl RailView {
         }
     }
 
-    /// Makes `id` current. The team's own counts stay until sync clears
-    /// them channel by channel, as viewing one channel does not read the
-    /// others.
+    /// Asks the window to switch to `id`; the window marks it current
+    /// once it shows the team (#89). The team's own counts stay until sync
+    /// clears them channel by channel, as viewing one channel does not
+    /// read the others.
     pub fn select(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        if self.current.as_ref() == Some(&id) {
-            return;
+        if self.current.as_ref() != Some(&id) {
+            cx.emit(RailEvent::Select(id));
         }
-        self.current = Some(id.clone());
-        cx.emit(RailEvent::Select(id));
-        cx.notify();
+    }
+
+    /// Marks `id` as the team on screen.
+    pub fn set_current(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.current != id {
+            self.current = id;
+            cx.notify();
+        }
     }
 
     fn open_server_menu(
@@ -395,7 +413,7 @@ impl RailView {
             ButtonVariant::Ghost
         })
         .size(ButtonSize::Icon)
-        .aria_label(name.clone())
+        .aria_label(team.label())
         .rounded(theme.radius.lg)
         .when(!current, |button| {
             button
@@ -606,6 +624,48 @@ mod tests {
             assert_eq!(rail.current_server(), Some(1));
         });
         assert_eq!(initials("Matty Community"), "MC");
+    }
+
+    #[test]
+    fn a_squares_name_says_what_is_unread() {
+        assert_eq!(Team::new("a", "Matty").label().as_ref(), "Matty");
+        assert_eq!(
+            Team::new("a", "Matty").unread().label().as_ref(),
+            "Matty, unread messages"
+        );
+        assert_eq!(
+            Team::new("a", "Matty").mentions(1).label().as_ref(),
+            "Matty, 1 mention"
+        );
+        assert_eq!(
+            Team::new("a", "Matty").mentions(3).label().as_ref(),
+            "Matty, 3 mentions"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn picking_a_team_asks_the_window_which_marks_it(cx: &mut gpui_kit::TestAppContext) {
+        let teams = vec![Team::new("a", "Matty"), Team::new("b", "Design")];
+        let rail = cx.new(|cx| RailView::new(teams, Some("a".into()), cx));
+        let picked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let picked = picked.clone();
+            cx.subscribe(&rail, move |_, event: &RailEvent, _| {
+                picked.borrow_mut().push(event.clone())
+            })
+            .detach();
+        });
+        rail.update(cx, |rail, cx| rail.select("a".into(), cx));
+        rail.update(cx, |rail, cx| rail.select("b".into(), cx));
+        assert_eq!(*picked.borrow(), vec![RailEvent::Select("b".into())]);
+        // Still the shown team until the window switches.
+        rail.read_with(cx, |rail, _| {
+            assert_eq!(rail.current().map(|id| id.as_ref()), Some("a"))
+        });
+        rail.update(cx, |rail, cx| rail.set_current(Some("b".into()), cx));
+        rail.read_with(cx, |rail, _| {
+            assert_eq!(rail.current().map(|id| id.as_ref()), Some("b"))
+        });
     }
 
     #[test]

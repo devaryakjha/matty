@@ -618,6 +618,9 @@ pub struct TeamWithUnreads {
     /// Mentions across the team's channels, muted ones included, as the
     /// webapp counts them.
     pub mentions: i64,
+    /// The team's `last_team_icon_update`: 0 when it has no icon, else the
+    /// version of the icon to show on the rail (#89).
+    pub icon: i64,
 }
 
 /// Every team the user is on, in rail order, with unread state from its
@@ -628,17 +631,22 @@ pub fn teams_with_unreads(
     mode: UnreadMode,
 ) -> Result<Vec<TeamWithUnreads>> {
     let mut teams = conn.prepare_cached(
-        "SELECT id, name, display_name FROM teams WHERE delete_at = 0
+        "SELECT id, name, display_name, data FROM teams WHERE delete_at = 0
          ORDER BY sort_order IS NULL, sort_order, display_name COLLATE NOCASE, id",
     )?;
     let mut result: Vec<TeamWithUnreads> = teams
         .query_map([], |row| {
+            let data: String = row.get(3)?;
+            let icon = serde_json::from_str::<Team>(&data)
+                .map(|team| team.last_team_icon_update)
+                .unwrap_or_default();
             Ok(TeamWithUnreads {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 display_name: row.get(2)?,
                 has_unreads: false,
                 mentions: 0,
+                icon,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;

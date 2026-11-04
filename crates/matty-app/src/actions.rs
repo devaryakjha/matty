@@ -28,6 +28,10 @@ gpui_kit::actions!(
         PreviousChannel,
         /// Go to the next channel in the sidebar. (MM)
         NextChannel,
+        /// Go to the previous team on the rail. (MM)
+        PreviousTeam,
+        /// Go to the next team on the rail. (MM)
+        NextTeam,
         /// Go to the previous unread channel. (MM)
         PreviousUnreadChannel,
         /// Go to the next unread channel. (MM)
@@ -114,6 +118,74 @@ gpui_kit::actions!(
         SwitchServer9,
     ]
 );
+
+gpui_kit::actions!(
+    matty,
+    [
+        /// Switch to the first team on the rail. (MM)
+        SwitchTeam1,
+        /// Switch to the second team on the rail. (MM)
+        SwitchTeam2,
+        /// Switch to the third team on the rail. (MM)
+        SwitchTeam3,
+        /// Switch to the fourth team on the rail. (MM)
+        SwitchTeam4,
+        /// Switch to the fifth team on the rail. (MM)
+        SwitchTeam5,
+        /// Switch to the sixth team on the rail. (MM)
+        SwitchTeam6,
+        /// Switch to the seventh team on the rail. (MM)
+        SwitchTeam7,
+        /// Switch to the eighth team on the rail. (MM)
+        SwitchTeam8,
+        /// Switch to the ninth team on the rail. (MM)
+        SwitchTeam9,
+    ]
+);
+
+/// Cmd+Option+1…9 on macOS and Ctrl+Alt+1…9 elsewhere switch to the team
+/// in that place on the rail, as in Mattermost (#89). Like
+/// [`server_bindings`] they stay out of [`bindings`].
+pub fn team_bindings(platform: Platform) -> Vec<KeyBinding> {
+    const MACOS: [&str; 9] = [
+        "cmd-alt-1",
+        "cmd-alt-2",
+        "cmd-alt-3",
+        "cmd-alt-4",
+        "cmd-alt-5",
+        "cmd-alt-6",
+        "cmd-alt-7",
+        "cmd-alt-8",
+        "cmd-alt-9",
+    ];
+    const OTHER: [&str; 9] = [
+        "ctrl-alt-1",
+        "ctrl-alt-2",
+        "ctrl-alt-3",
+        "ctrl-alt-4",
+        "ctrl-alt-5",
+        "ctrl-alt-6",
+        "ctrl-alt-7",
+        "ctrl-alt-8",
+        "ctrl-alt-9",
+    ];
+    let keys = match platform {
+        Platform::MacOs => MACOS,
+        Platform::Other => OTHER,
+    };
+    let main = Some(MAIN_WINDOW);
+    vec![
+        KeyBinding::new(keys[0], SwitchTeam1, main),
+        KeyBinding::new(keys[1], SwitchTeam2, main),
+        KeyBinding::new(keys[2], SwitchTeam3, main),
+        KeyBinding::new(keys[3], SwitchTeam4, main),
+        KeyBinding::new(keys[4], SwitchTeam5, main),
+        KeyBinding::new(keys[5], SwitchTeam6, main),
+        KeyBinding::new(keys[6], SwitchTeam7, main),
+        KeyBinding::new(keys[7], SwitchTeam8, main),
+        KeyBinding::new(keys[8], SwitchTeam9, main),
+    ]
+}
 
 /// Cmd/Ctrl+1…9 switch to the saved server in that place on the rail
 /// (PLAN §4.4, #206). They stay out of [`bindings`], whose rows the
@@ -296,6 +368,14 @@ pub fn bindings() -> Vec<Binding> {
         ),
         row!("Next channel", NextChannel, main, "alt-down", "alt-down"),
         row!(
+            "Previous team",
+            PreviousTeam,
+            main,
+            "cmd-alt-up",
+            "ctrl-alt-up"
+        ),
+        row!("Next team", NextTeam, main, "cmd-alt-down", "ctrl-alt-down"),
+        row!(
             "Previous unread channel",
             PreviousUnreadChannel,
             Some("MainWindow && !SidebarSortable"),
@@ -448,7 +528,8 @@ pub fn bind(cx: &mut App) {
         bindings()
             .into_iter()
             .map(|row| (row.bind)(row.keys(platform), row.context))
-            .chain(server_bindings(platform)),
+            .chain(server_bindings(platform))
+            .chain(team_bindings(platform)),
     );
     // On Linux and Windows a text field takes Alt+Shift+Up/Down to add a
     // cursor, which would swallow the unread jump from the composer. The
@@ -525,12 +606,30 @@ mod tests {
     }
 
     #[test]
+    fn team_switches_take_their_place_and_no_other_shortcut() {
+        for platform in [Platform::MacOs, Platform::Other] {
+            let taken: Vec<_> = bindings()
+                .into_iter()
+                .map(|row| row.keys(platform))
+                .collect();
+            for n in 1..=9 {
+                let keys = match platform {
+                    Platform::MacOs => format!("cmd-alt-{n}"),
+                    Platform::Other => format!("ctrl-alt-{n}"),
+                };
+                assert!(!taken.iter().any(|taken| *taken == keys), "{keys} is taken");
+            }
+            assert_eq!(team_bindings(platform).len(), 9);
+        }
+    }
+
+    #[test]
     fn every_action_has_one_row() {
         let mut names: Vec<&str> = bindings().iter().map(|row| (row.action)().name()).collect();
         let count = names.len();
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 37);
+        assert_eq!(count, 39);
     }
 }

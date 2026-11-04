@@ -410,6 +410,18 @@ fn teams_with_unreads_orders_and_badges_teams() {
         .find(|t| t.id == "t1")
         .unwrap();
     assert!(!t1.has_unreads, "{t1:?}");
+    assert_eq!(t1.icon, 0, "no icon yet");
+
+    // A team with an icon carries its version for the rail (#89).
+    let mut icon = team("t1", "Beta");
+    icon.last_team_icon_update = 1_700;
+    sidebar::upsert_teams(conn, &[icon]).unwrap();
+    let t1 = sidebar::teams_with_unreads(conn, ME, UnreadMode::AllPosts)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.id == "t1")
+        .unwrap();
+    assert_eq!(t1.icon, 1_700);
 }
 
 #[test]

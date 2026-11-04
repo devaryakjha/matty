@@ -204,6 +204,60 @@ pub fn sidebar() -> SidebarModel {
     }
 }
 
+/// The sidebar of the preview team `team` (#89): the first team's is
+/// [`sidebar`]; the others have channels of their own and the same direct
+/// messages, which belong to no team.
+pub fn team_sidebar(team: &str) -> SidebarModel {
+    let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
+    let channels = match team {
+        "design-guild" => vec![
+            public("dg-town-square", "town-square"),
+            public("critique", "critique").unread().mentions(2),
+            public("type-and-color", "type-and-color")
+                .unread()
+                .mentions(1),
+            public("motion", "motion"),
+        ],
+        "open-source" => vec![
+            public("os-town-square", "town-square"),
+            public("contributors", "contributors").unread(),
+            public("releases", "releases"),
+        ],
+        _ => return sidebar(),
+    };
+    let first = sidebar();
+    let direct = first
+        .categories
+        .iter()
+        .find(|category| category.id.as_ref() == "direct")
+        .cloned();
+    SidebarModel {
+        selected: None,
+        unread_threads: 0,
+        thread_mentions: 0,
+        drafted: Default::default(),
+        categories: preview_kinds(
+            std::iter::once(Category::new("channels", "Channels", channels))
+                .chain(direct)
+                .collect(),
+        ),
+        ..first
+    }
+}
+
+/// The preview team whose sidebar holds `channel_id`: the first team's
+/// when it does, as for direct messages.
+pub fn team_of(channel_id: &str) -> Option<SharedString> {
+    teams().into_iter().map(|team| team.id).find(|team| {
+        team_sidebar(team).categories.iter().any(|category| {
+            category
+                .rows
+                .iter()
+                .any(|row| row.id.as_ref() == channel_id)
+        })
+    })
+}
+
 /// Gives the preview's categories the kinds their ids name.
 fn preview_kinds(mut categories: Vec<Category>) -> Vec<Category> {
     for category in &mut categories {
@@ -285,9 +339,9 @@ fn repeat(posts: &[Post], count: usize) -> Vec<Post> {
 }
 
 pub fn channel(id: &str) -> Option<ChannelModel> {
-    let row = sidebar()
-        .categories
+    let row = teams()
         .into_iter()
+        .flat_map(|team| team_sidebar(&team.id).categories)
         .flat_map(|category| category.rows)
         .find(|row| row.id.as_ref() == id)?;
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
