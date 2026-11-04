@@ -76,6 +76,31 @@ async fn mfa_is_detected_by_error_id_not_status() {
 }
 
 #[tokio::test]
+async fn a_wrong_mfa_code_also_asks_for_the_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/users/login"))
+        .and(body_partial_json(json!({"token": "000000"})))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "id": "api.user.check_user_mfa.bad_code.app_error",
+            "message": "Invalid MFA token.",
+            "status_code": 401
+        })))
+        .mount(&server)
+        .await;
+    let credentials = Credentials {
+        mfa_token: Some("000000".into()),
+        ..credentials()
+    };
+    let error = Client::new(server.uri())
+        .unwrap()
+        .login(&credentials)
+        .await
+        .unwrap_err();
+    assert_eq!(error, ApiError::MfaRequired);
+}
+
+#[tokio::test]
 async fn other_login_errors_pass_through() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

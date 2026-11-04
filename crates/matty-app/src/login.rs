@@ -13,11 +13,16 @@ use gpui_kit::{
 use crate::style::{self, TypeStyleExt as _, scaled};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
-    field::Field,
+    field::{Field, field_title},
     input::{InputEvent, InputState},
+    otp_field::{OtpEvent, OtpField, OtpState},
     spinner::Spinner,
     theme::UiTheme,
+    toggle_group::{ToggleGroup, ToggleGroupItem},
 };
+
+/// How many digits an authenticator code has.
+pub const MFA_CODE_LEN: usize = 6;
 
 /// A single sign-on provider the server has enabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +56,30 @@ pub struct SignInMethods {
     pub sso: Vec<SsoProvider>,
 }
 
+impl SignInMethods {
+    /// Whether the form offers a choice between the server's own accounts
+    /// and AD/LDAP: only when both are on.
+    pub fn ldap_choice(&self) -> bool {
+        self.password && self.ldap
+    }
+
+    /// Whether a password sign-in goes to AD/LDAP only (`ldap_only`):
+    /// always when LDAP is the only password method, otherwise when the
+    /// person picked AD/LDAP.
+    pub fn ldap_only(&self, picked_ldap: bool) -> bool {
+        self.ldap && (!self.password || picked_ldap)
+    }
+
+    /// The login field's label for the method in use.
+    pub fn login_label(&self, picked_ldap: bool) -> &'static str {
+        if self.ldap_only(picked_ldap) {
+            "AD/LDAP username"
+        } else {
+            "Email or username"
+        }
+    }
+}
+
 /// Which step the card shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginStep {
@@ -58,6 +87,12 @@ pub enum LoginStep {
     Server,
     /// The server answered; asking how to sign in.
     Methods {
+        server_name: SharedString,
+        methods: SignInMethods,
+    },
+    /// The password was right and the account uses multi-factor
+    /// authentication: asking for the code. Back returns to `Methods`.
+    Mfa {
         server_name: SharedString,
         methods: SignInMethods,
     },
@@ -69,6 +104,15 @@ pub enum LoginStep {
         methods: SignInMethods,
         provider: SsoProvider,
     },
+}
+
+/// Why a sign-in did not go through, as the card needs to know it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInFailure {
+    /// The server wants an MFA code, or the code sent was wrong.
+    MfaRequired,
+    /// One sentence to show under the form.
+    Message(SharedString),
 }
 
 impl LoginStep {
@@ -114,6 +158,53 @@ pub struct LoginModel {
     pub error: Option<SharedString>,
 }
 
+impl LoginModel {
+    /// Applies a failed sign-in: a first MFA answer moves to the code step,
+    /// one on the code step means the code was wrong, and anything else is
+    /// shown where the person is.
+    pub fn sign_in_failed(&mut self, failure: SignInFailure) {
+        self.busy = false;
+        self.error = match (failure, &self.step) {
+            (
+                SignInFailure::MfaRequired,
+                LoginStep::Methods {
+                    server_name,
+                    methods,
+                },
+            ) => {
+                self.step = LoginStep::Mfa {
+                    server_name: server_name.clone(),
+                    methods: methods.clone(),
+                };
+                None
+            }
+            (SignInFailure::MfaRequired, LoginStep::Mfa { .. }) => Some(
+                "That code is not right. Enter the current code from your authenticator app."
+                    .into(),
+            ),
+            (SignInFailure::MfaRequired, LoginStep::Server | LoginStep::Browser { .. }) => {
+                Some("This account needs a multi-factor code. Sign in again.".into())
+            }
+            (SignInFailure::Message(message), _) => Some(message),
+        };
+    }
+
+    /// Leaves the code step for the password form, keeping what was typed.
+    pub fn back_to_methods(&mut self) {
+        if let LoginStep::Mfa {
+            server_name,
+            methods,
+        } = &self.step
+        {
+            self.step = LoginStep::Methods {
+                server_name: server_name.clone(),
+                methods: methods.clone(),
+            };
+            self.error = None;
+        }
+    }
+}
+
 impl Default for LoginModel {
     fn default() -> Self {
         Self {
@@ -124,13 +215,35 @@ impl Default for LoginModel {
     }
 }
 
+/// A password sign-in, as `POST /users/login` takes it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PasswordSignIn {
+    pub login_id: String,
+    pub password: String,
+    /// Check the password against AD/LDAP only.
+    pub ldap_only: bool,
+    /// The authenticator code, once the server has asked for one.
+    pub mfa_token: Option<String>,
+}
+
+impl std::fmt::Debug for PasswordSignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordSignIn")
+            .field("login_id", &self.login_id)
+            .field("password", &"[redacted]")
+            .field("ldap_only", &self.ldap_only)
+            .field("mfa_token", &self.mfa_token.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
 /// What the card asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginEvent {
     /// Check `url` with `/api/v4/system/ping` and fetch its client config.
     CheckServer(String),
-    /// Sign in with a login id and password (also LDAP).
-    SignIn { login_id: String, password: String },
+    /// Sign in with a login id and password (also LDAP and MFA).
+    SignIn(PasswordSignIn),
     /// Start (or restart) the browser flow for `provider`.
     Sso(SsoProvider),
     /// Stop waiting for the browser and go back to the methods.
@@ -176,7 +289,10 @@ pub struct LoginView {
     login_id: Entity<InputState>,
     password: Entity<InputState>,
     token: Entity<InputState>,
+    code: Entity<OtpState>,
     show_token: bool,
+    /// The person picked AD/LDAP where the server offers both.
+    picked_ldap: bool,
     focus: FocusHandle,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
@@ -195,7 +311,18 @@ impl LoginView {
         let login_id = cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let token = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let code = cx.new(|cx| OtpState::new(MFA_CODE_LEN, window, cx));
         let mut subscriptions = Vec::new();
+        // The last digit submits, as the code step has nothing else to fill.
+        subscriptions.push(cx.subscribe_in(
+            &code,
+            window,
+            |this, _, event: &OtpEvent, window, cx| {
+                if let OtpEvent::Complete = event {
+                    this.submit(Submit::Code, window, cx);
+                }
+            },
+        ));
         for (state, submit) in [
             (&server, Submit::Server),
             (&login_id, Submit::Password),
@@ -217,6 +344,7 @@ impl LoginView {
         let first = match &model.step {
             LoginStep::Server => server.read(cx).focus_handle(cx),
             LoginStep::Methods { .. } => login_id.read(cx).focus_handle(cx),
+            LoginStep::Mfa { .. } => code.read(cx).focus_handle(cx),
             LoginStep::Browser { .. } => focus.clone(),
         };
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
@@ -226,7 +354,9 @@ impl LoginView {
             login_id,
             password,
             token,
+            code,
             show_token: false,
+            picked_ldap: false,
             focus,
             _subscriptions: subscriptions,
         }
@@ -237,20 +367,47 @@ impl LoginView {
     }
 
     /// Replaces the model; moving to the methods step focuses its first
-    /// field, moving back focuses the URL.
+    /// field, moving back focuses the URL. The code step starts empty, and
+    /// a wrong code is cleared for the next one.
     pub fn set_model(&mut self, model: LoginModel, window: &mut Window, cx: &mut Context<Self>) {
         let step_changed = model.step != self.model.step;
         self.model = model;
+        let on_code = matches!(self.model.step, LoginStep::Mfa { .. });
+        if on_code && (step_changed || (self.model.error.is_some() && !self.model.busy)) {
+            self.code
+                .update(cx, |code, cx| code.set_value("", window, cx));
+        }
         if step_changed {
             self.show_token = false;
-            let focus = match &self.model.step {
-                LoginStep::Server => self.server.read(cx).focus_handle(cx),
-                LoginStep::Methods { .. } => self.login_id.read(cx).focus_handle(cx),
-                LoginStep::Browser { .. } => self.focus.clone(),
-            };
-            window.on_next_frame(move |window, cx| window.focus(&focus, cx));
+            self.focus_step(window, cx);
         }
         cx.notify();
+    }
+
+    fn focus_step(&self, window: &mut Window, cx: &App) {
+        let focus = match &self.model.step {
+            LoginStep::Server => self.server.read(cx).focus_handle(cx),
+            LoginStep::Methods { .. } => self.login_id.read(cx).focus_handle(cx),
+            LoginStep::Mfa { .. } => self.code.read(cx).focus_handle(cx),
+            LoginStep::Browser { .. } => self.focus.clone(),
+        };
+        window.on_next_frame(move |window, cx| window.focus(&focus, cx));
+    }
+
+    /// The password sign-in for what is typed, with `mfa_token` if given.
+    fn password_sign_in(&self, mfa_token: Option<String>, cx: &App) -> PasswordSignIn {
+        let ldap_only = match &self.model.step {
+            LoginStep::Methods { methods, .. } | LoginStep::Mfa { methods, .. } => {
+                methods.ldap_only(self.picked_ldap)
+            }
+            LoginStep::Server | LoginStep::Browser { .. } => false,
+        };
+        PasswordSignIn {
+            login_id: self.login_id.read(cx).value().trim().to_string(),
+            password: self.password.read(cx).value().to_string(),
+            ldap_only,
+            mfa_token,
+        }
     }
 
     /// The URL as typed, for the window to keep across steps.
@@ -274,13 +431,24 @@ impl LoginView {
                 }
             }
             Submit::Password => {
-                let login_id = self.login_id.read(cx).value().trim().to_string();
-                let password = self.password.read(cx).value().to_string();
-                if login_id.is_empty() || password.is_empty() {
+                let sign_in = self.password_sign_in(None, cx);
+                if sign_in.login_id.is_empty() || sign_in.password.is_empty() {
                     self.model.error = Some("Enter your email or username and password.".into());
                 } else {
                     self.model.error = None;
-                    cx.emit(LoginEvent::SignIn { login_id, password });
+                    cx.emit(LoginEvent::SignIn(sign_in));
+                }
+            }
+            Submit::Code => {
+                let code = self.code.read(cx).value().to_string();
+                if code.len() < MFA_CODE_LEN {
+                    self.model.error = Some(
+                        format!("Enter the {MFA_CODE_LEN}-digit code from your authenticator app.")
+                            .into(),
+                    );
+                } else {
+                    self.model.error = None;
+                    cx.emit(LoginEvent::SignIn(self.password_sign_in(Some(code), cx)));
                 }
             }
             Submit::Token => {
@@ -338,6 +506,7 @@ impl LoginView {
                         .flex_shrink_0()
                         .mt(theme.space(0.5)),
                 )
+                // Wraps inside the card instead of running past it.
                 .child(div().flex_1().min_w_0().child(error))
         })
     }
@@ -410,11 +579,7 @@ impl LoginView {
                     .child("Change"),
             );
         let password_form = methods.password || methods.ldap;
-        let login_label = match (methods.password, methods.ldap) {
-            (true, true) => "Email, username or AD/LDAP username",
-            (false, true) => "AD/LDAP username",
-            _ => "Email or username",
-        };
+        let login_label = methods.login_label(self.picked_ldap);
         let mut card = div()
             .flex()
             .flex_col()
@@ -427,6 +592,9 @@ impl LoginView {
             .child(server_row);
         if password_form {
             card = card
+                .when(methods.ldap_choice(), |card| {
+                    card.child(self.method_choice(cx))
+                })
                 .child(
                     div()
                         .flex()
@@ -520,6 +688,86 @@ impl LoginView {
                 }),
         );
         card
+    }
+
+    /// Email or username against AD/LDAP, where the server offers both.
+    fn method_choice(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let view = cx.entity().downgrade();
+        let item = |id: &'static str, value: &'static str, text: &'static str| {
+            ToggleGroupItem::new(id, value)
+                .aria_label(text)
+                .flex_1()
+                .child(text)
+        };
+        ToggleGroup::new("login.method")
+            .aria_label("Sign in with")
+            .joined(true)
+            .w_full()
+            .disabled(self.model.busy)
+            .value([if self.picked_ldap { "ldap" } else { "password" }])
+            .item(item(
+                "login.method.password",
+                "password",
+                "Email or username",
+            ))
+            .item(item("login.method.ldap", "ldap", "AD/LDAP"))
+            .on_change(move |next, _, cx| {
+                let ldap = next.first().is_some_and(|value| value == "ldap");
+                view.update(cx, |this, cx| {
+                    this.picked_ldap = ldap;
+                    cx.notify();
+                })
+                .ok();
+            })
+    }
+
+    /// The code step: six digit cells that submit when full, the error,
+    /// Verify, and Back to the password form.
+    fn mfa_step(
+        &self,
+        server_name: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(4.))
+            .child(Self::heading(
+                "Enter your code",
+                "This account uses multi-factor authentication. Open your authenticator app and enter the code it shows.",
+                &theme,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(2.))
+                    .child(field_title(cx).child(format!("{MFA_CODE_LEN}-digit code for {server_name}")))
+                    .child(
+                        OtpField::new(&self.code)
+                            .aria_label("Authentication code")
+                            .disabled(self.model.busy),
+                    ),
+            )
+            .children(self.error_line(cx))
+            .child(self.primary("login.verify", "Verify", Submit::Code, cx))
+            .child(
+                div().flex().justify_center().child(
+                    Button::new("login.mfa-back")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .aria_label("Back to sign in")
+                        .text_color(theme.colors.muted_foreground)
+                        .disabled(self.model.busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.model.back_to_methods();
+                            this.focus_step(window, cx);
+                            cx.notify();
+                        }))
+                        .child("Back"),
+                ),
+            )
     }
 
     /// Waiting for the browser: what is happening, a spinner while it
@@ -680,6 +928,7 @@ impl LoginView {
 enum Submit {
     Server,
     Password,
+    Code,
     Token,
 }
 
@@ -694,6 +943,9 @@ impl Render for LoginView {
             } => self
                 .methods_step(&server_name, &methods, cx)
                 .into_any_element(),
+            LoginStep::Mfa { server_name, .. } => {
+                self.mfa_step(&server_name, cx).into_any_element()
+            }
             LoginStep::Browser {
                 server_name,
                 provider,
@@ -760,7 +1012,111 @@ impl Render for LoginView {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoginStep, SignInMethods, SsoProvider, normalize_server_url};
+    use super::*;
+
+    fn methods(password: bool, ldap: bool) -> SignInMethods {
+        SignInMethods {
+            password,
+            ldap,
+            sso: Vec::new(),
+        }
+    }
+
+    fn at_methods() -> LoginModel {
+        LoginModel {
+            step: LoginStep::Methods {
+                server_name: "chat.example.com".into(),
+                methods: methods(true, false),
+            },
+            busy: true,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn the_ldap_choice_shows_only_when_the_server_offers_both() {
+        assert!(methods(true, true).ldap_choice());
+        assert!(!methods(true, false).ldap_choice());
+        assert!(!methods(false, true).ldap_choice());
+    }
+
+    #[test]
+    fn ldap_only_is_sent_for_an_ldap_only_server_or_when_picked() {
+        assert!(methods(false, true).ldap_only(false));
+        assert!(methods(true, true).ldap_only(true));
+        assert!(!methods(true, true).ldap_only(false));
+        // Without LDAP on the server, a stale pick never sends it.
+        assert!(!methods(true, false).ldap_only(true));
+        assert_eq!(methods(false, true).login_label(false), "AD/LDAP username");
+        assert_eq!(methods(true, true).login_label(false), "Email or username");
+        assert_eq!(methods(true, true).login_label(true), "AD/LDAP username");
+    }
+
+    #[test]
+    fn an_mfa_answer_moves_to_the_code_step_and_back_keeps_the_server() {
+        let mut model = at_methods();
+        model.sign_in_failed(SignInFailure::MfaRequired);
+        assert_eq!(
+            model.step,
+            LoginStep::Mfa {
+                server_name: "chat.example.com".into(),
+                methods: methods(true, false),
+            }
+        );
+        assert!(!model.busy);
+        assert_eq!(model.error, None);
+
+        model.back_to_methods();
+        assert_eq!(
+            model,
+            LoginModel {
+                busy: false,
+                ..at_methods()
+            }
+        );
+    }
+
+    #[test]
+    fn a_wrong_code_stays_on_the_code_step_with_an_error() {
+        let mut model = at_methods();
+        model.sign_in_failed(SignInFailure::MfaRequired);
+        model.busy = true;
+        model.sign_in_failed(SignInFailure::MfaRequired);
+        assert!(matches!(model.step, LoginStep::Mfa { .. }));
+        assert!(!model.busy);
+        assert!(
+            model
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("code is not right"))
+        );
+
+        model.sign_in_failed(SignInFailure::Message("Locked.".into()));
+        assert!(matches!(model.step, LoginStep::Mfa { .. }));
+        assert_eq!(model.error, Some("Locked.".into()));
+    }
+
+    #[test]
+    fn other_failures_stay_on_the_password_form() {
+        let mut model = at_methods();
+        model.sign_in_failed(SignInFailure::Message("Wrong password.".into()));
+        assert!(matches!(model.step, LoginStep::Methods { .. }));
+        assert_eq!(model.error, Some("Wrong password.".into()));
+    }
+
+    #[test]
+    fn a_sign_in_never_prints_its_password_or_code() {
+        let sign_in = PasswordSignIn {
+            login_id: "arya".into(),
+            password: "hunter2".into(),
+            ldap_only: false,
+            mfa_token: Some("123456".into()),
+        };
+        let printed = format!("{:?}", LoginEvent::SignIn(sign_in));
+        assert!(printed.contains("arya"));
+        assert!(!printed.contains("hunter2"));
+        assert!(!printed.contains("123456"));
+    }
 
     #[test]
     fn browser_step_goes_back_to_the_same_methods() {

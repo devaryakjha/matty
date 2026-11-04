@@ -16,7 +16,7 @@ use matty_sync::{
 };
 
 use crate::channel::{ChannelModel, Post};
-use crate::login::{SignInMethods, SsoProvider};
+use crate::login::{PasswordSignIn, SignInFailure, SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
 use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
@@ -1430,16 +1430,26 @@ fn connection_state(state: &matty_api::ws::ConnectionState) -> ConnectionState {
     }
 }
 
-/// Checks `url` and reads how its server lets people sign in.
+/// Checks `url` and reads how its server lets people sign in. A server
+/// older than Matty supports is refused here, before anyone signs in.
 pub async fn check_server(url: String) -> Result<ServerCapabilities, String> {
     let answer = matty_sync::io::run(async move {
         let client = Client::new(&url)?;
         client.capabilities().await
     });
     match answer.recv().await {
-        Ok(Ok(capabilities)) => Ok(capabilities),
+        Ok(Ok(capabilities)) => supported(capabilities),
         Ok(Err(error)) => Err(server_error(&error)),
         Err(_) => Err(STOPPED.into()),
+    }
+}
+
+/// `capabilities` if the server is at or above Matty's version floor
+/// (PLAN §6.3), otherwise the sentence naming both versions.
+fn supported(capabilities: ServerCapabilities) -> Result<ServerCapabilities, String> {
+    match capabilities.minimum_supported() {
+        Ok(()) => Ok(capabilities),
+        Err(old) => Err(old.to_string()),
     }
 }
 
@@ -1449,12 +1459,17 @@ pub struct Session {
     pub user: User,
 }
 
-/// Signs in to `url` with a login id and password.
-pub async fn sign_in(url: String, login_id: String, password: String) -> Result<Session, String> {
+/// Signs in to `url` with a login id and password, an MFA code once the
+/// server asked for one, and `ldap_only` for AD/LDAP. `device_id` stays
+/// empty: the server only takes a push-notification device there
+/// (PLAN §6.3).
+pub async fn sign_in(url: String, sign_in: PasswordSignIn) -> Result<Session, SignInFailure> {
     let answer = matty_sync::io::run(async move {
         let credentials = matty_api::Credentials {
-            login_id,
-            password,
+            login_id: sign_in.login_id,
+            password: sign_in.password,
+            mfa_token: sign_in.mfa_token,
+            ldap_only: sign_in.ldap_only,
             ..Default::default()
         };
         Client::new(&url)?.login(&credentials).await
@@ -1465,12 +1480,12 @@ pub async fn sign_in(url: String, login_id: String, password: String) -> Result<
             user: signed_in.user,
         }),
         Ok(Err(error)) => Err(sign_in_error(&error)),
-        Err(_) => Err(STOPPED.into()),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
     }
 }
 
 /// Signs in with a personal access token.
-pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, String> {
+pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, SignInFailure> {
     let answer =
         matty_sync::io::run(
             async move { Client::new(&url)?.login_personal_access_token(&token).await },
@@ -1481,7 +1496,7 @@ pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, S
             user: signed_in.user,
         }),
         Ok(Err(error)) => Err(sign_in_error(&error)),
-        Err(_) => Err(STOPPED.into()),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
     }
 }
 
@@ -1490,7 +1505,7 @@ pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, S
 pub async fn sign_in_with_desktop_token(
     url: String,
     server_token: String,
-) -> Result<Session, String> {
+) -> Result<Session, SignInFailure> {
     let answer = matty_sync::io::run(async move {
         Client::new(&url)?
             .login_desktop_token(&server_token, "")
@@ -1502,7 +1517,7 @@ pub async fn sign_in_with_desktop_token(
             user: signed_in.user,
         }),
         Ok(Err(error)) => Err(sign_in_error(&error)),
-        Err(_) => Err(STOPPED.into()),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
     }
 }
 
@@ -1563,6 +1578,15 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
 
 fn server_error(error: &ApiError) -> String {
     match error {
+        // Already one sentence for a person, naming what is wrong with the
+        // certificate (`matty_api::error::describe_tls`).
+        ApiError::Tls(text) => text.clone(),
+        ApiError::Timeout => {
+            "That server did not answer in time. Check the address and try again.".into()
+        }
+        ApiError::Redirected { location } => {
+            format!("That address sends Matty to {location}. Enter that address instead.")
+        }
         ApiError::Server { status: 404, .. } => {
             "That address answered, but it is not a Mattermost server.".into()
         }
@@ -1573,18 +1597,33 @@ fn server_error(error: &ApiError) -> String {
     }
 }
 
-fn sign_in_error(error: &ApiError) -> String {
-    match error {
-        ApiError::MfaRequired => {
-            "This account uses multi-factor authentication, which Matty does not support yet."
-                .into()
+fn sign_in_error(error: &ApiError) -> SignInFailure {
+    let message: String = match (error, error.id()) {
+        (ApiError::MfaRequired, _) => return SignInFailure::MfaRequired,
+        (
+            _,
+            Some(
+                "api.user.check_user_login_attempts.too_many.app_error"
+                | "api.user.check_user_login_attempts.too_many_ldap.app_error",
+            ),
+        ) => "This account is locked after too many failed attempts. Reset your password or ask your server's administrator to unlock it.".into(),
+        (_, Some("api.user.login.inactive.app_error")) => {
+            "This account is deactivated. Ask your server's administrator to reactivate it.".into()
         }
-        ApiError::Server { status: 401, .. } => {
+        (_, Some("api.user.login.not_verified.app_error")) => {
+            "Verify your email address first, with the link the server sent you.".into()
+        }
+        (ApiError::Server { status: 401, .. }, _) => {
             "That login or password is not right. Check them and try again.".into()
         }
-        ApiError::Server { message, .. } if !message.is_empty() => message.clone(),
+        (ApiError::Server { message, .. }, _) if !message.is_empty() => message.clone(),
+        (ApiError::RateLimited, _) => {
+            "Too many tries in a row. Wait a moment and try again.".into()
+        }
+        (ApiError::Tls(text), _) => text.clone(),
         _ => "Matty could not reach the server. Check your connection and try again.".into(),
-    }
+    };
+    SignInFailure::Message(message.into())
 }
 
 #[cfg(test)]
@@ -1645,6 +1684,76 @@ mod tests {
         // The engine may still be opening the file; let the folder outlive it.
         std::mem::forget(dir);
         live
+    }
+
+    fn capabilities(version: &str) -> ServerCapabilities {
+        let config = HashMap::from([("Version".to_string(), serde_json::json!(version))]);
+        ServerCapabilities::from_old_format(&config, &HashMap::new()).unwrap()
+    }
+
+    #[test]
+    fn a_server_below_the_floor_is_refused_naming_both_versions() {
+        let error = supported(capabilities("9.3.2")).unwrap_err();
+        let minimum = matty_api::capabilities::MINIMUM_VERSION.to_string();
+        assert!(error.contains("9.3.2"), "{error}");
+        assert!(error.contains(&minimum), "{error}");
+        assert!(supported(capabilities(&minimum)).is_ok());
+        assert!(supported(capabilities("11.0.1")).is_ok());
+    }
+
+    #[test]
+    fn certificate_errors_keep_their_own_words() {
+        let text =
+            "The server's certificate has expired. Ask the server's administrator to renew it.";
+        assert_eq!(server_error(&ApiError::Tls(text.into())), text);
+        assert_eq!(
+            sign_in_error(&ApiError::Tls(text.into())),
+            SignInFailure::Message(text.into())
+        );
+    }
+
+    fn refused(status: u16, id: &str) -> ApiError {
+        ApiError::Server {
+            status,
+            id: id.into(),
+            message: "Server words.".into(),
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn sign_in_errors_are_specific() {
+        assert_eq!(
+            sign_in_error(&ApiError::MfaRequired),
+            SignInFailure::MfaRequired
+        );
+        let says = |error: ApiError| match sign_in_error(&error) {
+            SignInFailure::Message(text) => text.to_string(),
+            SignInFailure::MfaRequired => String::new(),
+        };
+        assert!(
+            says(refused(
+                401,
+                "api.user.login.invalid_credentials_email_username"
+            ))
+            .contains("login or password is not right")
+        );
+        assert!(
+            says(refused(
+                401,
+                "api.user.check_user_login_attempts.too_many.app_error"
+            ))
+            .contains("locked")
+        );
+        assert!(
+            says(refused(
+                401,
+                "api.user.check_user_login_attempts.too_many_ldap.app_error"
+            ))
+            .contains("locked")
+        );
+        assert!(says(refused(401, "api.user.login.inactive.app_error")).contains("deactivated"));
+        assert_eq!(says(refused(400, "some.other.error")), "Server words.");
     }
 
     #[test]
