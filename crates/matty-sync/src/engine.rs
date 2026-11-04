@@ -70,6 +70,28 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Loads the page after the newest post in the open channel's
+    /// snapshot, while it stops short of the newest post (see
+    /// [`Command::LoadAround`]).
+    LoadNewer {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Shows the posts around `post_id`, such as a search result's,
+    /// fetching them when they are not cached: the snapshot becomes the
+    /// post with a page on each side, and the older and newer pages extend
+    /// it. With collapsed threads a reply is shown by its root.
+    LoadAround {
+        /// The channel.
+        channel_id: String,
+        /// The post.
+        post_id: String,
+    },
+    /// Returns the open channel's snapshot to its newest posts.
+    LoadLatest {
+        /// The channel.
+        channel_id: String,
+    },
     /// The channel left the screen.
     CloseChannel {
         /// The channel.
@@ -349,6 +371,22 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::LoadOlder { channel_id } => f
                 .debug_struct("LoadOlder")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::LoadNewer { channel_id } => f
+                .debug_struct("LoadNewer")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::LoadAround {
+                channel_id,
+                post_id,
+            } => f
+                .debug_struct("LoadAround")
+                .field("channel_id", channel_id)
+                .field("post_id", post_id)
+                .finish(),
+            Self::LoadLatest { channel_id } => f
+                .debug_struct("LoadLatest")
                 .field("channel_id", channel_id)
                 .finish(),
             Self::CloseChannel { channel_id } => f
@@ -672,7 +710,7 @@ impl Engine {
         let mut to_fetch = Vec::new();
         let mut uploads = Vec::new();
         let mut images = Vec::new();
-        let mut older = Vec::new();
+        let mut pages = Vec::new();
         let mut downloads = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
@@ -749,7 +787,27 @@ impl Engine {
                     dirty.channels.insert(channel_id);
                 }
                 Message::Command(Command::LoadOlder { channel_id }) => {
-                    older.push(channel_id);
+                    pages.push((channel_id, Page::Older));
+                }
+                Message::Command(Command::LoadNewer { channel_id }) => {
+                    pages.push((channel_id, Page::Newer));
+                }
+                Message::Command(Command::LoadAround {
+                    channel_id,
+                    post_id,
+                }) => {
+                    pages.push((channel_id, Page::Around(post_id)));
+                }
+                Message::Command(Command::LoadLatest { channel_id }) => {
+                    if self.history.remove(&channel_id).is_some() {
+                        dirty.direct.push(ChangeSet::History {
+                            channel_id: channel_id.clone(),
+                            at_start: false,
+                            at_end: true,
+                            failed: false,
+                        });
+                        dirty.channels.insert(channel_id);
+                    }
                 }
                 Message::Command(Command::CloseChannel { channel_id }) => {
                     self.history.remove(&channel_id);
@@ -1063,8 +1121,8 @@ impl Engine {
         for (file_id, folder, name) in downloads {
             self.download(file_id, folder, name, dirty);
         }
-        for channel_id in older {
-            self.load_older(channel_id, dirty);
+        for (channel_id, page) in pages {
+            self.load_page(channel_id, page, dirty);
         }
         for (file_id, size) in images {
             self.image(file_id, size, dirty);
@@ -1124,63 +1182,116 @@ impl Engine {
         ));
     }
 
-    /// Fetches the page before the oldest post in `channel_id`'s snapshot;
-    /// it comes back as [`Loaded::Older`].
-    fn load_older(&mut self, channel_id: String, dirty: &mut Dirty) {
+    /// Fetches a page of `channel_id`'s history; it comes back as
+    /// [`Loaded::Older`], [`Loaded::Newer`] or [`Loaded::Around`].
+    fn load_page(&mut self, channel_id: String, page: Page, dirty: &mut Dirty) {
         if !self.open_channels.contains(&channel_id) {
             return;
         }
         let history = self.history.entry(channel_id.clone()).or_default();
-        if history.loading || history.at_start {
-            if history.at_start {
-                dirty.direct.push(ChangeSet::History {
-                    channel_id,
-                    at_start: true,
-                    failed: false,
-                });
-            }
+        if history.loading {
             return;
         }
-        let limit = POSTS_WINDOW + history.extra;
+        let done = match page {
+            Page::Older => history.at_start,
+            Page::Newer => history.anchor.is_none(),
+            Page::Around(_) => false,
+        };
+        if done {
+            dirty.direct.push(history.change(&channel_id, false));
+            return;
+        }
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
-            dirty.direct.push(ChangeSet::History {
-                channel_id,
-                at_start: false,
-                failed: true,
-            });
+            dirty.direct.push(history.change(&channel_id, true));
             return;
         };
         let roots_only = session.collapsed_threads;
-        let oldest = match posts::posts_window(
-            self.store.conn(),
-            &channel_id,
-            Window::Latest,
-            limit,
-            roots_only,
-        ) {
-            Ok(window) => window.first().map(|post| post.id.clone()),
-            Err(error) => {
-                tracing::error!(%error, "could not read a posts snapshot");
-                return;
+        let edge = if matches!(page, Page::Around(_)) {
+            None
+        } else {
+            match snapshot(self.store.conn(), &channel_id, Some(history), roots_only) {
+                Ok(window) => {
+                    let post = match page {
+                        Page::Older => window.first(),
+                        _ => window.last(),
+                    };
+                    let Some(post) = post else {
+                        return;
+                    };
+                    Some(post.id.clone())
+                }
+                Err(error) => {
+                    tracing::error!(%error, "could not read a posts snapshot");
+                    return;
+                }
             }
-        };
-        let Some(oldest) = oldest else {
-            return;
         };
         history.loading = true;
         let client = session.client.clone();
         let results = self.loaded.clone();
         tokio::spawn(async move {
-            let mut query = matty_api::PostsQuery::before(oldest, HISTORY_PAGE);
-            query.collapsed_threads = roots_only;
-            let posts = match client.channel_posts(&channel_id, &query).await {
-                Ok(list) => Some(list),
-                Err(error) => {
-                    tracing::warn!(%error, channel_id, "could not load older posts");
-                    None
-                }
+            let page_of = |query: matty_api::PostsQuery| matty_api::PostsQuery {
+                collapsed_threads: roots_only,
+                ..query
             };
-            let _ = results.send(Loaded::Older { channel_id, posts });
+            let message = match (page, edge) {
+                (Page::Around(post_id), _) => {
+                    let around = async {
+                        let mut post = client.get_post(&post_id).await?;
+                        if roots_only && !post.root_id.is_empty() {
+                            post = client.get_post(&post.root_id).await?;
+                        }
+                        let before = client
+                            .channel_posts(
+                                &channel_id,
+                                &page_of(matty_api::PostsQuery::before(post.id.clone(), HISTORY_PAGE)),
+                            )
+                            .await?;
+                        let after = client
+                            .channel_posts(
+                                &channel_id,
+                                &page_of(matty_api::PostsQuery::after(post.id.clone(), HISTORY_PAGE)),
+                            )
+                            .await?;
+                        Ok::<_, matty_api::ApiError>(Box::new(crate::load::Around {
+                            post,
+                            before,
+                            after,
+                        }))
+                    }
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, channel_id, "could not load the posts around a post");
+                    })
+                    .ok();
+                    Loaded::Around {
+                        channel_id,
+                        posts: around,
+                    }
+                }
+                (page, Some(edge)) => {
+                    let older = matches!(page, Page::Older);
+                    let query = if older {
+                        matty_api::PostsQuery::before(edge, HISTORY_PAGE)
+                    } else {
+                        matty_api::PostsQuery::after(edge, HISTORY_PAGE)
+                    };
+                    let posts = client
+                        .channel_posts(&channel_id, &page_of(query))
+                        .await
+                        .inspect_err(|error| {
+                            tracing::warn!(%error, channel_id, "could not load a page of posts");
+                        })
+                        .ok();
+                    if older {
+                        Loaded::Older { channel_id, posts }
+                    } else {
+                        Loaded::Newer { channel_id, posts }
+                    }
+                }
+                (_, None) => return,
+            };
+            let _ = results.send(message);
         });
     }
 
@@ -1407,6 +1518,77 @@ impl Engine {
         }
     }
 
+    /// Stores a page from [`Engine::load_page`] and widens the snapshot
+    /// to take it in.
+    fn write_page(
+        &mut self,
+        channel_id: String,
+        posts: Option<matty_api::models::PostList>,
+        page: Page,
+        dirty: &mut Dirty,
+    ) -> Result<(), StoreError> {
+        let Some(history) = self.history.get_mut(&channel_id) else {
+            return Ok(());
+        };
+        history.loading = false;
+        let Some(list) = posts else {
+            dirty.direct.push(history.change(&channel_id, true));
+            return Ok(());
+        };
+        let fetched: Vec<_> = list.posts.into_values().collect();
+        let mut latest = false;
+        match (page, history.anchor.as_mut()) {
+            (Page::Older, anchor) => {
+                history.at_start = list.prev_post_id.is_empty();
+                match anchor {
+                    Some((from, _)) => {
+                        *from = fetched.iter().map(|p| p.create_at).fold(*from, i64::min);
+                    }
+                    None => history.extra += list.order.len(),
+                }
+            }
+            (_, Some((_, to))) => {
+                *to = fetched.iter().map(|p| p.create_at).fold(*to, i64::max);
+                latest = list.next_post_id.is_empty();
+            }
+            (_, None) => {}
+        }
+        let tx = self.store.conn_mut().transaction()?;
+        posts::insert_posts(&tx, &fetched)?;
+        tx.commit()?;
+        if latest {
+            self.reach_latest(&channel_id);
+        }
+        let history = &self.history[&channel_id];
+        dirty.direct.push(history.change(&channel_id, false));
+        dirty.channels.insert(channel_id);
+        Ok(())
+    }
+
+    /// A history window that reached the newest post becomes the latest
+    /// posts again, reaching back as far as it did.
+    fn reach_latest(&mut self, channel_id: &str) {
+        let roots_only = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.collapsed_threads);
+        let Some(history) = self.history.get_mut(channel_id) else {
+            return;
+        };
+        let Some((from, _)) = history.anchor.take() else {
+            return;
+        };
+        let shown = posts::posts_window(
+            self.store.conn(),
+            channel_id,
+            Window::After(from - 1),
+            usize::MAX,
+            roots_only,
+        )
+        .map_or(0, |window| window.len());
+        history.extra = shown.saturating_sub(POSTS_WINDOW);
+    }
+
     fn write_loaded(&mut self, result: Loaded, dirty: &mut Dirty) -> Result<(), StoreError> {
         match result {
             Loaded::Account {
@@ -1509,30 +1691,40 @@ impl Engine {
                 .direct
                 .push(ChangeSet::Connection(Connection::SignedOut)),
             Loaded::Older { channel_id, posts } => {
+                self.write_page(channel_id, posts, Page::Older, dirty)?;
+            }
+            Loaded::Newer { channel_id, posts } => {
+                self.write_page(channel_id, posts, Page::Newer, dirty)?;
+            }
+            Loaded::Around { channel_id, posts } => {
                 let Some(history) = self.history.get_mut(&channel_id) else {
                     return Ok(());
                 };
                 history.loading = false;
-                let Some(list) = posts else {
-                    dirty.direct.push(ChangeSet::History {
-                        channel_id,
-                        at_start: false,
-                        failed: true,
-                    });
+                let Some(around) = posts else {
+                    dirty.direct.push(history.change(&channel_id, true));
                     return Ok(());
                 };
-                history.at_start = list.prev_post_id.is_empty();
-                history.extra += list.order.len();
-                let at_start = history.at_start;
+                let crate::load::Around {
+                    post,
+                    before,
+                    after,
+                } = *around;
+                let mut fetched = vec![post];
+                fetched.extend(before.posts.into_values());
+                fetched.extend(after.posts.into_values());
+                let from = fetched.iter().map(|p| p.create_at).min().unwrap_or(0);
+                let to = fetched.iter().map(|p| p.create_at).max().unwrap_or(0);
+                history.at_start = before.prev_post_id.is_empty();
+                history.anchor = Some((from, to));
                 let tx = self.store.conn_mut().transaction()?;
-                let fetched: Vec<_> = list.posts.into_values().collect();
                 posts::insert_posts(&tx, &fetched)?;
                 tx.commit()?;
-                dirty.direct.push(ChangeSet::History {
-                    channel_id: channel_id.clone(),
-                    at_start,
-                    failed: false,
-                });
+                if after.next_post_id.is_empty() {
+                    self.reach_latest(&channel_id);
+                }
+                let history = &self.history[&channel_id];
+                dirty.direct.push(history.change(&channel_id, false));
                 dirty.channels.insert(channel_id);
             }
             Loaded::Posts {
@@ -1949,8 +2141,7 @@ impl Engine {
                 Ok(None) => {}
                 Err(error) => tracing::error!(%error, "could not read a channel"),
             }
-            let limit = POSTS_WINDOW + self.history.get(&channel_id).map_or(0, |h| h.extra);
-            match posts::posts_window(conn, &channel_id, Window::Latest, limit, roots_only) {
+            match snapshot(conn, &channel_id, self.history.get(&channel_id), roots_only) {
                 Ok(window) => changes.push(ChangeSet::Posts {
                     channel_id,
                     posts: Arc::from(window),
@@ -2124,8 +2315,56 @@ const HISTORY_PAGE: u32 = 60;
 struct History {
     /// Posts beyond [`POSTS_WINDOW`].
     extra: usize,
+    /// A stretch away from the newest posts, from and to these creation
+    /// times, which replaces the latest posts until it reaches them.
+    anchor: Option<(i64, i64)>,
     /// A page is on its way.
     loading: bool,
     /// The channel's first post is loaded.
     at_start: bool,
+}
+
+impl History {
+    fn change(&self, channel_id: &str, failed: bool) -> ChangeSet {
+        ChangeSet::History {
+            channel_id: channel_id.to_owned(),
+            at_start: self.at_start,
+            at_end: self.anchor.is_none(),
+            failed,
+        }
+    }
+}
+
+/// Which page of history to fetch.
+#[derive(Debug)]
+enum Page {
+    Older,
+    Newer,
+    Around(String),
+}
+
+/// An open channel's posts snapshot: its history window, or else the
+/// latest posts reaching back as far as history has loaded.
+fn snapshot(
+    conn: &rusqlite::Connection,
+    channel_id: &str,
+    history: Option<&History>,
+    roots_only: bool,
+) -> Result<Vec<matty_api::models::Post>, StoreError> {
+    match history.and_then(|h| h.anchor) {
+        Some((from, to)) => posts::posts_window(
+            conn,
+            channel_id,
+            Window::Between(from, to),
+            usize::MAX,
+            roots_only,
+        ),
+        None => posts::posts_window(
+            conn,
+            channel_id,
+            Window::Latest,
+            POSTS_WINDOW + history.map_or(0, |h| h.extra),
+            roots_only,
+        ),
+    }
 }

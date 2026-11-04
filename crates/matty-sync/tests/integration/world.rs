@@ -78,6 +78,12 @@ impl World {
     /// Makes the users and the channel; `None` when no server is set.
     pub async fn new() -> Option<Self> {
         let (url, password) = server()?;
+        // The engine's warnings, such as a load that failed, in the log of
+        // a test that fails.
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_test_writer()
+            .try_init();
         let admin_login = std::env::var("MATTY_TEST_ADMIN").unwrap_or_else(|_| "admin".into());
         let (admin, _) = sign_in(&url, &admin_login, &password).await;
         // A team of its own: teams cap their members, and joining posts in
@@ -227,10 +233,23 @@ impl Engine {
     }
 
     /// Waits for a change set `stop` accepts, and returns it.
+    /// A load that fails ends the wait at once with its error, and a wait
+    /// that times out lists the connection changes it saw, so a failure
+    /// says why.
     pub async fn wait(&self, what: &str, mut stop: impl FnMut(&ChangeSet) -> bool) -> ChangeSet {
-        tokio::time::timeout(WAIT, async {
+        let mut connection = Vec::new();
+        let waited = tokio::time::timeout(WAIT, async {
             loop {
                 let change = self.changes.recv().await.unwrap();
+                if let ChangeSet::Connection(state) = &change {
+                    if let Connection::ChannelFailed { error, .. }
+                    | Connection::TeamFailed { error, .. } = state
+                        && !stop(&change)
+                    {
+                        panic!("waiting for {what}, a load failed: {error}");
+                    }
+                    connection.push(format!("{state:?}"));
+                }
                 if let ChangeSet::Sidebar { sections, .. } = &change {
                     let mut seen = self.seen.lock().unwrap();
                     for channel in sections.iter().flat_map(|s| s.channels.iter()) {
@@ -242,8 +261,10 @@ impl Engine {
                 }
             }
         })
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        .await;
+        waited.unwrap_or_else(|_| {
+            panic!("timed out waiting for {what}; connection changes: {connection:?}")
+        })
     }
 
     /// Opens `channel_id` and waits for a window `stop` accepts.

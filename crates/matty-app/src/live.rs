@@ -782,6 +782,7 @@ impl Live {
                 channel_id,
                 at_start,
                 failed,
+                ..
             } if self.is_open(channel_id) => {
                 update.history = Some((*at_start, *failed));
             }
