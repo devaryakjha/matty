@@ -11,8 +11,11 @@ pub mod actions;
 pub mod attachments;
 pub mod avatars;
 pub mod badge;
+pub mod categories;
 pub mod channel;
 pub mod channel_settings;
+pub mod composer_draft;
+pub mod contrast;
 pub mod deeplink;
 pub mod directory;
 pub mod dnd;
@@ -26,8 +29,10 @@ pub mod logging;
 pub mod login;
 mod main_window;
 pub mod menu;
+pub mod perf;
 pub mod preview;
 pub mod profile;
+pub mod profile_editor;
 pub mod rail;
 pub mod right_pane;
 pub mod secrets;
@@ -38,6 +43,7 @@ pub mod switcher;
 pub mod threads;
 pub mod transcript;
 mod ui;
+mod updater;
 
 use std::borrow::Cow;
 
@@ -49,6 +55,9 @@ use gpui_kit::{
 use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
 use ui::title_bar::title_bar_window_options;
+
+/// This build's version, with the release tag's pre-release suffix.
+pub const VERSION: &str = matty_update::CURRENT_VERSION;
 
 /// The smallest window PLAN §4.1 supports.
 pub const MIN_WINDOW: (f32, f32) = (480., 400.);
@@ -94,7 +103,7 @@ pub fn run_with_links(links: Vec<String>) {
     app.run(move |cx: &mut App| {
         // Settings load after this, so their level applies just below.
         let logs = logging::init(logging::default_dir().as_deref(), Default::default());
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
+        tracing::info!(version = VERSION, "matty starting");
         ui::theme::init(cx);
         style::install(ThemeMode::Light, cx);
         load_fonts(cx);
@@ -161,11 +170,22 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 fn open_main_window(cx: &mut App) {
-    cx.open_window(window_options(cx), |window, cx| {
-        apply_theme(window, cx);
-        cx.new(|cx| main_window::MainWindow::new(window, cx))
-    })
-    .expect("open the main window");
+    let options = window_options(cx);
+    let opened = if perf::enabled() {
+        cx.open_window(options, |window, cx| {
+            apply_theme(window, cx);
+            let main = cx.new(|cx| main_window::MainWindow::new(window, cx));
+            cx.new(|cx| perf::PerfRoot::new(main, cx))
+        })
+        .map(|_| ())
+    } else {
+        cx.open_window(options, |window, cx| {
+            apply_theme(window, cx);
+            cx.new(|cx| main_window::MainWindow::new(window, cx))
+        })
+        .map(|_| ())
+    };
+    opened.expect("open the main window");
 }
 
 /// Applies the theme choice from settings, following the OS when it is
