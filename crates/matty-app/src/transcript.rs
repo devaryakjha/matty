@@ -174,6 +174,7 @@ pub fn channel_model(
         first_unread: None,
         max_post_size: max_post_size.unwrap_or(DEFAULT_MAX_POST_SIZE),
         can_manage: false,
+        delete_others: false,
         profiles: Vec::new(),
         notifications: Default::default(),
         typing: Vec::new(),
