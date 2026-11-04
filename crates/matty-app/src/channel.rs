@@ -465,6 +465,9 @@ pub enum ChannelEvent {
     /// U on a selected post: unread from this post on (PLAN §4.2); sync
     /// tells the server.
     MarkUnread(SharedString),
+    /// "Copy link" on a post: the window puts its permalink on the
+    /// clipboard, since only sync knows the server and the team (#133).
+    CopyLink(SharedString),
     /// The transcript showed its top row and wants an older page; sync
     /// answers with `prepend_posts` and `set_history`. Fired once per page:
     /// the view marks itself loading until one of those arrives.
@@ -2099,6 +2102,14 @@ impl ChannelView {
             {
                 let id = id.clone();
                 act(
+                    "copy-link",
+                    "Copy link".into(),
+                    Box::new(move |_, _, cx| cx.emit(ChannelEvent::CopyLink(id.clone()))),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
                     "pin",
                     if post.pinned {
                         "Unpin from channel".into()
@@ -2171,9 +2182,9 @@ impl ChannelView {
             MenuItem::separator(),
         ];
         let more = Self::more_items_for(post, cx);
-        // `more` is copy, copy as Markdown, pin, save, then the owner's
-        // edit and delete.
-        let (keep, own) = more.split_at(4.min(more.len()));
+        // `more` is copy, copy as Markdown, copy link, pin, save, then the
+        // owner's edit and delete.
+        let (keep, own) = more.split_at(5.min(more.len()));
         items.extend(keep.iter().cloned());
         items.push(act(
             "unread",

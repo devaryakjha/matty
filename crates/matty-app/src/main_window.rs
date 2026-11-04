@@ -472,6 +472,7 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -897,6 +898,34 @@ impl MainWindow {
                         move |_, cx| cx.reveal_path(&path)
                     })
                     .timeout(std::time::Duration::from_secs(6)),
+                cx,
+            );
+        });
+    }
+
+    /// Puts a post's permalink on the clipboard and says so (#133).
+    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        let link = self.live.as_ref().and_then(|live| {
+            let channel = self.selected_channel.as_ref()?;
+            live.permalink(channel, post_id)
+        });
+        let link = link.or_else(|| {
+            crate::preview::enabled()
+                .then(|| format!("https://chat.example.com/matty/pl/{post_id}"))
+        });
+        let Some(link) = link else {
+            self.push_error_with(
+                "Couldn't copy the link. Try again once you're connected.",
+                None,
+                cx,
+            );
+            return;
+        };
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(link));
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "copy-link",
+                Notice::new("Link copied").timeout(std::time::Duration::from_secs(4)),
                 cx,
             );
         });

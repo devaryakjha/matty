@@ -29,6 +29,8 @@ pub struct Live {
     /// they pick another.
     team: Option<String>,
     teams: Vec<TeamWithUnreads>,
+    /// The server's address, for message links.
+    server: String,
     sections: HashMap<String, Arc<[SidebarSection]>>,
     presence: HashMap<String, Presence>,
     /// The signed-in user's id and username.
@@ -327,6 +329,7 @@ impl Live {
                 sync,
                 team: None,
                 teams: Vec::new(),
+                server: account.server.clone(),
                 sections: HashMap::new(),
                 presence: HashMap::new(),
                 me: (account.user_id.clone(), account.username.clone()),
@@ -951,6 +954,31 @@ impl Live {
         Some(self.categories(sections))
     }
 
+    /// The link to a post, `{server}/{team}/pl/{post_id}` (#133). The team
+    /// is the one whose sidebar holds the channel; direct and group
+    /// messages, which belong to no team, use the team on screen, as the
+    /// webapp does.
+    pub fn permalink(&self, channel_id: &str, post_id: &str) -> Option<String> {
+        let team_id = self
+            .sections
+            .iter()
+            .find(|(_, sections)| {
+                sections.iter().any(|section| {
+                    section.channels.iter().any(|channel| {
+                        channel.id == channel_id && !matches!(channel.kind.as_str(), "D" | "G")
+                    })
+                })
+            })
+            .map(|(team_id, _)| team_id)
+            .or(self.team.as_ref())?;
+        let team = self.teams.iter().find(|team| &team.id == team_id)?;
+        Some(format!(
+            "{}/{}/pl/{post_id}",
+            self.server.trim_end_matches('/'),
+            team.name
+        ))
+    }
+
     fn team_name(&self) -> Option<SharedString> {
         let team = self.team.as_ref()?;
         let team = self.teams.iter().find(|candidate| &candidate.id == team)?;
@@ -1278,6 +1306,36 @@ mod tests {
             ChannelKind::Direct {
                 presence: Presence::Dnd
             }
+        );
+    }
+
+    #[test]
+    fn a_permalink_uses_the_channels_team() {
+        let mut live = live();
+        let team = |id: &str, name: &str| TeamWithUnreads {
+            id: id.into(),
+            name: name.into(),
+            display_name: name.into(),
+            has_unreads: false,
+            mentions: 0,
+        };
+        live.teams = vec![team("t1", "core"), team("t2", "design")];
+        live.sections.insert(
+            "t2".into(),
+            Arc::from(vec![section(
+                "s",
+                vec![channel("c2", "O", 0, 0), channel("dm", "D", 0, 0)],
+            )]),
+        );
+        live.team = Some("t1".into());
+        assert_eq!(
+            live.permalink("c2", "p1").as_deref(),
+            Some("http://localhost/design/pl/p1")
+        );
+        // A direct message belongs to no team: the team on screen.
+        assert_eq!(
+            live.permalink("dm", "p2").as_deref(),
+            Some("http://localhost/core/pl/p2")
         );
     }
 
