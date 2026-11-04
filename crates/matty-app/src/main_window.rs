@@ -27,7 +27,7 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SendKey,
+    ClockFormat, MessageDisplay, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SendKey,
     SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
@@ -38,6 +38,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     kbd::{Kbd, format_shortcut},
+    markdown::selection_root,
     resizable::{PaneLimits, Resizable},
     switch::Switch,
     theme::UiTheme,
@@ -2193,6 +2194,49 @@ impl MainWindow {
                 };
                 send_store.update(cx, |store, cx| store.update(cx, |s| s.send_on = send_on));
             });
+        let display_value: SharedString = match settings.display {
+            MessageDisplay::Standard => "standard",
+            MessageDisplay::Compact => "compact",
+        }
+        .into();
+        let display_store = store.clone();
+        let display_group = ToggleGroup::new("preferences.display")
+            .aria_label("Message display")
+            .joined(true)
+            .w_full()
+            .value([display_value])
+            .item(clock_item(
+                "preferences.display.standard",
+                "standard",
+                "Standard",
+            ))
+            .item(clock_item(
+                "preferences.display.compact",
+                "compact",
+                "Compact",
+            ))
+            .on_change(move |next, _, cx| {
+                let display = match next.first().map(|v| v.as_ref()) {
+                    Some("compact") => MessageDisplay::Compact,
+                    _ => MessageDisplay::Standard,
+                };
+                display_store.update(cx, |store, cx| store.update(cx, |s| s.display = display));
+            });
+        let display_hint = match settings.display {
+            MessageDisplay::Standard => "Avatars and a name line above each message.",
+            MessageDisplay::Compact => "One line per message, with the time in the margin.",
+        };
+        let display_section = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .child(display_group)
+            .child(
+                div()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(display_hint),
+            );
         let send_hint = match settings.send_on {
             SendKey::Enter => "Shift+Enter starts a new line.",
             SendKey::ModEnter => "Enter starts a new line.",
@@ -2267,6 +2311,10 @@ impl MainWindow {
                     .child(section(
                         "Send message with",
                         send_section.into_any_element(),
+                    ))
+                    .child(section(
+                        "Message display",
+                        display_section.into_any_element(),
                     ))
                     .child(section(
                         "Window",
@@ -2438,15 +2486,21 @@ impl Render for MainWindow {
                     .w_full()
                     .child(login.clone())
                     .into_any_element(),
+                // One selection root over the rail, sidebar, channel and
+                // right pane, so a drag can select text across messages and
+                // Cmd/Ctrl+C copies it in reading order (PLAN §4.2).
                 None => div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .flex()
-                    .when(self.rail.read(cx).is_multi(), |row| {
-                        row.child(self.rail.clone())
-                    })
-                    .child(div().flex_1().min_w_0().h_full().child(frame))
+                    .child(
+                        selection_root("window.selection")
+                            .flex()
+                            .when(self.rail.read(cx).is_multi(), |row| {
+                                row.child(self.rail.clone())
+                            })
+                            .child(div().flex_1().min_w_0().h_full().child(frame)),
+                    )
                     .into_any_element(),
             })
             .child(self.shortcut_sheet(window, cx))
