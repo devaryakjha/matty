@@ -523,6 +523,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   opened from their control: `style::tipped_when` drops the tooltip while
   the emoji picker or a post's action menu is open. Light mode only gains
   the tooltip fix (`design-57`).
+- **Focus sweep** (DESIGN §4.4): Tab through the whole window in both
+  themes. Every control shows the `ring`, including the pane divider. Three
+  stops drew nothing: the zero-size hosts for the post, right-pane and
+  sidebar context menus; they are disabled now and out of the tab order.
+  The channel list is one tab stop with Up/Down between rows (gpuicn 0.9.1
+  roving focus), as DESIGN §4.4 asked (`design-58`).
 
 ## 5. Components
 
