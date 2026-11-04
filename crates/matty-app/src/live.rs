@@ -1343,6 +1343,18 @@ impl Live {
                     *shown = Some(posts.clone());
                     update.listing = self.listing_content();
                 }
+                // The open channel's pins, fresh from the server, also
+                // correct the header's count.
+                if let matty_sync::Listing::Pinned { channel_id } = listing
+                    && self.is_open(channel_id)
+                    && let Some(stats) = self.stats.as_mut()
+                {
+                    let pinned = i64::try_from(posts.len()).unwrap_or(i64::MAX);
+                    if stats.pinnedpost_count != pinned {
+                        Arc::make_mut(stats).pinnedpost_count = pinned;
+                        update.details = self.shown_details();
+                    }
+                }
             }
             ChangeSet::Saved(ids) => {
                 let saved: std::collections::HashSet<String> = ids.iter().cloned().collect();
