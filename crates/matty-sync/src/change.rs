@@ -264,9 +264,10 @@ pub enum ChangeSet {
     Connection(Connection),
     /// The user's preferences changed.
     Preferences,
-    /// The user's `display_settings` and `advanced_settings` preferences,
-    /// at sign-in and whenever they change, for Preferences to mirror:
-    /// message display and name format (#156), send on Ctrl+Enter (#157).
+    /// The user's `display_settings`, `advanced_settings` and `theme`
+    /// preferences, at sign-in and whenever they change, for Preferences to
+    /// mirror: message display and name format (#156), send on Ctrl+Enter
+    /// (#157), and the Mattermost theme for every team and per team (#214).
     /// A preference the user never set is missing.
     AccountPreferences(Arc<[Preference]>),
     /// Whether collapsed reply threads are on for the user, at sign-in and

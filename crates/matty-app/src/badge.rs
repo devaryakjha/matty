@@ -35,6 +35,29 @@ pub fn dock_badge(sidebar: &SidebarModel, teams: &[Team], current: Option<&Share
     Badge::new(mentions, unread)
 }
 
+/// `badge` with the other saved servers' mentions and unreads added
+/// (#206); the shown server, `current`, is in `badge` already.
+pub fn with_servers(
+    badge: Badge,
+    servers: &[crate::rail::Server],
+    current: Option<usize>,
+) -> Badge {
+    let (mut mentions, mut unread) = match badge {
+        Badge::Clear => (0, false),
+        Badge::Unread => (0, true),
+        Badge::Mentions(count) => (count, true),
+    };
+    for (_, server) in servers
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != current)
+    {
+        mentions += server.mentions;
+        unread |= server.unread;
+    }
+    Badge::new(mentions, unread)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +72,25 @@ mod tests {
 
     fn row(id: &str) -> ChannelRow {
         ChannelRow::new(id, id, ChannelKind::Public)
+    }
+
+    #[test]
+    fn other_servers_add_to_the_badge() {
+        use crate::rail::Server;
+        let servers = [
+            Server::new("Acme").mentions(2),
+            Server::new("Quiet").unread(true),
+        ];
+        assert_eq!(
+            with_servers(Badge::Mentions(3), &servers, None),
+            Badge::Mentions(5)
+        );
+        // The shown server's counts are the sidebar's.
+        assert_eq!(with_servers(Badge::Clear, &servers, Some(0)), Badge::Unread);
+        assert_eq!(
+            with_servers(Badge::Clear, &[Server::new("Calm")], None),
+            Badge::Clear
+        );
     }
 
     #[test]

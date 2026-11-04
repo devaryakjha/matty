@@ -30,6 +30,7 @@ pub mod live;
 pub mod logging;
 pub mod login;
 mod main_window;
+pub mod mattermost_theme;
 pub mod menu;
 pub mod offline;
 pub mod perf;
@@ -53,6 +54,7 @@ mod updater;
 #[cfg(target_family = "wasm")]
 #[path = "updater_web.rs"]
 mod updater;
+pub mod watch;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;
 
@@ -63,7 +65,7 @@ use gpui_kit::{
     App, AppContext as _, Bounds, Entity, Window, WindowAppearance, WindowBounds, WindowOptions,
     point, px, size,
 };
-use settings::{SettingsStore, ThemeChoice};
+use settings::{SettingsStore, ThemeChoice, ThemeSource};
 use ui::theme::{ThemeMode, UiTheme};
 use ui::title_bar::title_bar_window_options;
 
@@ -309,6 +311,15 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
         theme.text_scale = text_scale;
         theme.spacing.unit = unit;
         UiTheme::set(cx, theme);
+    }
+    // The account's Mattermost theme, when chosen and known (#214), sets
+    // light or dark itself.
+    if settings.theme_source == ThemeSource::Mattermost
+        && let Some(imported) = mattermost_theme::shown(&settings, cx)
+    {
+        let (theme, palette) = imported.ui();
+        style::install_theme(theme, palette, cx);
+        return;
     }
     style::install(mode, cx);
 }

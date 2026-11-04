@@ -160,6 +160,17 @@ impl Settings {
         Some(server)
     }
 
+    /// Moves the saved server at `from` to `to`, counted once it has left
+    /// `from`, as the rail's drag reports it. The current server stays
+    /// current wherever it goes.
+    pub fn move_server(&mut self, from: usize, to: usize) {
+        if from >= self.servers.len() || to >= self.servers.len() {
+            return;
+        }
+        let server = self.servers.remove(from);
+        self.servers.insert(to, server);
+    }
+
     /// Where the current server sits on the rail.
     pub fn current_server(&self) -> Option<usize> {
         let current = self.account.as_ref()?.data_key();
@@ -291,6 +302,27 @@ mod tests {
         assert_eq!(settings.remove_server(&key), None);
         assert_eq!(settings.select_server(0).unwrap().user_id, "u1");
         assert_eq!(settings.select_server(3), None);
+    }
+
+    #[test]
+    fn a_moved_server_keeps_its_place_and_the_current_one_stays() {
+        let mut settings = Settings::default();
+        settings.sign_in_server(account("https://a.example.com", "u1"));
+        settings.sign_in_server(account("https://b.example.com", "u2"));
+        settings.sign_in_server(account("https://c.example.com", "u3"));
+        settings.move_server(2, 0);
+        let order: Vec<_> = settings
+            .servers
+            .iter()
+            .map(|s| s.user_id.as_str())
+            .collect();
+        assert_eq!(order, ["u3", "u1", "u2"]);
+        assert_eq!(settings.current_server(), Some(0));
+        settings.move_server(0, 3);
+        assert_eq!(
+            settings.servers[0].user_id, "u3",
+            "out of range moves nothing"
+        );
     }
 
     #[test]

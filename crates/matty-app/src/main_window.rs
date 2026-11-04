@@ -176,6 +176,7 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod background;
 mod drafts;
 mod preferences;
 mod servers;
@@ -275,6 +276,8 @@ pub struct MainWindow {
     /// The sync engine, once there is an account to show.
     live: Option<Live>,
     _live_task: Option<gpui_kit::Task<()>>,
+    /// Every saved server's sync, the shown one's included (#206).
+    watches: background::Watches,
     /// The signed-out account's database and media folder, deleted once
     /// sync has ended the session (#160).
     forget: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
@@ -390,6 +393,9 @@ impl MainWindow {
         };
         if crate::preview::enabled() {
             crate::preview::seed_drafts(cx);
+            if crate::preview::seed_theme(cx) {
+                crate::apply_theme(window, cx);
+            }
         }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| {
@@ -1087,6 +1093,7 @@ impl MainWindow {
             history_at: 0,
             live: None,
             _live_task: None,
+            watches: Default::default(),
             forget: None,
             _typing_task: None,
             _view_task: None,
@@ -1125,12 +1132,14 @@ impl MainWindow {
     }
 
     /// Starts sync over `account`'s database and applies what it publishes.
+    /// `true` when the server's sync was already running and the window
+    /// now shows what it has, with nothing to connect.
     fn start_live(
         &mut self,
         account: &crate::settings::SavedAccount,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         // Switching servers: the shown one stops first (#206).
         if self.live.is_some() {
             self.leave_server(window, cx);
@@ -1142,7 +1151,7 @@ impl MainWindow {
             self.forget = None;
         }
         self.forget_signed_out(cx);
-        self.run_live(account, Live::start(path, account), window, cx);
+        self.watched_live(account, window, cx)
     }
 
     /// Opens the web demo's sample workspace from `snapshot`, with no
@@ -1931,8 +1940,8 @@ impl MainWindow {
             self.collapsed_threads = Some(threads);
             cx.notify();
         }
-        if let Some(preferences) = update.account_preferences {
-            self.mirror_account_preferences(&preferences, cx);
+        if let Some(preferences) = &update.account_preferences {
+            self.mirror_account_preferences(preferences, cx);
         }
         if let Some(thread) = update.thread {
             if self.threads_open {
@@ -2000,6 +2009,8 @@ impl MainWindow {
             self._live_task = None;
             self.forget_signed_out(cx);
         }
+        // The account's Mattermost theme, for the team on screen (#214).
+        self.sync_server_theme(update.account_preferences.as_deref(), window, cx);
         if update.expired && self.login.is_none() {
             self.session_expired(window, cx);
         }
@@ -2190,7 +2201,8 @@ impl MainWindow {
     }
 
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post, or with a thread reply's thread open at the reply.
+    /// its post, or with a thread reply's thread open at the reply; on the
+    /// server it came from, switching first if need be (#206).
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -2199,6 +2211,9 @@ impl MainWindow {
     ) {
         cx.activate(true);
         window.activate_window();
+        if !self.show_notified_server(&clicked, window, cx) {
+            return;
+        }
         self.open_channel(clicked.channel_id.into(), window, cx);
         if !clicked.root_id.is_empty() {
             // A thread reply opens its thread at the reply (#141): with
@@ -3415,6 +3430,7 @@ impl MainWindow {
         let rail = self.rail.read(cx);
         let badge =
             crate::badge::dock_badge(self.sidebar.read(cx).model(), rail.teams(), rail.current());
+        let badge = crate::badge::with_servers(badge, rail.servers(), rail.current_server());
         if badge != self.badge {
             self.badge = badge;
             self.notifier.set_badge(badge);
@@ -3459,6 +3475,8 @@ impl MainWindow {
                     s.remove_server(&account.data_key());
                 }
                 s.account = None;
+                // The account's Mattermost theme goes with it (#214).
+                s.mattermost_theme = None;
             })
         });
         // Other servers stay signed in: the next one opens.
@@ -3644,7 +3662,7 @@ impl MainWindow {
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let platform = Platform::current();
-        let rows = actions::bindings().into_iter().map(|row| {
+        let sheet_row = |label: &'static str, keys: Kbd| {
             div()
                 .flex()
                 .items_center()
@@ -3652,8 +3670,16 @@ impl MainWindow {
                 .gap(theme.space(6.))
                 .h(scaled(&theme, metrics::ROW_HEIGHT))
                 .type_style(style::UI, &theme)
-                .child(row.label)
-                .child(Kbd::shortcut(row.keys(platform)))
+                .child(label)
+                .child(keys)
+        };
+        let rows = actions::bindings().into_iter().flat_map(|row| {
+            // Cmd/Ctrl+1…9 stay out of the keymap's rows; one line lists them.
+            let servers = (row.label == "Forward").then(|| {
+                let first = actions::format_keys("cmd-1", "ctrl-1");
+                sheet_row("Switch to server 1–9", Kbd::new(format!("{first}–9")))
+            });
+            std::iter::once(sheet_row(row.label, Kbd::shortcut(row.keys(platform)))).chain(servers)
         });
         let popup = dialog_popup("shortcuts.popup", "Keyboard shortcuts", cx)
             .child(dialog_title("shortcuts.title", cx).child("Keyboard shortcuts"))

@@ -60,6 +60,44 @@ Semantic colors Matty adds on top (`style::Palette`):
 | `online` | `#16a34a` | `#3fb950` | Presence dot |
 | `away` | `#cc7a00` | `#f2b038` | Presence dot, favorite star |
 | `dnd` | `#d42020` | `#f0564f` | Presence dot |
+| `sidebar_muted` | `muted-foreground` | `muted-foreground` | Read channels, icons and labels on the sidebar |
+| `mention` / `mention_foreground` | `primary` / `primary-foreground` | `primary` / `primary-foreground` | Mention counts on the sidebar |
+
+In Matty's own theme the last two rows repeat shadcn tokens; they exist
+because a Mattermost theme colors the sidebar apart from the channel view.
+
+### Mattermost themes
+
+Preferences → Appearance → Colors can show the account's Mattermost theme
+instead (#214): the `theme` preference for the team on screen, else the
+one for every team, else Denim. `mattermost_theme.rs` maps its JSON onto
+the tokens above on Matty's theme for its mode (light when
+`centerChannelBg` is light), so radius, type and chart colors stay Matty's:
+
+| Mattermost | Matty |
+| --- | --- |
+| `centerChannelBg` / `centerChannelColor` | `background`, `card`, `popover` / their foregrounds; `muted` and `accent` are the text at 8%, `border` and `input` at 16%, `muted-foreground` at 72% |
+| `buttonBg` / `buttonColor` | `primary` / `primary-foreground`, `ring` |
+| `errorTextColor` | `destructive` |
+| `linkColor` | `info` (gpuicn draws links in `primary`) |
+| `sidebarBg` / `sidebarUnreadText` | `sidebar` / `sidebar-foreground` |
+| `sidebarText` | `sidebar_muted` at 72%, `sidebar-border` at 16% |
+| `sidebarTextHoverBg` / `sidebarTextActiveColor` | `sidebar-accent` / its foreground |
+| `sidebarTextActiveBorder` | `sidebar-primary`, `sidebar-ring` |
+| `onlineIndicator`, `awayIndicator`, `dndIndicator` | `online`, `away`, `dnd` |
+| `mentionBg` / `mentionColor` | `mention` / `mention_foreground` |
+
+`sidebarHeaderBg`, `sidebarHeaderTextColor`, `newMessageSeparator`,
+`mentionHighlightBg`, `mentionHighlightLink` and `codeTheme` have no
+gpuicn token yet and are read but not shown. For a custom theme,
+Preferences warns with a destructive tag when a mapped pair falls below
+4.5:1 for text or 3:1 for other UI. The five built-ins fail a few pairs
+too (Denim's presence dots on white), but the user cannot change them, so
+they never warn.
+
+The last theme shown is cached in the settings file
+(`mattermost_theme`), so Matty starts in it rather than flashing its own
+colors until sync connects; signing out drops it.
 
 Mentions, the "New messages" line and links need no token of their own:
 gpuicn's `Message` tints a mention row with `primary` at 6% behind a 2px

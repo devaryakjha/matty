@@ -6,7 +6,7 @@
 use gpui_kit::Rgba;
 
 use crate::style::{Palette, theme};
-use crate::ui::theme::ThemeMode;
+use crate::ui::theme::{ThemeMode, UiColors};
 
 /// What a pair is: text needs 4.5:1, other UI (focus rings, presence dots,
 /// icons that carry meaning) needs 3:1.
@@ -76,8 +76,13 @@ pub fn ratio(a: Rgba, b: Rgba) -> f32 {
 /// Every pair the app draws in `mode`. Translucent fills (hover, mention
 /// and error tints) are composited over the surface they sit on.
 pub fn pairs(mode: ThemeMode) -> Vec<Pair> {
-    let c = theme(mode).colors;
-    let p = Palette::for_mode(mode);
+    pairs_of(&theme(mode).colors, &Palette::for_mode(mode))
+}
+
+/// Every pair the app draws with colors `c` and palette `p`, such as an
+/// imported Mattermost theme's (#214).
+pub fn pairs_of(c: &UiColors, p: &Palette) -> Vec<Pair> {
+    let c = *c;
     // gpuicn's Message: mention rows tint primary at 6%, hover is muted at
     // 50%. Matty's offline banner tints destructive at 8%.
     let mention = over(c.primary.opacity(0.06), c.background);
@@ -111,7 +116,7 @@ pub fn pairs(mode: ThemeMode) -> Vec<Pair> {
         text("Errors", c.destructive, c.background),
         text("Error banner", c.destructive, error),
         text("Sidebar text", c.sidebar_foreground, c.sidebar),
-        text("Sidebar muted text", c.muted_foreground, c.sidebar),
+        text("Sidebar muted text", p.sidebar_muted, c.sidebar),
         text(
             "Selected sidebar row",
             c.sidebar_accent_foreground,
@@ -134,13 +139,18 @@ pub fn pairs(mode: ThemeMode) -> Vec<Pair> {
             c.primary,
         ),
         ui("Focus ring on the window", c.ring, c.background),
-        ui("Focus ring in the sidebar", c.ring, c.sidebar),
+        ui("Focus ring in the sidebar", c.sidebar_ring, c.sidebar),
         ui("Focus ring in popovers", c.ring, c.popover),
-        ui("Unread badge on the sidebar", c.primary, c.sidebar),
+        text(
+            "Mention count on the sidebar",
+            p.mention_foreground,
+            p.mention,
+        ),
+        ui("Unread badge on the sidebar", p.mention, c.sidebar),
         ui("Online dot", p.online, c.sidebar),
         ui("Away dot", p.away, c.sidebar),
         ui("Do not disturb dot", p.dnd, c.sidebar),
-        ui("Offline ring", c.muted_foreground, c.sidebar),
+        ui("Offline ring", p.sidebar_muted, c.sidebar),
         ui("Online dot on messages", p.online, c.background),
         ui("Away dot on messages", p.away, c.background),
         ui("Do not disturb dot on messages", p.dnd, c.background),
