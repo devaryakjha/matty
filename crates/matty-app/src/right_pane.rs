@@ -12,7 +12,9 @@ use gpui_kit::{
 
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
-use crate::channel::{ChannelModel, Post, PostStatus, post_markers, reaction_tooltip};
+use crate::channel::{
+    ChannelModel, Post, PostStatus, QUICK_REACTIONS, post_markers, reaction_tooltip,
+};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
@@ -27,7 +29,8 @@ use crate::ui::{
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
-    message::{Message, MessageStatus, Reaction},
+    menu::{Menu, MenuItem, MenuState},
+    message::{Message, MessageHighlight, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
     popover::popover,
     theme::UiTheme,
@@ -139,6 +142,12 @@ pub struct RightPaneView {
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
     focus: FocusHandle,
+    /// Focus of the thread transcript while a row is keyboard-selected.
+    thread_focus: FocusHandle,
+    /// The keyboard-selected row of the thread transcript (PLAN §4.2).
+    selection: Option<usize>,
+    /// The shared right-click menu over thread rows.
+    menu: Entity<MenuState>,
     /// The current user's display name, for optimistic rows.
     me: SharedString,
     draft_len: usize,
@@ -184,6 +193,16 @@ impl RightPaneView {
             state.set_submit_on_enter(send_on == SendKey::Enter);
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
+                if keystroke.key == "tab" && keystroke.modifiers.shift {
+                    // Shift+Tab leaves the composer for keyboard selection of
+                    // the thread's rows, as in the channel (PLAN §4.2).
+                    return keys
+                        .update(cx, |this, cx| {
+                            this.select_newest(window, cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                }
                 if keystroke.key != "enter"
                     || !(keystroke.modifiers.control || keystroke.modifiers.platform)
                 {
@@ -223,6 +242,9 @@ impl RightPaneView {
             list,
             composer,
             focus: cx.focus_handle(),
+            thread_focus: cx.focus_handle(),
+            selection: None,
+            menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             draft_len: 0,
             pending_seq: 0,
@@ -470,7 +492,116 @@ impl RightPaneView {
         };
         self.list = cx.new(|cx| MessageListState::new(rows, cx));
         self.content = content;
+        self.selection = None;
         cx.notify();
+    }
+
+    /// Rows of the thread transcript: the root, the divider, then replies.
+    fn thread_rows(&self) -> usize {
+        match &self.content {
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
+            _ => 0,
+        }
+    }
+
+    fn select_row(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.selection = index;
+        if index.is_none() {
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Selects the newest reply, or the root when there is none.
+    fn select_newest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.thread_rows();
+        if rows == 0 {
+            return;
+        }
+        self.selection = Some(if rows > 2 { rows - 1 } else { 0 });
+        window.focus(&self.thread_focus, cx);
+        cx.notify();
+    }
+
+    /// Selects the row showing `id`.
+    fn select_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return;
+        };
+        let row = if thread.root.id == *id {
+            Some(0)
+        } else {
+            thread
+                .replies
+                .iter()
+                .position(|post| post.id == *id)
+                .map(|index| index + 2)
+        };
+        if row.is_some() {
+            self.selection = row;
+            window.focus(&self.thread_focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// Opens the shared menu at the pointer with `items`.
+    fn open_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.open_at(Some(at), window, cx);
+        });
+    }
+
+    /// The right-click menu of a thread row: copy, a reaction submenu, and
+    /// Retry and Delete on a reply that never reached the server.
+    fn thread_items_for(view: &gpui_kit::WeakEntity<Self>, post: &Post) -> Vec<MenuItem> {
+        let body = post.body.clone();
+        let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
+            let (view, id) = (view.clone(), post.id.clone());
+            let emoji: SharedString = (*emoji).into();
+            MenuItem::new(
+                gpui_kit::ElementId::Name(format!("thread.context.react.{name}").into()),
+                format!("{emoji}  {name}"),
+            )
+            .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
+            .on_click(move |_, _, cx| {
+                let (id, emoji) = (id.clone(), emoji.clone());
+                view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                    .ok();
+            })
+        });
+        let mut items = vec![
+            MenuItem::submenu("thread.context.react", "Add reaction", reactions),
+            MenuItem::separator(),
+            MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+            }),
+        ];
+        if post.status == PostStatus::Failed {
+            let (retry_view, retry_id) = (view.clone(), post.id.clone());
+            let (delete_view, delete_id) = (view.clone(), post.id.clone());
+            items.push(MenuItem::separator());
+            items.push(
+                MenuItem::new("thread.context.retry", "Retry").on_click(move |_, _, cx| {
+                    let id = retry_id.clone();
+                    retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
+                }),
+            );
+            items.push(MenuItem::new("thread.context.delete", "Delete").on_click(
+                move |_, _, cx| {
+                    let id = delete_id.clone();
+                    delete_view.update(cx, |this, cx| this.discard(id, cx)).ok();
+                },
+            ));
+        }
+        items
     }
 
     fn header(
@@ -542,6 +673,7 @@ impl RightPaneView {
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
         root: bool,
+        highlight: MessageHighlight,
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -579,6 +711,7 @@ impl RightPaneView {
             .timestamp(time.clone())
             .gutter_time(time)
             .continuation(post.continues && !root)
+            .highlight(highlight)
             .avatar(
                 Avatar::new(gpui_kit::ElementId::Name(
                     format!("thread.{id}.avatar").into(),
@@ -620,7 +753,23 @@ impl RightPaneView {
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
-        row
+        // Right-click selects the row and opens its menu (design-42).
+        let items = Self::thread_items_for(view, post);
+        let menu_view = view.clone();
+        div()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                move |event: &gpui_kit::MouseDownEvent, window, cx| {
+                    let items = items.clone();
+                    menu_view
+                        .update(cx, |this, cx| {
+                            this.select_post(&id, window, cx);
+                            this.open_menu(items, event.position, window, cx);
+                        })
+                        .ok();
+                },
+            )
+            .child(row)
     }
 
     fn replies_divider(
@@ -671,21 +820,41 @@ impl RightPaneView {
         let theme = UiTheme::read(cx).clone();
         let model = thread.clone();
         let view = cx.entity().downgrade();
+        let selection = self.selection;
+        let highlight = move |index| {
+            if selection == Some(index) {
+                MessageHighlight::Selected
+            } else {
+                MessageHighlight::None
+            }
+        };
         let transcript =
             MessageList::new(
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&view, &model.root, true, cx).into_any_element(),
+                    0 => Self::post_row(&view, &model.root, true, highlight(0), cx)
+                        .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
                     index => match model.replies.get(index - 2) {
-                        Some(reply) => Self::post_row(&view, reply, false, cx).into_any_element(),
+                        Some(reply) => Self::post_row(&view, reply, false, highlight(index), cx)
+                            .into_any_element(),
                         None => div().into_any_element(),
                     },
                 },
             )
             .size_full()
-            .pt(theme.space(2.));
+            .pt(theme.space(2.))
+            .track_focus(&self.thread_focus)
+            .selected(self.selection)
+            .selectable(|index, _| index != 1)
+            .on_select({
+                let view = cx.entity().downgrade();
+                move |index, window, cx| {
+                    view.update(cx, |this, cx| this.select_row(index, window, cx))
+                        .ok();
+                }
+            });
         let send = Button::new("right-pane.send")
             .variant(ButtonVariant::Default)
             .size(ButtonSize::IconSm)
@@ -865,6 +1034,7 @@ impl RightPaneView {
                             ..item.post.clone()
                         },
                         true,
+                        MessageHighlight::None,
                         cx,
                     ))
             }))
@@ -1300,6 +1470,7 @@ impl Render for RightPaneView {
         let root = div()
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(Menu::new(&self.menu, "Message actions").context_area(div()))
             .key_context(actions::RIGHT_PANE)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseRightPane, _, cx| cx.emit(RightPaneEvent::Close)))

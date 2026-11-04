@@ -417,7 +417,7 @@ type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<Channel
 
 /// The reactions one click away, as Mattermost's recent-emoji row. The full
 /// picker arrives with the emoji data from sync.
-const QUICK_REACTIONS: [(&str, &str); 6] = [
+pub(crate) const QUICK_REACTIONS: [(&str, &str); 6] = [
     ("👍", "Thumbs up"),
     ("❤️", "Heart"),
     ("😂", "Joy"),

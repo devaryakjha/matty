@@ -411,6 +411,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   as unread, and Edit and Delete on your own posts (`design-41`). The menu
   returns focus to the transcript when it closes, so the selection keys
   keep working, and Escape then hands focus back to the composer.
+- **Thread pane selection** (PLAN §4.3): the thread transcript takes the
+  same keyboard selection as the channel. Shift+Tab from the reply composer
+  selects the newest reply, Up and Down move over the root and replies and
+  skip the replies divider, and Escape returns to the composer. A
+  right-click selects the row and opens a smaller menu: an Add reaction
+  submenu with the quick reactions, Copy text, and Retry and Delete on a
+  reply that never reached the server (`design-42`). Pin and Save stay on
+  the channel row until sync can act on a thread post.
 
 ## 5. Components
 
