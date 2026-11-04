@@ -261,6 +261,15 @@ impl SidebarModel {
         }
     }
 
+    /// The channels with unread messages or mentions, in sidebar order,
+    /// for Mark all read to view on the server.
+    pub fn unread_ids(&self) -> Vec<SharedString> {
+        self.rows()
+            .filter(|row| row.unread || row.mentions > 0)
+            .map(|row| row.id.clone())
+            .collect()
+    }
+
     /// Clears every unread mark and mention count.
     pub fn mark_all_read(&mut self) {
         for row in self
@@ -556,6 +565,18 @@ impl SidebarView {
             row.unread = true;
             cx.notify();
         }
+    }
+
+    /// Whether `id` shows unread messages or mentions.
+    pub fn is_unread(&self, id: &str) -> bool {
+        self.model
+            .rows()
+            .any(|row| row.id.as_ref() == id && (row.unread || row.mentions > 0))
+    }
+
+    /// The channels Mark all read clears.
+    pub fn unread_ids(&self) -> Vec<SharedString> {
+        self.model.unread_ids()
     }
 
     pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
@@ -1086,7 +1107,10 @@ mod tests {
     fn the_unreads_filter_is_empty_when_everything_is_read() {
         let mut all_read = model("a");
         assert!(!all_read.caught_up());
+        // Shift+Escape views every unread row on the server, muted ones too.
+        assert_eq!(all_read.unread_ids(), ["b", "c", "e"]);
         all_read.mark_all_read();
+        assert!(all_read.unread_ids().is_empty());
         // Only the open channel is left, and that is all caught up.
         assert_eq!(ids(&all_read.unreads()), [vec!["a"]]);
         assert!(all_read.caught_up());

@@ -14,7 +14,9 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::actions::{self, EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
+use crate::actions::{
+    self, EditLastMessage, FocusComposer, MarkChannelRead, ReplyToLastMessage, UploadFiles,
+};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
@@ -1076,6 +1078,12 @@ impl ChannelView {
     /// The jump pill while the newest posts are not loaded: asks sync for
     /// them and scrolls to the end once they are in (`set_history`, or
     /// `set_model` when they come as a new model).
+    /// Whether the newest post is on screen: the list reaches the
+    /// channel's end and is not scrolled up from it (#145).
+    pub fn at_newest(&self, cx: &gpui_kit::App) -> bool {
+        self.model.is_some() && self.history.at_end && !self.list.read(cx).is_scrolled_up()
+    }
+
     fn jump_latest(&mut self, cx: &mut Context<Self>) {
         self.open_at_end = true;
         cx.emit(ChannelEvent::JumpLatest);
@@ -3486,11 +3494,23 @@ impl Render for ChannelView {
         self.composer_cap = style::composer_cap(window);
         let theme = UiTheme::read(cx).clone();
         let root = div()
+            .key_context(actions::CHANNEL_VIEW)
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
             .bg(theme.colors.background)
+            // Escape ends an edit or a selection first; only then does it
+            // reach the window, which marks the channel read (#147).
+            .on_action(cx.listener(|this, _: &MarkChannelRead, window, cx| {
+                if this.editing.is_some() {
+                    this.cancel_edit(window, cx);
+                } else if this.selection.is_some() {
+                    this.select_row(None, window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
                 this.composer
                     .update(cx, |composer, cx| composer.focus(window, cx))
