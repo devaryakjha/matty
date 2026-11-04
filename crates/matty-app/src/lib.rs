@@ -12,6 +12,7 @@ pub mod attachments;
 pub mod categories;
 pub mod channel;
 pub mod channel_settings;
+pub mod contrast;
 pub mod directory;
 pub mod dnd;
 pub mod draft_link;

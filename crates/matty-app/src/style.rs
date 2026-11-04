@@ -371,23 +371,6 @@ pub fn presence_name(name: &str, presence: crate::sidebar::Presence) -> SharedSt
 mod tests {
     use super::*;
 
-    fn luminance(color: Rgba) -> f32 {
-        fn channel(c: f32) -> f32 {
-            if c <= 0.03928 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        }
-        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
-    }
-
-    /// WCAG 2.1 contrast ratio.
-    fn contrast(a: Rgba, b: Rgba) -> f32 {
-        let (la, lb) = (luminance(a) + 0.05, luminance(b) + 0.05);
-        la.max(lb) / la.min(lb)
-    }
-
     #[test]
     fn theme_css_parses_in_both_modes() {
         UiTheme::from_shadcn_css(THEME_CSS, ThemeMode::Light).unwrap();
@@ -405,30 +388,6 @@ mod tests {
             UiTheme::neutral_dark().colors.sidebar
         );
         assert_eq!(theme(ThemeMode::Light).radius.base, px(8.));
-    }
-
-    #[test]
-    fn text_meets_wcag_aa_on_its_surfaces() {
-        for mode in [ThemeMode::Light, ThemeMode::Dark] {
-            let c = theme(mode).colors;
-            let pairs = [
-                ("foreground/background", c.foreground, c.background),
-                ("muted/background", c.muted_foreground, c.background),
-                ("muted/sidebar", c.muted_foreground, c.sidebar),
-                ("sidebar fg/sidebar", c.sidebar_foreground, c.sidebar),
-                (
-                    "sidebar fg/sidebar accent",
-                    c.sidebar_accent_foreground,
-                    c.sidebar_accent,
-                ),
-                ("primary fg/primary", c.primary_foreground, c.primary),
-                ("popover fg/popover", c.popover_foreground, c.popover),
-            ];
-            for (name, fg, bg) in pairs {
-                let ratio = contrast(fg, bg);
-                assert!(ratio >= 4.5, "{mode:?} {name}: contrast {ratio:.2} < 4.5");
-            }
-        }
     }
 
     #[test]

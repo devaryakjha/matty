@@ -2779,7 +2779,7 @@ impl MainWindow {
             .justify_center()
             .gap(theme.space(2.))
             .bg(if offline {
-                theme.colors.destructive.opacity(0.1)
+                theme.colors.destructive.opacity(0.08)
             } else {
                 theme.colors.muted
             })
