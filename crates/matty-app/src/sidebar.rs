@@ -567,6 +567,13 @@ impl SidebarView {
         }
     }
 
+    /// Whether `id` shows unread messages or mentions.
+    pub fn is_unread(&self, id: &str) -> bool {
+        self.model
+            .rows()
+            .any(|row| row.id.as_ref() == id && (row.unread || row.mentions > 0))
+    }
+
     /// The channels Mark all read clears.
     pub fn unread_ids(&self) -> Vec<SharedString> {
         self.model.unread_ids()

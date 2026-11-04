@@ -80,6 +80,31 @@ fn event_url(event: &LoginEvent) -> String {
 
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
+/// How long the open channel waits after a post before it checks whether
+/// the user saw it (#145).
+const VIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What decides whether the open channel counts as viewed (#145).
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    /// A Matty window has focus.
+    focused: bool,
+    /// The channel is on screen, not Threads or Drafts.
+    channel_shown: bool,
+    /// A drawer covers the channel.
+    covered: bool,
+    /// The list is at its newest post.
+    at_newest: bool,
+    /// The sidebar marks the channel unread.
+    unread: bool,
+}
+
+impl Seen {
+    fn views(self) -> bool {
+        self.unread && self.focused && self.channel_shown && !self.covered && self.at_newest
+    }
+}
+
 /// Below this window width the right pane overlays the channel as a drawer
 /// instead of splitting it (PLAN §4.1 narrow windows).
 const NARROW_RIGHT_PANE: f32 = 900.;
@@ -174,6 +199,9 @@ pub struct MainWindow {
     _live_task: Option<gpui_kit::Task<()>>,
     /// Clears typing notices as they run out.
     _typing_task: Option<gpui_kit::Task<()>>,
+    /// Views the open channel a moment after a post arrives in it, if the
+    /// user can see it then (#145).
+    _view_task: Option<gpui_kit::Task<()>>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     sidebar_shown: bool,
@@ -195,6 +223,14 @@ impl MainWindow {
         .detach();
         cx.observe_window_bounds(window, |this, window, cx| this.remember_bounds(window, cx))
             .detach();
+        // Coming back to the window views the open channel if its newest
+        // posts are on screen (#145).
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.view_if_seen(window, cx);
+            }
+        })
+        .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let model = if crate::preview::enabled() {
@@ -711,6 +747,7 @@ impl MainWindow {
             live: None,
             _live_task: None,
             _typing_task: None,
+            _view_task: None,
             login_server: None,
             sidebar_shown: false,
         };
@@ -1160,6 +1197,9 @@ impl MainWindow {
         }
         if let Some(arrival) = update.arrived {
             self.notify(&arrival, window, cx);
+            if self.selected_channel.as_deref() == Some(arrival.event.channel_id.as_str()) {
+                self.view_later(window, cx);
+            }
         }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {
@@ -2428,6 +2468,37 @@ impl MainWindow {
             .update(cx, |sidebar, cx| sidebar.mark_all_read(cx));
     }
 
+    /// Checks again a second after a post arrives in the open channel, so a
+    /// burst of posts views the channel once.
+    fn view_later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._view_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(VIEW_DEBOUNCE).await;
+            this.update_in(cx, |this, window, cx| this.view_if_seen(window, cx))
+                .ok();
+        }));
+    }
+
+    /// Views the open channel when it shows unread posts the user can see:
+    /// the window has focus, nothing covers the channel, and the list is at
+    /// its newest post. Otherwise the unread mark and the pill stay.
+    fn view_if_seen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_channel.clone() else {
+            return;
+        };
+        let seen = Seen {
+            focused: window.is_window_active(),
+            channel_shown: !self.threads_open && !self.drafts_open,
+            covered: self.right_drawer_shown || self.sidebar_drawer_shown,
+            at_newest: self.channel.read(cx).at_newest(cx),
+            unread: self.sidebar.read(cx).is_unread(&id),
+        };
+        if seen.views() {
+            self.view_channels(std::slice::from_ref(&id));
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
+        }
+    }
+
     /// Tells the server the user viewed `ids`, one request each.
     fn view_channels(&self, ids: &[gpui_kit::SharedString]) {
         let Some(live) = &self.live else {
@@ -3053,7 +3124,59 @@ fn opens_safely(path: &std::path::Path) -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::opens_safely;
+    use super::{Seen, opens_safely};
+
+    #[test]
+    fn the_open_channel_counts_as_viewed_only_when_seen() {
+        let seen = Seen {
+            focused: true,
+            channel_shown: true,
+            covered: false,
+            at_newest: true,
+            unread: true,
+        };
+        assert!(seen.views(), "focused and at the newest post");
+        assert!(
+            !Seen {
+                focused: false,
+                ..seen
+            }
+            .views(),
+            "unfocused"
+        );
+        assert!(
+            !Seen {
+                at_newest: false,
+                ..seen
+            }
+            .views(),
+            "scrolled up"
+        );
+        assert!(
+            !Seen {
+                covered: true,
+                ..seen
+            }
+            .views(),
+            "a drawer covers it"
+        );
+        assert!(
+            !Seen {
+                channel_shown: false,
+                ..seen
+            }
+            .views(),
+            "Threads is open"
+        );
+        assert!(
+            !Seen {
+                unread: false,
+                ..seen
+            }
+            .views(),
+            "nothing to view"
+        );
+    }
 
     #[test]
     fn only_content_opens_without_asking() {

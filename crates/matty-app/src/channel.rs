@@ -1078,6 +1078,12 @@ impl ChannelView {
     /// The jump pill while the newest posts are not loaded: asks sync for
     /// them and scrolls to the end once they are in (`set_history`, or
     /// `set_model` when they come as a new model).
+    /// Whether the newest post is on screen: the list reaches the
+    /// channel's end and is not scrolled up from it (#145).
+    pub fn at_newest(&self, cx: &gpui_kit::App) -> bool {
+        self.model.is_some() && self.history.at_end && !self.list.read(cx).is_scrolled_up()
+    }
+
     fn jump_latest(&mut self, cx: &mut Context<Self>) {
         self.open_at_end = true;
         cx.emit(ChannelEvent::JumpLatest);
