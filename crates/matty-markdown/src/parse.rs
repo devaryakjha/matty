@@ -22,18 +22,23 @@ pub fn parse(text: &str) -> Document {
 /// ([`link_entities`](crate::link_entities)). `is_emoji` says whether a
 /// shortcode names a system or custom emoji.
 pub fn parse_with(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> Document {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_MATH);
     let mut builder = Builder::default();
-    for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
+    for (event, range) in Parser::new_ext(text, options()).into_offset_iter() {
         builder.event(event, &text[range]);
     }
     let mut document = builder.finish();
     crate::link_entities(&mut document, is_emoji);
     document
+}
+
+/// The Markdown extensions Mattermost turns on.
+pub(crate) fn options() -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_MATH);
+    options
 }
 
 #[derive(Debug)]

@@ -10,9 +10,11 @@ mod entities;
 mod html;
 mod parse;
 mod plain;
+mod source;
 
 pub use ast::{Alignment, Block, Document, Inline, ListItem};
 pub use entities::{SPECIAL_MENTIONS, link_entities};
 pub use html::to_html;
 pub use parse::{MAX_DEPTH, parse, parse_with};
 pub use plain::to_plain;
+pub use source::link_entities_in_source;
