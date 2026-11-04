@@ -11,7 +11,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use serde_json::Value;
@@ -265,8 +265,51 @@ struct Supervisor {
 
 enum Ended {
     Lost(String),
-    ReconnectNow,
+    ReconnectNow(&'static str),
     Stop,
+}
+
+/// How often the client checks whether the computer slept.
+const WAKE_CHECK: Duration = Duration::from_secs(5);
+
+/// Wall-clock time beyond the monotonic clock's that counts as a sleep.
+pub(crate) const SLEPT_AFTER: Duration = Duration::from_secs(10);
+
+fn wake_checks() -> tokio::time::Interval {
+    let mut checks = tokio::time::interval(WAKE_CHECK);
+    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    checks
+}
+
+/// Notices a sleep: the monotonic clock stops while the computer sleeps
+/// and the wall clock does not, on macOS, Linux and Windows alike.
+struct SleepWatch {
+    wall: SystemTime,
+    mono: tokio::time::Instant,
+}
+
+impl SleepWatch {
+    fn new() -> Self {
+        Self {
+            wall: SystemTime::now(),
+            mono: tokio::time::Instant::now(),
+        }
+    }
+
+    /// Whether the computer slept since the last check.
+    fn woke(&mut self) -> bool {
+        let now = Self::new();
+        let wall = now.wall.duration_since(self.wall).unwrap_or_default();
+        let mono = now.mono - self.mono;
+        *self = now;
+        slept(wall, mono)
+    }
+}
+
+/// Whether `wall` time passing while the monotonic clock saw only `mono`
+/// means the computer slept.
+pub(crate) fn slept(wall: Duration, mono: Duration) -> bool {
+    wall.saturating_sub(mono) >= SLEPT_AFTER
 }
 
 impl Supervisor {
@@ -286,22 +329,36 @@ impl Supervisor {
         let mut attempt: u32 = 0;
         self.emit(WsSignal::State(ConnectionState::Connecting));
         loop {
-            let dialed = tokio::select! {
-                dialed = self.dialer.dial(resume.clone()) => dialed,
-                control = self.control.recv() => match control {
-                    Some(Control::ReconnectNow) => continue,
-                    Some(Control::Stop) | None => break,
-                },
+            let dialed = {
+                let dial = self.dialer.dial(resume.clone());
+                tokio::pin!(dial);
+                loop {
+                    tokio::select! {
+                        dialed = &mut dial => break Some(dialed),
+                        control = self.control.recv() => match control {
+                            // Already dialing: a burst of requests, as from a
+                            // flapping network, adds nothing (#165).
+                            Some(Control::ReconnectNow) => {}
+                            Some(Control::Stop) | None => break None,
+                        },
+                    }
+                }
+            };
+            let Some(dialed) = dialed else {
+                break;
             };
             let reason = match dialed {
                 Ok((connection, events)) => {
                     attempt = 0;
                     match self.serve(connection, events, &mut resume).await {
                         Ended::Stop => break,
-                        Ended::ReconnectNow => {
+                        Ended::ReconnectNow(reason) => {
+                            if self.drain_requests() {
+                                break;
+                            }
                             self.emit(WsSignal::State(ConnectionState::Reconnecting {
                                 attempt: 1,
-                                reason: "reconnect requested".into(),
+                                reason: reason.into(),
                             }));
                             continue;
                         }
@@ -319,17 +376,40 @@ impl Supervisor {
                 attempt,
                 reason,
             }));
-            let wait = self.backoff.delay(attempt, self.jitter.unit());
-            tokio::select! {
-                () = tokio::time::sleep(wait) => {}
-                control = self.control.recv() => match control {
-                    Some(Control::ReconnectNow) => {}
-                    Some(Control::Stop) | None => break,
-                },
+            let wait = tokio::time::sleep(self.backoff.delay(attempt, self.jitter.unit()));
+            tokio::pin!(wait);
+            let mut sleep_watch = SleepWatch::new();
+            let mut checks = wake_checks();
+            let stop = loop {
+                tokio::select! {
+                    () = &mut wait => break false,
+                    _ = checks.tick() => if sleep_watch.woke() {
+                        break false;
+                    },
+                    control = self.control.recv() => match control {
+                        Some(Control::ReconnectNow) => break self.drain_requests(),
+                        Some(Control::Stop) | None => break true,
+                    },
+                }
+            };
+            if stop {
+                break;
             }
         }
         self.set_current(None);
         self.emit(WsSignal::State(ConnectionState::Stopped));
+    }
+
+    /// Drops reconnect requests that queued up behind the one being handled,
+    /// so a burst redials once; true if a stop was among them.
+    fn drain_requests(&mut self) -> bool {
+        loop {
+            match self.control.try_recv() {
+                Ok(Control::ReconnectNow) => {}
+                Ok(Control::Stop) | Err(mpsc::error::TryRecvError::Disconnected) => return true,
+                Err(mpsc::error::TryRecvError::Empty) => return false,
+            }
+        }
     }
 
     /// Delivers one connection's events until it ends.
@@ -359,8 +439,15 @@ impl Supervisor {
             connection_id: connection_id.clone(),
         }));
 
+        let mut sleep_watch = SleepWatch::new();
+        let mut checks = wake_checks();
         let ended = loop {
             tokio::select! {
+                // After a sleep the socket is likely dead though no ping has
+                // failed yet: redial at once (#165).
+                _ = checks.tick() => if sleep_watch.woke() {
+                    break Ended::ReconnectNow("woke from sleep");
+                },
                 message = events.recv() => match message {
                     Some(WsMessage::Event(event)) => match seq.accept(event.seq) {
                         // Replays and late arrivals the client is past.
@@ -386,7 +473,7 @@ impl Supervisor {
                     None => break Ended::Lost("the connection ended".into()),
                 },
                 control = self.control.recv() => match control {
-                    Some(Control::ReconnectNow) => break Ended::ReconnectNow,
+                    Some(Control::ReconnectNow) => break Ended::ReconnectNow("reconnect requested"),
                     Some(Control::Stop) | None => break Ended::Stop,
                 },
             }
@@ -407,5 +494,21 @@ fn describe(reason: &DisconnectReason) -> String {
         DisconnectReason::Lost(why) => format!("lost: {why}"),
         DisconnectReason::ClientClosed => "closed by Matty".into(),
         DisconnectReason::Timeout => "the server stopped answering".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wall_clock_jump_past_the_monotonic_clock_is_a_sleep() {
+        let secs = Duration::from_secs;
+        assert!(!slept(secs(5), secs(5)));
+        // A slow tick or a small clock correction is not.
+        assert!(!slept(secs(12), secs(5)));
+        assert!(slept(secs(125), secs(5)));
+        // The wall clock set back is not a sleep either.
+        assert!(!slept(secs(0), secs(5)));
     }
 }
