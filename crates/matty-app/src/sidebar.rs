@@ -879,7 +879,9 @@ impl SidebarView {
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let mut sidebar = Sidebar::new("sidebar", "Channels").header(self.header(cx));
+        let mut sidebar = Sidebar::new("sidebar", "Channels")
+            .roving_focus(true)
+            .header(self.header(cx));
         if self.model.loading {
             for (label, rows) in [("Favorites", 2), ("Channels", 4), ("Direct messages", 3)] {
                 sidebar = sidebar.child(
@@ -907,7 +909,11 @@ impl Render for SidebarView {
         for category in &categories {
             sidebar = sidebar.child(self.category(category, window, cx));
         }
-        sidebar.child(Menu::new(&self.row_menu, "Channel options").context_area(div()))
+        sidebar.child(
+            Menu::new(&self.row_menu, "Channel options")
+                .context_area(div())
+                .disabled(true),
+        )
     }
 }
 

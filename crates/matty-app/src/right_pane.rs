@@ -1483,7 +1483,11 @@ impl Render for RightPaneView {
         let root = div()
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
-            .child(Menu::new(&self.menu, "Message actions").context_area(div()))
+            .child(
+                Menu::new(&self.menu, "Message actions")
+                    .context_area(div())
+                    .disabled(true),
+            )
             .key_context(actions::RIGHT_PANE)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseRightPane, _, cx| cx.emit(RightPaneEvent::Close)))
