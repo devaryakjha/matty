@@ -23,6 +23,7 @@ pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod fd_limit;
 pub mod forward;
 pub mod instance;
 pub mod links;
@@ -41,6 +42,7 @@ pub mod rail;
 pub mod remote_images;
 pub mod right_pane;
 pub mod secrets;
+pub mod server_links;
 pub mod servers;
 pub mod settings;
 pub mod sidebar;
@@ -184,6 +186,9 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     // Settings load after this, so their level applies just below.
     let logs = logging::init(logging::default_dir().as_deref(), Default::default());
     tracing::info!(version = VERSION, "matty starting");
+    // Every saved server runs its own engine, each with its own files.
+    #[cfg(not(target_family = "wasm"))]
+    fd_limit::raise();
     ui::theme::init(cx);
     style::install(ThemeMode::Light, cx);
     load_fonts(cx);

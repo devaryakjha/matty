@@ -51,6 +51,8 @@ regex = "1"
 emojis = "0.6"
 async-channel = "2"
 getrandom = "0.3"
+# Raises the open file limit at launch (#206), without unsafe code.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 insta = "1"
 keyring = "4.2"
