@@ -15,6 +15,7 @@ use matty_sync::{
     UploadState,
 };
 
+use crate::attachments::{AttachmentStatus, Upload, UploadSource};
 use crate::channel::{ChannelModel, Post};
 use crate::login::{PasswordSignIn, SignInFailure, SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
@@ -210,6 +211,11 @@ pub struct Update {
     /// The server refused the saved session; the window asks the user to
     /// sign in again.
     pub expired: bool,
+    /// A draft as sync stores it now, or `None` once deleted (#114).
+    pub draft: Option<(
+        crate::composer_draft::DraftKey,
+        Option<Arc<matty_api::models::Draft>>,
+    )>,
 }
 
 /// A post that just arrived, with the preferences that decide whether it
@@ -507,6 +513,42 @@ impl Live {
             self.sync.send(Command::CancelUpload {
                 upload_id: id.to_owned(),
             });
+        }
+    }
+
+    /// The server ids of tray files that are up, for a draft (#114).
+    pub fn file_ids(&self, ids: &[SharedString]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.uploads.get(id.as_ref())?.file_id.clone())
+            .collect()
+    }
+
+    /// A file a stored draft carries, as a finished tray upload whose id is
+    /// its file id, so a send or a later save finds it again.
+    pub fn draft_upload(&mut self, channel_id: &str, file_id: &str) -> Upload {
+        let name = self
+            .uploads
+            .values()
+            .find(|job| job.file_id.as_deref() == Some(file_id))
+            .map(|job| job.name.clone())
+            .or_else(|| self.file_name(file_id))
+            .unwrap_or_else(|| "Attachment".to_owned());
+        let source = match self.thumbnails.get(file_id) {
+            Some(image) => UploadSource::Image(image.clone()),
+            None => UploadSource::Path(std::path::PathBuf::new()),
+        };
+        self.uploads.entry(file_id.to_owned()).or_insert(UploadJob {
+            channel_id: channel_id.to_owned(),
+            name: name.clone(),
+            source: source.clone(),
+            file_id: Some(file_id.to_owned()),
+        });
+        Upload {
+            id: file_id.to_owned().into(),
+            name: name.into(),
+            size: 0,
+            source,
+            status: AttachmentStatus::Ready,
         }
     }
 
@@ -892,6 +934,7 @@ impl Live {
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
+            channel_id: root.channel_id.clone().into(),
             channel_name: self.channel_name(&root.channel_id).unwrap_or_default(),
             root: shown(root),
             replies: replies
@@ -1178,7 +1221,6 @@ impl Live {
             }
             ChangeSet::Upload { upload_id, state } => {
                 if let Some(job) = self.uploads.get_mut(upload_id) {
-                    use crate::attachments::AttachmentStatus;
                     let status = match state {
                         UploadState::Sending(fraction) => AttachmentStatus::Uploading(*fraction),
                         UploadState::Done { file_id } => {
@@ -1192,6 +1234,15 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::Draft {
+                channel_id,
+                root_id,
+                draft,
+            } => {
+                let key =
+                    crate::composer_draft::DraftKey::thread(channel_id.clone(), root_id.clone());
+                update.draft = Some((key, draft.clone()));
             }
             ChangeSet::LinkResolved { query, answer } => {
                 update.link = Some((query.clone(), answer.clone()));
@@ -2701,6 +2752,31 @@ mod tests {
             state: UploadState::Failed("gone".into()),
         });
         assert_eq!(update.upload, None);
+    }
+
+    #[test]
+    fn a_stored_draft_reaches_the_window_with_its_files() {
+        let mut live = live();
+        let draft = matty_api::models::Draft {
+            channel_id: "c1".into(),
+            root_id: "r1".into(),
+            message: "later".into(),
+            file_ids: vec!["f1".into()],
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Draft {
+            channel_id: "c1".into(),
+            root_id: "r1".into(),
+            draft: Some(Arc::new(draft)),
+        });
+        let (key, stored) = update.draft.unwrap();
+        assert_eq!(key, crate::composer_draft::DraftKey::thread("c1", "r1"));
+        assert_eq!(stored.unwrap().message, "later");
+        // Its file comes back as a finished upload a send can carry.
+        let upload = live.draft_upload("c1", "f1");
+        assert!(upload.is_ready());
+        assert_eq!(live.file_ids(std::slice::from_ref(&upload.id)), ["f1"]);
+        assert_eq!(live.take_file_ids(&[upload.id]), ["f1"]);
     }
 
     #[test]

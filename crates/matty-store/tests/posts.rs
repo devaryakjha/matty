@@ -288,6 +288,37 @@ fn drafts_per_channel_and_thread() {
 }
 
 #[test]
+fn every_draft_lists_newest_first_with_its_files() {
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let draft = |channel: &str, root: &str, message: &str, at: i64| Draft {
+        channel_id: channel.into(),
+        root_id: root.into(),
+        message: message.into(),
+        update_at: at,
+        ..Draft::default()
+    };
+    posts::upsert_draft(conn, &draft("a", "", "older", 10)).unwrap();
+    posts::upsert_draft(conn, &draft("b", "root", "newer", 20)).unwrap();
+    // Files alone keep a draft, and their ids come back in order.
+    let files = Draft {
+        file_ids: vec!["f1".into(), "f2".into()],
+        ..draft("c", "", "", 30)
+    };
+    posts::upsert_draft(conn, &files).unwrap();
+    let all = posts::drafts(conn).unwrap();
+    let keys: Vec<(&str, &str)> = all
+        .iter()
+        .map(|d| (d.channel_id.as_str(), d.root_id.as_str()))
+        .collect();
+    assert_eq!(keys, [("c", ""), ("b", "root"), ("a", "")]);
+    assert_eq!(all[0].file_ids, ["f1", "f2"]);
+    assert_eq!(all[1].message, "newer");
+    // A relaunch reads back exactly what was saved.
+    assert_eq!(posts::draft(conn, "c", "").unwrap().unwrap(), all[0]);
+}
+
+#[test]
 fn threads_list_with_unread_replies() {
     let store = Store::open_in_memory().unwrap();
     let conn = store.conn();

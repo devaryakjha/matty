@@ -125,8 +125,10 @@ pub struct SidebarModel {
     pub selected: Option<SharedString>,
     /// Followed threads with replies the user has not read.
     pub unread_threads: usize,
-    /// Channels with an unsent draft.
+    /// Unsent drafts, channels' and threads', for the Drafts row's count.
     pub drafts: usize,
+    /// Channels whose composer holds a draft; their rows show a pencil.
+    pub drafted: std::collections::HashSet<SharedString>,
     pub categories: Vec<Category>,
 }
 
@@ -809,6 +811,20 @@ impl SidebarView {
                             .line_height(theme.text(11.)),
                     ),
             );
+        } else if self.model.drafted.contains(&row.id) && !selected {
+            // An unsent draft (#114), as Mattermost marks it.
+            item = item.trailing(
+                div()
+                    .flex()
+                    .items_center()
+                    .mr(theme.space(0.5))
+                    .group_hover(ROW_GROUP, |style| style.invisible())
+                    .child(
+                        lucide(LucideIcon::Pencil)
+                            .size(scaled(&theme, metrics::ICON_SMALL))
+                            .text_color(theme.colors.muted_foreground),
+                    ),
+            );
         } else if row.unread && !row.muted {
             item = item.trailing(
                 div()
@@ -1062,6 +1078,7 @@ mod tests {
             selected: None,
             unread_threads: 0,
             drafts: 0,
+            drafted: Default::default(),
             categories: vec![
                 Category::new(FAVORITES_ID, "Favorites", vec![]),
                 Category::new(
@@ -1142,6 +1159,7 @@ mod tests {
             selected: Some(selected.into()),
             unread_threads: 0,
             drafts: 0,
+            drafted: Default::default(),
             categories: vec![
                 Category::new(
                     "fav",

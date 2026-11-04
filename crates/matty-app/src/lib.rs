@@ -13,6 +13,7 @@ pub mod avatars;
 pub mod badge;
 pub mod channel;
 pub mod channel_settings;
+pub mod composer_draft;
 pub mod deeplink;
 pub mod directory;
 pub mod dnd;

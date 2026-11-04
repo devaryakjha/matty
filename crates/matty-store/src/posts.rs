@@ -506,6 +506,31 @@ pub fn draft(conn: &Connection, channel_id: &str, root_id: &str) -> Result<Optio
     Ok(draft)
 }
 
+/// Every stored draft, newest first: the sidebar marks their channels and
+/// the composers restore them after a relaunch.
+pub fn drafts(conn: &Connection) -> Result<Vec<Draft>> {
+    let drafts = conn
+        .prepare_cached(
+            "SELECT channel_id, root_id, message, file_ids, props, update_at FROM drafts
+             ORDER BY update_at DESC",
+        )?
+        .query_map([], |row| {
+            let file_ids: String = row.get(3)?;
+            let props: String = row.get(4)?;
+            Ok(Draft {
+                channel_id: row.get(0)?,
+                root_id: row.get(1)?,
+                message: row.get(2)?,
+                file_ids: from_json(&file_ids),
+                props: from_json(&props),
+                update_at: row.get(5)?,
+                ..Draft::default()
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(drafts)
+}
+
 /// Removes a draft (`draft_deleted`, or the message was sent).
 pub fn delete_draft(conn: &Connection, channel_id: &str, root_id: &str) -> Result<()> {
     conn.prepare_cached("DELETE FROM drafts WHERE channel_id = ?1 AND root_id = ?2")?
