@@ -669,8 +669,47 @@ pub(crate) fn format_shortcut(
     }
 }
 
+/// When `selection` in `value` is already wrapped in `before` and `after`,
+/// either just outside it or as its own ends: the wrapped range to replace
+/// with its inside, and the selection after, so the shortcut toggles the
+/// format off (#115). A one-character marker next to another of its kind
+/// is part of a longer one, such as `` ` `` in a code fence, and stays.
+fn unwrap_selection(
+    value: &str,
+    selection: std::ops::Range<usize>,
+    before: &str,
+    after: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let lone = |at: usize, marker: &str| {
+        marker.chars().count() > 1
+            || (!value[..at].ends_with(marker) && !value[at + marker.len()..].starts_with(marker))
+    };
+    // Markers just outside the selection: **|bold|**
+    if let (Some(start), Some(end)) = (
+        selection.start.checked_sub(before.len()),
+        selection.end.checked_add(after.len()),
+    ) && value.get(start..selection.start) == Some(before)
+        && value.get(selection.end..end) == Some(after)
+        && lone(start, before)
+        && lone(selection.end, after)
+    {
+        return Some((start..end, start..selection.end - before.len()));
+    }
+    // The selection takes the markers in: |**bold**|
+    let selected = value.get(selection.clone())?;
+    if selected.len() >= before.len() + after.len()
+        && selected.starts_with(before)
+        && selected.ends_with(after)
+    {
+        let inner = selected.len() - before.len() - after.len();
+        return Some((selection.clone(), selection.start..selection.start + inner));
+    }
+    None
+}
+
 /// Applies a formatting shortcut to `composer` and reports whether the key
-/// was one. A link leaves "url" selected so typing replaces it.
+/// was one. A link leaves "url" selected so typing replaces it; a selection
+/// already in that format loses it.
 pub(crate) fn apply_format(
     composer: &Entity<ComposerState>,
     keystroke: &gpui_kit::Keystroke,
@@ -685,6 +724,19 @@ pub(crate) fn apply_format(
     let composer = composer.clone();
     window.defer(cx, move |window, cx| {
         composer.update(cx, |composer, cx| {
+            let value = composer.value(cx);
+            if let Some((wrapped, selection)) =
+                unwrap_selection(&value, composer.selection(cx), before, after)
+            {
+                let inside =
+                    value[wrapped.start + before.len()..wrapped.end - after.len()].to_string();
+                composer.input().update(cx, |input, cx| {
+                    input.set_selected_range(wrapped, cx);
+                    input.replace(inside, window, cx);
+                    input.set_selected_range(selection, cx);
+                });
+                return;
+            }
             composer.wrap_selection(before, after, window, cx);
             if after == "](url)" {
                 let end = composer.selection(cx).end;
@@ -4823,6 +4875,33 @@ mod tests {
             ]
         );
         assert!(values("ada").is_empty());
+    }
+
+    #[test]
+    fn a_format_shortcut_on_formatted_text_takes_the_format_off() {
+        // Markers just outside the selection.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 4..8, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        // Markers inside it.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 2..10, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        assert_eq!(
+            unwrap_selection("a `x` b", 3..4, "`", "`"),
+            Some((2..5, 2..3))
+        );
+        // Not wrapped, or a lone marker that belongs to a longer one.
+        assert_eq!(unwrap_selection("a bold b", 2..6, "**", "**"), None);
+        assert_eq!(unwrap_selection("``x``", 2..3, "`", "`"), None);
+        // A second Cmd+B on an empty pair takes it back out.
+        assert_eq!(
+            unwrap_selection("****", 2..2, "**", "**"),
+            Some((0..4, 0..0))
+        );
+        assert_eq!(unwrap_selection("**", 0..2, "**", "**"), None);
     }
 
     #[test]
