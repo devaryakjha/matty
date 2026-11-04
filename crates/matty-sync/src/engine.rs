@@ -288,6 +288,12 @@ pub enum Command {
         /// The fields to change.
         patch: matty_api::ProfilePatch,
     },
+    /// Sets the user's profile picture from an image file's bytes and
+    /// name, or with `None` goes back to the generated one.
+    SetPicture {
+        /// The image's bytes and file name, or `None` to remove it.
+        picture: Option<(Vec<u8>, String)>,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -740,6 +746,10 @@ impl std::fmt::Debug for Command {
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
             Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
+            Self::SetPicture { picture } => f
+                .debug_struct("SetPicture")
+                .field("bytes", &picture.as_ref().map(|(bytes, _)| bytes.len()))
+                .finish(),
             Self::MoveCategory { .. } => f.write_str("MoveCategory"),
             Self::MoveChannel { .. } => f.write_str("MoveChannel"),
             Self::OpenDirect { user_ids } => f
@@ -1481,6 +1491,9 @@ impl Engine {
                 }
                 Message::Command(Command::UpdateProfile { patch }) => {
                     writes.push(Write::Profile(patch))
+                }
+                Message::Command(Command::SetPicture { picture }) => {
+                    writes.push(Write::Picture(picture))
                 }
                 Message::Command(Command::SetCollapsedThreads { on }) => {
                     if let Some(me) = &self.me {

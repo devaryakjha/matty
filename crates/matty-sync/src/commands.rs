@@ -53,6 +53,8 @@ pub(crate) enum Write {
     },
     NotifyProps(std::collections::HashMap<String, String>),
     Profile(matty_api::ProfilePatch),
+    /// A new profile picture, or `None` to remove it.
+    Picture(Option<(Vec<u8>, String)>),
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -171,6 +173,8 @@ impl Write {
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
             Self::Profile(_) => "save your profile",
+            Self::Picture(Some(_)) => "change your picture",
+            Self::Picture(None) => "remove your picture",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
@@ -218,7 +222,9 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) => user_id.to_owned(),
+            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) | Self::Picture(_) => {
+                user_id.to_owned()
+            }
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -427,6 +433,16 @@ pub(crate) async fn run(
             Write::Profile(patch) => {
                 let user = client.patch_profile(&user_id, &patch).await?;
                 Some(Loaded::Users(vec![user]))
+            }
+            Write::Picture(picture) => {
+                match picture {
+                    Some((bytes, file_name)) => {
+                        client.set_profile_image(&user_id, bytes, file_name).await?
+                    }
+                    None => client.reset_profile_image(&user_id).await?,
+                }
+                // The new `last_picture_update` refetches the picture.
+                Some(Loaded::Users(vec![client.me().await?]))
             }
             Write::OpenDirect { user_ids } => {
                 let channel = match user_ids.as_slice() {
