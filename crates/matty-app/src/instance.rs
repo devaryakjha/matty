@@ -107,7 +107,10 @@ mod imp {
     }
 
     fn read_link(stream: UnixStream) -> Option<String> {
-        stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        // macOS refuses socket options (EINVAL) once the other launch has
+        // already sent its link and closed, which is the usual case; the
+        // link is still there to read, so carry on without the timeout.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut link = String::new();
         stream.take(MAX_LINK).read_to_string(&mut link).ok()?;
         Some(link.trim().to_owned())
