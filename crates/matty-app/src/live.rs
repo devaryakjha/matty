@@ -147,6 +147,9 @@ pub struct Update {
     pub own_presence: Option<(Presence, Option<i64>)>,
     /// The open thread, for the right pane.
     pub thread: Option<crate::right_pane::ThreadModel>,
+    /// A link's preview for the composer, or `None` when it has none
+    /// (#188).
+    pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
     /// Whether the user may choose collapsed reply threads, and whether
@@ -1133,6 +1136,14 @@ impl Live {
                         update.typing = Some(self.typing_names());
                     }
                 }
+            }
+            ChangeSet::LinkPreview { url, graph } => {
+                update.link_preview = Some((
+                    url.clone(),
+                    graph
+                        .as_deref()
+                        .map(|graph| crate::embeds::link_card(url, graph)),
+                ));
             }
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);

@@ -102,6 +102,11 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// A link's Open Graph data, or `None` when it has none.
+    LinkPreview {
+        url: String,
+        graph: Option<matty_api::models::OpenGraph>,
+    },
     /// An outside image, or `None` when the URL gave none.
     RemoteImage {
         url: String,

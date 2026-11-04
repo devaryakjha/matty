@@ -141,6 +141,14 @@ pub enum ChangeSet {
         /// Its MIME type, such as `image/jpeg`.
         content_type: String,
     },
+    /// A link's Open Graph data, or `None` when it has none: the answer to
+    /// [`Command::LoadLinkPreview`](crate::Command::LoadLinkPreview).
+    LinkPreview {
+        /// The URL asked for.
+        url: String,
+        /// What the server read from it.
+        graph: Option<Arc<matty_api::models::OpenGraph>>,
+    },
     /// An outside image: the answer to
     /// [`Command::LoadRemoteImage`](crate::Command::LoadRemoteImage).
     RemoteImage {

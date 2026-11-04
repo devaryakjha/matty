@@ -273,6 +273,13 @@ pub struct PostPatch {
 }
 
 impl Client {
+    /// `POST opengraph`: the server's Open Graph read of `url`, for a link
+    /// preview while composing (#188). The server caches it.
+    pub async fn opengraph(&self, url: &str) -> Result<crate::models::OpenGraph, ApiError> {
+        self.post("opengraph", &serde_json::json!({ "url": url }))
+            .await
+    }
+
     /// `GET users/{user_id}/channels/{channel_id}/posts/unread`: the posts
     /// around the user's first unread one, for opening a channel there.
     pub async fn posts_around_unread(
