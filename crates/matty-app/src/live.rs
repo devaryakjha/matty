@@ -123,6 +123,9 @@ pub struct Update {
     /// Messages waiting to send across every channel, failed ones left
     /// out, for the connection banner (#195).
     pub queued: Option<usize>,
+    /// The user's own presence from the server, with when Do not disturb
+    /// ends if the server said (#190).
+    pub own_presence: Option<(Presence, Option<i64>)>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
     /// The shown team's public channels, for Browse channels.
@@ -679,6 +682,10 @@ impl Live {
                 for status in statuses.iter() {
                     self.presence
                         .insert(status.user_id.clone(), presence(&status.status));
+                    if status.user_id == self.me.0 {
+                        let end = (status.dnd_end_time > 0).then_some(status.dnd_end_time);
+                        update.own_presence = Some((presence(&status.status), end));
+                    }
                 }
                 update.categories = self.shown_categories();
                 if self.shown.is_some() {
@@ -1242,6 +1249,36 @@ mod tests {
                 presence: Presence::Dnd
             }
         );
+    }
+
+    #[test]
+    fn the_users_own_status_reaches_the_account_menu() {
+        let mut live = live();
+        let me = live.me.0.clone();
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: me.clone(),
+            status: "dnd".into(),
+            dnd_end_time: 1_800_000_000,
+            ..Status::default()
+        }])));
+        assert_eq!(
+            update.own_presence,
+            Some((Presence::Dnd, Some(1_800_000_000)))
+        );
+        // A status_change event carries no end time.
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: me,
+            status: "online".into(),
+            ..Status::default()
+        }])));
+        assert_eq!(update.own_presence, Some((Presence::Online, None)));
+        // Someone else's status leaves the menu alone.
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: "someone".into(),
+            status: "away".into(),
+            ..Status::default()
+        }])));
+        assert_eq!(update.own_presence, None);
     }
 
     #[test]

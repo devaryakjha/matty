@@ -696,6 +696,7 @@ pub fn account() -> Account {
         username: "arya".into(),
         presence: Presence::Online,
         status_text: None,
+        dnd_end: None,
     }
 }
 

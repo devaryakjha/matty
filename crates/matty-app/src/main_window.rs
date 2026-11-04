@@ -262,11 +262,11 @@ impl MainWindow {
             window,
             |this, _, event: &AccountEvent, window, cx| match event {
                 // The menu already shows the change.
-                AccountEvent::SetPresence(presence) => {
+                AccountEvent::SetPresence(presence, dnd_end) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::SetStatus {
                             status: crate::live::status(*presence).into(),
-                            dnd_end_time: None,
+                            dnd_end_time: *dnd_end,
                         });
                     }
                 }
@@ -740,6 +740,7 @@ impl MainWindow {
                         crate::sidebar::Presence::Online
                     },
                     status_text: None,
+                    dnd_end: None,
                 },
                 cx,
             )
@@ -1090,6 +1091,11 @@ impl MainWindow {
         if let Some(queued) = update.queued {
             self.queued = queued;
             cx.notify();
+        }
+        if let Some((presence, dnd_end)) = update.own_presence {
+            self.account.update(cx, |view, cx| {
+                view.set_server_presence(presence, dnd_end, cx)
+            });
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
