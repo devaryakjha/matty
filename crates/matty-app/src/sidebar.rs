@@ -174,8 +174,10 @@ pub struct SidebarModel {
     pub selected: Option<SharedString>,
     /// Followed threads with replies the user has not read.
     pub unread_threads: usize,
-    /// Channels with an unsent draft.
+    /// Unsent drafts, channels' and threads', for the Drafts row's count.
     pub drafts: usize,
+    /// Channels whose composer holds a draft; their rows show a pencil.
+    pub drafted: std::collections::HashSet<SharedString>,
     pub categories: Vec<Category>,
 }
 
@@ -841,6 +843,20 @@ impl SidebarView {
             )
     }
 
+    /// The pencil a row with a draft shows in its icon's slot.
+    fn draft_icon(theme: &UiTheme) -> impl IntoElement + use<> {
+        div()
+            .size(scaled(theme, metrics::ROW_SLOT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                lucide(LucideIcon::Pencil)
+                    .size(scaled(theme, metrics::ICON))
+                    .text_color(theme.colors.muted_foreground),
+            )
+    }
+
     /// The icon slot: `#` and lock for channels, an avatar with a presence
     /// dot for people, a member count for group messages.
     fn row_icon(
@@ -928,7 +944,13 @@ impl SidebarView {
         let mut item = SidebarItem::new(element_id("sidebar.channel", &row.id), row.name.clone())
             .size(SidebarItemSize::Small)
             .selected(selected)
-            .icon(Self::row_icon(row, &theme, &palette, cx))
+            .icon(if self.model.drafted.contains(&row.id) && !selected {
+                // An unsent draft takes the icon's place, as in Mattermost
+                // (#114).
+                Self::draft_icon(&theme).into_any_element()
+            } else {
+                Self::row_icon(row, &theme, &palette, cx).into_any_element()
+            })
             .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
             .on_activate(cx.listener(move |this, _, _, cx| {
                 this.model.selected = Some(id.clone());
@@ -1216,6 +1238,7 @@ mod tests {
             selected: None,
             unread_threads: 0,
             drafts: 0,
+            drafted: Default::default(),
             categories: vec![
                 Category::new(FAVORITES_ID, "Favorites", vec![]),
                 Category::new(
@@ -1296,6 +1319,7 @@ mod tests {
             selected: Some(selected.into()),
             unread_threads: 0,
             drafts: 0,
+            drafted: Default::default(),
             categories: vec![
                 Category::new(
                     "fav",

@@ -1055,11 +1055,13 @@ impl Engine {
                     });
                     // Tell the app what is still waiting from an earlier run.
                     dirty.outbox.extend(queue::channels(&tx)?);
+                    publish_drafts(&tx, dirty)?;
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
+                    publish_drafts(&tx, dirty)?;
                 }
                 Message::Command(Command::SignOut) => {
                     // Nothing queued in this session may go out under the
@@ -2524,6 +2526,21 @@ impl Engine {
             Loaded::Statuses(statuses) => {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
+            Loaded::Drafts(drafts) => {
+                // The newer copy wins, so a draft typed here while the load
+                // ran stays.
+                let tx = self.store.conn_mut().transaction()?;
+                for draft in drafts.into_iter().filter(|draft| draft.delete_at == 0) {
+                    posts::upsert_draft(&tx, &draft)?;
+                    let stored = posts::draft(&tx, &draft.channel_id, &draft.root_id)?;
+                    dirty.direct.push(ChangeSet::Draft {
+                        channel_id: draft.channel_id,
+                        root_id: draft.root_id,
+                        draft: stored.map(Arc::new),
+                    });
+                }
+                tx.commit()?;
+            }
             Loaded::StatusesDue => self.fetch_statuses(),
             Loaded::Done => {
                 // The server answered the whole load, so what waits from an
@@ -3663,4 +3680,17 @@ fn reply_roots(
 /// send in flight.
 fn in_flight(sending: &std::collections::HashMap<String, String>, pending_post_id: &str) -> bool {
     sending.values().any(|id| id == pending_post_id)
+}
+
+/// Every stored draft as a [`ChangeSet::Draft`], so a subscriber restores
+/// the composers and marks the sidebar before the server answers.
+fn publish_drafts(conn: &Db, dirty: &mut Dirty) -> Result<(), StoreError> {
+    for draft in posts::drafts(conn)? {
+        dirty.direct.push(ChangeSet::Draft {
+            channel_id: draft.channel_id.clone(),
+            root_id: draft.root_id.clone(),
+            draft: Some(Arc::new(draft)),
+        });
+    }
+    Ok(())
 }

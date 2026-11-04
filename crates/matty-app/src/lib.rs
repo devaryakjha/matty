@@ -14,6 +14,7 @@ pub mod badge;
 pub mod categories;
 pub mod channel;
 pub mod channel_settings;
+pub mod composer_draft;
 pub mod contrast;
 pub mod deeplink;
 pub mod directory;
