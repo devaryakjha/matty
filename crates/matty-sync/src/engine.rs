@@ -175,6 +175,9 @@ pub enum Command {
         message: String,
         /// Uploaded file ids.
         file_ids: Vec<String>,
+        /// Files attached while offline, by local path: kept in the outbox
+        /// and uploaded before the post goes (#194).
+        local_files: Vec<std::path::PathBuf>,
         /// Post properties, such as `remove_link_preview` when the user
         /// removed the link preview while composing (#188).
         props: std::collections::HashMap<String, serde_json::Value>,
@@ -1306,6 +1309,7 @@ impl Engine {
                     root_id,
                     message,
                     file_ids,
+                    local_files,
                     props,
                 }) => {
                     let Some(me) = self.me.clone() else {
@@ -1324,6 +1328,10 @@ impl Engine {
                         root_id,
                         message,
                         file_ids,
+                        local_files: local_files
+                            .iter()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect(),
                         props,
                         created_at: now,
                         ..Outgoing::default()
@@ -3124,6 +3132,13 @@ impl Engine {
                 tx.commit()?;
                 self.sent(&pending_post_id);
                 self.drain(&post.channel_id, dirty)?;
+            }
+            Loaded::FileUp {
+                pending_post_id,
+                path,
+                file_id,
+            } => {
+                queue::file_up(self.store.conn(), &pending_post_id, &path, &file_id)?;
             }
             Loaded::SendFailed {
                 pending_post_id,

@@ -21,6 +21,7 @@ fn send() -> Command {
         root_id: String::new(),
         message: "hello".into(),
         file_ids: Vec::new(),
+        local_files: Vec::new(),
         props: Default::default(),
     }
 }
@@ -288,6 +289,7 @@ fn post_in(channel: &str, id: &str, message: &str) -> Command {
         root_id: String::new(),
         message: message.into(),
         file_ids: Vec::new(),
+        local_files: Vec::new(),
         props: Default::default(),
     }
 }
@@ -367,6 +369,7 @@ async fn sends_in_a_channel_go_one_at_a_time_in_order() {
         root_id: String::new(),
         message: "second".into(),
         file_ids: Vec::new(),
+        local_files: Vec::new(),
         props: Default::default(),
     });
     // While the first is on its way, the second waits.
@@ -418,6 +421,7 @@ async fn a_posts_properties_reach_the_server() {
         root_id: String::new(),
         message: "see https://github.com/devaryakjha/matty".into(),
         file_ids: Vec::new(),
+        local_files: Vec::new(),
         props: [("remove_link_preview".to_owned(), "true".into())].into(),
     });
     next(
@@ -484,4 +488,72 @@ async fn sign_out_clears_the_outbox() {
             .unwrap()
             .is_none()
     );
+}
+
+/// A file attached while offline waits in the outbox by its path; once
+/// the post goes, the file uploads first and the post carries its id
+/// (#194). One no longer on disk fails the send for the user to see.
+#[tokio::test(flavor = "multi_thread")]
+async fn files_attached_offline_upload_before_their_post() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/files"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "file_infos": [{"id": "f9", "name": "notes.txt", "size": 5}],
+            "client_ids": ["x"]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(created())
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    let (sync, changes) = connected(&server).await;
+
+    sync.send(send_with("me:1", vec![file]));
+    next(
+        &changes,
+        |c| matches!(c, ChangeSet::Outbox { sends, .. } if sends.is_empty()),
+    )
+    .await;
+    let requests = server.received_requests().await.unwrap();
+    let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+    let files_at = paths.iter().position(|p| *p == "/api/v4/files").unwrap();
+    let post_at = paths.iter().position(|p| *p == "/api/v4/posts").unwrap();
+    assert!(files_at < post_at, "{paths:?}");
+    let body: serde_json::Value = serde_json::from_slice(&requests[post_at].body).unwrap();
+    assert_eq!(body["file_ids"], json!(["f9"]));
+
+    sync.send(send_with("me:2", vec![dir.path().join("gone.txt")]));
+    let failed = next(&changes, |c| {
+        matches!(c, ChangeSet::Outbox { sends, .. } if sends.first().is_some_and(|s| s.last_error.is_some()))
+    })
+    .await;
+    let ChangeSet::Outbox { sends, .. } = failed else {
+        unreachable!()
+    };
+    assert!(
+        sends[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("gone.txt")),
+        "{sends:?}"
+    );
+    assert_eq!(post_requests(&server).await, 1);
+}
+
+fn send_with(id: &str, local_files: Vec<std::path::PathBuf>) -> Command {
+    Command::SendPost {
+        pending_post_id: id.into(),
+        channel_id: "c1".into(),
+        root_id: String::new(),
+        message: "with a file".into(),
+        file_ids: Vec::new(),
+        local_files,
+        props: Default::default(),
+    }
 }

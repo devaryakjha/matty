@@ -40,6 +40,9 @@ pub struct Upload {
     pub size: u64,
     pub source: UploadSource,
     pub status: AttachmentStatus,
+    /// Added while offline: it waits on this computer and uploads when
+    /// the connection is back, or with its post from the outbox (#194).
+    pub queued: bool,
 }
 
 impl Upload {
@@ -57,6 +60,7 @@ impl Upload {
             size,
             source: UploadSource::Path(path),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 
@@ -69,6 +73,7 @@ impl Upload {
             size,
             source: UploadSource::Image(image),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 
@@ -85,14 +90,27 @@ impl Upload {
         self
     }
 
+    /// Marks it queued while offline, for fixtures.
+    pub fn queued(mut self) -> Self {
+        self.status = AttachmentStatus::Ready;
+        self.queued = true;
+        self
+    }
+
     /// The image to show as a thumbnail, when the file is one.
     pub fn image(&self) -> Option<ImageSource> {
         thumbnail(&self.name, &self.source)
     }
 
-    /// The chip's second line: "PDF · 2.4 MB".
+    /// The chip's second line: "PDF · 2.4 MB", or "Queued · 2.4 MB" while
+    /// it waits for the connection.
     pub fn meta(&self) -> SharedString {
-        format!("{} · {}", kind(&self.name), format_size(self.size)).into()
+        let kind = if self.queued {
+            "Queued".to_owned()
+        } else {
+            kind(&self.name)
+        };
+        format!("{kind} · {}", format_size(self.size)).into()
     }
 
     /// The file-type icon for a card.
@@ -100,7 +118,8 @@ impl Upload {
         icon_for(&self.name)
     }
 
-    /// Whether the file is on the server and the post can go.
+    /// Whether the post can go: the file is on the server, or queued to
+    /// upload with it.
     pub fn is_ready(&self) -> bool {
         self.status == AttachmentStatus::Ready
     }
@@ -226,6 +245,7 @@ impl UploadTray {
                 let mut upload = file.clone();
                 upload.id = format!("{}-{}", self.prefix, self.seq).into();
                 upload.status = AttachmentStatus::Uploading(0.);
+                upload.queued = false;
                 self.uploads.push(upload.clone());
                 accepted.push(upload);
             }
@@ -269,7 +289,25 @@ impl UploadTray {
             return false;
         };
         upload.status = status;
+        upload.queued = false;
         self.settle()
+    }
+
+    /// Sync is offline: the file waits here and goes with the post through
+    /// the outbox, or uploads when the connection is back (#194). True
+    /// when a waiting send is now due.
+    pub fn set_queued(&mut self, id: &str) -> bool {
+        let Some(upload) = self.uploads.iter_mut().find(|upload| upload.id == id) else {
+            return false;
+        };
+        upload.status = AttachmentStatus::Ready;
+        upload.queued = true;
+        self.settle()
+    }
+
+    /// Whether any file waits for the connection.
+    pub fn has_queued(&self) -> bool {
+        self.uploads.iter().any(|upload| upload.queued)
     }
 
     /// Takes a file out of the tray. True when a waiting send is now due.
@@ -344,6 +382,29 @@ impl UploadTray {
             return true;
         }
         false
+    }
+}
+
+/// Where a file added while offline is read from when it uploads later
+/// (#194): a picked or dropped file stays where it is, and a pasted image
+/// is written to a folder of its own under the system's temporary folder,
+/// keeping its name.
+pub fn keep_for_outbox(id: &str, name: &str, source: &UploadSource) -> std::io::Result<PathBuf> {
+    match source {
+        UploadSource::Path(path) => Ok(path.clone()),
+        UploadSource::Image(image) => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default();
+            let dir = std::env::temp_dir()
+                .join("matty-outbox")
+                .join(format!("{id}-{stamp}"));
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(name);
+            std::fs::write(&path, &image.bytes)?;
+            Ok(path)
+        }
     }
 }
 
@@ -592,6 +653,16 @@ pub fn upload_tray(
             theme.colors.muted_foreground,
         )
     });
+    let offline = tray.has_queued().then(|| {
+        line(
+            lucide(LucideIcon::CloudOff)
+                .size(scaled(&theme, 14.))
+                .text_color(theme.colors.muted_foreground)
+                .into_any_element(),
+            "Queued: files upload when you're back online. You can send now.".into(),
+            theme.colors.muted_foreground,
+        )
+    });
     if chips.is_empty() && notice.is_none() {
         return None;
     }
@@ -609,6 +680,7 @@ pub fn upload_tray(
                 )
             }))
             .children(notice)
+            .children(offline)
             .children(waiting),
     )
 }
@@ -747,6 +819,22 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #194: a file queued offline counts as ready, so Send goes now and
+    /// a waiting send is due; once it uploads it is no longer queued.
+    #[test]
+    fn a_file_queued_offline_lets_the_post_go() {
+        let mut tray = UploadTray::new("t");
+        let added = tray.admit(vec![file("plan.pdf", 2_516_582)]);
+        assert_eq!(tray.request_send(false), SendGate::Wait);
+        assert!(tray.set_queued(&added[0].id));
+        assert!(tray.has_queued());
+        assert_eq!(tray.uploads()[0].meta().as_ref(), "Queued · 2.4 MB");
+        assert_eq!(tray.gate(false), SendGate::Now);
+        tray.set_status(&added[0].id, AttachmentStatus::Uploading(0.));
+        assert!(!tray.has_queued());
+        assert_eq!(tray.gate(false), SendGate::Wait);
+    }
 
     type Seen = std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>;
 
@@ -962,6 +1050,7 @@ mod tests {
             size,
             source: UploadSource::Path(name.into()),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 

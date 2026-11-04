@@ -2051,6 +2051,14 @@ impl ChannelView {
         cx.notify();
     }
 
+    /// Sync is offline: the file waits in the tray, queued (#194).
+    pub fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tray.set_queued(id) {
+            self.send_queued(window, cx);
+        }
+        cx.notify();
+    }
+
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
         self.schedule_draft_save(cx);
@@ -3578,16 +3586,13 @@ impl ChannelView {
         };
         // The author's presence on the avatar (#135).
         let theme = UiTheme::read(cx);
-        let avatar = div()
-            .relative()
-            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
-            .child(crate::style::presence_dot(
+        let avatar = avatar
+            .aria_label(post.author.clone())
+            .status(crate::style::avatar_status(
                 profile.presence,
-                scaled(theme, 10.),
-                theme.colors.background,
-                theme,
                 &crate::style::Palette::read(cx),
-            ));
+            ))
+            .ring_color(theme.colors.background);
         let view = cx.entity().downgrade();
         let card_id = id.clone();
         let label = crate::style::presence_name(&post.author, profile.presence);

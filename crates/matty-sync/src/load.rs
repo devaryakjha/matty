@@ -194,6 +194,13 @@ pub(crate) enum Loaded {
         pending_post_id: String,
         post: Box<matty_api::models::Post>,
     },
+    /// One of a queued post's offline files is on the server (#194).
+    FileUp {
+        pending_post_id: String,
+        /// The local path it was read from.
+        path: String,
+        file_id: String,
+    },
     /// A queued post could not be sent.
     SendFailed {
         pending_post_id: String,

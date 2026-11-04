@@ -1,7 +1,7 @@
 //! Reconnects as soon as the network changes (#165): a new address on a
 //! network interface, as when Wi-Fi comes back or the Mac joins another
 //! network, asks the socket to reconnect now instead of waiting out its
-//! backoff. Waking from sleep is caught by the socket itself.
+//! backoff. Waking from sleep is [`crate::wake`]'s.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -10,7 +10,6 @@ use futures_util::{Stream, StreamExt as _};
 use if_watch::IfEvent;
 use tokio::sync::mpsc::WeakUnboundedSender;
 
-use crate::Command;
 use crate::engine::Message;
 
 /// Addresses listed while the watcher starts are the network as it is,
@@ -30,7 +29,7 @@ pub(crate) async fn watch(messages: WeakUnboundedSender<Message>) {
     }
 }
 
-/// Sends [`Command::Reconnect`] after each burst of new addresses.
+/// Sends [`crate::Command::Reconnect`] after each burst of new addresses.
 pub(crate) async fn reconnect_on_change<S>(events: S, messages: WeakUnboundedSender<Message>)
 where
     S: Stream<Item = std::io::Result<IfEvent>> + Unpin,
@@ -44,11 +43,7 @@ where
                 Ok(event) => event,
                 Err(_) => {
                     pending = false;
-                    tracing::info!("the network changed; reconnecting");
-                    let sent = messages
-                        .upgrade()
-                        .is_some_and(|m| m.send(Message::Command(Command::Reconnect)).is_ok());
-                    if !sent {
+                    if !crate::wake::reconnect(&messages, "the network changed") {
                         return;
                     }
                     continue;
@@ -84,6 +79,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::Command;
     use tokio::sync::mpsc;
 
     fn up(addr: &str) -> std::io::Result<IfEvent> {

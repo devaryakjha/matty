@@ -559,13 +559,14 @@ impl MainWindow {
                     unfurl,
                 } => {
                     if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
-                        let file_ids = live.take_file_ids(files);
+                        let (file_ids, local_files) = live.take_files(files);
                         live.send(matty_sync::Command::SendPost {
                             pending_post_id: String::new(),
                             channel_id: channel.to_string(),
                             root_id: String::new(),
                             message: text.to_string(),
                             file_ids,
+                            local_files,
                             props: crate::embeds::send_props(*unfurl),
                         });
                     }
@@ -1144,6 +1145,22 @@ impl MainWindow {
             return;
         };
         live.track_upload(&id, job.clone());
+        if live.is_offline() {
+            // Offline: the file waits here and goes with its post through
+            // the outbox, or uploads when the connection is back (#194).
+            match crate::attachments::keep_for_outbox(&id, &job.name, &job.source) {
+                Ok(path) => {
+                    live.queue_upload(&id, path);
+                    self.set_upload_queued(&id, window, cx);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not keep a file to upload later");
+                    let failed = crate::attachments::AttachmentStatus::Failed;
+                    self.set_upload_status(&id, failed, window, cx);
+                }
+            }
+            return;
+        }
         cx.spawn_in(window, async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move {
@@ -1198,6 +1215,17 @@ impl MainWindow {
             self.channel.update(cx, |view, cx| {
                 view.set_upload_status(id, status, window, cx)
             });
+        }
+    }
+
+    /// Tells the tray a file waits for the connection (#194).
+    fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id.starts_with(crate::right_pane::UPLOAD_PREFIX) {
+            self.right_pane
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
+        } else {
+            self.channel
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
         }
     }
 
@@ -1339,6 +1367,7 @@ impl MainWindow {
             root_id: String::new(),
             message: link,
             file_ids: Vec::new(),
+            local_files: Vec::new(),
             props: crate::embeds::send_props(true),
         });
         let name = self.channel_name(to, cx);
@@ -1720,6 +1749,13 @@ impl MainWindow {
         }
         if let Some((id, status)) = update.upload {
             self.set_upload_status(&id, status, window, cx);
+        }
+        for id in update.resume_uploads {
+            if let Some(job) = self.live.as_ref().and_then(|live| live.upload_job(&id)) {
+                let sending = crate::attachments::AttachmentStatus::Uploading(0.);
+                self.set_upload_status(&id, sending, window, cx);
+                self.start_upload(id, job, window, cx);
+            }
         }
         if let Some(bytes) = update.max_file_size {
             self.channel
@@ -2696,13 +2732,14 @@ impl MainWindow {
                 if let Some(live) = &mut self.live
                     && let Some(channel_id) = live.thread_channel()
                 {
-                    let file_ids = live.take_file_ids(files);
+                    let (file_ids, local_files) = live.take_files(files);
                     live.send(matty_sync::Command::SendPost {
                         pending_post_id: String::new(),
                         channel_id,
                         root_id: root.to_string(),
                         message: text.to_string(),
                         file_ids,
+                        local_files,
                         props: crate::embeds::send_props(*unfurl),
                     });
                 }
