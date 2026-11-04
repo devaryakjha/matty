@@ -51,6 +51,8 @@ pub(crate) enum Loaded {
     Left { channel_id: String },
     /// The account itself could not load.
     Failed(String),
+    /// The server refused the session token.
+    Expired,
     /// Custom emoji.
     Emoji(Vec<Emoji>),
     /// Statuses for the people in direct messages.
@@ -222,6 +224,10 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
     );
     let (me, capabilities, preferences, teams) = match account {
         Ok(account) => account,
+        Err(matty_api::ApiError::Server { status: 401, .. }) => {
+            let _ = results.send(Loaded::Expired);
+            return;
+        }
         Err(error) => {
             let _ = results.send(Loaded::Failed(error.to_string()));
             return;

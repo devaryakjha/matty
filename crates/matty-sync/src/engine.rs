@@ -1669,6 +1669,12 @@ impl Engine {
                         error,
                     }));
             }
+            Loaded::Expired => {
+                tracing::warn!("the server refused the session token");
+                dirty
+                    .direct
+                    .push(ChangeSet::Connection(Connection::Expired));
+            }
             Loaded::Failed(error) => {
                 tracing::warn!(%error, "the account did not load");
                 dirty

@@ -22,6 +22,7 @@ pub mod preview;
 pub mod profile;
 pub mod rail;
 pub mod right_pane;
+pub mod secrets;
 pub mod settings;
 pub mod sidebar;
 pub mod style;
