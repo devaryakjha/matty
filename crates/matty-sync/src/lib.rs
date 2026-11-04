@@ -18,6 +18,7 @@ mod engine;
 mod events;
 pub mod io;
 mod load;
+mod netwatch;
 mod outbox;
 mod presence;
 mod typing;
