@@ -174,6 +174,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   place, and Send is disabled while empty. Follow/Following is a small
   outline or secondary button on the replies rule, never a toggle switch;
   it flips at once.
+- **System messages** (joins, leaves, header and purpose changes) are one
+  `ui` line in `muted-foreground` in the body column, worded like the web
+  app, with no avatar, author, actions or reactions; the time shows in the
+  gutter on hover, like a continuation. Joins and leaves in a row on one
+  day combine: "Ada, Sam and 3 others joined the channel. Ola left the
+  channel." A system row always ends a run of grouped posts. A post type
+  Matty cannot draw yet (a plugin's `custom_*`) keeps its author header
+  and shows an embed card, "This message type isn't supported yet.", with
+  an outline Open in browser button that opens its permalink.
 - **Reply footer** (Collapsed Reply Threads, PLAN §4.4): a post with a
   thread shows one line under its body: up to three small overlapping
   avatars of who replied, "3 replies" in `primary` and `ui_strong`, a
