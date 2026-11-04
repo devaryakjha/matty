@@ -1004,9 +1004,9 @@ impl RightPaneView {
         });
     }
 
-    /// The right-click menu of a thread row: copy, a reaction submenu,
-    /// Retry on a reply that failed, and the channel's Edit and Discard…
-    /// on one waiting to send (#195).
+    /// The right-click menu of a thread row: a reaction submenu and copy;
+    /// on a reply the server does not have yet, copy, Retry if it failed,
+    /// and the channel's Edit and Discard… while it waits to send (#195).
     fn thread_items_for(
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
@@ -1028,9 +1028,16 @@ impl RightPaneView {
             })
         });
         let markdown_body = post.body.clone();
-        let mut items = vec![
-            MenuItem::submenu("thread.context.react", "Add reaction", reactions),
-            MenuItem::separator(),
+        // The server does not have an unsent reply yet: nothing to react to.
+        let mut items = if post.status == PostStatus::Sent {
+            vec![
+                MenuItem::submenu("thread.context.react", "Add reaction", reactions),
+                MenuItem::separator(),
+            ]
+        } else {
+            Vec::new()
+        };
+        items.extend([
             MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
@@ -1041,7 +1048,7 @@ impl RightPaneView {
                     ))
                 },
             ),
-        ];
+        ]);
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
