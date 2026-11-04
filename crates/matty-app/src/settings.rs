@@ -545,6 +545,10 @@ pub struct SettingsStore {
     /// The pending write. Replacing it cancels the previous one, so a window
     /// drag produces one write when it settles, not one per frame.
     save: Option<Task<()>>,
+    /// In the preview, the pop-outs and splits as the file had them. The
+    /// preview's own, under no server, last for the run: every write puts
+    /// these back in their place.
+    kept_places: Option<(Vec<PopOutPlace>, Vec<SplitPlace>)>,
 }
 
 /// How long settings must stay unchanged before they are written.
@@ -559,13 +563,26 @@ impl SettingsStore {
     /// Loads settings from `path` (or keeps them in memory only when `None`)
     /// and installs the store as a global.
     pub fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<Self> {
-        let settings = path
+        Self::init_for(path, crate::preview::enabled(), cx)
+    }
+
+    /// [`init`](Self::init), saying whether this is the preview: it opens
+    /// with no saved pop-outs or splits and writes none.
+    fn init_for(path: Option<PathBuf>, preview: bool, cx: &mut App) -> Entity<Self> {
+        let mut settings = path
             .as_deref()
             .map_or_else(Settings::default, |path| load(path).0);
+        let kept_places = preview.then(|| {
+            (
+                std::mem::take(&mut settings.popouts),
+                std::mem::take(&mut settings.splits),
+            )
+        });
         let store = cx.new(|_| Self {
             settings,
             path,
             save: None,
+            kept_places,
         });
         cx.set_global(GlobalSettings(store.clone()));
         store
@@ -598,7 +615,11 @@ impl SettingsStore {
         cx.emit(SettingsChanged);
         cx.notify();
         if let Some(path) = self.path.clone() {
-            let settings = self.settings.clone();
+            let mut settings = self.settings.clone();
+            if let Some((popouts, splits)) = &self.kept_places {
+                settings.popouts = popouts.clone();
+                settings.splits = splits.clone();
+            }
             self.save = Some(cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(SAVE_DELAY).await;
                 // localStorage lives on the page, not in a worker.
@@ -672,6 +693,50 @@ mod tests {
         assert_eq!(splits[1].ratio, 0.5, "a split without a ratio halves");
         let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
         assert!(old.splits.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_keeps_its_splits_and_pop_outs_out_of_the_file(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"splits": [{"server": "https://a", "channel_id": "c", "ratio": 0.3}],
+                "popouts": [{"server": "https://a", "channel_id": "p",
+                  "bounds": {"x": 1.0, "y": 2.0, "width": 300.0, "height": 400.0}}]}"#,
+        )
+        .unwrap();
+        let store = cx.update(|cx| SettingsStore::init_for(Some(path.clone()), true, cx));
+        // The preview opens with neither: they are the user's servers'.
+        cx.read(|cx| {
+            let settings = store.read(cx).get();
+            assert!(settings.splits.is_empty() && settings.popouts.is_empty());
+        });
+        // Its own split, under no server, and another change it does save.
+        store.update(cx, |store, cx| {
+            store.update(cx, |settings| {
+                settings.zoom = 1.25;
+                settings.splits.push(SplitPlace {
+                    server: String::new(),
+                    channel_id: "town-square".into(),
+                    ratio: 0.5,
+                });
+            })
+        });
+        cx.executor().advance_clock(SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let written = load(&path).0;
+        assert_eq!(written.zoom, 1.25);
+        let splits: Vec<_> = written.splits.iter().map(|s| s.server.as_str()).collect();
+        assert_eq!(
+            splits,
+            ["https://a"],
+            "the file keeps the user's split only"
+        );
+        assert_eq!(written.popouts.len(), 1);
+        assert_eq!(written.popouts[0].channel_id, "p");
     }
 
     #[test]

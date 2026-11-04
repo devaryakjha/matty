@@ -207,7 +207,8 @@ impl MainWindow {
     fn mount_split(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let fork = self.live.as_ref().map(Live::fork);
         let server = self.split_server();
-        let pane = cx.new(|cx| PopOutView::in_split(id, server, fork, window, cx));
+        let toasts = self.toasts.clone();
+        let pane = cx.new(|cx| PopOutView::in_split(id, server, fork, toasts, window, cx));
         pane.update(cx, |pane, cx| pane.set_split_controls(true, cx));
         self.channel
             .update(cx, |channel, cx| channel.set_split_controls(true, cx));
@@ -242,6 +243,65 @@ impl MainWindow {
                 .update(cx, |channel, cx| channel.focus_composer(window, cx));
         }
         cx.notify();
+    }
+
+    /// The channel `id` was left or archived: the second pane, if it shows
+    /// it, closes and the split is forgotten.
+    pub(super) fn close_split_showing(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .split
+            .pane
+            .as_ref()
+            .is_some_and(|pane| *pane.read(cx).channel_id() == id)
+        {
+            self.close_split(true, window, cx);
+        }
+    }
+
+    /// A clicked notification about the second pane's channel focuses
+    /// that pane, at the post or with a reply's thread open, rather than
+    /// opening the channel in the main pane too. `false` when the second
+    /// pane does not show it.
+    pub(super) fn show_notified_in_split(
+        &mut self,
+        clicked: &matty_notify::Clicked,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let server = self.split_server();
+        let Some(pane) = self.split.pane.clone().filter(|pane| {
+            let pane = pane.read(cx);
+            *pane.channel_id() == clicked.channel_id.as_str() && pane.server() == server
+        }) else {
+            return false;
+        };
+        let id = pane.read(cx).channel_id().clone();
+        // Over Threads or Drafts the split is hidden; this brings it back.
+        self.open_in_split(id.clone(), window, cx);
+        self.notifier.withdraw(&id);
+        if !clicked.root_id.is_empty() {
+            // As in the main pane: the channel goes to the root and the
+            // thread opens at the reply.
+            let root: SharedString = clicked.root_id.clone().into();
+            let post: SharedString = if clicked.post_id.is_empty() {
+                root.clone()
+            } else {
+                clicked.post_id.clone().into()
+            };
+            pane.update(cx, |pane, cx| pane.jump_to(root.clone(), cx));
+            self.open_split_thread(&pane, root.clone(), cx);
+            self.right_pane
+                .update(cx, |right, cx| right.jump_to(root, post, cx));
+        } else if !clicked.post_id.is_empty() {
+            let post: SharedString = clicked.post_id.clone().into();
+            pane.update(cx, |pane, cx| pane.jump_to(post, cx));
+        }
+        true
     }
 
     /// Cmd/Ctrl+Alt+W: closes the focused pane, and the other one fills
@@ -456,6 +516,12 @@ impl MainWindow {
                 self.open_in_split(channel.clone(), window, cx);
                 if let (Some(post), Some(pane)) = (post.clone(), self.split.pane.clone()) {
                     pane.update(cx, |pane, cx| pane.jump_to(post, cx));
+                }
+            }
+            // A direct message asked for here opens here.
+            PaneEvent::Ask(Ask::OpenDirect(name)) => {
+                if let Some(id) = self.direct_channel(name, cx) {
+                    self.open_in_split(id, window, cx);
                 }
             }
             PaneEvent::Ask(Ask::Forward { post, .. }) => {
@@ -711,5 +777,58 @@ impl MainWindow {
             })
             .unwrap_or_default();
         Some((pane.channel_id().to_string(), posts))
+    }
+
+    /// The main pane's channel.
+    pub(crate) fn main_channel_for_tests(&self) -> Option<String> {
+        self.selected_channel.as_ref().map(ToString::to_string)
+    }
+
+    /// Whether the second pane shows and has focus.
+    pub(crate) fn second_focused_for_tests(&self) -> bool {
+        self.second_focused()
+    }
+
+    /// Whether the main window's toast area holds a toast.
+    pub(crate) fn toasts_shown_for_tests(&self, cx: &gpui_kit::App) -> bool {
+        !self.toasts.read(cx).is_empty()
+    }
+
+    /// A click on the notification about `post` in `channel`.
+    pub(crate) fn click_notification_for_tests(
+        &mut self,
+        channel: &str,
+        post: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let clicked = matty_notify::Clicked {
+            channel_id: channel.into(),
+            post_id: post.into(),
+            root_id: String::new(),
+        };
+        self.open_notification(clicked, window, cx);
+    }
+
+    /// The second pane asks the main window for `ask`, as its menus do.
+    pub(crate) fn split_ask_for_tests(&mut self, ask: Ask, cx: &mut Context<Self>) {
+        if let Some(pane) = self.split.pane.clone() {
+            pane.update(cx, |_, cx| cx.emit(PaneEvent::Ask(ask)));
+        }
+    }
+
+    /// The second pane's channel view asks to copy `post`'s link.
+    pub(crate) fn split_copy_link_for_tests(&mut self, post: &str, cx: &mut Context<Self>) {
+        let view = self
+            .split
+            .pane
+            .as_ref()
+            .and_then(|pane| pane.read(cx).channel_view().cloned());
+        if let Some(view) = view {
+            let post = SharedString::from(post.to_owned());
+            view.update(cx, |_, cx| {
+                cx.emit(crate::channel::ChannelEvent::CopyLink(post))
+            });
+        }
     }
 }
