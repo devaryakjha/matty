@@ -142,6 +142,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         author: author.into(),
         time: hm(time),
         day: day.into(),
+        date: full_date(day),
         body: body.into(),
         reactions: vec![],
         mentions_me: false,
@@ -282,6 +283,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 preview: Some(UploadSource::Image(attachments::png(include_bytes!(
                     "../assets/preview/mockup.png"
                 )))),
+                width: 640,
+                height: 400,
             },
             PostFile {
                 id: "f-mockup-dark".into(),
@@ -290,12 +293,16 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 preview: Some(UploadSource::Image(attachments::png(include_bytes!(
                     "../assets/preview/mockup-dark.png"
                 )))),
+                width: 640,
+                height: 400,
             },
             PostFile {
                 id: "f-notes".into(),
                 name: "review-notes.pdf".into(),
                 size: 2_516_582,
                 preview: None,
+                width: 0,
+                height: 0,
             },
         ],
         ..post(
@@ -471,6 +478,16 @@ pub fn mentions() -> Vec<ListedPost> {
 }
 
 /// "08:02" as minutes since midnight, so fixtures read like a clock.
+/// The fixtures' tooltip date for a day label, as if today were
+/// Wednesday, November 4, 2026.
+fn full_date(day: &str) -> SharedString {
+    match day {
+        "Today" => "Wednesday, November 4, 2026".into(),
+        "Yesterday" => "Tuesday, November 3, 2026".into(),
+        other => format!("{other}, 2026").into(),
+    }
+}
+
 fn hm(time: &str) -> u16 {
     let (hour, minute) = time.split_once(':').expect("HH:MM");
     hour.parse::<u16>().expect("hour") * 60 + minute.parse::<u16>().expect("minute")
@@ -488,6 +505,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         author: author.into(),
         time: hm(time),
         day: "Today".into(),
+        date: full_date("Today"),
         body: body.into(),
         reactions: vec![],
         mentions_me: false,
@@ -810,6 +828,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         author: author.into(),
         time: hm(time),
         day: root.day.clone(),
+        date: root.date.clone(),
         body: body.into(),
         reactions: vec![],
         mentions_me: false,

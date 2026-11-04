@@ -313,6 +313,12 @@ pub fn tipped_when(
         .child(child)
 }
 
+/// The tallest a composer's text box grows before it scrolls: 40% of the
+/// window, read on every render so it follows resizes.
+pub fn composer_cap(window: &gpui_kit::Window) -> gpui_kit::Pixels {
+    window.viewport_size().height * 0.4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

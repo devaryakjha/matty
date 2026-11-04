@@ -94,6 +94,9 @@ const TEXT_SIZES: &[(&str, f32)] = &[
     ("larger", 1.3),
 ];
 
+/// What a toast's Retry button runs.
+type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
+
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     /// Shown until a session exists; sync replaces it with the workspace.
@@ -140,6 +143,9 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
+    /// Files asked for and not yet saved, oldest first, so a failed
+    /// download can offer Retry when only one was in flight.
+    downloads: std::collections::VecDeque<SharedString>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
@@ -448,6 +454,13 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::JumpLatest => {
+                    if let (Some(live), Some(id)) = (&this.live, this.selected_channel.clone()) {
+                        live.send(matty_sync::Command::LoadLatest {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -634,6 +647,7 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
+            downloads: Default::default(),
             threads_open: false,
             drafts,
             drafts_open: false,
@@ -798,6 +812,7 @@ impl MainWindow {
             .or_else(dirs::download_dir)
             .or_else(dirs::home_dir)
             .unwrap_or_else(std::env::temp_dir);
+        self.downloads.push_back(file_id.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
             folder,
@@ -805,9 +820,8 @@ impl MainWindow {
         });
     }
 
-    /// Tells the user a file was saved: the file name as the title and the
-    /// folder below it. A "Show in folder" action waits on gpuicn's toast
-    /// growing action buttons; until then the file opens on its own.
+    /// Tells the user a file was saved: the file name as the title, the
+    /// folder below it, and "Show in folder" to reveal it.
     pub fn push_download_toast(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         let name = path
             .file_name()
@@ -828,22 +842,37 @@ impl MainWindow {
                 format!("download.{}", path.display()),
                 Notice::new(name)
                     .description(folder)
+                    .action("Show in folder", {
+                        let path = path.to_path_buf();
+                        move |_, cx| cx.reveal_path(&path)
+                    })
                     .timeout(std::time::Duration::from_secs(6)),
                 cx,
             );
         });
     }
 
-    /// Tells the user something failed, in one sentence, for eight seconds.
-    /// Retry waits on gpuicn toast actions; the message says what to do.
+    /// Tells the user something failed, in one sentence, for eight seconds,
+    /// with a Dismiss button.
     pub fn push_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.push_error_with(text, None, cx);
+    }
+
+    /// `push_error` with a Retry button when there is something to retry.
+    fn push_error_with(
+        &mut self,
+        text: impl Into<SharedString>,
+        retry: Option<Retry>,
+        cx: &mut Context<Self>,
+    ) {
         let text = text.into();
+        let notice = Notice::new(text.clone()).timeout(std::time::Duration::from_secs(8));
+        let notice = match retry {
+            Some(retry) => notice.action("Retry", retry),
+            None => notice.cancel("Dismiss"),
+        };
         self.toasts.update(cx, |toasts, cx| {
-            toasts.push(
-                format!("error.{text}"),
-                Notice::new(text).timeout(std::time::Duration::from_secs(8)),
-                cx,
-            );
+            toasts.push(format!("error.{text}"), notice, cx);
         });
     }
 
@@ -990,12 +1019,35 @@ impl MainWindow {
         if let Some(download) = update.download {
             match download {
                 matty_sync::DownloadState::Done(path) => {
+                    self.downloads.pop_front();
                     open_download(&path, cx);
                     self.push_download_toast(&path, cx);
                 }
                 matty_sync::DownloadState::Failed(error) => {
                     tracing::warn!(%error, "download failed");
-                    self.push_error(format!("Couldn't download the file: {error}"), cx);
+                    // Sync does not say which file failed, so Retry only
+                    // shows when there was one.
+                    let only = (self.downloads.len() == 1)
+                        .then(|| self.downloads.pop_front())
+                        .flatten();
+                    if only.is_none() {
+                        self.downloads.pop_front();
+                    }
+                    let text = format!("Couldn't download the file: {error}");
+                    match only {
+                        Some(file_id) => {
+                            let view = cx.entity().downgrade();
+                            self.push_error_with(
+                                text,
+                                Some(Box::new(move |_, cx| {
+                                    view.update(cx, |this, cx| this.download_file(&file_id, cx))
+                                        .ok();
+                                })),
+                                cx,
+                            );
+                        }
+                        None => self.push_error(text, cx),
+                    }
                 }
             }
         }

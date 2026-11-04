@@ -634,6 +634,11 @@ pub(crate) struct Engine {
     /// How far back each open channel's snapshot reaches beyond the
     /// latest [`POSTS_WINDOW`] posts.
     history: std::collections::HashMap<String, History>,
+    /// Per channel, the creation time at or before which stored posts are
+    /// left over from a jump into the past that was given up (Jump to
+    /// latest, or leaving the channel) and may not join the latest posts;
+    /// the latest snapshot leaves them out until older pages reach them.
+    floors: std::collections::HashMap<String, i64>,
     /// Thumbnails on their way from the server.
     fetching: BTreeSet<String>,
 }
@@ -661,6 +666,7 @@ impl Engine {
             media: None,
             fetching: BTreeSet::new(),
             history: std::collections::HashMap::new(),
+            floors: std::collections::HashMap::new(),
         }
     }
 
@@ -799,7 +805,8 @@ impl Engine {
                     pages.push((channel_id, Page::Around(post_id)));
                 }
                 Message::Command(Command::LoadLatest { channel_id }) => {
-                    if self.history.remove(&channel_id).is_some() {
+                    if let Some(history) = self.history.remove(&channel_id) {
+                        give_up(&mut self.floors, &channel_id, &history);
                         dirty.direct.push(ChangeSet::History {
                             channel_id: channel_id.clone(),
                             at_start: false,
@@ -810,7 +817,9 @@ impl Engine {
                     }
                 }
                 Message::Command(Command::CloseChannel { channel_id }) => {
-                    self.history.remove(&channel_id);
+                    if let Some(history) = self.history.remove(&channel_id) {
+                        give_up(&mut self.floors, &channel_id, &history);
+                    }
                     self.open_channels.remove(&channel_id);
                     self.sent_channels.remove(&channel_id);
                 }
@@ -1209,7 +1218,14 @@ impl Engine {
         let edge = if matches!(page, Page::Around(_)) {
             None
         } else {
-            match snapshot(self.store.conn(), &channel_id, Some(history), roots_only) {
+            let floor = self.floors.get(&channel_id).copied();
+            match snapshot(
+                self.store.conn(),
+                &channel_id,
+                Some(history),
+                floor,
+                roots_only,
+            ) {
                 Ok(window) => {
                     let post = match page {
                         Page::Older => window.first(),
@@ -1544,7 +1560,17 @@ impl Engine {
                     Some((from, _)) => {
                         *from = fetched.iter().map(|p| p.create_at).fold(*from, i64::min);
                     }
-                    None => history.extra += list.order.len(),
+                    None => {
+                        history.extra += list.order.len();
+                        // The page joins the latest posts, reaching below
+                        // a given-up jump's leftovers it overlaps.
+                        if let (Some(floor), Some(oldest)) = (
+                            self.floors.get_mut(&channel_id),
+                            fetched.iter().map(|p| p.create_at).min(),
+                        ) {
+                            *floor = (*floor).min(oldest - 1);
+                        }
+                    }
                 }
             }
             (_, Some((_, to))) => {
@@ -1578,6 +1604,10 @@ impl Engine {
         let Some((from, _)) = history.anchor.take() else {
             return;
         };
+        // Everything from `from` on now joins the newest post.
+        if let Some(floor) = self.floors.get_mut(channel_id) {
+            *floor = (*floor).min(from - 1);
+        }
         let shown = posts::posts_window(
             self.store.conn(),
             channel_id,
@@ -2147,7 +2177,14 @@ impl Engine {
                 Ok(None) => {}
                 Err(error) => tracing::error!(%error, "could not read a channel"),
             }
-            match snapshot(conn, &channel_id, self.history.get(&channel_id), roots_only) {
+            let floor = self.floors.get(&channel_id).copied();
+            match snapshot(
+                conn,
+                &channel_id,
+                self.history.get(&channel_id),
+                floor,
+                roots_only,
+            ) {
                 Ok(window) => changes.push(ChangeSet::Posts {
                     channel_id,
                     posts: Arc::from(window),
@@ -2341,6 +2378,20 @@ impl History {
     }
 }
 
+/// Leaving a history window before it reached the newest post: what it
+/// loaded stays stored but out of the latest snapshot, which would
+/// otherwise show it above a gap.
+fn give_up(
+    floors: &mut std::collections::HashMap<String, i64>,
+    channel_id: &str,
+    history: &History,
+) {
+    if let Some((_, to)) = history.anchor {
+        let floor = floors.entry(channel_id.to_owned()).or_insert(to);
+        *floor = (*floor).max(to);
+    }
+}
+
 /// Which page of history to fetch.
 #[derive(Debug)]
 enum Page {
@@ -2350,11 +2401,13 @@ enum Page {
 }
 
 /// An open channel's posts snapshot: its history window, or else the
-/// latest posts reaching back as far as history has loaded.
+/// latest posts reaching back as far as history has loaded, newer than
+/// `floor` (see `Engine::floors`).
 fn snapshot(
     conn: &rusqlite::Connection,
     channel_id: &str,
     history: Option<&History>,
+    floor: Option<i64>,
     roots_only: bool,
 ) -> Result<Vec<matty_api::models::Post>, StoreError> {
     match history.and_then(|h| h.anchor) {
@@ -2365,12 +2418,18 @@ fn snapshot(
             usize::MAX,
             roots_only,
         ),
-        None => posts::posts_window(
-            conn,
-            channel_id,
-            Window::Latest,
-            POSTS_WINDOW + history.map_or(0, |h| h.extra),
-            roots_only,
-        ),
+        None => {
+            let mut posts = posts::posts_window(
+                conn,
+                channel_id,
+                Window::Latest,
+                POSTS_WINDOW + history.map_or(0, |h| h.extra),
+                roots_only,
+            )?;
+            if let Some(floor) = floor {
+                posts.retain(|post| post.create_at > floor);
+            }
+            Ok(posts)
+        }
     }
 }

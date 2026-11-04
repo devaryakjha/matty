@@ -240,6 +240,41 @@ async fn jumping_back_to_the_latest_leaves_the_history_window() {
     });
     let history = next(&changes, |c| matches!(c, ChangeSet::History { .. })).await;
     assert!(matches!(history, ChangeSet::History { at_end: true, .. }));
+    // The jump's posts stay out: p5 to p7 were never loaded, so they
+    // would show above a gap.
     let shown = next(&changes, |c| matches!(c, ChangeSet::Posts { .. })).await;
-    assert_eq!(ids(&shown).last().map(String::as_str), Some("p9"));
+    assert_eq!(ids(&shown), ["p8", "p9"]);
+
+    // Older pages come from the server and take the jump's posts back in
+    // once they reach them.
+    for (before, body) in [
+        (
+            "p8",
+            json!({"order": ["p7", "p6", "p5"],
+                   "posts": {"p5": post("p5", 50), "p6": post("p6", 60), "p7": post("p7", 70)},
+                   "prev_post_id": "p4"}),
+        ),
+        (
+            "p5",
+            json!({"order": ["p4", "p3"], "posts": {"p3": post("p3", 30), "p4": post("p4", 40)},
+                   "prev_post_id": "p2"}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/v4/channels/c1/posts"))
+            .and(query_param("before", before))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    sync.send(Command::LoadOlder {
+        channel_id: "c1".into(),
+    });
+    let shown = next(&changes, |c| matches!(c, ChangeSet::Posts { .. })).await;
+    assert_eq!(ids(&shown), ["p5", "p6", "p7", "p8", "p9"]);
+    sync.send(Command::LoadOlder {
+        channel_id: "c1".into(),
+    });
+    let shown = next(&changes, |c| matches!(c, ChangeSet::Posts { .. })).await;
+    assert_eq!(ids(&shown), ["p3", "p4", "p5", "p6", "p7", "p8", "p9"]);
 }

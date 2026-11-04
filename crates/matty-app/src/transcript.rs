@@ -50,13 +50,14 @@ pub fn channel_model(
         if post.delete_at != 0 || !post.kind.is_empty() && post.kind.starts_with("system_") {
             continue;
         }
-        let (time, day) = when(post.create_at, viewer.zone, today);
+        let stamp = when(post.create_at, viewer.zone, today);
+        let day = stamp.1.clone();
         let continues = previous.as_ref().is_some_and(|(user, at, last_day)| {
             *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
         });
         previous = Some((&post.user_id, post.create_at, day.clone()));
         rows.push(display_post(
-            post, users, viewer, &mention, day, time, continues,
+            post, users, viewer, &mention, stamp, continues,
         ));
     }
     ChannelModel {
@@ -85,8 +86,7 @@ fn display_post(
     users: &HashMap<String, User>,
     viewer: &Viewer<'_>,
     mention: &str,
-    day: SharedString,
-    time: u16,
+    (time, day, date): (u16, SharedString, SharedString),
     continues: bool,
 ) -> Post {
     let author = users
@@ -98,6 +98,7 @@ fn display_post(
         author: author.into(),
         time,
         day,
+        date,
         body: post.message.clone().into(),
         reactions: reactions(post, viewer.user_id, users),
         mentions_me: !viewer.username.is_empty() && mentions(&post.message, mention),
@@ -124,6 +125,8 @@ fn display_post(
                 name: file.name.clone().into(),
                 size: u64::try_from(file.size).unwrap_or(0),
                 preview: None,
+                width: u32::try_from(file.width).unwrap_or(0),
+                height: u32::try_from(file.height).unwrap_or(0),
             })
             .collect(),
     }
@@ -132,15 +135,26 @@ fn display_post(
 /// A post shown on its own, as in search results: never a continuation.
 pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Post {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
-    let (time, day) = when(post.create_at, viewer.zone, today);
     let mention = format!("@{}", viewer.username);
-    display_post(post, users, viewer, &mention, day, time, false)
+    display_post(
+        post,
+        users,
+        viewer,
+        &mention,
+        when(post.create_at, viewer.zone, today),
+        false,
+    )
 }
 
-/// Minutes since local midnight, and the day label the post falls under.
-fn when(millis: i64, zone: &TimeZone, today: jiff::civil::Date) -> (u16, SharedString) {
+/// Minutes since local midnight, the day label the post falls under, and
+/// the full date for the time's tooltip.
+fn when(
+    millis: i64,
+    zone: &TimeZone,
+    today: jiff::civil::Date,
+) -> (u16, SharedString, SharedString) {
     let Ok(at) = Timestamp::from_millisecond(millis) else {
-        return (0, "Today".into());
+        return (0, "Today".into(), SharedString::default());
     };
     let local = at.to_zoned(zone.clone());
     let minutes =
@@ -155,7 +169,8 @@ fn when(millis: i64, zone: &TimeZone, today: jiff::civil::Date) -> (u16, SharedS
     } else {
         date.strftime("%B %-d, %Y").to_string()
     };
-    (minutes, day.into())
+    let full = date.strftime("%A, %B %-d, %Y").to_string();
+    (minutes, day.into(), full.into())
 }
 
 /// `@name` as a word: not followed by more of a username.
@@ -239,7 +254,7 @@ mod tests {
             user_id: "me",
             username: "arya",
             zone,
-            // 2026-11-03 12:00 UTC.
+            // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),
         }
     }
@@ -284,6 +299,9 @@ mod tests {
             ]
         );
         assert_eq!(model.posts[2].time, 12 * 60);
+        // The time's tooltip names the full date, even under "Today".
+        assert_eq!(model.posts[2].date, "Wednesday, November 4, 2026");
+        assert_eq!(model.posts[0].date, "Tuesday, November 3, 2026");
         assert!(model.posts[2].mentions_me && !model.posts[1].mentions_me);
         assert!(model.posts[3].mine);
         assert_eq!(model.posts[3].status, PostStatus::Sent);
@@ -314,6 +332,8 @@ mod tests {
                 id: id.into(),
                 name: "notes.pdf".into(),
                 size: 2048,
+                width: 640,
+                height: 400,
                 delete_at: deleted,
                 ..Default::default()
             });
@@ -327,6 +347,8 @@ mod tests {
                 name: "notes.pdf".into(),
                 size: 2048,
                 preview: None,
+                width: 640,
+                height: 400,
             }]
         );
     }

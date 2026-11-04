@@ -141,6 +141,8 @@ pub enum RightPaneEvent {
 }
 
 pub struct RightPaneView {
+    /// `style::composer_cap` as of the last render.
+    composer_cap: gpui_kit::Pixels,
     content: Option<RightPaneContent>,
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
@@ -247,6 +249,7 @@ impl RightPaneView {
             }),
         ];
         Self {
+            composer_cap: px(320.),
             content: None,
             list,
             composer,
@@ -383,6 +386,7 @@ impl RightPaneView {
             author: me.clone(),
             time: last.time,
             day: last.day.clone(),
+            date: SharedString::default(),
             body: body.clone(),
             reactions: vec![],
             mentions_me: false,
@@ -754,6 +758,10 @@ impl RightPaneView {
             })
             .author(post.author.clone())
             .timestamp(time.clone())
+            .when(
+                post.status == PostStatus::Sent && !post.date.is_empty(),
+                |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
+            )
             .gutter_time(time)
             .continuation(post.continues && !root)
             .density(message_density(cx))
@@ -940,6 +948,7 @@ impl RightPaneView {
                     .pb(theme.space(4.))
                     .child(
                         Composer::new(&self.composer)
+                            .max_height(self.composer_cap)
                             .rounded(theme.radius.lg)
                             .child(style::tipped(
                                 "right-pane.attach.tip",
@@ -1479,6 +1488,7 @@ impl RightPaneView {
 
 impl Render for RightPaneView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.composer_cap = style::composer_cap(window);
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .child(self.lightbox(window, cx))

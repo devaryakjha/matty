@@ -1246,6 +1246,7 @@ mod tests {
             author: "a".into(),
             time: 600,
             day: "Today".into(),
+            date: SharedString::default(),
             body: body.into(),
             reactions: vec![],
             mentions_me: false,
