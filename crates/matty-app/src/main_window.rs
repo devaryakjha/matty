@@ -313,6 +313,9 @@ impl MainWindow {
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        if crate::preview::enabled() {
+            cx.set_global(crate::preview::avatars());
+        }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
         if crate::preview::enabled() {
@@ -877,10 +880,12 @@ impl MainWindow {
                 return;
             }
         };
+        cx.set_global(live.avatars());
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
                 Account {
+                    user_id: account.user_id.clone().into(),
                     display_name: account.display_name.clone().into(),
                     username: account.username.clone().into(),
                     presence: if crate::offline() {
@@ -1353,7 +1358,11 @@ impl MainWindow {
         if let Some((query, answer)) = update.link {
             self.link_resolved(query, answer, window, cx);
         }
+        if update.avatars {
+            cx.refresh_windows();
+        }
         if update.signed_out {
+            cx.set_global(crate::avatars::Avatars::default());
             self.live = None;
             self._live_task = None;
             self.forget_signed_out(cx);
@@ -1700,7 +1709,8 @@ impl MainWindow {
                 profile.user_id.clone(),
                 profile.display_name.clone(),
                 kind.clone(),
-            );
+            )
+            .person(profile.user_id.clone());
             self.add_row("direct", row, cx);
             self.joined.push(crate::preview::empty_channel(
                 profile.user_id.clone(),

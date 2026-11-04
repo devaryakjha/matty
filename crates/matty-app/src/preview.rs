@@ -112,7 +112,7 @@ pub fn teams() -> Vec<Team> {
 pub fn sidebar() -> SidebarModel {
     let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
     let dm = |id: &str, name: &str, presence| {
-        ChannelRow::new(id, name, ChannelKind::Direct { presence })
+        ChannelRow::new(id, name, ChannelKind::Direct { presence }).person(format!("u-{id}"))
     };
     SidebarModel {
         loading: false,
@@ -194,6 +194,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: day.into(),
         date: full_date(day),
@@ -239,6 +240,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 last_time: hm("10:02"),
                 last_day: "Today".into(),
                 participants: vec!["Lena Fischer".into()],
+                participant_ids: vec![person("Lena Fischer")],
                 following: false,
                 unread: true,
             }),
@@ -346,6 +348,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 last_time: hm("08:13"),
                 last_day: "Today".into(),
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
+                participant_ids: vec![person("Arya"), person("Jonas Weber")],
                 following: true,
                 unread: false,
             }),
@@ -734,6 +737,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: "Today".into(),
         date: full_date("Today"),
@@ -930,12 +934,54 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
 
 pub fn account() -> Account {
     Account {
+        user_id: "u-arya".into(),
         display_name: "Arya".into(),
         username: "arya".into(),
         presence: Presence::Online,
         status_text: None,
         dnd_end: None,
     }
+}
+
+/// A fixture person's user id from their display name: `u-` and the first
+/// name, as in [`profiles`]. Bots and strangers get none.
+fn person(name: &str) -> SharedString {
+    let first = name.split(' ').next().unwrap_or_default().to_lowercase();
+    if profiles()
+        .iter()
+        .any(|profile| profile.username.as_ref() == first)
+    {
+        format!("u-{first}").into()
+    } else {
+        SharedString::default()
+    }
+}
+
+/// Profile pictures for the fixture people. Jonas has none, so his
+/// avatar shows the initials as it does when a picture fails to load.
+pub fn avatars() -> crate::avatars::Avatars {
+    let avatars = crate::avatars::Avatars::default();
+    let pictures: [(&str, &[u8]); 4] = [
+        (
+            "u-priya",
+            include_bytes!("../assets/preview/avatar-priya.png"),
+        ),
+        ("u-sam", include_bytes!("../assets/preview/avatar-sam.png")),
+        (
+            "u-lena",
+            include_bytes!("../assets/preview/avatar-lena.png"),
+        ),
+        (
+            "u-arya",
+            include_bytes!("../assets/preview/avatar-arya.png"),
+        ),
+    ];
+    for (user_id, bytes) in pictures {
+        if let Some(picture) = crate::avatars::picture(bytes, "image/png") {
+            avatars.insert(user_id, picture);
+        }
+    }
+    avatars
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
@@ -1038,6 +1084,7 @@ pub fn threads() -> ThreadsModel {
             last.into()
         },
         participants: participants.iter().map(|name| (*name).into()).collect(),
+        participant_ids: participants.iter().map(|name| person(name)).collect(),
         following: true,
         unread,
     };
@@ -1084,6 +1131,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         kind: crate::channel::PostKind::Regular,
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: root.day.clone(),
         date: root.date.clone(),

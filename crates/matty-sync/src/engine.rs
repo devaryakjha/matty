@@ -343,6 +343,18 @@ pub enum Command {
         /// The image's URL.
         url: String,
     },
+    /// Loads a user's profile picture (#153): from the media cache, else
+    /// from the server, keeping it for next time. [`ChangeSet::Avatar`]
+    /// always answers, with no image when there is none to show.
+    ///
+    /// [`ChangeSet::Avatar`]: crate::ChangeSet::Avatar
+    LoadAvatar {
+        /// The user.
+        user_id: String,
+        /// Their `last_picture_update` as the app knows it; `None` uses
+        /// the stored user's.
+        last_picture_update: Option<i64>,
+    },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
     Download {
@@ -610,6 +622,14 @@ impl std::fmt::Debug for Command {
             Self::LoadRemoteImage { .. } => {
                 f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
             }
+            Self::LoadAvatar {
+                user_id,
+                last_picture_update,
+            } => f
+                .debug_struct("LoadAvatar")
+                .field("user_id", user_id)
+                .field("last_picture_update", last_picture_update)
+                .finish(),
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
                 .field("file_id", file_id)
@@ -830,6 +850,7 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
+        let mut avatars = Vec::new();
         let mut threads_to_fetch = Vec::new();
         let mut thread_lists_to_fetch = Vec::new();
         let mut link_previews = Vec::new();
@@ -1247,6 +1268,10 @@ impl Engine {
                 Message::Command(Command::LoadRemoteImage { url }) => {
                     remote_images.push(url);
                 }
+                Message::Command(Command::LoadAvatar {
+                    user_id,
+                    last_picture_update,
+                }) => avatars.push((user_id, last_picture_update)),
                 Message::Command(Command::LoadLinkPreview { url }) => {
                     link_previews.push(url);
                 }
@@ -1335,6 +1360,9 @@ impl Engine {
         }
         for url in remote_images {
             self.remote_image(url, dirty);
+        }
+        for (user_id, version) in avatars {
+            self.avatar(user_id, version, dirty);
         }
         for (team_id, since) in thread_lists_to_fetch {
             self.fetch_thread_list(team_id, since);
@@ -1734,6 +1762,65 @@ impl Engine {
                 }
             };
             let _ = results.send(Loaded::RemoteImage { url, image });
+        });
+    }
+
+    /// Answers a profile picture from the media cache, or fetches it; it
+    /// comes back as [`Loaded::Avatar`]. Without a session there is no
+    /// picture to fetch, which the app hears as an empty answer.
+    fn avatar(&mut self, user_id: String, version: Option<i64>, dirty: &mut Dirty) {
+        let version = version.unwrap_or_else(|| {
+            sidebar::users(self.store.conn(), std::slice::from_ref(&user_id))
+                .ok()
+                .and_then(|users| users.first().map(|user| user.last_picture_update))
+                .unwrap_or(0)
+        });
+        let key = matty_store::media::avatar_key(&user_id, version);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::Avatar {
+                        user_id,
+                        last_picture_update: version,
+                        image: Some((Arc::from(cached.bytes), cached.content_type)),
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Avatar {
+                user_id,
+                last_picture_update: version,
+                image: None,
+            });
+            return;
+        };
+        if !self.fetching.insert(key) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let image = match client.avatar(&user_id, None).await {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type,
+                    ..
+                }) => Some((bytes, content_type.unwrap_or_else(|| "image/png".into()))),
+                Ok(matty_api::Fetched::NotModified) => None,
+                Err(error) => {
+                    tracing::debug!(%error, user_id, "no profile picture");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            });
         });
     }
 
@@ -2230,6 +2317,25 @@ impl Engine {
                         content_type,
                     });
                 }
+            }
+            Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            } => {
+                let key = matty_store::media::avatar_key(&user_id, version);
+                self.fetching.remove(&key);
+                if let Some((bytes, content_type)) = &image
+                    && let Some(media) = &self.media
+                    && let Err(error) = media.put(self.store.conn(), &key, bytes, content_type)
+                {
+                    tracing::warn!(%error, "could not keep a profile picture");
+                }
+                dirty.direct.push(ChangeSet::Avatar {
+                    user_id,
+                    last_picture_update: version,
+                    image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
+                });
             }
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })
