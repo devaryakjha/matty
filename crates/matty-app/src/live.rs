@@ -163,6 +163,8 @@ pub struct Details {
     pub pinned: usize,
     /// See [`crate::channel::ChannelModel::can_manage`].
     pub can_manage: bool,
+    /// See [`crate::channel::ChannelModel::delete_others`].
+    pub delete_others: bool,
 }
 
 /// What a change set means for the window.
@@ -857,6 +859,7 @@ impl Live {
                 .as_ref()
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
             can_manage: self.can_manage(),
+            delete_others: self.is_system_admin(),
         }
     }
 
@@ -868,11 +871,16 @@ impl Live {
             .member
             .as_ref()
             .is_some_and(|member| member.scheme_admin || has(&member.roles, "channel_admin"));
-        let system_admin = self
-            .users
-            .get(&self.me.0)
-            .is_some_and(|me| has(&me.roles, "system_admin"));
-        channel_admin || system_admin
+        channel_admin || self.is_system_admin()
+    }
+
+    /// Whether the user is a system admin.
+    fn is_system_admin(&self) -> bool {
+        self.users.get(&self.me.0).is_some_and(|me| {
+            me.roles
+                .split_whitespace()
+                .any(|role| role == "system_admin")
+        })
     }
 
     fn typing_names(&self) -> Vec<SharedString> {
@@ -3306,6 +3314,7 @@ mod tests {
             ..User::default()
         }])));
         assert!(live.details(0).can_manage);
+        assert!(live.details(0).delete_others);
     }
 
     #[test]
@@ -3391,6 +3400,7 @@ mod tests {
                 members: 0,
                 pinned: 1,
                 can_manage: false,
+                delete_others: false,
             })
         );
         let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {

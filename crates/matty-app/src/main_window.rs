@@ -1734,14 +1734,7 @@ impl MainWindow {
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {
-                view.set_details(
-                    details.header,
-                    details.purpose,
-                    details.members,
-                    details.pinned,
-                    details.can_manage,
-                    cx,
-                );
+                view.set_details(details, cx);
             });
         }
         if let Some((muted, notifications)) = update.notifications {
