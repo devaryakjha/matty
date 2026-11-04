@@ -205,6 +205,9 @@ pub enum Window {
     Before(i64),
     /// Posts created strictly after this time, oldest first, for scrolling down.
     After(i64),
+    /// Posts created from the first time to the second, both included,
+    /// oldest first: a stretch of history away from the newest posts.
+    Between(i64, i64),
 }
 
 const POST_COLUMNS: &str = "id, channel_id, user_id, root_id, create_at, update_at, edit_at,
@@ -287,10 +290,11 @@ pub fn posts_window(
     limit: usize,
     roots_only: bool,
 ) -> Result<Vec<Post>> {
-    let (bound, order, time) = match window {
-        Window::Latest => ("1", "DESC", 0),
-        Window::Before(time) => ("create_at < ?3", "DESC", time),
-        Window::After(time) => ("create_at > ?3", "ASC", time),
+    let (bound, order, time, until) = match window {
+        Window::Latest => ("1", "DESC", 0, 0),
+        Window::Before(time) => ("create_at < ?3", "DESC", time, 0),
+        Window::After(time) => ("create_at > ?3", "ASC", time, 0),
+        Window::Between(from, to) => ("create_at >= ?3 AND create_at <= ?4", "ASC", from, to),
     };
     let roots = if roots_only { "AND root_id = ''" } else { "" };
     let sql = format!(
@@ -302,6 +306,8 @@ pub fn posts_window(
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let rows = if matches!(window, Window::Latest) {
         statement.query_map(params![channel_id, limit], post_from_row)?
+    } else if matches!(window, Window::Between(..)) {
+        statement.query_map(params![channel_id, limit, time, until], post_from_row)?
     } else {
         statement.query_map(params![channel_id, limit, time], post_from_row)?
     };
