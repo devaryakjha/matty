@@ -10,6 +10,42 @@ pub trait Notifier {
     fn show(&self, notification: &Notification);
     /// Removes the notifications for `channel_id`, as the user is reading it.
     fn withdraw(&self, channel_id: &str);
+    /// Shows `badge` on the app icon: the dock on macOS (#141).
+    fn set_badge(&self, badge: Badge);
+}
+
+/// What the app icon's badge shows (PLAN §4.6): the mention count, a dot
+/// when something is unread without a mention, or nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Badge {
+    /// Nothing is unread.
+    #[default]
+    Clear,
+    /// Something is unread, with no mention.
+    Unread,
+    /// Mentions of the user, at least one.
+    Mentions(usize),
+}
+
+impl Badge {
+    /// The badge for `mentions` mentions, with `unread` saying whether
+    /// anything else is unread.
+    pub fn new(mentions: usize, unread: bool) -> Self {
+        match (mentions, unread) {
+            (0, false) => Self::Clear,
+            (0, true) => Self::Unread,
+            (count, _) => Self::Mentions(count),
+        }
+    }
+
+    /// The text on the icon: the count, a dot, or `None` for no badge.
+    pub fn label(self) -> Option<String> {
+        match self {
+            Self::Clear => None,
+            Self::Unread => Some("\u{2022}".to_owned()),
+            Self::Mentions(count) => Some(count.to_string()),
+        }
+    }
 }
 
 /// Logs what it would show, without the message: the fallback where the
@@ -30,6 +66,10 @@ impl Notifier for Logged {
 
     fn withdraw(&self, channel_id: &str) {
         tracing::debug!(channel = %channel_id, "notifications withdrawn");
+    }
+
+    fn set_badge(&self, badge: Badge) {
+        tracing::debug!(?badge, "badge");
     }
 }
 
@@ -67,12 +107,27 @@ pub fn platform(clicked: async_channel::Sender<Clicked>) -> Box<dyn Notifier> {
         return Box::new(center);
     }
     drop(clicked);
+    #[cfg(target_os = "macos")]
+    return Box::new(crate::macos::DockOnly);
+    #[cfg(not(target_os = "macos"))]
     Box::new(Logged)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_badge_shows_mentions_then_a_dot_then_nothing() {
+        assert_eq!(Badge::new(0, false), Badge::Clear);
+        assert_eq!(Badge::new(0, true), Badge::Unread);
+        assert_eq!(Badge::new(3, false), Badge::Mentions(3));
+        assert_eq!(Badge::new(3, true), Badge::Mentions(3));
+        assert_eq!(Badge::Clear.label(), None);
+        assert_eq!(Badge::Unread.label().as_deref(), Some("\u{2022}"));
+        assert_eq!(Badge::Mentions(7).label().as_deref(), Some("7"));
+        assert_eq!(Badge::Mentions(1234).label().as_deref(), Some("1234"));
+    }
 
     #[test]
     fn a_notification_identifier_names_its_channel_and_post() {

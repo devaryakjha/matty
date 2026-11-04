@@ -33,7 +33,7 @@ def chains(lines, start):
 
 def main():
     missing = []
-    for path in sorted(glob.glob(str(SRC / "*.rs"))):
+    for path in sorted(glob.glob(str(SRC / "**" / "*.rs"), recursive=True)):
         lines = Path(path).read_text().split("\n")
         for index, line in enumerate(lines):
             if "Button::new(" not in line:

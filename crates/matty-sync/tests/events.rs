@@ -405,6 +405,7 @@ async fn users_statuses_and_preferences() {
         event(WsEvent::UserUpdated(Box::new(User {
             id: "u2".into(),
             username: "ada.l".into(),
+            last_picture_update: 42,
             ..User::default()
         }))),
         event(WsEvent::StatusChange {
@@ -427,6 +428,11 @@ async fn users_statuses_and_preferences() {
             .any(|c| matches!(c, ChangeSet::Presence(s) if s[0].status == "away"))
     );
     assert!(seen.iter().any(|c| matches!(c, ChangeSet::Preferences)));
+    // The app hears the new picture time, to fetch the new avatar (#153).
+    assert!(seen.iter().any(|c| matches!(
+        c,
+        ChangeSet::Users(users) if users[0].id == "u2" && users[0].last_picture_update == 42
+    )));
     assert_eq!(
         sidebar::preference(store.conn(), "favorite_channel", "c1")
             .unwrap()
