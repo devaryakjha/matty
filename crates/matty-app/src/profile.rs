@@ -111,14 +111,16 @@ pub fn profile_card(
                 div()
                     .relative()
                     .flex_shrink_0()
-                    .child(
+                    .child(crate::avatars::with_picture(
                         Avatar::new(gpui_kit::ElementId::Name(
                             format!("profile.{id}.avatar").into(),
                         ))
                         .size(AvatarSize::Lg)
                         .fallback(initial)
                         .aria_label(profile.display_name.clone()),
-                    )
+                        &profile.user_id,
+                        cx,
+                    ))
                     .child(
                         div()
                             .absolute()

@@ -23,9 +23,15 @@ fn main() -> ExitCode {
         }
         Some("--help" | "-h") => {
             println!(
-                "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help]\n\n    --offline    open the last account's cache without connecting",
+                "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help | <link>]\n\n    --offline    open the last account's cache without connecting\n    <link>       open a mattermost:// link, such as the SSO hand-off",
                 env!("CARGO_PKG_VERSION")
             );
+            ExitCode::SUCCESS
+        }
+        // A deep link, such as the SSO hand-off a browser passes to
+        // `matty mattermost://…` on systems that launch the handler.
+        Some(link) if link.contains("://") => {
+            matty_app::run_with_links(vec![link.to_string()]);
             ExitCode::SUCCESS
         }
         Some(other) => {
