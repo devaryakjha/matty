@@ -9,6 +9,7 @@
 pub mod account;
 pub mod actions;
 pub mod attachments;
+pub mod badge;
 pub mod channel;
 pub mod channel_settings;
 pub mod deeplink;
@@ -22,6 +23,7 @@ pub mod live;
 pub mod logging;
 pub mod login;
 mod main_window;
+pub mod menu;
 pub mod preview;
 pub mod profile;
 pub mod rail;
@@ -99,6 +101,7 @@ pub fn run_with_links(links: Vec<String>) {
             follow_log_level(&settings, logs, cx);
         }
         actions::bind(cx);
+        menu::init(cx);
         cx.set_global(deeplink::Incoming(links_rx));
         open_main_window(cx);
         cx.activate(true);
