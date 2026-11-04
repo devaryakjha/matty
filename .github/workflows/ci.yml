@@ -256,7 +256,16 @@ jobs:
           shared-key: integration
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.server == '12.0' }}
       - name: Start the server in the background
-        run: docker compose -f docker/compose.yml up -d
+        # Docker Hub now and then refuses an anonymous pull ("unauthorized:
+        # authentication required"), so the pull is retried.
+        run: |
+          for attempt in 1 2 3 4; do
+            docker compose -f docker/compose.yml pull --quiet && break
+            [ "$attempt" = 4 ] && exit 1
+            echo "Pull failed, retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          docker compose -f docker/compose.yml up -d
       - name: Build the tests while it starts
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync --no-run
       - name: Wait for the server
