@@ -27,6 +27,7 @@ regex.workspace = true
 emojis.workspace = true
 matty-api.workspace = true
 matty-sync.workspace = true
+matty-markdown.workspace = true
 async-channel.workspace = true
 url.workspace = true
 jiff.workspace = true

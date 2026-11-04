@@ -4550,6 +4550,7 @@ dependencies = [
  "gpuicn",
  "jiff",
  "matty-api",
+ "matty-markdown",
  "matty-sync",
  "regex",
  "serde",

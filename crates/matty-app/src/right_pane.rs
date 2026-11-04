@@ -13,7 +13,7 @@ use gpui_kit::{
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
 use crate::channel::{
-    ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, post_markers,
+    ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, plain_text, post_markers,
     reaction_tooltip,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
@@ -604,12 +604,20 @@ impl RightPaneView {
                     .ok();
             })
         });
+        let markdown_body = post.body.clone();
         let mut items = vec![
             MenuItem::submenu("thread.context.react", "Add reaction", reactions),
             MenuItem::separator(),
             MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
+            MenuItem::new("thread.context.copy-markdown", "Copy as Markdown").on_click(
+                move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        markdown_body.to_string(),
+                    ))
+                },
+            ),
         ];
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
