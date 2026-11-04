@@ -4,9 +4,9 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -16,7 +16,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant, style_button},
     collapsible::{collapsible, collapsible_trigger},
     menu::{Menu, MenuItem, MenuState},
-    sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_skeleton},
+    sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_action, sidebar_menu_skeleton},
     theme::UiTheme,
 };
 
@@ -182,6 +182,58 @@ impl SidebarModel {
         Some(order[next].clone())
     }
 
+    fn row_mut(&mut self, id: &str) -> Option<&mut ChannelRow> {
+        self.categories
+            .iter_mut()
+            .flat_map(|category| category.rows.iter_mut())
+            .find(|row| row.id.as_ref() == id)
+    }
+
+    /// Whether `id` sits in the Favorites category.
+    pub fn is_favorite(&self, id: &str) -> bool {
+        self.categories.iter().any(|category| {
+            category.id == FAVORITES_ID && category.rows.iter().any(|row| row.id.as_ref() == id)
+        })
+    }
+
+    /// Takes `id` out of whatever category holds it.
+    pub fn remove(&mut self, id: &str) -> Option<ChannelRow> {
+        for category in &mut self.categories {
+            if let Some(index) = category.rows.iter().position(|row| row.id.as_ref() == id) {
+                return Some(category.rows.remove(index));
+            }
+        }
+        None
+    }
+
+    /// Moves `id` into Favorites, or back to the category its kind lives
+    /// in (`channels` or `direct`), appending at the end as Mattermost does.
+    /// Missing categories are created so the row never disappears.
+    pub fn set_favorite(&mut self, id: &str, favorite: bool) {
+        let Some(row) = self.remove(id) else { return };
+        let (target_id, target_name) = if favorite {
+            (FAVORITES_ID, "Favorites")
+        } else if matches!(
+            row.kind,
+            ChannelKind::Direct { .. } | ChannelKind::Group { .. }
+        ) {
+            (DIRECT_ID, "Direct messages")
+        } else {
+            (CHANNELS_ID, "Channels")
+        };
+        match self.categories.iter_mut().find(|c| c.id == target_id) {
+            Some(category) => category.rows.push(row),
+            None => {
+                let category = Category::new(target_id, target_name, vec![row]);
+                if favorite {
+                    self.categories.insert(0, category);
+                } else {
+                    self.categories.push(category);
+                }
+            }
+        }
+    }
+
     /// Clears every unread mark and mention count.
     pub fn mark_all_read(&mut self) {
         for row in self
@@ -204,6 +256,15 @@ fn element_id(prefix: &str, id: &SharedString) -> gpui_kit::ElementId {
 /// What the sidebar asks the window to do.
 /// The `selected` id that marks the Threads row, which is not a channel.
 pub const THREADS_ID: &str = "~threads";
+/// The hover group of a channel row: its options button shows and its
+/// count hides while the pointer is over the row.
+const ROW_GROUP: &str = "sidebar-row";
+/// The Favorites category, as Mattermost names it.
+pub const FAVORITES_ID: &str = "favorites";
+/// The default category for channels.
+pub const CHANNELS_ID: &str = "channels";
+/// The default category for direct and group messages.
+pub const DIRECT_ID: &str = "direct";
 /// The `selected` id that marks the Drafts row.
 pub const DRAFTS_ID: &str = "~drafts";
 
@@ -221,6 +282,17 @@ pub enum SidebarEvent {
     BrowseChannels,
     /// "Create channel" from the sidebar's plus menu.
     CreateChannel,
+    /// "Mark as read" from a row's menu; the row is already clear.
+    MarkRead(SharedString),
+    /// Favorite or unfavorite a channel from its row menu; the row has
+    /// already moved between Favorites and its home category.
+    SetFavorite { id: SharedString, favorite: bool },
+    /// Mute or unmute a channel from its row menu; the row already shows it.
+    SetMuted { id: SharedString, muted: bool },
+    /// "Leave channel" from a channel row's menu.
+    Leave(SharedString),
+    /// "Close conversation" from a direct or group message row's menu.
+    Close(SharedString),
 }
 
 pub struct SidebarView {
@@ -228,6 +300,8 @@ pub struct SidebarView {
     team_name: SharedString,
     /// The plus menu: new message, browse, create.
     menu: Entity<MenuState>,
+    /// The per-row options menu, refilled for the row it opens on.
+    row_menu: Entity<MenuState>,
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
@@ -268,11 +342,123 @@ impl SidebarView {
                 cx,
             )
         });
+        let row_menu = cx.new(|cx| MenuState::new([], cx));
         Self {
             model,
             team_name: team_name.into(),
             menu,
+            row_menu,
         }
+    }
+
+    /// Clears one row's unread mark, as "Mark as read" does.
+    pub fn mark_read(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(row) = self.model.row_mut(id) {
+            row.unread = false;
+            row.mentions = 0;
+            cx.notify();
+        }
+    }
+
+    pub fn set_muted(&mut self, id: &str, muted: bool, cx: &mut Context<Self>) {
+        if let Some(row) = self.model.row_mut(id) {
+            row.muted = muted;
+            cx.notify();
+        }
+    }
+
+    pub fn set_favorite(&mut self, id: &str, favorite: bool, cx: &mut Context<Self>) {
+        self.model.set_favorite(id, favorite);
+        cx.notify();
+    }
+
+    /// The row menu's items for `row`: mark read while unread, favorite,
+    /// mute, then leave or close.
+    fn row_items(&self, row: &ChannelRow, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.weak_entity();
+        let emit = |id: &'static str, label: &str, event: SidebarEvent| {
+            let view = view.clone();
+            MenuItem::new(id, label.to_string()).on_click(move |_, _, cx| {
+                view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            })
+        };
+        let direct = matches!(
+            row.kind,
+            ChannelKind::Direct { .. } | ChannelKind::Group { .. }
+        );
+        let favorite = self.model.is_favorite(&row.id);
+        let mut items = Vec::new();
+        if row.unread {
+            items.push(emit(
+                "sidebar.row.read",
+                "Mark as read",
+                SidebarEvent::MarkRead(row.id.clone()),
+            ));
+        }
+        items.push(emit(
+            "sidebar.row.favorite",
+            if favorite {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            },
+            SidebarEvent::SetFavorite {
+                id: row.id.clone(),
+                favorite: !favorite,
+            },
+        ));
+        items.push(emit(
+            "sidebar.row.mute",
+            match (row.muted, direct) {
+                (true, true) => "Unmute conversation",
+                (true, false) => "Unmute channel",
+                (false, true) => "Mute conversation",
+                (false, false) => "Mute channel",
+            },
+            SidebarEvent::SetMuted {
+                id: row.id.clone(),
+                muted: !row.muted,
+            },
+        ));
+        items.push(MenuItem::separator());
+        items.push(if direct {
+            emit(
+                "sidebar.row.close",
+                "Close conversation",
+                SidebarEvent::Close(row.id.clone()),
+            )
+        } else {
+            emit(
+                "sidebar.row.leave",
+                "Leave channel",
+                SidebarEvent::Leave(row.id.clone()),
+            )
+        });
+        items
+    }
+
+    fn open_row_menu(
+        &mut self,
+        id: &SharedString,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self
+            .model
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| &row.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let items = self.row_items(&row, cx);
+        self.row_menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.open_at(Some(at), window, cx);
+        });
     }
 
     pub fn model(&self) -> &SidebarModel {
@@ -476,14 +662,20 @@ impl SidebarView {
         if row.muted && !selected {
             item = item.opacity(0.6);
         }
+        // The count or dot hides while the row is hovered, where the options
+        // button takes its place, as in Mattermost.
         if row.mentions > 0 {
             item = item.trailing(
-                Badge::count(row.mentions, 99)
-                    .h(theme.space(4.5))
-                    .min_w(theme.space(4.5))
-                    .px(theme.space(1.5))
-                    .text_size(theme.text(11.))
-                    .line_height(theme.text(11.)),
+                div()
+                    .group_hover(ROW_GROUP, |style| style.invisible())
+                    .child(
+                        Badge::count(row.mentions, 99)
+                            .h(theme.space(4.5))
+                            .min_w(theme.space(4.5))
+                            .px(theme.space(1.5))
+                            .text_size(theme.text(11.))
+                            .line_height(theme.text(11.)),
+                    ),
             );
         } else if row.unread && !row.muted {
             item = item.trailing(
@@ -491,10 +683,54 @@ impl SidebarView {
                     .size(theme.space(1.5))
                     .rounded_full()
                     .bg(theme.colors.sidebar_foreground)
-                    .mr(theme.space(1.)),
+                    .mr(theme.space(1.))
+                    .group_hover(ROW_GROUP, |style| style.invisible()),
             );
         }
-        item
+        let menu_id = row.id.clone();
+        let context_id = row.id.clone();
+        let options = sidebar_menu_action(
+            element_id("sidebar.channel.options", &row.id),
+            format!("Options for {}", row.name),
+            cx,
+        )
+        .child(
+            lucide(LucideIcon::Ellipsis)
+                .size(scaled(&theme, 14.))
+                .text_color(theme.colors.muted_foreground),
+        )
+        .on_click(
+            cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                // The button floats over the row, whose own click would
+                // otherwise fire too and open the channel.
+                cx.stop_propagation();
+                this.open_row_menu(&menu_id, event.position(), window, cx)
+            }),
+        );
+        div()
+            .id(element_id("sidebar.channel.row", &row.id))
+            .group(ROW_GROUP)
+            .relative()
+            .w_full()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    this.open_row_menu(&context_id, event.position, window, cx)
+                }),
+            )
+            .child(item)
+            .child(
+                div()
+                    .absolute()
+                    .right(theme.space(1.))
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .invisible()
+                    .group_hover(ROW_GROUP, |style| style.visible())
+                    .child(options),
+            )
     }
 
     /// DESIGN.md §4: the Threads and Drafts entries sit above the categories,
@@ -655,13 +891,59 @@ impl Render for SidebarView {
         for category in &categories {
             sidebar = sidebar.child(self.category(category, window, cx));
         }
-        sidebar
+        sidebar.child(Menu::new(&self.row_menu, "Channel options").context_area(div()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorite_moves_rows_between_categories() {
+        let mut model = SidebarModel {
+            loading: false,
+            selected: None,
+            unread_threads: 0,
+            drafts: 0,
+            categories: vec![
+                Category::new(FAVORITES_ID, "Favorites", vec![]),
+                Category::new(
+                    CHANNELS_ID,
+                    "Channels",
+                    vec![
+                        ChannelRow::new("a", "a", ChannelKind::Public),
+                        ChannelRow::new("b", "b", ChannelKind::Public),
+                    ],
+                ),
+                Category::new(
+                    DIRECT_ID,
+                    "Direct messages",
+                    vec![ChannelRow::new(
+                        "d",
+                        "Dana",
+                        ChannelKind::Direct {
+                            presence: Presence::Online,
+                        },
+                    )],
+                ),
+            ],
+        };
+        assert!(!model.is_favorite("a"));
+        model.set_favorite("a", true);
+        assert!(model.is_favorite("a"));
+        assert_eq!(model.categories[1].rows.len(), 1);
+        model.set_favorite("d", true);
+        assert_eq!(model.categories[0].rows.len(), 2);
+        model.set_favorite("a", false);
+        model.set_favorite("d", false);
+        assert_eq!(model.categories[0].rows.len(), 0);
+        // Back home, appended after the rows that stayed.
+        assert_eq!(model.categories[1].rows[1].id, "a");
+        assert_eq!(model.categories[2].rows[0].id, "d");
+        assert_eq!(model.remove("b").map(|row| row.id), Some("b".into()));
+        assert!(model.remove("b").is_none());
+    }
 
     fn model(selected: &str) -> SidebarModel {
         SidebarModel {

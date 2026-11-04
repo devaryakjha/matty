@@ -366,6 +366,22 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   dialogs: Cmd/Ctrl+Shift+J for Browse channels and Cmd/Ctrl+Shift+N for
   Create channel (`design-35`). The shortcut sheet lists them from the
   same table, so the sheet and the bindings cannot drift apart.
+- **Team rail states** (§4 above, PLAN §3 M1): the rail is its own view,
+  `rail.rs`, with a `Team` per square. The current team is a primary
+  button, so its hover stays primary; the others are ghost buttons on the
+  sidebar accent. A team with mentions wears a count badge on its top-right
+  corner and an unread team a dot, each ringed in the rail's color so it
+  stands off the tile (`design-36`). Clicking a square makes it current and
+  emits `RailEvent::Select`; the dashed square emits `RailEvent::Join`.
+  Switching and joining teams are sync's (M2).
+- **Channel row options** (PLAN §3 M1): hovering a sidebar row swaps its
+  count or dot for a "…" button, gpuicn's `sidebar_menu_action`, and the
+  button or a right-click opens one shared menu for that row: Mark as read
+  (while unread), Add to or Remove from favorites, Mute or Unmute, then
+  Leave channel or Close conversation (`design-37`). Favoriting moves the
+  row between Favorites and its home category at once, and the header
+  star follows; muting dims the row as before. The button stops its click
+  so the row beneath does not open the channel.
 
 ## 5. Components
 
