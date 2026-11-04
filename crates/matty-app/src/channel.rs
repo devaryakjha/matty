@@ -385,7 +385,41 @@ impl ReplySummary {
     }
 }
 
+/// A row as it compares across edits: a post by its id, since its index
+/// shifts when a post above it goes.
+#[derive(Debug, PartialEq, Eq)]
+enum RowKey {
+    Post(SharedString),
+    Other(Row),
+}
+
+/// The rows of `before` that differ from `after`, and how many rows of
+/// `after` take their place: everything between the common head and tail.
+fn changed_rows(before: &[RowKey], after: &[RowKey]) -> (std::ops::Range<usize>, usize) {
+    let head = before
+        .iter()
+        .zip(after)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let tail = before[head..]
+        .iter()
+        .rev()
+        .zip(after[head..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    (head..before.len() - tail, after.len() - head - tail)
+}
+
 impl ChannelModel {
+    fn row_keys(&self, rows: &[Row]) -> Vec<RowKey> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Post(index) => RowKey::Post(self.posts[*index].id.clone()),
+                other => RowKey::Other(other.clone()),
+            })
+            .collect()
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(self.posts.len() + 4);
         rows.push(Row::History);
@@ -1255,20 +1289,40 @@ impl ChannelView {
         self.mutate_post(&id, |current| *current = post, cx);
     }
 
-    /// Removes a post the server deleted; the rows above keep their place.
-    pub fn remove_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut model) = self.model.clone() else {
+    /// Removes a post the server deleted. Only its rows leave the list, so
+    /// the scroll and the New messages line stay where they were (#164).
+    pub fn remove_post(&mut self, id: &SharedString, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_mut() else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
             return;
         };
+        let before = model.row_keys(&self.rows);
         model.posts.remove(at);
         model.first_unread = model.first_unread.and_then(|first| {
             let first = if at < first { first - 1 } else { first };
             (first < model.posts.len()).then_some(first)
         });
-        self.set_model(Some(model), window, cx);
+        self.rows = model.rows();
+        let (range, count) = changed_rows(&before, &model.row_keys(&self.rows));
+        let rows = self.rows.len();
+        self.list.update(cx, |list, cx| {
+            if !list.splice(range.clone(), count, cx) {
+                list.reset(rows, cx);
+            }
+        });
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| &editing.post == id)
+        {
+            self.editing = None;
+        }
+        if self.selection.is_some_and(|row| row >= range.start) {
+            self.selection = None;
+        }
+        cx.notify();
     }
 
     /// In preview, a couple of posts land in #general a while after it
@@ -3737,6 +3791,46 @@ mod tests {
                 Row::Newer,
             ]
         );
+    }
+
+    #[test]
+    fn removing_a_post_changes_only_its_rows() {
+        let mut channel = ChannelModel {
+            purpose: None,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![
+                post("1", "Yesterday"),
+                post("2", "Today"),
+                post("3", "Today"),
+                post("4", "Today"),
+            ],
+            first_unread: Some(2),
+        };
+        let before = channel.row_keys(&channel.rows());
+        // The post above the New messages line goes: one row, and the
+        // marker stays on post 3.
+        channel.posts.remove(1);
+        channel.first_unread = Some(1);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (4..5, 0));
+        // The only post of a day takes its divider with it.
+        let before = after;
+        channel.posts.remove(0);
+        channel.first_unread = Some(0);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (1..3, 0));
     }
 
     #[test]
