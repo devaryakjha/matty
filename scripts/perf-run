@@ -12,6 +12,9 @@ The journey:
      times. With --server the first visits are uncached, the way back cached.
   3. Open the long channel with the quick switcher and scroll the transcript
      up and back down with the wheel.
+  3b. Split view (#222): open a second pane, show the long channel in it as
+     well, and scroll the two panes in turn, up and back down, then close
+     the second pane.
   4. Type a sentence into the composer, one key at a time, and clear it.
   5. Move to another channel, let the window settle, then touch nothing for
      --idle seconds (default 10). The report asserts that no frame was drawn.
@@ -53,6 +56,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WINDOW = (1200, 800)
+# The middle of split view's two panes, right of the server rail and the
+# 240px sidebar.
+SIDE = 300
+SPLIT_LEFT_X = SIDE + (WINDOW[0] - SIDE) // 4
+SPLIT_RIGHT_X = SIDE + 3 * (WINDOW[0] - SIDE) // 4
 SENTENCE = "the quick brown fox jumps over the lazy dog"
 
 # PLAN §9: (key, metric, budget text, check on the summary or None).
@@ -64,6 +72,8 @@ BUDGETS = [
     ("switch_uncached", "Channel switch (uncached) to messages", "< 300ms",
      lambda s: s["p99"] < 300),
     ("scroll_frame", "Scroll frame time (long channel)", "p99 < 12ms",
+     lambda s: s["p99"] < 12),
+    ("split_scroll_frame", "Scroll frame time, two panes (split view)", "p99 < 12ms",
      lambda s: s["p99"] < 12),
     ("key_to_glyph", "Keypress to glyph in composer", "< 16ms",
      lambda s: s["p99"] < 16),
@@ -344,6 +354,7 @@ def xdo_journey(args, display, pid, perf_log):
     settle(perf_log, 0.3)
 
     xdo.shot("1-scrolled")
+    notes = {"split": split_journey(args, xdo, perf_log)}
     for _ in range(2):
         glyphs = count(perf_log, "key_to_glyph")
         xdo.click(WINDOW[0] * 3 // 5, WINDOW[1] - 72)  # the composer
@@ -357,7 +368,7 @@ def xdo_journey(args, display, pid, perf_log):
     xdo.key("ctrl+a")
     xdo.key("BackSpace")
     # The composer keeps focus: its caret blinks.
-    notes = {"focused": idle_window(args, pid, args.idle_focused)}
+    notes["focused"] = idle_window(args, pid, args.idle_focused)
 
     xdo.key("alt+Down")
     settle(perf_log, 0.3)
@@ -365,6 +376,48 @@ def xdo_journey(args, display, pid, perf_log):
     xdo.click(WINDOW[0] // 6, 16)
     notes.update(idle_window(args, pid, args.idle))
     return notes
+
+
+def split_journey(args, xdo, perf_log):
+    """Step 3b: both panes of split view show the long channel and scroll
+    in turn. Returns the window the scrolling took, for the report."""
+    # Cmd/Ctrl+\ opens the channel before this one beside it and focuses
+    # it; the switcher then opens the long channel in that pane.
+    # The shortcut needs focus in the window: the composer has it.
+    xdo.click(WINDOW[0] * 3 // 5, WINDOW[1] - 72)
+    settle(perf_log, 0.3)
+    xdo.key("ctrl+backslash")
+    settle(perf_log, 0.5)
+    xdo.key("ctrl+k")
+    settle(perf_log, 0.3)
+    xdo.type(args.long_channel, 40)
+    settle(perf_log, 0.5)
+    xdo.key("Return")
+    settle(perf_log, 2 if args.server else 0.5, quiet=0.6)
+    xdo.key("Escape")
+    settle(perf_log, 0.3)
+    xdo.shot("1b-split")
+    left = SPLIT_LEFT_X, WINDOW[1] // 2
+    right = SPLIT_RIGHT_X, WINDOW[1] // 2
+    chunk = max(1, args.scroll // 6)
+    start = time.time()
+    for up in (True, False):
+        done = 0
+        while done < args.scroll:
+            clicks = min(chunk, args.scroll - done)
+            for x, y in (left, right):
+                xdo.move(x, y)
+                xdo.scroll(up, clicks, 16)
+            done += clicks
+        settle(perf_log, 0.3)
+    end = time.time()
+    xdo.shot("1c-split-scrolled")
+    # Closes the second pane (it has focus), as the user would.
+    xdo.click(*right)
+    settle(perf_log, 0.3)
+    xdo.key("ctrl+alt+w")
+    settle(perf_log, 0.5)
+    return {"start_ms": start * 1000, "end_ms": end * 1000}
 
 
 def manual_journey(args, pid):
@@ -376,12 +429,20 @@ def manual_journey(args, pid):
         f"Press Command-K, type {args.long_channel}, press Return, then scroll the "
         "transcript up a long way and back down."
     )
+    split_start = time.time()
+    person.step(
+        f"Press Command-\\ to open split view, then Command-K, type {args.long_channel} "
+        "and press Return to show it in the second pane too. Scroll the left pane up "
+        "a long way and back down, then the right pane, then both in turn. Press "
+        "Command-Option-W to close the second pane."
+    )
+    split = {"start_ms": split_start * 1000, "end_ms": time.time() * 1000}
     person.step(
         "Click into the composer and type a sentence at an even pace, then select "
         "it all and delete it. Do not send it. Leave the composer focused."
     )
     log(f"idle, composer focused: hands off for {args.settle + args.idle_focused:.0f} s")
-    notes = {"focused": idle_window(args, pid, args.idle_focused)}
+    notes = {"split": split, "focused": idle_window(args, pid, args.idle_focused)}
     person.step(
         "Press Option-Down once, click an empty spot in the title bar, then let "
         "go of the mouse and keyboard."
@@ -408,10 +469,17 @@ def summarize(events, notes):
         values = [e["ms"] for e in switches if e.get("cached") is cached]
         if values:
             summary[key] = stats(values)
-    scroll = [e["dur"] for e in frames if e.get("input") == "scroll" and e["since_input"] < 100]
-    if scroll:
-        summary["scroll_frame"] = stats(scroll)
-        summary["scroll_frame"]["over_16ms"] = sum(1 for d in scroll if d > 1000 / 60)
+    scrolled = [e for e in frames if e.get("input") == "scroll" and e["since_input"] < 100]
+    split = notes.get("split", {})
+    in_split = (lambda e: split["start_ms"] - epoch <= e["t"] <= split["end_ms"] - epoch) \
+        if epoch is not None and "start_ms" in split else (lambda e: False)
+    for key, values in (
+        ("scroll_frame", [e["dur"] for e in scrolled if not in_split(e)]),
+        ("split_scroll_frame", [e["dur"] for e in scrolled if in_split(e)]),
+    ):
+        if values:
+            summary[key] = stats(values)
+            summary[key]["over_16ms"] = sum(1 for d in values if d > 1000 / 60)
     glyphs = [e["ms"] for e in events if e.get("ev") == "key_to_glyph"]
     if glyphs:
         summary["key_to_glyph"] = stats(glyphs)

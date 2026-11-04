@@ -3,7 +3,10 @@
 //! the panes and marks the focused one's channel read, the second pane's
 //! composer sends into its own channel, sidebar clicks open in the focused
 //! pane, the panes swap, and closing the focused pane ends the split and
-//! forgets it.
+//! forgets it. What the second pane asks for lands in it: a notification
+//! about its channel focuses it, a direct message it opens opens there,
+//! leaving or archiving its channel closes it, and its toasts join the
+//! main window's.
 #![allow(clippy::unwrap_used)]
 
 use gpui_kit::{AnyView, IntoElement, Modifiers, MouseButton, Render, VisualTestContext};
@@ -152,4 +155,168 @@ fn two_channels_side_by_side_follow_focus(cx: &mut gpui_kit::TestAppContext) {
     assert!(!labels(&mut cx).iter().any(|l| l.starts_with("Right pane")));
     let saved = cx.update(|_, cx| SettingsStore::global(cx).read(cx).get().splits.len());
     assert_eq!(saved, 0);
+}
+
+/// The preview's main window, with `second` saved as its split.
+fn split_window(cx: &mut gpui_kit::TestAppContext, second: &str) -> (VisualTestContext, AnyView) {
+    matty_app::preview::set("1".into());
+    cx.update(matty_app::test_support::init);
+    let second = second.to_owned();
+    cx.update(|cx| {
+        SettingsStore::global(cx).update(cx, |store, cx| {
+            store.update(cx, |settings| {
+                settings.splits = vec![SplitPlace {
+                    server: String::new(),
+                    channel_id: second,
+                    ratio: 0.5,
+                }]
+            })
+        })
+    });
+    let mut main = None;
+    let window = cx.add_window(|window, cx| {
+        let view = matty_app::test_support::main_window(window, cx);
+        main = Some(view.clone());
+        Root(view)
+    });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    (cx, main.unwrap())
+}
+
+fn second(cx: &mut VisualTestContext, main: &AnyView) -> Option<String> {
+    cx.update(|_, cx| matty_app::test_support::split(main, cx))
+        .map(|(channel, _)| channel)
+}
+
+fn first(cx: &mut VisualTestContext, main: &AnyView) -> Option<String> {
+    cx.update(|_, cx| matty_app::test_support::main_channel(main, cx))
+}
+
+#[gpui_kit::test]
+fn a_notification_about_the_second_channel_focuses_its_pane(cx: &mut gpui_kit::TestAppContext) {
+    let (mut cx, main) = split_window(cx, "town-square");
+    assert!(has(&mut cx, "Left pane, general, focused"));
+    let post = matty_app::preview::channel("town-square")
+        .and_then(|channel| channel.posts.first().map(|post| post.id.to_string()))
+        .unwrap();
+
+    cx.update(|window, cx| {
+        matty_app::test_support::click_notification(&main, "town-square", &post, window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("general"));
+    assert_eq!(second(&mut cx, &main).as_deref(), Some("town-square"));
+    assert!(cx.update(|_, cx| matty_app::test_support::second_pane_focused(&main, cx)));
+    assert!(has(&mut cx, "Right pane, town-square, focused"));
+
+    // A notification about another channel still opens in the main pane.
+    cx.update(|window, cx| {
+        matty_app::test_support::click_notification(&main, "design", "", window, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("design"));
+    assert_eq!(second(&mut cx, &main).as_deref(), Some("town-square"));
+}
+
+#[gpui_kit::test]
+fn a_direct_message_asked_for_in_the_second_pane_opens_there(cx: &mut gpui_kit::TestAppContext) {
+    let (mut cx, main) = split_window(cx, "town-square");
+    cx.update(|_, cx| {
+        matty_app::test_support::split_ask(
+            &main,
+            matty_app::popout::Ask::OpenDirect("Lena Fischer".into()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(second(&mut cx, &main).as_deref(), Some("lena"));
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("general"));
+    assert!(has(&mut cx, "Right pane, Lena Fischer, focused"));
+
+    // So does a channel from the quick switcher.
+    let keys = if cfg!(target_os = "macos") {
+        "cmd-k"
+    } else {
+        "ctrl-k"
+    };
+    cx.simulate_keystrokes(keys);
+    cx.run_until_parked();
+    // The field takes focus on the frame after the dialog mounts, which a
+    // test window never asks for; a click puts it there.
+    click(&mut cx, "Search commands");
+    cx.simulate_input("help-desk");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(second(&mut cx, &main).as_deref(), Some("help-desk"));
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("general"));
+}
+
+#[gpui_kit::test]
+fn leaving_or_archiving_the_second_channel_closes_its_pane(cx: &mut gpui_kit::TestAppContext) {
+    let (mut cx, main) = split_window(cx, "town-square");
+    let saved = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| SettingsStore::global(cx).read(cx).get().splits.len())
+    };
+    cx.simulate_keystrokes("f6");
+    cx.run_until_parked();
+
+    // Leaving it closes the pane and forgets the split; the main pane
+    // stays where it was.
+    cx.update(|_, cx| {
+        matty_app::test_support::split_ask(
+            &main,
+            matty_app::popout::Ask::Leave("town-square".into()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(second(&mut cx, &main), None);
+    assert_eq!(saved(&mut cx), 0);
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("general"));
+    assert!(!labels(&mut cx).iter().any(|l| l.starts_with("Right pane")));
+    assert!(
+        !has(&mut cx, "town-square"),
+        "the row goes from the sidebar"
+    );
+
+    // Archiving it does too.
+    click(&mut cx, "help-desk");
+    let keys = if cfg!(target_os = "macos") {
+        "cmd-\\"
+    } else {
+        "ctrl-\\"
+    };
+    cx.simulate_keystrokes(keys);
+    cx.run_until_parked();
+    assert_eq!(second(&mut cx, &main).as_deref(), Some("general"));
+    cx.update(|_, cx| {
+        matty_app::test_support::split_ask(
+            &main,
+            matty_app::popout::Ask::Archive("general".into()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(second(&mut cx, &main), None);
+    assert_eq!(saved(&mut cx), 0);
+    assert_eq!(first(&mut cx, &main).as_deref(), Some("help-desk"));
+}
+
+#[gpui_kit::test]
+fn the_second_pane_toasts_in_the_main_window(cx: &mut gpui_kit::TestAppContext) {
+    let (mut cx, main) = split_window(cx, "town-square");
+    let shown = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| matty_app::test_support::toasts_shown(&main, cx))
+    };
+    assert!(!shown(&mut cx));
+    // The preview has no server, so the link cannot be copied: a toast.
+    let post = matty_app::preview::channel("town-square")
+        .and_then(|channel| channel.posts.first().map(|post| post.id.to_string()))
+        .unwrap();
+    cx.update(|_, cx| matty_app::test_support::split_copy_link(&main, &post, cx));
+    cx.run_until_parked();
+    assert!(shown(&mut cx), "one toast stack, the main window's");
 }
