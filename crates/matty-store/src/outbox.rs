@@ -25,6 +25,9 @@ pub struct Outgoing {
     pub message: String,
     /// Uploaded file ids.
     pub file_ids: Vec<String>,
+    /// Files attached while offline, by local path: they upload before the
+    /// post goes, each joining `file_ids` once it is up ([`file_up`]).
+    pub local_files: Vec<String>,
     /// Post properties.
     pub props: HashMap<String, Value>,
     /// When it was written, on the local clock (ms).
@@ -36,7 +39,7 @@ pub struct Outgoing {
 }
 
 const COLUMNS: &str = "pending_post_id, channel_id, root_id, message, file_ids, props, created_at,
-    attempts, last_error";
+    attempts, last_error, local_files";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<Outgoing> {
     let file_ids: String = row.get(4)?;
@@ -51,13 +54,14 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Outgoing> {
         created_at: row.get(6)?,
         attempts: row.get(7)?,
         last_error: row.get(8)?,
+        local_files: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
     })
 }
 
 /// Queues a send. Queuing the same id again changes nothing.
 pub fn push(conn: &Connection, outgoing: &Outgoing) -> Result<()> {
     conn.prepare_cached(&format!(
-        "INSERT INTO outbox ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO outbox ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT (pending_post_id) DO NOTHING"
     ))?
     .execute(params![
@@ -69,7 +73,8 @@ pub fn push(conn: &Connection, outgoing: &Outgoing) -> Result<()> {
         serde_json::to_string(&outgoing.props).unwrap_or_else(|_| "{}".into()),
         outgoing.created_at,
         outgoing.attempts,
-        outgoing.last_error
+        outgoing.last_error,
+        serde_json::to_string(&outgoing.local_files).unwrap_or_else(|_| "[]".into())
     ])?;
     Ok(())
 }
@@ -119,6 +124,35 @@ pub fn edit(conn: &Connection, pending_post_id: &str, message: &str) -> Result<b
             .execute(params![pending_post_id, message])?;
     }
     Ok(changed > 0)
+}
+
+/// One of a send's offline files is on the server: its id joins the
+/// send's file ids and its path leaves `local_files`, so a later attempt
+/// does not upload it again. `false` when the send is gone or the file was
+/// not waiting.
+pub fn file_up(
+    conn: &Connection,
+    pending_post_id: &str,
+    path: &str,
+    file_id: &str,
+) -> Result<bool> {
+    let Some(mut outgoing) = get(conn, pending_post_id)? else {
+        return Ok(false);
+    };
+    let Some(at) = outgoing.local_files.iter().position(|local| local == path) else {
+        return Ok(false);
+    };
+    outgoing.local_files.remove(at);
+    outgoing.file_ids.push(file_id.to_owned());
+    conn.prepare_cached(
+        "UPDATE outbox SET file_ids = ?2, local_files = ?3 WHERE pending_post_id = ?1",
+    )?
+    .execute(params![
+        pending_post_id,
+        serde_json::to_string(&outgoing.file_ids).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&outgoing.local_files).unwrap_or_else(|_| "[]".into())
+    ])?;
+    Ok(true)
 }
 
 /// Records an attempt starting: one more try, no error.

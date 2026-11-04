@@ -852,8 +852,6 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
     ]
 }
 
-/// What the composer tray shows after Attach: a thumbnail, a file still
-/// uploading and one that failed.
 /// The team's public channels for Browse: the sidebar's plus five more.
 pub fn directory() -> Vec<DirectoryChannel> {
     let joined: Vec<SharedString> = sidebar()
@@ -971,6 +969,8 @@ pub fn empty_channel(
     }
 }
 
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed; offline, all three queued.
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -978,7 +978,7 @@ pub fn uploads() -> Vec<Upload> {
     )
     .ready(48_312);
     mockup.name = "sidebar-mockup.png".into();
-    vec![
+    let uploads = vec![
         mockup,
         Upload {
             id: "u-notes".into(),
@@ -986,6 +986,7 @@ pub fn uploads() -> Vec<Upload> {
             size: 2_516_582,
             source: UploadSource::Path("release-notes.pdf".into()),
             status: AttachmentStatus::Uploading(0.6),
+            queued: false,
         },
         Upload {
             id: "u-log".into(),
@@ -993,8 +994,15 @@ pub fn uploads() -> Vec<Upload> {
             size: 918_000,
             source: UploadSource::Path("matty-2026-11-03.log".into()),
             status: AttachmentStatus::Failed,
+            queued: false,
         },
-    ]
+    ];
+    // `MATTY_PREVIEW=offline`: each file waits for the connection (#194).
+    if connection() == crate::main_window::ConnectionState::Offline {
+        uploads.into_iter().map(Upload::queued).collect()
+    } else {
+        uploads
+    }
 }
 
 /// A screen recording over the default 100 MB limit, which the tray
@@ -1006,6 +1014,7 @@ pub fn oversize_upload() -> Upload {
         size: 251_658_240,
         source: UploadSource::Path("screen-recording.mov".into()),
         status: AttachmentStatus::Uploading(0.),
+        queued: false,
     }
 }
 

@@ -1896,6 +1896,14 @@ impl ChannelView {
         cx.notify();
     }
 
+    /// Sync is offline: the file waits in the tray, queued (#194).
+    pub fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tray.set_queued(id) {
+            self.send_queued(window, cx);
+        }
+        cx.notify();
+    }
+
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
         self.schedule_draft_save(cx);

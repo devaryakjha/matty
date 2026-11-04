@@ -116,6 +116,9 @@ pub struct UploadJob {
     pub name: String,
     pub source: crate::attachments::UploadSource,
     file_id: Option<String>,
+    /// Waiting on this computer for the connection (#194): it goes with
+    /// its post through the outbox, or uploads once back online.
+    queued: Option<PathBuf>,
 }
 
 impl UploadJob {
@@ -129,6 +132,7 @@ impl UploadJob {
             name: name.into(),
             source,
             file_id: None,
+            queued: None,
         }
     }
 }
@@ -212,6 +216,9 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// Tray files queued while offline, to upload now that the connection
+    /// is back (#194).
+    pub resume_uploads: Vec<SharedString>,
     /// The server's `MaxFileSize`, for the trays to check files against.
     pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
@@ -520,6 +527,20 @@ impl Live {
         self.uploads.insert(id.to_owned(), job);
     }
 
+    /// Whether sync is offline, so a new tray file waits on this computer
+    /// instead of failing to upload (#194).
+    pub fn is_offline(&self) -> bool {
+        self.offline || crate::offline()
+    }
+
+    /// Keeps a tray file on this computer until the post goes or the
+    /// connection is back; `path` is where its bytes are.
+    pub fn queue_upload(&mut self, id: &str, path: PathBuf) {
+        if let Some(job) = self.uploads.get_mut(id) {
+            job.queued = Some(path);
+        }
+    }
+
     /// The tray file `id`, to send again after a failure.
     pub fn upload_job(&self, id: &str) -> Option<UploadJob> {
         self.uploads.get(id).cloned()
@@ -560,6 +581,7 @@ impl Live {
             name: name.clone(),
             source: source.clone(),
             file_id: Some(file_id.to_owned()),
+            queued: None,
         });
         Upload {
             id: file_id.to_owned().into(),
@@ -567,15 +589,24 @@ impl Live {
             size: 0,
             source,
             status: AttachmentStatus::Ready,
+            queued: false,
         }
     }
 
-    /// The server ids for the tray files a post carries; they leave the
-    /// tray with it.
-    pub fn take_file_ids(&mut self, ids: &[SharedString]) -> Vec<String> {
-        ids.iter()
-            .filter_map(|id| self.uploads.remove(id.as_ref())?.file_id)
-            .collect()
+    /// The tray files a post carries, as server ids and, for files queued
+    /// while offline, local paths for the outbox to upload (#194); they
+    /// leave the tray with it.
+    pub fn take_files(&mut self, ids: &[SharedString]) -> (Vec<String>, Vec<PathBuf>) {
+        let mut file_ids = Vec::new();
+        let mut local = Vec::new();
+        for job in ids.iter().filter_map(|id| self.uploads.remove(id.as_ref())) {
+            match (job.file_id, job.queued) {
+                (Some(file_id), _) => file_ids.push(file_id),
+                (None, Some(path)) => local.push(path),
+                (None, None) => {}
+            }
+        }
+        (file_ids, local)
     }
 
     /// Shows `row`'s channel: sync publishes its posts now and as they
@@ -1596,6 +1627,14 @@ impl Live {
             let offline = *state != ConnectionState::Online;
             if offline != self.offline {
                 self.offline = offline;
+                if !offline {
+                    // Back online: files queued in a tray upload now.
+                    update.resume_uploads = self
+                        .uploads
+                        .iter_mut()
+                        .filter_map(|(id, job)| job.queued.take().map(|_| id.as_str().into()))
+                        .collect();
+                }
                 // Only an empty channel reads it, and a patch would not
                 // carry it.
                 if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
@@ -2459,6 +2498,38 @@ mod tests {
         );
     }
 
+    /// #194: a file added offline waits by its path, goes with its post
+    /// as a local file, and uploads once the connection is back.
+    #[test]
+    fn files_added_offline_wait_and_resume_when_back() {
+        let mut live = live();
+        live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Stopped,
+        )));
+        assert!(live.is_offline());
+        for id in ["upload-1", "upload-2"] {
+            let path = PathBuf::from(format!("/home/me/{id}.pdf"));
+            live.track_upload(
+                id,
+                UploadJob::new("c", "x.pdf", UploadSource::Path(path.clone())),
+            );
+            live.queue_upload(id, path);
+        }
+        let (file_ids, local) = live.take_files(&["upload-1".into()]);
+        assert!(file_ids.is_empty());
+        assert_eq!(local, [PathBuf::from("/home/me/upload-1.pdf")]);
+
+        let update = live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Connected {
+                connection_id: "c".into(),
+            },
+        )));
+        assert!(!live.is_offline());
+        assert_eq!(update.resume_uploads, [SharedString::from("upload-2")]);
+        // Resumed, it no longer goes as a local file.
+        assert_eq!(live.take_files(&["upload-2".into()]), (vec![], vec![]));
+    }
+
     #[test]
     fn the_remembered_name_prefers_the_nickname_then_the_full_name() {
         let mut user = User {
@@ -3113,7 +3184,7 @@ mod tests {
             update.upload,
             Some(("upload-1".into(), AttachmentStatus::Ready))
         );
-        assert_eq!(live.take_file_ids(&["upload-1".into()]), vec!["f1"]);
+        assert_eq!(live.take_files(&["upload-1".into()]).0, vec!["f1"]);
         // It left with the post; a late report changes nothing.
         let update = live.apply(&ChangeSet::Upload {
             upload_id: "upload-1".into(),
@@ -3144,7 +3215,7 @@ mod tests {
         let upload = live.draft_upload("c1", "f1");
         assert!(upload.is_ready());
         assert_eq!(live.file_ids(std::slice::from_ref(&upload.id)), ["f1"]);
-        assert_eq!(live.take_file_ids(&[upload.id]), ["f1"]);
+        assert_eq!(live.take_files(&[upload.id]).0, ["f1"]);
     }
 
     #[test]
@@ -3155,7 +3226,7 @@ mod tests {
         live.track_upload("upload-1", job);
         live.cancel_upload("upload-1");
         assert!(live.upload_job("upload-1").is_none());
-        assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
+        assert!(live.take_files(&["upload-1".into()]).0.is_empty());
     }
 
     #[test]
