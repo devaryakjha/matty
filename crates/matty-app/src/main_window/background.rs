@@ -215,6 +215,31 @@ impl MainWindow {
         }
     }
 
+    /// The channels the other saved servers' caches hold, for the
+    /// switcher's "Search all servers" (#206), keyed as the rail keys them.
+    pub(super) fn other_server_channels(
+        &self,
+        cx: &Context<Self>,
+    ) -> Vec<crate::switcher::ServerChannels> {
+        let settings = self.settings.read(cx).get();
+        let current = settings.current_server();
+        settings
+            .servers
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != current)
+            .filter_map(|(_, server)| {
+                let key = server.data_key();
+                let watch = self.watches.get(&key)?;
+                Some(crate::switcher::ServerChannels {
+                    key: key.into(),
+                    name: server.label().to_owned().into(),
+                    channels: watch.switcher_channels(),
+                })
+            })
+            .collect()
+    }
+
     /// Before a clicked notification opens its post: switches to the server
     /// it came from when that is not the one shown. `false` when that
     /// server could not be shown, as when it needs signing in again.
@@ -252,7 +277,7 @@ impl MainWindow {
     }
 
     /// Whether `data_key` names the server the window shows.
-    fn is_shown(&self, data_key: &str, cx: &Context<Self>) -> bool {
+    pub(super) fn is_shown(&self, data_key: &str, cx: &Context<Self>) -> bool {
         self.settings
             .read(cx)
             .get()

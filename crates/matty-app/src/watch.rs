@@ -131,6 +131,44 @@ impl ServerWatch {
         (mentions, unread || mentions > 0)
     }
 
+    /// The server's channels, each with its team's name, in rail then
+    /// sidebar order, for the quick switcher's "Search all servers"
+    /// (#206). Direct messages are left out.
+    pub fn switcher_channels(&self) -> Vec<(gpui_kit::SharedString, crate::sidebar::ChannelRow)> {
+        use crate::sidebar::{ChannelKind, ChannelRow};
+        let mut seen = std::collections::HashSet::new();
+        let mut channels = Vec::new();
+        for team in self.teams.iter().flat_map(|teams| teams.iter()) {
+            let sections = self
+                .sections
+                .get(&team.id)
+                .into_iter()
+                .flat_map(|s| s.iter());
+            for channel in sections.flat_map(|section| section.channels.iter()) {
+                let kind = match channel.kind.as_str() {
+                    "O" => ChannelKind::Public,
+                    "P" => ChannelKind::Private,
+                    _ => continue,
+                };
+                if !seen.insert(channel.id.as_str()) {
+                    continue;
+                }
+                let mut row =
+                    ChannelRow::new(channel.id.clone(), channel.display_name.clone(), kind)
+                        .handle(channel.name.clone())
+                        .mentions(usize::try_from(channel.unreads.mentions).unwrap_or(0));
+                if channel.unreads.messages > 0 {
+                    row = row.unread();
+                }
+                if channel.muted {
+                    row = row.muted();
+                }
+                channels.push((team.display_name.clone().into(), row));
+            }
+        }
+        channels
+    }
+
     /// The user's own status on this server: whether Do not disturb holds
     /// now, for its notifications.
     pub fn dnd(&self, now: i64) -> bool {
@@ -341,6 +379,46 @@ mod tests {
         assert_eq!(watch.unreads(), (0, false));
         watch.apply(&sidebar("t1", vec![channel("a", 5, 1, true)]));
         assert_eq!(watch.unreads(), (1, true));
+    }
+
+    #[test]
+    fn the_switcher_gets_each_teams_channels_but_not_direct_messages() {
+        let mut watch = watch();
+        let mut dm = channel("dm", 1, 1, false);
+        dm.kind = "D".into();
+        watch.apply(&sidebar("t1", vec![channel("a", 3, 2, false), dm.clone()]));
+        watch.apply(&sidebar("t2", vec![channel("b", 0, 0, true), dm]));
+        let team = |id: &str| matty_sync::TeamWithUnreads {
+            id: id.into(),
+            name: id.into(),
+            display_name: format!("Team {id}"),
+            has_unreads: false,
+            mentions: 0,
+            icon: 0,
+        };
+        watch.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1"), team("t2")]),
+        });
+        let channels: Vec<_> = watch
+            .switcher_channels()
+            .into_iter()
+            .map(|(team, row)| {
+                (
+                    team.to_string(),
+                    row.id.to_string(),
+                    row.unread,
+                    row.mentions,
+                    row.muted,
+                )
+            })
+            .collect();
+        assert_eq!(
+            channels,
+            vec![
+                ("Team t1".into(), "a".into(), true, 2, false),
+                ("Team t2".into(), "b".into(), false, 0, true),
+            ]
+        );
     }
 
     #[test]

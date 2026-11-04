@@ -68,6 +68,41 @@ impl Live {
             .find(|team| holds(team))
     }
 
+    /// The user's teams other than the shown one, in rail order, with
+    /// their channels, for the quick switcher (#90). Direct messages are
+    /// in every team's sidebar and come with the shown team's.
+    pub fn other_teams(&self) -> Vec<crate::switcher::TeamChannels> {
+        self.teams
+            .iter()
+            .filter(|team| Some(&team.id) != self.team.as_ref())
+            .map(|team| crate::switcher::TeamChannels {
+                id: team.id.clone().into(),
+                name: team.display_name.clone().into(),
+                rows: self
+                    .sections
+                    .get(&team.id)
+                    .map(|sections| self.categories(sections))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|category| category.rows)
+                    .filter(|row| {
+                        matches!(
+                            row.kind,
+                            crate::sidebar::ChannelKind::Public
+                                | crate::sidebar::ChannelKind::Private
+                        )
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Opens `channel_id` once some team's sidebar holds it, as after
+    /// switching to a server whose cache has not loaded yet (#206).
+    pub fn open_when_ready(&mut self, channel_id: String) {
+        self.ready = Some(channel_id);
+    }
+
     /// Whether the user is on `team_id`.
     pub fn on_team(&self, team_id: &str) -> bool {
         self.teams.iter().any(|team| team.id == team_id)
@@ -207,6 +242,43 @@ mod tests {
         assert_eq!(live.team(), Some("t1"));
         assert_eq!(update.teams.unwrap().1.as_deref(), Some("t1"));
         assert_eq!(update.categories.unwrap()[0].rows[0].id.as_ref(), "general");
+    }
+
+    #[test]
+    fn the_switcher_gets_the_other_teams_channels() {
+        let mut live = live();
+        sidebars(&mut live);
+        live.apply(&teams());
+        let others = live.other_teams();
+        assert_eq!(others.len(), 1);
+        assert_eq!(
+            (others[0].id.as_ref(), others[0].name.as_ref()),
+            ("t2", "Team t2")
+        );
+        let rows: Vec<_> = others[0]
+            .rows
+            .iter()
+            .map(|row| (row.id.as_ref(), row.unread, row.mentions))
+            .collect();
+        assert_eq!(rows, vec![("design", true, 3)], "no direct messages");
+    }
+
+    #[test]
+    fn a_channel_asked_for_opens_once_any_teams_sidebar_holds_it() {
+        let mut live = live();
+        live.apply(&teams());
+        live.open_when_ready("design".into());
+        // The shown team's sidebar does not hold it.
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![channel("general", "O", 0, 0)])]),
+        });
+        assert_eq!(update.ready, None);
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t2".into(),
+            sections: Arc::from(vec![section("c", vec![channel("design", "O", 0, 0)])]),
+        });
+        assert_eq!(update.ready.as_deref(), Some("design"));
     }
 
     #[test]
