@@ -29,6 +29,10 @@ pub struct Viewer<'a> {
     /// Whether link previews show: the server allows them and the user
     /// has not turned them off (#187). Message attachments always show.
     pub link_previews: bool,
+    /// Collapsed reply threads (#123): on, a root with replies gets the
+    /// reply footer and replies stay in their thread; off, replies show in
+    /// the channel under a "Commented on" line.
+    pub collapsed_threads: bool,
 }
 
 /// The name Mattermost shows by default: nickname, then full name, then
@@ -43,12 +47,15 @@ pub fn display_name(user: &User) -> String {
 }
 
 /// The channel view's model for `row`, from sync's posts (oldest first).
+/// `roots` are cached roots of replies in `posts` that `posts` leaves out,
+/// for the line above a reply when collapsed reply threads are off.
 pub fn channel_model(
     row: &ChannelRow,
     posts: Option<&[ApiPost]>,
     users: &HashMap<String, User>,
     viewer: &Viewer<'_>,
     max_post_size: Option<usize>,
+    roots: &[ApiPost],
 ) -> ChannelModel {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
@@ -56,8 +63,22 @@ pub fn channel_model(
     // Joins and leaves since the last other row, combined into one row.
     let mut activity: Vec<Activity> = Vec::new();
     let mention = viewer.keys;
+    let known: HashMap<&str, &ApiPost> = posts
+        .unwrap_or_default()
+        .iter()
+        .chain(roots)
+        .map(|post| (post.id.as_str(), post))
+        .collect();
+    // The thread of the last message row, so a run of one thread's posts
+    // names the root only once.
+    let mut thread: Option<&str> = None;
     for post in posts.unwrap_or_default() {
         if post.delete_at != 0 {
+            continue;
+        }
+        // Collapsed threads keep replies in their thread; sync leaves
+        // them out, and any that slip through stay out too.
+        if viewer.collapsed_threads && post.is_reply() {
             continue;
         }
         let stamp = when(post.create_at, viewer.zone, today);
@@ -79,22 +100,40 @@ pub fn channel_model(
                 }
             }
             previous = None;
+            thread = None;
             continue;
         }
         activity.clear();
         if is_system(&post.kind) {
             // A system row breaks the run of one author's posts.
             previous = None;
+            thread = None;
             if let Some(text) = system_text(post, users, viewer.user_id) {
                 rows.push(system_post(post, text, false, stamp));
             }
             continue;
         }
-        let continues = previous.as_ref().is_some_and(|(user, at, last_day)| {
-            *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
-        });
+        let root_id = if post.is_reply() {
+            post.root_id.as_str()
+        } else {
+            post.id.as_str()
+        };
+        let reply_to = (post.is_reply() && thread != Some(root_id))
+            .then(|| known.get(root_id).map(|root| reply_context(root, users)))
+            .flatten();
+        thread = Some(root_id);
+        // A reply under its own "Commented on" line starts a new run.
+        let continues = reply_to.is_none()
+            && previous.as_ref().is_some_and(|(user, at, last_day)| {
+                *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
+            });
         previous = Some((&post.user_id, post.create_at, day.clone()));
-        rows.push(display_post(post, users, viewer, mention, stamp, continues));
+        let mut shown = display_post(post, users, viewer, mention, stamp, continues);
+        shown.reply_to = reply_to;
+        if viewer.collapsed_threads && post.reply_count > 0 {
+            shown.replies = Some(reply_summary(post, users, viewer, today));
+        }
+        rows.push(shown);
     }
     ChannelModel {
         offline: false,
@@ -114,6 +153,52 @@ pub fn channel_model(
         profiles: Vec::new(),
         notifications: Default::default(),
         typing: Vec::new(),
+    }
+}
+
+/// What a reply answers: its root's author and words.
+fn reply_context(root: &ApiPost, users: &HashMap<String, User>) -> crate::channel::ReplyContext {
+    let author = users
+        .get(&root.user_id)
+        .map(display_name)
+        .unwrap_or_else(|| "Someone".into());
+    let words = crate::channel::plain_text(&root.message);
+    let excerpt = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::channel::ReplyContext {
+        author: author.into(),
+        excerpt: excerpt.into(),
+    }
+}
+
+/// The reply footer under a root while collapsed reply threads are on
+/// (#123), from what the server and the cache know of its thread.
+fn reply_summary(
+    root: &ApiPost,
+    users: &HashMap<String, User>,
+    viewer: &Viewer<'_>,
+    today: jiff::civil::Date,
+) -> crate::channel::ReplySummary {
+    let (last_time, last_day, _) = when(root.last_reply_at.max(root.create_at), viewer.zone, today);
+    // The server lists who replied oldest first; the footer shows the
+    // newest three.
+    let people: Vec<&User> = root
+        .participants
+        .iter()
+        .rev()
+        .filter_map(|user| users.get(&user.id))
+        .take(3)
+        .collect();
+    crate::channel::ReplySummary {
+        count: usize::try_from(root.reply_count).unwrap_or(0),
+        last_time,
+        last_day,
+        participants: people
+            .iter()
+            .map(|user| display_name(user).into())
+            .collect(),
+        participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
+        following: root.is_following.unwrap_or(false),
+        unread: false,
     }
 }
 
@@ -167,6 +252,8 @@ fn display_post(
             PostStatus::Sent
         },
         replies: None,
+        root_id: post.root_id.clone().into(),
+        reply_to: None,
         files: post
             .metadata
             .files
@@ -224,6 +311,8 @@ fn system_post(
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: Vec::new(),
         embeds: Vec::new(),
     }
@@ -462,6 +551,9 @@ pub fn thread_row(
             root: listed_post(root, users, viewer),
             replies: Vec::new(),
             following: true,
+            reply_count: usize::try_from(thread.reply_count).unwrap_or(0),
+            older: false,
+            failed_older: false,
         },
         summary: crate::channel::ReplySummary {
             count: usize::try_from(thread.reply_count).unwrap_or(0),
@@ -578,6 +670,7 @@ mod tests {
             // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),
             link_previews: true,
+            collapsed_threads: false,
         }
     }
 
@@ -604,7 +697,7 @@ mod tests {
             post("p5", "ghost", NOON + 120_000, "who"),
         ];
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), Some(4000));
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), Some(4000), &[]);
         let shown: Vec<_> = model
             .posts
             .iter()
@@ -640,7 +733,14 @@ mod tests {
         sent.pending_post_id = "me:0".into();
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
         let posts = [sent, sending];
-        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        let model = channel_model(
+            &row,
+            Some(&posts),
+            &HashMap::new(),
+            &viewer(&zone),
+            None,
+            &[],
+        );
         assert_eq!(model.posts[0].status, PostStatus::Sent);
         assert_eq!(model.posts[1].status, PostStatus::Pending);
     }
@@ -661,7 +761,7 @@ mod tests {
             });
         }
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&[p]), &HashMap::new(), &viewer(&zone), None);
+        let model = channel_model(&row, Some(&[p]), &HashMap::new(), &viewer(&zone), None, &[]);
         assert_eq!(
             model.posts[0].files,
             vec![PostFile {
@@ -679,7 +779,7 @@ mod tests {
     fn no_snapshot_yet_is_loading() {
         let zone = TimeZone::UTC;
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, None, &HashMap::new(), &viewer(&zone), None);
+        let model = channel_model(&row, None, &HashMap::new(), &viewer(&zone), None, &[]);
         assert!(model.loading && model.posts.is_empty());
     }
 
@@ -752,7 +852,7 @@ mod tests {
         let users = HashMap::from([person("ada", "Ada")]);
         let posts = [system("s1", "system_join_channel", "ada", NOON, &[])];
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None, &[]);
         assert_eq!(
             shown(&model),
             [(ACTIVITY, "Ada joined the channel.", false)]
@@ -803,7 +903,7 @@ mod tests {
             &[],
         ));
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None, &[]);
         assert_eq!(
             shown(&model),
             [(
@@ -847,10 +947,10 @@ mod tests {
         };
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
         let one = [remove("r1", "ada", NOON)];
-        let model = channel_model(&row, Some(&one), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&one), &users, &viewer(&zone), None, &[]);
         assert_eq!(model.posts[0].body, "Ada was removed from the channel.");
         let two = [remove("r1", "ada", NOON), remove("r2", "sam", NOON + 1)];
-        let model = channel_model(&row, Some(&two), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&two), &users, &viewer(&zone), None, &[]);
         assert_eq!(
             model.posts[0].body,
             "Ada and Sam were removed from the channel."
@@ -893,7 +993,7 @@ mod tests {
             post("p5", "ada", NOON + 9_000, "five"),
         ];
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None, &[]);
         assert_eq!(
             shown(&model),
             [
@@ -932,7 +1032,7 @@ mod tests {
             system("s2", "system_join_channel", "sam", NOON, &[]),
         ];
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
-        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None, &[]);
         let days: Vec<_> = model.posts.iter().map(|p| p.day.as_ref()).collect();
         assert_eq!(days, ["Yesterday", "Today"]);
     }
@@ -945,7 +1045,14 @@ mod tests {
         let silent = system("s2", "system_ephemeral", "ada", NOON + 1, &[]);
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
         let posts = [known, silent];
-        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        let model = channel_model(
+            &row,
+            Some(&posts),
+            &HashMap::new(),
+            &viewer(&zone),
+            None,
+            &[],
+        );
         assert_eq!(
             shown(&model),
             [(
@@ -967,7 +1074,14 @@ mod tests {
         me.kind = "me".into();
         let row = ChannelRow::new("c1", "town", ChannelKind::Public);
         let posts = [poll, hook, me];
-        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        let model = channel_model(
+            &row,
+            Some(&posts),
+            &HashMap::new(),
+            &viewer(&zone),
+            None,
+            &[],
+        );
         let kinds: Vec<_> = model.posts.iter().map(|p| p.kind.clone()).collect();
         assert_eq!(
             kinds,
@@ -980,6 +1094,134 @@ mod tests {
         // An unsupported post still has its author and groups like any other.
         assert_eq!(model.posts[0].author, "Someone");
         assert!(model.posts[1].continues);
+    }
+
+    fn people() -> HashMap<String, User> {
+        ["ada", "sam", "lena", "jonas"]
+            .into_iter()
+            .map(|id| {
+                let mut name = id.to_string();
+                name[..1].make_ascii_uppercase();
+                (
+                    id.to_string(),
+                    User {
+                        id: id.into(),
+                        username: id.into(),
+                        first_name: name,
+                        ..User::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn reply_to(id: &str, user: &str, at: i64, root: &str) -> ApiPost {
+        ApiPost {
+            root_id: root.into(),
+            ..post(id, user, at, &format!("reply {id}"))
+        }
+    }
+
+    /// #123, collapsed reply threads off: a reply names its root above it
+    /// ("Commented on Ada's message: …") unless the row above is already in
+    /// that thread, starts its own run, and opens its root's thread. A root
+    /// the posts leave out comes from `roots`.
+    #[test]
+    fn replies_show_inline_with_what_they_answer() {
+        let zone = TimeZone::UTC;
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let old = post(
+            "old",
+            "ada",
+            NOON - 86_400_000,
+            "The **old** plan\nwith two lines",
+        );
+        let posts = [
+            post("root", "sam", NOON, "Lunch at 12?"),
+            reply_to("r1", "lena", NOON + 1, "root"),
+            reply_to("r2", "lena", NOON + 2, "root"),
+            post("other", "lena", NOON + 3, "Unrelated"),
+            reply_to("r3", "lena", NOON + 4, "root"),
+            reply_to("r4", "lena", NOON + 5, "old"),
+            reply_to("r5", "jonas", NOON + 6, "gone"),
+        ];
+        let model = channel_model(
+            &row,
+            Some(&posts),
+            &people(),
+            &viewer(&zone),
+            None,
+            std::slice::from_ref(&old),
+        );
+        let context: Vec<_> = model
+            .posts
+            .iter()
+            .map(|p| {
+                p.reply_to
+                    .as_ref()
+                    .map(|c| format!("{}: {}", c.author, c.excerpt))
+            })
+            .collect();
+        assert_eq!(
+            context,
+            [
+                None,
+                // Right under its root: no need to name it.
+                None,
+                None,
+                None,
+                Some("Sam: Lunch at 12?".into()),
+                Some("Ada: The old plan with two lines".into()),
+                // The root is not cached: nothing to name.
+                None,
+            ]
+        );
+        let continues: Vec<_> = model.posts.iter().map(|p| p.continues).collect();
+        assert_eq!(continues, [false, false, true, true, false, false, false]);
+        assert_eq!(model.posts[5].thread_root(), "old");
+        assert_eq!(model.posts[0].thread_root(), "root");
+        assert!(model.posts.iter().all(|p| p.replies.is_none()));
+    }
+
+    /// #123, collapsed reply threads on: replies stay in their thread and a
+    /// root with replies gets the footer from what sync knows of them.
+    #[test]
+    fn collapsed_threads_give_roots_a_reply_footer() {
+        let zone = TimeZone::UTC;
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let user = |id: &str| User {
+            id: id.into(),
+            ..User::default()
+        };
+        let root = ApiPost {
+            reply_count: 3,
+            last_reply_at: NOON + 60_000 * 13,
+            participants: vec![user("ada"), user("lena"), user("jonas"), user("sam")],
+            is_following: Some(true),
+            ..post("root", "sam", NOON, "Lunch at 12?")
+        };
+        let posts = [
+            root,
+            reply_to("r1", "lena", NOON + 1, "root"),
+            post("plain", "ada", NOON + 2, "No replies here"),
+        ];
+        let viewer = Viewer {
+            collapsed_threads: true,
+            ..viewer(&zone)
+        };
+        let model = channel_model(&row, Some(&posts), &people(), &viewer, None, &[]);
+        let ids: Vec<_> = model.posts.iter().map(|p| p.id.as_ref()).collect();
+        assert_eq!(ids, ["root", "plain"]);
+        let footer = model.posts[0].replies.as_ref().expect("a footer");
+        assert_eq!(footer.count, 3);
+        assert_eq!(footer.participants, ["Sam", "Jonas", "Lena"]);
+        assert_eq!(footer.participant_ids, ["sam", "jonas", "lena"]);
+        assert_eq!(
+            (footer.last_time, footer.last_day.as_ref()),
+            (12 * 60 + 13, "Today")
+        );
+        assert!(footer.following);
+        assert!(model.posts[1].replies.is_none());
     }
 
     #[test]

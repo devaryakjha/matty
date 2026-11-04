@@ -217,10 +217,37 @@ pub struct Post {
     /// The thread under this post, when it has one, for the reply footer
     /// (Collapsed Reply Threads, PLAN §4.4).
     pub replies: Option<ReplySummary>,
+    /// The root post's id when this post is a reply; empty for a root.
+    pub root_id: SharedString,
+    /// What a reply answers, drawn above it in the channel while collapsed
+    /// reply threads are off (#123); `None` when the row above is already
+    /// in the same thread.
+    pub reply_to: Option<ReplyContext>,
     /// Files on the post (PLAN §4.6).
     pub files: Vec<PostFile>,
     /// Link previews and message attachments under the body (#187).
     pub embeds: Vec<crate::embeds::Embed>,
+}
+
+/// The root a reply answers, for "Commented on Ada's message: …" above the
+/// reply while collapsed reply threads are off (#123).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyContext {
+    /// The root author's display name.
+    pub author: SharedString,
+    /// The root's words as plain text, for one truncated line.
+    pub excerpt: SharedString,
+}
+
+impl Post {
+    /// The thread this post opens: its root's, or its own.
+    pub fn thread_root(&self) -> SharedString {
+        if self.root_id.is_empty() {
+            self.id.clone()
+        } else {
+            self.root_id.clone()
+        }
+    }
 }
 
 /// What the channel shows about a post's thread without loading it.
@@ -829,7 +856,7 @@ impl ChannelView {
                     }
                     if keystroke.modifiers.shift {
                         if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
-                            cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                            cx.emit(ChannelEvent::OpenThread(post.thread_root()));
                         }
                     } else if let Some(id) = this.last_own_post() {
                         this.start_edit(id, window, cx);
@@ -1814,6 +1841,8 @@ impl ChannelView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files,
             embeds: Vec::new(),
         };
@@ -2429,7 +2458,7 @@ impl ChannelView {
                 view.update(cx, |this, cx| run(this, window, cx)).ok();
             })
         };
-        let reply_id = id.clone();
+        let reply_id = post.thread_root();
         let react_id = id.clone();
         let unread_id = id.clone();
         let mut items = vec![
@@ -2978,7 +3007,7 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let avatar = Self::avatar(id.clone(), post, profile, cx);
-        let thread_id = id.clone();
+        let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
         let more_items = Self::more_items_for(post, away, cx);
@@ -3117,6 +3146,9 @@ impl ChannelView {
             .actions(actions)
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
+            .when_some(post.reply_to.as_ref(), |row, context| {
+                row.child(Self::reply_context(post, context, cx))
+            })
             .child(match editor {
                 Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
                 None => match &post.kind {
@@ -3273,6 +3305,60 @@ impl ChannelView {
 
     /// The thread line under a post with replies: who replied, how many,
     /// when last, and Follow. Clicking it opens the thread.
+    /// The line above a reply while collapsed reply threads are off
+    /// (#123): "Commented on Ada's message: …", which opens the thread.
+    fn reply_context(
+        post: &Post,
+        context: &ReplyContext,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let root = post.thread_root();
+        let whose = format!("{}'s", context.author);
+        div()
+            .id(gpui_kit::ElementId::Name(
+                format!("post.{}.replying", post.id).into(),
+            ))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!(
+                "Open thread: commented on {whose} message: {}",
+                context.excerpt
+            ))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(theme.space(1.))
+            .pb(theme.space(0.5))
+            .cursor_pointer()
+            .type_style(style::META, &theme)
+            .text_color(theme.colors.muted_foreground)
+            .hover(|style| style.text_color(theme.colors.foreground))
+            .on_click(
+                cx.listener(move |_, _, _, cx| cx.emit(ChannelEvent::OpenThread(root.clone()))),
+            )
+            .child(
+                lucide(LucideIcon::MessageSquareReply)
+                    .flex_shrink_0()
+                    .size(scaled(&theme, metrics::ICON_TINY)),
+            )
+            .child(div().flex_shrink_0().child("Commented on"))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(whose),
+            )
+            .child(div().flex_shrink_0().child("message:"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(context.excerpt.clone()),
+            )
+    }
+
     fn reply_footer(
         id: &SharedString,
         summary: &ReplySummary,
@@ -3545,7 +3631,7 @@ impl ChannelView {
         };
         let id = post.id.clone();
         match keystroke.key.as_str() {
-            "r" => cx.emit(ChannelEvent::OpenThread(id)),
+            "r" => cx.emit(ChannelEvent::OpenThread(post.thread_root())),
             "e" if post.mine => {
                 self.selection = None;
                 self.start_edit(id, window, cx);
@@ -3665,7 +3751,7 @@ impl ChannelView {
             }))
             .on_action(cx.listener(|this, _: &ReplyToLastMessage, _, cx| {
                 if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
-                    cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                    cx.emit(ChannelEvent::OpenThread(post.thread_root()));
                 }
             }))
             .on_action(
@@ -4056,6 +4142,8 @@ mod tests {
             pinned: false,
             status: PostStatus::Sent,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files: vec![],
             embeds: vec![],
         }

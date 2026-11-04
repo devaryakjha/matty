@@ -50,6 +50,12 @@ pub struct Live {
     /// The thread in the right pane: its root, and its posts once sync
     /// has published them (root first).
     thread: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// Whether the open thread has older replies to page in, and whether
+    /// the last page failed (#122).
+    thread_pages: (bool, bool),
+    /// The roots of the open channel's replies that its posts leave out,
+    /// for the "Commented on" line (#123).
+    reply_roots: Arc<[matty_api::models::Post]>,
     /// The shown team's followed threads and their root posts, for the
     /// Threads view and the sidebar's count (#124).
     thread_list: Option<ThreadList>,
@@ -452,6 +458,8 @@ impl Live {
                 posts: None,
                 max_post_size: None,
                 thread: None,
+                thread_pages: (false, false),
+                reply_roots: Arc::from([]),
                 thread_list: None,
                 threads_choice: None,
                 threads_on: None,
@@ -524,6 +532,7 @@ impl Live {
             channel_id: row.id.to_string(),
         });
         self.posts = None;
+        self.reply_roots = Arc::from([]);
         self.shown = None;
         self.failed.clear();
         self.channel = None;
@@ -579,6 +588,7 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
         };
         let mut model = crate::transcript::channel_model(
             row,
@@ -586,6 +596,7 @@ impl Live {
             &self.users,
             &viewer,
             self.max_post_size,
+            &self.reply_roots,
         );
         let details = self.details(model.pinned);
         model.header = details.header;
@@ -761,6 +772,7 @@ impl Live {
         }
         self.close_thread();
         self.thread = Some((root_id.to_owned(), None));
+        self.thread_pages = (false, false);
         self.send(Command::OpenThread {
             root_id: root_id.to_owned(),
         });
@@ -794,6 +806,26 @@ impl Live {
         }
     }
 
+    /// The thread pane reached its oldest loaded reply (#122).
+    pub fn load_older_replies(&self, root_id: &str) {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|(open, _)| open == root_id)
+        {
+            self.send(Command::LoadOlderReplies {
+                root_id: root_id.to_owned(),
+            });
+        }
+    }
+
+    /// The Threads list reached its last row (#122).
+    pub fn load_more_threads(&self) {
+        if let Some(team_id) = self.team.clone() {
+            self.send(Command::LoadMoreThreads { team_id });
+        }
+    }
+
     /// "Mark all as read" in the Threads view.
     pub fn read_all_threads(&self) {
         if let Some(team_id) = self.team.clone() {
@@ -815,7 +847,7 @@ impl Live {
     /// The shown team's followed threads as the Threads view lists them;
     /// a thread whose root is not cached yet waits for it.
     fn threads_model(&self) -> crate::threads::ThreadsModel {
-        let Some((threads, roots)) = &self.thread_list else {
+        let Some((threads, roots, more, failed)) = &self.thread_list else {
             return crate::threads::ThreadsModel::default();
         };
         let viewer = crate::transcript::Viewer {
@@ -824,6 +856,7 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
         };
         let rows = threads
             .iter()
@@ -842,6 +875,8 @@ impl Live {
         crate::threads::ThreadsModel {
             threads: rows,
             loading: false,
+            more: *more,
+            failed: *failed,
         }
     }
 
@@ -858,6 +893,7 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -869,6 +905,9 @@ impl Live {
                 .map(shown)
                 .collect(),
             following: false,
+            reply_count: usize::try_from(root.reply_count).unwrap_or(0),
+            older: self.thread_pages.0,
+            failed_older: self.thread_pages.1,
         };
         for post in std::iter::once(&mut model.root).chain(model.replies.iter_mut()) {
             if self.failed.contains(post.id.as_ref()) {
@@ -891,6 +930,7 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
         };
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
@@ -1268,20 +1308,37 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
-            ChangeSet::Thread { root_id, posts } => {
+            ChangeSet::Thread {
+                root_id,
+                posts,
+                older,
+                failed,
+            } => {
                 if let Some((open, shown)) = &mut self.thread
                     && open == root_id
                 {
                     *shown = Some(posts.clone());
+                    self.thread_pages = (*older, *failed);
                     update.thread = self.thread_model();
+                }
+            }
+            ChangeSet::ReplyRoots { channel_id, roots } => {
+                if self
+                    .open
+                    .as_ref()
+                    .is_some_and(|row| row.id.as_ref() == channel_id)
+                {
+                    self.reply_roots = roots.clone();
                 }
             }
             ChangeSet::ThreadList {
                 team_id,
                 threads,
                 roots,
+                more,
+                failed,
             } if self.team.as_ref() == Some(team_id) => {
-                self.thread_list = Some((threads.clone(), roots.clone()));
+                self.thread_list = Some((threads.clone(), roots.clone(), *more, *failed));
                 update.threads = Some(self.threads_model());
             }
             ChangeSet::Users(users) => {
@@ -1333,8 +1390,13 @@ impl Live {
                 update.collapsed_threads = self.threads();
             }
             ChangeSet::CollapsedThreads(on) => {
+                let changed = self.threads_on != Some(*on);
                 self.threads_on = Some(*on);
                 update.collapsed_threads = self.threads();
+                // The footer gives way to inline replies, or back (#123).
+                if changed && self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
             }
             ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
                 self.link_previews = *on;
@@ -1598,10 +1660,13 @@ pub async fn sign_in_with_desktop_token(
 }
 
 /// A team's followed threads and their cached root posts, as sync sent
-/// them.
+/// them, then whether more are on the server and whether the last page of
+/// them failed (#122).
 type ThreadList = (
     Arc<[matty_sync::ThreadSummary]>,
     Arc<[matty_api::models::Post]>,
+    bool,
+    bool,
 );
 
 const STOPPED: &str = "Matty could not start its network thread. Quit and open it again.";
@@ -2120,6 +2185,8 @@ mod tests {
             pinned: false,
             status: crate::channel::PostStatus::Sent,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files: vec![],
             embeds: vec![],
         }
@@ -2208,6 +2275,8 @@ mod tests {
         let thread = |root: &str| ChangeSet::Thread {
             root_id: root.into(),
             posts: Arc::from(vec![post("root", "Plan?"), post("r1", "Yes")]),
+            older: true,
+            failed: false,
         };
         assert_eq!(live.apply(&thread("root")).thread, None, "not open");
         live.open_thread("root");
@@ -2216,6 +2285,7 @@ mod tests {
         assert_eq!(model.root.body.as_ref(), "Plan?");
         let replies: Vec<_> = model.replies.iter().map(|r| r.body.as_ref()).collect();
         assert_eq!(replies, ["Yes"]);
+        assert!(model.older, "older replies wait on the server");
         assert_eq!(live.thread_channel().as_deref(), Some("c1"));
         assert_eq!(live.apply(&thread("other")).thread, None);
         live.close_thread();
@@ -2290,10 +2360,13 @@ mod tests {
             // "gone" has no cached root yet, so it waits.
             threads: Arc::from(vec![summary("root", 2), summary("gone", 1)]),
             roots: Arc::from(vec![root.clone()]),
+            more: true,
+            failed: false,
         };
         assert_eq!(live.apply(&list("t2")).threads, None, "another team");
         let model = live.apply(&list("t1")).threads.unwrap();
         assert_eq!(model.threads.len(), 1);
+        assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
         assert_eq!((row.summary.count, row.summary.unread), (2, true));

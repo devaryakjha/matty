@@ -417,6 +417,7 @@ impl MainWindow {
             match event {
                 ThreadsEvent::MarkAllRead => live.read_all_threads(),
                 ThreadsEvent::Unfollow(root) => live.follow_thread(root, false),
+                ThreadsEvent::LoadMore => live.load_more_threads(),
                 ThreadsEvent::Open { root, unread } => {
                     // Only while on screen: the view keeps its selection
                     // when the user goes back to a channel.
@@ -2148,6 +2149,11 @@ impl MainWindow {
             RightPaneEvent::ToggleFollow { root, following } => {
                 if let Some(live) = &self.live {
                     live.follow_thread(root, *following);
+                }
+            }
+            RightPaneEvent::LoadOlderReplies(root) => {
+                if let Some(live) = &self.live {
+                    live.load_older_replies(root);
                 }
             }
             // Sync owns the rest (PLAN §4.3); the pane already shows them.

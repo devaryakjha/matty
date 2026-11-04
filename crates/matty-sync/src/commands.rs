@@ -227,6 +227,7 @@ pub(crate) async fn run(
                 Some(Loaded::Threads {
                     team_id,
                     threads: vec![thread],
+                    total: None,
                 })
             }
             Write::ReadAllThreads { team_id } => {

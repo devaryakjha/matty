@@ -208,6 +208,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -592,8 +594,9 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
+        collapsed_threads: false,
     };
-    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None).posts
+    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None, &[]).posts
 }
 
 fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
@@ -751,6 +754,8 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -1115,6 +1120,8 @@ pub fn threads() -> ThreadsModel {
         .flatten()
         .collect(),
         loading: false,
+        more: false,
+        failed: false,
     }
 }
 
@@ -1145,6 +1152,8 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -1172,6 +1181,9 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
             ..root
         },
         following: true,
+        reply_count: 3,
+        older: false,
+        failed_older: false,
     })
 }
 

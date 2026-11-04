@@ -17,6 +17,7 @@ use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
+    spinner::Spinner,
     theme::UiTheme,
     toggle_group::{ToggleGroup, ToggleGroupItem},
 };
@@ -40,6 +41,11 @@ impl ThreadRow {
 pub struct ThreadsModel {
     pub threads: Vec<ThreadRow>,
     pub loading: bool,
+    /// The server follows more threads than `threads` lists; reaching the
+    /// end of the list pages them in (#122).
+    pub more: bool,
+    /// The last page failed; the list's last row offers Retry.
+    pub failed: bool,
 }
 
 impl ThreadsModel {
@@ -58,7 +64,13 @@ pub enum ThreadsEvent {
     /// The thread under `root` opened beside the list; `unread` when it
     /// had replies the user had not read, which opening reads.
     Open { root: SharedString, unread: bool },
+    /// The list reached its last row while the server follows more
+    /// threads; sync pages them in (#122).
+    LoadMore,
 }
+
+/// How close to the end of the list, in pixels, the next page is asked for.
+const LOAD_MORE_WITHIN: f32 = 240.;
 
 pub struct ThreadsView {
     model: ThreadsModel,
@@ -66,6 +78,10 @@ pub struct ThreadsView {
     unread_only: bool,
     /// The open thread, drawn by the same view as the right pane.
     detail: Entity<RightPaneView>,
+    /// Where the list is scrolled, to ask for more threads near its end.
+    scroll: gpui_kit::ScrollHandle,
+    /// A page of threads is on its way (#122).
+    loading_more: bool,
 }
 
 impl EventEmitter<ThreadsEvent> for ThreadsView {}
@@ -88,6 +104,8 @@ impl ThreadsView {
             selected: None,
             unread_only: false,
             detail,
+            scroll: gpui_kit::ScrollHandle::new(),
+            loading_more: false,
         };
         this.set_model(model, cx);
         this
@@ -101,6 +119,7 @@ impl ThreadsView {
     /// there; otherwise the first thread opens.
     pub fn set_model(&mut self, model: ThreadsModel, cx: &mut Context<Self>) {
         self.model = model;
+        self.loading_more = false;
         let keep = self
             .selected
             .as_ref()
@@ -152,6 +171,70 @@ impl ThreadsView {
             self.detail
                 .update(cx, |pane, cx| pane.set_thread(thread, cx));
         }
+    }
+
+    /// Asks for the next page when the list's end is in reach and nothing
+    /// stops it (#122). Before the list is laid out its scroll is unknown,
+    /// so the check waits a frame.
+    fn request_more(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.model.more || self.model.failed || self.loading_more {
+            return;
+        }
+        if self.scroll.bounds().size.height <= px(0.) {
+            window.request_animation_frame();
+            return;
+        }
+        let left = self.scroll.max_offset().y + self.scroll.offset().y;
+        if left > px(LOAD_MORE_WITHIN) {
+            return;
+        }
+        self.loading_more = true;
+        cx.emit(ThreadsEvent::LoadMore);
+    }
+
+    /// The list's last row while more threads are on the server: the next
+    /// page's progress, or its failure with Retry.
+    fn more_row(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        if !self.model.more {
+            return None;
+        }
+        let theme = UiTheme::read(cx).clone();
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .px(theme.space(3.))
+            .py(theme.space(3.))
+            .text_size(theme.text(12.))
+            .text_color(theme.colors.muted_foreground)
+            .debug_selector(|| "threads.more".into());
+        Some(if self.model.failed {
+            row.child("Couldn't load more threads.")
+                .child(
+                    div().debug_selector(|| "threads.more.retry".into()).child(
+                        Button::new("threads.more.retry")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .label("Retry")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model.failed = false;
+                                this.loading_more = true;
+                                cx.emit(ThreadsEvent::LoadMore);
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            row.child(
+                Spinner::new("threads.more.spinner")
+                    .label("Loading more threads")
+                    .size(px(14.)),
+            )
+            .child("Loading more threads…")
+            .into_any_element()
+        })
     }
 
     fn mark_all_read(&mut self, cx: &mut Context<Self>) {
@@ -407,7 +490,8 @@ fn snippet(body: &str) -> String {
 }
 
 impl Render for ThreadsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.request_more(window, cx);
         let theme = UiTheme::read(cx).clone();
         let rows: Vec<ThreadRow> = self
             .model
@@ -433,11 +517,13 @@ impl Render for ThreadsView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .py(theme.space(2.))
                     .flex()
                     .flex_col()
                     .gap(theme.space(0.5))
                     .children(rows.iter().map(|row| self.row(row, cx)))
+                    .children(self.more_row(cx))
                     .into_any_element()
             });
         div()
@@ -452,7 +538,61 @@ impl Render for ThreadsView {
 
 #[cfg(test)]
 mod tests {
-    use super::snippet;
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// #122: a list that ends short of the server's threads asks for the
+    /// next page once, shows its progress, and after a failure waits for
+    /// Retry.
+    #[gpui_kit::test]
+    fn the_end_of_the_list_asks_for_more_threads(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let model = |more, failed| ThreadsModel {
+            more,
+            failed,
+            ..crate::preview::threads()
+        };
+        let window =
+            cx.add_window(|window, cx| ThreadsView::new(model(true, false), "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = Rc::new(RefCell::new(0));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &ThreadsEvent, _| {
+                if matches!(event, ThreadsEvent::LoadMore) {
+                    *events.borrow_mut() += 1;
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        for _ in 0..3 {
+            draw(&mut cx);
+        }
+        assert_eq!(*events.borrow(), 1, "asked once");
+        assert!(cx.debug_bounds("threads.more").is_some());
+
+        cx.update(|_, cx| view.update(cx, |view, cx| view.set_model(model(true, true), cx)));
+        draw(&mut cx);
+        assert_eq!(*events.borrow(), 1, "a failed page waits for Retry");
+        let retry = cx.debug_bounds("threads.more.retry").expect("Retry shows");
+        cx.simulate_click(retry.center(), Default::default());
+        draw(&mut cx);
+        assert_eq!(*events.borrow(), 2);
+
+        cx.update(|_, cx| view.update(cx, |view, cx| view.set_model(model(false, false), cx)));
+        draw(&mut cx);
+        assert_eq!(*events.borrow(), 2, "every thread is listed");
+        assert!(cx.debug_bounds("threads.more").is_none());
+    }
 
     #[test]
     fn snippet_takes_the_first_plain_line() {
