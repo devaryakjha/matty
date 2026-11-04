@@ -779,6 +779,29 @@ impl MainWindow {
                             .categories
                             .update(cx, |dialogs, cx| dialogs.delete(id, name, window, cx));
                     }
+                    SidebarEvent::MoveCategory { id, up } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveCategory {
+                                category_id: id.to_string(),
+                                up: *up,
+                            });
+                        }
+                        return;
+                    }
+                    SidebarEvent::MoveChannel {
+                        category_id,
+                        channel_id,
+                        up,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveChannel {
+                                category_id: category_id.to_string(),
+                                channel_id: channel_id.to_string(),
+                                up: *up,
+                            });
+                        }
+                        return;
+                    }
                     SidebarEvent::MoveToCategory {
                         channel_id,
                         category_id,
