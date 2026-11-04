@@ -3575,16 +3575,13 @@ impl ChannelView {
         };
         // The author's presence on the avatar (#135).
         let theme = UiTheme::read(cx);
-        let avatar = div()
-            .relative()
-            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
-            .child(crate::style::presence_dot(
+        let avatar = avatar
+            .aria_label(post.author.clone())
+            .status(crate::style::avatar_status(
                 profile.presence,
-                scaled(theme, 10.),
-                theme.colors.background,
-                theme,
                 &crate::style::Palette::read(cx),
-            ));
+            ))
+            .ring_color(theme.colors.background);
         let view = cx.entity().downgrade();
         let card_id = id.clone();
         popover(gpui_kit::ElementId::Name(
