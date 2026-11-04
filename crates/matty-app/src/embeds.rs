@@ -292,7 +292,7 @@ fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
 }
 
 /// The name an image link shows: the last part of its path.
-fn image_name(url: &str) -> SharedString {
+pub(crate) fn image_name(url: &str) -> SharedString {
     let url = url.split(['?', '#']).next().unwrap_or_default();
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let path = after_scheme.split_once('/').map_or("", |(_, path)| path);
@@ -310,6 +310,9 @@ fn image_name(url: &str) -> SharedString {
 
 /// Collapses or expands a post's previews; gets the new collapsed state.
 pub type ToggleHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+
+/// Opens a linked image in the lightbox; gets the image's URL.
+pub type ImageHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
 /// The card for what the server read from a link.
 pub fn link_card(url: &str, graph: &matty_api::models::OpenGraph) -> LinkCard {
@@ -366,11 +369,13 @@ pub type OnJump =
 
 /// The cards under the post `id`. `collapsed` hides their images, as the
 /// web app's per-post preview toggle does; `on_toggle` flips it.
+/// `on_image` opens a linked image in the lightbox (#152).
 pub fn post_embeds(
     id: &str,
     embeds: &[Embed],
     collapsed: bool,
     on_toggle: ToggleHandler,
+    on_image: ImageHandler,
     on_jump: OnJump,
     cx: &App,
 ) -> impl IntoElement + use<> {
@@ -433,20 +438,25 @@ pub fn post_embeds(
                     }
                     card.into_any_element()
                 }
-                Embed::Image(image) => {
-                    image_element(element_id, image, collapsed, on_toggle.clone(), &theme)
-                }
+                Embed::Image(image) => image_element(
+                    element_id,
+                    image,
+                    collapsed,
+                    (on_toggle.clone(), on_image.clone()),
+                    &theme,
+                ),
             }
         }))
 }
 
 /// An image the message links to: its name and a collapse toggle above
-/// it, as in the web app, and the image in a box its size reserves.
+/// it, as in the web app, and the image in a box its size reserves;
+/// clicking the image opens the lightbox.
 fn image_element(
     element_id: gpui_kit::ElementId,
     image: &EmbedImage,
     collapsed: bool,
-    on_toggle: ToggleHandler,
+    (on_toggle, on_image): (ToggleHandler, ImageHandler),
     theme: &UiTheme,
 ) -> gpui_kit::AnyElement {
     let name = image_name(&image.url);
@@ -494,7 +504,7 @@ fn image_element(
                 .max_size(theme.space(120.), theme.space(87.5));
             if opens(&image.url) {
                 let url = image.url.clone();
-                picture = picture.on_click(move |_, _, cx| cx.open_url(&url));
+                picture = picture.on_click(move |_, window, cx| on_image(url.clone(), window, cx));
             }
             div().debug_selector(|| "post-image".into()).child(picture)
         });
@@ -786,6 +796,7 @@ mod tests {
         embeds: Vec<Embed>,
         collapsed: bool,
         toggled: Rc<std::cell::Cell<Option<bool>>>,
+        opened: Rc<std::cell::RefCell<Vec<SharedString>>>,
     }
 
     impl gpui_kit::Render for Probe {
@@ -795,11 +806,13 @@ mod tests {
             cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             let toggled = self.toggled.clone();
+            let opened = self.opened.clone();
             div().w(gpui_kit::px(800.)).child(post_embeds(
                 "p1",
                 &self.embeds,
                 self.collapsed,
                 Rc::new(move |collapsed, _, _| toggled.set(Some(collapsed))),
+                Rc::new(move |url, _, _| opened.borrow_mut().push(url)),
                 Rc::new(|_, _, _, _| {}),
                 cx,
             ))
@@ -826,6 +839,7 @@ mod tests {
                 embeds,
                 collapsed,
                 toggled,
+                opened: Rc::default(),
             }
         });
         let entity = window.root(cx).unwrap();
@@ -881,6 +895,27 @@ mod tests {
             toggled.get(),
             Some(false),
             "expanding reports collapsed = false"
+        );
+    }
+
+    /// #152: clicking a linked image hands its URL to the lightbox instead
+    /// of leaving for the browser.
+    #[gpui_kit::test]
+    fn clicking_an_image_opens_it_in_the_lightbox(cx: &mut gpui_kit::TestAppContext) {
+        let image = Embed::Image(EmbedImage {
+            url: "https://example.com/shots/a.png".into(),
+            width: 640,
+            height: 400,
+            loaded: Some(crate::attachments::png(&PENDING_PNG)),
+        });
+        let (probe, _, mut cx) = probe(cx, vec![image], false);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let picture = cx.debug_bounds("post-image").unwrap();
+        cx.simulate_click(picture.center(), Default::default());
+        let opened = cx.update(|_, cx| probe.read(cx).opened.borrow().clone());
+        assert_eq!(
+            opened,
+            [SharedString::from("https://example.com/shots/a.png")]
         );
     }
 
