@@ -229,6 +229,13 @@ pub struct Settings {
     /// Turns off the eases on panes, banners and disclosures (DESIGN.md §1);
     /// the OS reduced-motion setting does the same on its own.
     pub reduce_motion: bool,
+    /// Link previews start collapsed: the account's `collapse_previews`
+    /// display setting (#187).
+    pub collapse_previews: bool,
+    /// Posts whose previews the user opened or closed against
+    /// [`collapse_previews`](Self::collapse_previews), oldest first, at most
+    /// [`PREVIEW_CHOICES`].
+    pub preview_choices: Vec<PreviewChoice>,
     pub account: Option<SavedAccount>,
     /// Servers whose check went through, newest first.
     pub recent_servers: Vec<RecentServer>,
@@ -260,6 +267,8 @@ impl Default for Settings {
             display: MessageDisplay::Standard,
             name_format: NameFormat::NicknameFullName,
             reduce_motion: false,
+            collapse_previews: false,
+            preview_choices: Vec::new(),
             account: None,
             recent_servers: Vec::new(),
             recent_searches: Vec::new(),
@@ -323,8 +332,43 @@ impl Settings {
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
         self.recent_servers.truncate(RECENT_SERVERS);
+        let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
+        self.preview_choices.drain(..extra);
         self
     }
+
+    /// Whether `post_id`'s link previews show collapsed.
+    pub fn previews_collapsed(&self, post_id: &str) -> bool {
+        self.preview_choices
+            .iter()
+            .find(|choice| choice.post_id == post_id)
+            .map_or(self.collapse_previews, |choice| choice.collapsed)
+    }
+
+    /// Remembers that the user collapsed or expanded `post_id`'s previews.
+    /// A choice that matches the default is forgotten.
+    pub fn choose_previews(&mut self, post_id: &str, collapsed: bool) {
+        self.preview_choices
+            .retain(|choice| choice.post_id != post_id);
+        if collapsed != self.collapse_previews {
+            self.preview_choices.push(PreviewChoice {
+                post_id: post_id.to_string(),
+                collapsed,
+            });
+        }
+        let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
+        self.preview_choices.drain(..extra);
+    }
+}
+
+/// How many posts' preview choices are kept; the oldest go first.
+pub const PREVIEW_CHOICES: usize = 500;
+
+/// One post's previews, opened or closed by the user.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewChoice {
+    pub post_id: String,
+    pub collapsed: bool,
 }
 
 /// What [`load`] found on disk.
@@ -563,6 +607,36 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn a_post_remembers_its_previews_against_the_default() {
+        let mut settings = Settings::default();
+        assert!(!settings.previews_collapsed("p1"));
+        settings.choose_previews("p1", true);
+        assert!(settings.previews_collapsed("p1"));
+        assert!(!settings.previews_collapsed("p2"));
+        // Collapsing everything by default keeps p1's choice and leaves
+        // the rest closed; opening p2 is remembered.
+        settings.collapse_previews = true;
+        settings.choose_previews("p2", false);
+        assert!(!settings.previews_collapsed("p2"));
+        assert!(settings.previews_collapsed("p3"));
+        // A choice that matches the default is forgotten.
+        settings.choose_previews("p1", true);
+        assert_eq!(settings.preview_choices.len(), 1);
+        // The oldest choices go first.
+        settings.collapse_previews = false;
+        for n in 0..PREVIEW_CHOICES + 5 {
+            settings.choose_previews(&format!("q{n}"), true);
+        }
+        assert_eq!(settings.preview_choices.len(), PREVIEW_CHOICES);
+        assert!(!settings.previews_collapsed("q0"));
+        assert!(settings.previews_collapsed(&format!("q{}", PREVIEW_CHOICES + 4)));
+        // They survive a restart.
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.preview_choices, settings.preview_choices);
     }
 
     #[test]

@@ -1047,7 +1047,6 @@ pub struct ChannelView {
     away: bool,
     /// Posts whose preview images the user collapsed (#187), as the web
     /// app's per-post toggle; they expand again with the toggle.
-    collapsed_previews: std::collections::HashSet<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1326,7 +1325,6 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
-            collapsed_previews: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -2535,14 +2533,14 @@ impl ChannelView {
     /// Collapses or expands the images in a post's previews; the row's
     /// height changes, so the list measures it again.
     fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
-        let changed = if collapsed {
-            self.collapsed_previews.insert(id.clone())
-        } else {
-            self.collapsed_previews.remove(&id)
-        };
-        if !changed {
+        // Remembered across restarts, against the account's default (#187).
+        let store = SettingsStore::global(cx);
+        if store.read(cx).get().previews_collapsed(&id) == collapsed {
             return;
         }
+        store.update(cx, |store, cx| {
+            store.update(cx, |settings| settings.choose_previews(&id, collapsed))
+        });
         let posts = self.model.as_ref().map(|model| &model.posts);
         let row = self.rows.iter().position(|row| {
             matches!(row, Row::Post(index)
@@ -3969,7 +3967,10 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
-                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
+                        let previews_collapsed = SettingsStore::global(cx)
+                            .read(cx)
+                            .get()
+                            .previews_collapsed(&post.id);
                         Self::post_row(
                             &post,
                             profile,
