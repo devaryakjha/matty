@@ -210,6 +210,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -551,6 +553,14 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         message: message.into(),
         ..ApiPost::default()
     };
+    let user = |id: &str| User {
+        id: id.into(),
+        ..User::default()
+    };
+    let reply = |post: ApiPost, root: &str| ApiPost {
+        root_id: root.into(),
+        ..post
+    };
     let mut header = post("t6", "priya", 12, "system_header_change", "");
     header.props = [
         ("old_header", "Company-wide chat"),
@@ -560,13 +570,18 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
     .map(|(key, value)| (key.to_string(), serde_json::Value::from(value)))
     .collect();
     let posts = [
-        post(
-            "t1",
-            "priya",
-            0,
-            "",
-            "Welcome to town-square! Say hi when you get a minute.",
-        ),
+        ApiPost {
+            reply_count: 1,
+            last_reply_at: at(32),
+            participants: vec![user("tomas")],
+            ..post(
+                "t1",
+                "priya",
+                0,
+                "",
+                "Welcome to town-square! Say hi when you get a minute.",
+            )
+        },
         post("t2", "sam", 1, "system_join_channel", ""),
         post("t2b", "lena", 2, "system_join_channel", ""),
         post("t2c", "jonas", 3, "system_join_channel", ""),
@@ -576,7 +591,15 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         post("t3", "sam", 10, "", "Hi all, Sam from the desktop team."),
         post("t4", "sam", 11, "", "Glad to be here."),
         header,
-        post("t7", "sam", 13, "", "Is lunch at 12 today?"),
+        // Replies (#123): with collapsed reply threads on they leave the
+        // channel and their roots get the reply footer; with
+        // `MATTY_PREVIEW=crt-off` they show inline.
+        ApiPost {
+            reply_count: 2,
+            last_reply_at: at(21),
+            participants: vec![user("jonas"), user("lena")],
+            ..post("t7", "sam", 13, "", "Is lunch at 12 today?")
+        },
         post(
             "t8",
             "lena",
@@ -584,7 +607,22 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
             "custom_matterpoll",
             "Lunch: pizza or ramen?",
         ),
-        post("t9", "jonas", 20, "", "Ramen, obviously."),
+        reply(post("t9", "jonas", 20, "", "Ramen, obviously."), "t7"),
+        reply(
+            post("t10", "lena", 21, "", "Ramen it is. I'll book for six."),
+            "t7",
+        ),
+        post("t11", "mei", 30, "", "Has anyone seen the new desk plan?"),
+        reply(
+            post(
+                "t12",
+                "tomas",
+                32,
+                "",
+                "Hi Priya! Tomas from support, glad to be here.",
+            ),
+            "t1",
+        ),
     ];
     let keys = matty_notify::MentionKeys::username("arya");
     let zone = jiff::tz::TimeZone::UTC;
@@ -594,9 +632,10 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
+        collapsed_threads: std::env::var("MATTY_PREVIEW").as_deref() != Ok("crt-off"),
         names: crate::settings::NameFormat::default(),
     };
-    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None).posts
+    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None, &[]).posts
 }
 
 fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
@@ -754,6 +793,8 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -1118,7 +1159,7 @@ pub fn threads() -> ThreadsModel {
             row(
                 "general",
                 "p5",
-                summary(3, "08:13", &["Arya", "Jonas Weber"], false),
+                summary(12, "08:13", &["Arya", "Jonas Weber"], false),
             ),
             row(
                 "help-desk",
@@ -1130,6 +1171,9 @@ pub fn threads() -> ThreadsModel {
         .flatten()
         .collect(),
         loading: false,
+        // The list's last row shows the next page on its way (#122).
+        more: true,
+        failed: false,
     }
 }
 
@@ -1160,6 +1204,8 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -1196,6 +1242,11 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
             ..root
         },
         following: true,
+        // #5 is a long thread whose older replies are still on their way
+        // (#122).
+        reply_count: if post_id == "p5" { 12 } else { 3 },
+        older: post_id == "p5",
+        failed_older: false,
     })
 }
 

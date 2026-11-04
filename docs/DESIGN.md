@@ -204,6 +204,21 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `meta`, and a ghost Follow/Following button. The whole line is a hover
   target that opens the thread; replies never appear inline in the
   channel.
+- **Inline replies** (Collapsed Reply Threads off, #123): replies sit in
+  the channel in time order. Above a reply whose row above is not in its
+  thread, one `meta` line in `muted-foreground` reads "Commented on
+  **Ada's** message: …" with the root's first words, truncated, and a reply
+  icon; it turns `foreground` on hover and opens the thread. That reply
+  starts a new run with its own header. Roots carry no footer in this mode.
+- **Paging threads** (#122): the thread pane opens on the newest 50
+  replies. A row between the "N replies" divider and the first reply loads
+  the page before it when it scrolls into view: a spinner and "Loading
+  older replies…", or "Couldn't load older replies." with a ghost Retry,
+  in 12px `muted-foreground`, like the channel's history row. The divider
+  counts every reply, loaded or not, and an older page goes in above
+  without moving what the reader sees. The Threads list does the same at
+  its end: "Loading more threads…" or "Couldn't load more threads." with
+  Retry, asked for within 240px of the bottom.
 - **Threads view** (PLAN §4.4) replaces the channel when the sidebar's
   Threads row is chosen: a 360px list on the left and the selected thread
   on the right, drawn by the same view as the right pane. The header holds
