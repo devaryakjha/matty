@@ -106,6 +106,11 @@ pub enum ChangeSet {
         channel_id: String,
         /// The channel's first post is loaded.
         at_start: bool,
+        /// The snapshot runs to the newest post. After a
+        /// [`Command::LoadAround`](crate::Command::LoadAround) it stops
+        /// short of it until [`Command::LoadNewer`](crate::Command::LoadNewer)
+        /// pages reach it.
+        at_end: bool,
         /// The page failed; asking again retries it.
         failed: bool,
     },

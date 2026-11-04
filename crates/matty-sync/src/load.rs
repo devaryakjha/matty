@@ -72,6 +72,16 @@ pub(crate) enum Loaded {
         channel_id: String,
         posts: Option<matty_api::models::PostList>,
     },
+    /// A page of newer posts for a channel's history window, or `None`.
+    Newer {
+        channel_id: String,
+        posts: Option<matty_api::models::PostList>,
+    },
+    /// A post with a page on each side of it, or `None`.
+    Around {
+        channel_id: String,
+        posts: Option<Box<Around>>,
+    },
     /// An upload's progress, file id or failure.
     Upload {
         upload_id: String,
@@ -480,4 +490,12 @@ async fn reset(client: &Client, channel_id: &str) -> Result<Loaded, ApiError> {
         channel_id: channel_id.to_owned(),
         posts,
     })
+}
+
+/// A post and the pages before and after it.
+#[derive(Debug)]
+pub(crate) struct Around {
+    pub post: matty_api::models::Post,
+    pub before: matty_api::models::PostList,
+    pub after: matty_api::models::PostList,
 }

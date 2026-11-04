@@ -100,6 +100,8 @@ fn window_is_in_create_at_order_with_reactions_and_files() {
     assert_eq!(ids(&before), ["b"]);
     let after = posts::posts_window(conn, "c", Window::After(10), 1, false).unwrap();
     assert_eq!(ids(&after), ["b"]);
+    let between = posts::posts_window(conn, "c", Window::Between(20, 30), 10, false).unwrap();
+    assert_eq!(ids(&between), ["b", "c"]);
 }
 
 #[test]
