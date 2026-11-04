@@ -622,6 +622,27 @@ pub fn channel(conn: &Connection, channel_id: &str) -> Result<Option<Channel>> {
     Ok(channel)
 }
 
+/// A cached channel by its team and URL name, as channel links name it.
+pub fn channel_by_name(conn: &Connection, team_id: &str, name: &str) -> Result<Option<Channel>> {
+    let id: Option<String> = conn
+        .prepare_cached("SELECT id FROM channels WHERE team_id = ?1 AND name = ?2")?
+        .query_row([team_id, name], |row| row.get(0))
+        .optional()?;
+    match id {
+        Some(id) => channel(conn, &id),
+        None => Ok(None),
+    }
+}
+
+/// A cached user by username, ignoring case as Mattermost does.
+pub fn user_by_username(conn: &Connection, username: &str) -> Result<Option<User>> {
+    let data: Option<String> = conn
+        .prepare_cached("SELECT data FROM users WHERE username = ?1 COLLATE NOCASE")?
+        .query_row([username], |row| row.get(0))
+        .optional()?;
+    Ok(data.and_then(|data| serde_json::from_str(&data).ok()))
+}
+
 /// A user's cached membership of a channel.
 pub fn channel_member(
     conn: &Connection,

@@ -37,7 +37,6 @@ use crate::ui::{
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::EmptyContent,
     lightbox::{LightboxImage, LightboxState, lightbox},
-    markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{
         Message, MessageDensity, MessageHighlight, MessageStatus, Reaction, day_divider,
@@ -570,6 +569,8 @@ pub enum ChannelEvent {
     JumpLatest,
     /// The user asked for the channel's pinned messages.
     OpenPinned,
+    /// The user clicked a link or an entity chip in a message (#103).
+    OpenLink(SharedString),
     /// The user asked for the channel info pane (header info button or the
     /// members count).
     OpenInfo,
@@ -3012,12 +3013,19 @@ impl ChannelView {
                 Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
                 None => match &post.kind {
                     PostKind::Unsupported(_) => Self::unsupported_card(&id, cx).into_any_element(),
-                    _ => markdown(
-                        gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
-                        post.body.clone(),
-                        cx,
-                    )
-                    .into_any_element(),
+                    _ => {
+                        let link_view = cx.entity().downgrade();
+                        crate::links::message_body(
+                            gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
+                            &post.body,
+                            move |url, _, cx| {
+                                let event = ChannelEvent::OpenLink(url.clone());
+                                link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                            },
+                            cx,
+                        )
+                        .into_any_element()
+                    }
                 },
             });
         for marker in post_markers(post, &theme) {

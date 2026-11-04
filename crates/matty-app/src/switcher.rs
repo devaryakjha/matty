@@ -24,10 +24,14 @@ pub enum SwitcherEvent {
     Open(SharedString),
     /// The user chose "Search messages for …" with this query.
     Search(SharedString),
+    /// The user pasted a link and chose "Open link" (#85).
+    OpenLink(SharedString),
 }
 
 /// The value of the search row; the query follows it.
 const SEARCH_PREFIX: &str = "~search:";
+/// The value of the open-link row; the link follows it.
+const LINK_PREFIX: &str = "~link:";
 
 pub struct Switcher {
     handle: DialogHandle,
@@ -56,9 +60,12 @@ impl Switcher {
                 move |this, _, event, window, cx| match event {
                     CommandEvent::Confirm(value) => {
                         close.close(window, cx);
-                        match value.strip_prefix(SEARCH_PREFIX) {
-                            Some(query) => cx.emit(SwitcherEvent::Search(query.into())),
-                            None => cx.emit(SwitcherEvent::Open(value.clone())),
+                        if let Some(query) = value.strip_prefix(SEARCH_PREFIX) {
+                            cx.emit(SwitcherEvent::Search(query.into()));
+                        } else if let Some(url) = value.strip_prefix(LINK_PREFIX) {
+                            cx.emit(SwitcherEvent::OpenLink(url.into()));
+                        } else {
+                            cx.emit(SwitcherEvent::Open(value.clone()));
                         }
                         this.reset(window, cx);
                     }
@@ -77,10 +84,20 @@ impl Switcher {
         }
     }
 
-    /// Any typed query also offers a message search, last in the list.
+    /// Any typed query also offers a message search, last in the list; a
+    /// pasted link offers to open it, first.
     fn offer_search(&mut self, query: SharedString, cx: &mut Context<Self>) {
         let query = query.trim().to_string();
         let mut items = self.items.clone();
+        if crate::links::looks_like_link(&query) {
+            items.insert(
+                0,
+                CommandItem::new(format!("{LINK_PREFIX}{query}"), "Open link")
+                    .group("Link")
+                    .icon(LucideIcon::Link)
+                    .keywords([query.clone()]),
+            );
+        }
         if !query.is_empty() {
             items.push(
                 CommandItem::new(

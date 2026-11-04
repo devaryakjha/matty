@@ -192,6 +192,8 @@ pub struct Update {
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
+    /// What a link in a message turned out to name (#85, #103).
+    pub link: Option<(matty_sync::LinkQuery, Option<matty_sync::LinkAnswer>)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
     /// The server refused the saved session; the window asks the user to
@@ -909,6 +911,32 @@ impl Live {
         self.team.as_deref()
     }
 
+    /// The server's address, for telling its links from others.
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// The user's teams as (id, URL name).
+    pub fn team_names(&self) -> Vec<(String, String)> {
+        self.teams
+            .iter()
+            .map(|team| (team.id.clone(), team.name.clone()))
+            .collect()
+    }
+
+    /// The profile of someone whose posts have been on screen, by username.
+    pub fn known_user(&self, username: &str) -> Option<UserProfile> {
+        self.users
+            .values()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+            .map(|user| self.profile(user))
+    }
+
+    /// The profile for a user sync found.
+    pub fn user_profile(&self, user: &User) -> UserProfile {
+        self.profile(user)
+    }
+
     fn profile(&self, user: &User) -> UserProfile {
         UserProfile {
             user_id: user.id.clone().into(),
@@ -1101,6 +1129,9 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::LinkResolved { query, answer } => {
+                update.link = Some((query.clone(), answer.clone()));
             }
             ChangeSet::Search { terms, posts } => {
                 if let Some((asked, results)) = self.search.as_mut()
