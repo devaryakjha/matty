@@ -591,6 +591,18 @@ pub fn mark_thread_read(
     Ok(())
 }
 
+/// Records that the user read every followed thread in a team up to
+/// `viewed_at` ("Mark all as read" in the Threads view).
+pub fn mark_team_threads_read(conn: &Connection, team_id: &str, viewed_at: i64) -> Result<()> {
+    conn.prepare_cached(
+        "UPDATE threads SET last_viewed_at = MAX(last_viewed_at, ?2), unread_replies = 0,
+             unread_mentions = 0
+         WHERE team_id = ?1 AND is_following = 1",
+    )?
+    .execute(params![team_id, viewed_at])?;
+    Ok(())
+}
+
 /// Stops listing a thread the user unfollowed (`thread_follow_changed`).
 pub fn set_following(conn: &Connection, thread_id: &str, following: bool) -> Result<()> {
     conn.prepare_cached("UPDATE threads SET is_following = ?2 WHERE id = ?1")?

@@ -34,5 +34,6 @@ pub use matty_store::forget as forget_account;
 /// Where an account's media cache lives.
 pub use matty_store::media::default_dir as media_dir;
 pub use matty_store::outbox::Outgoing;
+pub use matty_store::posts::ThreadSummary;
 /// The snapshot types change sets carry, so the app needs no store crate.
 pub use matty_store::sidebar::{SidebarChannel, SidebarSection, TeamWithUnreads, Unreads};

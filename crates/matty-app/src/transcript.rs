@@ -147,6 +147,44 @@ pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewe
     )
 }
 
+/// A followed thread as the Threads view lists it (#124): its root post,
+/// and a summary of its replies from the server's thread record.
+pub fn thread_row(
+    thread: &matty_sync::ThreadSummary,
+    root: &ApiPost,
+    channel_name: SharedString,
+    users: &HashMap<String, User>,
+    viewer: &Viewer<'_>,
+) -> crate::threads::ThreadRow {
+    let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+    let (last_time, last_day, _) = when(thread.last_reply_at, viewer.zone, today);
+    let participants = thread
+        .participants
+        .iter()
+        .rev()
+        .filter_map(|id| users.get(id))
+        .take(3)
+        .map(|user| display_name(user).into())
+        .collect();
+    crate::threads::ThreadRow {
+        channel_id: root.channel_id.clone().into(),
+        thread: crate::right_pane::ThreadModel {
+            channel_name,
+            root: listed_post(root, users, viewer),
+            replies: Vec::new(),
+            following: true,
+        },
+        summary: crate::channel::ReplySummary {
+            count: usize::try_from(thread.reply_count).unwrap_or(0),
+            last_time,
+            last_day,
+            participants,
+            following: true,
+            unread: thread.unread_replies > 0,
+        },
+    }
+}
+
 /// Minutes since local midnight, the day label the post falls under, and
 /// the full date for the time's tooltip.
 fn when(

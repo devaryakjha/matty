@@ -87,6 +87,22 @@ pub(crate) enum Write {
     },
     /// Saves preferences already applied to the store.
     Preferences(Vec<matty_api::models::Preference>),
+    /// Marks a thread read; the store already shows it read.
+    ReadThread {
+        team_id: String,
+        thread_id: String,
+        at: i64,
+    },
+    /// Marks every followed thread in a team read.
+    ReadAllThreads {
+        team_id: String,
+    },
+    /// Follows or unfollows a thread; the store already shows it.
+    Follow {
+        team_id: String,
+        thread_id: String,
+        follow: bool,
+    },
 }
 
 impl Write {
@@ -114,6 +130,10 @@ impl Write {
             Self::Notify { .. } => "change notifications",
             Self::AddMembers { .. } => "add members",
             Self::Preferences(_) => "save preferences",
+            Self::ReadThread { .. } => "mark thread read",
+            Self::ReadAllThreads { .. } => "mark threads read",
+            Self::Follow { follow: true, .. } => "follow thread",
+            Self::Follow { follow: false, .. } => "unfollow thread",
         }
     }
 
@@ -135,8 +155,12 @@ impl Write {
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
-            Self::Browse { team_id } | Self::People { team_id } | Self::Search { team_id, .. } => {
-                team_id.clone()
+            Self::Browse { team_id }
+            | Self::People { team_id }
+            | Self::Search { team_id, .. }
+            | Self::ReadAllThreads { team_id } => team_id.clone(),
+            Self::ReadThread { thread_id, .. } | Self::Follow { thread_id, .. } => {
+                thread_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
             Self::Preferences(preferences) => preferences
@@ -183,6 +207,37 @@ pub(crate) async fn run(
                 Some(Loaded::Edited(Box::new(
                     client.patch_post(&post_id, &patch).await?,
                 )))
+            }
+            Write::ReadThread {
+                team_id,
+                thread_id,
+                at,
+            } => {
+                let thread = client
+                    .mark_thread_read(&user_id, &team_id, &thread_id, at)
+                    .await?;
+                Some(Loaded::Threads {
+                    team_id,
+                    threads: vec![thread],
+                })
+            }
+            Write::ReadAllThreads { team_id } => {
+                client.mark_all_threads_read(&user_id, &team_id).await?;
+                None
+            }
+            Write::Follow {
+                team_id,
+                thread_id,
+                follow,
+            } => {
+                if follow {
+                    client.follow_thread(&user_id, &team_id, &thread_id).await?;
+                } else {
+                    client
+                        .unfollow_thread(&user_id, &team_id, &thread_id)
+                        .await?;
+                }
+                None
             }
             Write::Delete { post_id } => {
                 client.delete_post(&post_id).await?;
