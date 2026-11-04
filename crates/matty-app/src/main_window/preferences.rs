@@ -19,7 +19,8 @@ use matty_api::models::Preference;
 use super::{MainWindow, TEXT_SIZES};
 use crate::actions::Platform;
 use crate::settings::{
-    ClockFormat, MessageDisplay, NameFormat, SendKey, Settings, ThemeChoice, UpdateChannel,
+    ClockFormat, MessageDisplay, NameFormat, RemoteImages, SendKey, Settings, ThemeChoice,
+    UpdateChannel,
 };
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -843,6 +844,35 @@ impl MainWindow {
                 &theme,
             )
         };
+        // Local to this device, unlike the synced settings around it (#159).
+        let images_group = {
+            let store = self.settings.clone();
+            choices(
+                "preferences.remote-images",
+                "Load remote images",
+                match settings.load_remote_images {
+                    RemoteImages::Always => "always",
+                    RemoteImages::Ask => "ask",
+                },
+                &[("always", "Always"), ("ask", "Ask first")],
+                move |value, cx| {
+                    let choice = match value {
+                        "ask" => RemoteImages::Ask,
+                        _ => RemoteImages::Always,
+                    };
+                    store.update(cx, |store, cx| {
+                        store.update(cx, |s| s.load_remote_images = choice)
+                    });
+                },
+            )
+        };
+        let images_hint = match settings.load_remote_images {
+            RemoteImages::Always => {
+                "Images from other sites show in messages and previews, \
+                 through your server's image proxy when it has one."
+            }
+            RemoteImages::Ask => "Images from other sites wait until you click them.",
+        };
         let threads = self
             .collapsed_threads
             .filter(|(choice, _)| *choice)
@@ -874,6 +904,12 @@ impl MainWindow {
                 &theme,
             ))
             .child(previews)
+            .child(group(
+                "Load remote images",
+                hinted(images_group, images_hint, &theme),
+                false,
+                &theme,
+            ))
             .children(threads)
             .into_any_element()
     }

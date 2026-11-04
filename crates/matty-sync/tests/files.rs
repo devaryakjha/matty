@@ -294,6 +294,50 @@ async fn an_outside_image_is_fetched_directly_once_then_cached() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn with_the_image_proxy_on_an_outside_image_comes_through_the_server() {
+    use matty_sync::Connection;
+
+    let server = common::server_with_config(json!({"HasImageProxy": "true"})).await;
+    let outside = wiremock::MockServer::start().await;
+    let url = format!("{}/og.png", outside.uri());
+    Mock::given(method("GET"))
+        .and(path("/api/v4/image"))
+        .and(wiremock::matchers::query_param("url", url.as_str()))
+        .and(wiremock::matchers::header("authorization", "Bearer token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(b"proxied".to_vec()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let sync =
+        matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(dir.path().join("media"))).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("token"),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Connection(Connection::Loaded))
+    })
+    .await;
+
+    sync.send(Command::LoadRemoteImage { url: url.clone() });
+    let ChangeSet::RemoteImage { bytes, .. } =
+        next(&changes, |c| matches!(c, ChangeSet::RemoteImage { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(&*bytes, b"proxied");
+    // The outside host never hears from Matty.
+    assert!(outside.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_profile_picture_is_fetched_once_per_version_and_kept() {
     use matty_sync::Connection;
 

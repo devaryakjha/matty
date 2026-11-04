@@ -2,7 +2,8 @@
 //! data, an image a message links to, and the message attachments
 //! integrations and bots send. Their images come from outside the server
 //! (#159): sync fetches them, and until they are here each keeps the box
-//! its size reserves, so nothing moves when one arrives.
+//! its size reserves, so nothing moves when one arrives. With "Load remote
+//! images: Ask" that box is a click-to-load placeholder.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -18,7 +19,7 @@ use serde_json::Value;
 
 use crate::ui::attachment::Attachment;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
-use crate::ui::embed::{LinkPreview, MessageEmbed};
+use crate::ui::embed::{ImagePlaceholder, LinkPreview, MessageEmbed};
 use crate::ui::markdown::markdown;
 use crate::ui::theme::{UiTheme, primitives::text};
 
@@ -291,6 +292,22 @@ fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
     Some((ImageSource::Image(loaded), image.width, image.height))
 }
 
+/// The click-to-load stand-in for `image` when the person is asked before
+/// remote images load (#159): the image's box, from the server's
+/// `metadata.images`, and its host.
+fn placeholder(image: &EmbedImage, cx: &App) -> Option<ImagePlaceholder> {
+    if !crate::remote_images::waiting(&image.url, cx) {
+        return None;
+    }
+    let url = image.url.clone();
+    Some(
+        ImagePlaceholder::new(crate::remote_images::host(&url), move |_, _, cx| {
+            crate::remote_images::load(&url, cx);
+        })
+        .size(image.width, image.height),
+    )
+}
+
 /// The name an image link shows: the last part of its path.
 pub(crate) fn image_name(url: &str) -> SharedString {
     let url = url.split(['?', '#']).next().unwrap_or_default();
@@ -399,7 +416,9 @@ pub fn post_embeds(
                     if !link.description.is_empty() {
                         card = card.description(link.description.clone());
                     }
-                    if let Some((source, width, height)) = shown(link.image.as_ref()) {
+                    if let Some(waiting) = link.image.as_ref().and_then(|i| placeholder(i, cx)) {
+                        card = card.image_placeholder(waiting);
+                    } else if let Some((source, width, height)) = shown(link.image.as_ref()) {
                         card = card.image(source, width, height);
                     }
                     if opens(&link.url) {
@@ -444,6 +463,7 @@ pub fn post_embeds(
                     collapsed,
                     (on_toggle.clone(), on_image.clone()),
                     &theme,
+                    cx,
                 ),
             }
         }))
@@ -458,6 +478,7 @@ fn image_element(
     collapsed: bool,
     (on_toggle, on_image): (ToggleHandler, ImageHandler),
     theme: &UiTheme,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let name = image_name(&image.url);
     let (icon, label) = if collapsed {
@@ -494,8 +515,17 @@ fn image_element(
                 .debug_selector(|| "post-image-toggle".into())
                 .child(toggle),
         );
-    let picture = shown(Some(image))
+    let waiting = placeholder(image, cx)
         .filter(|_| !collapsed)
+        .map(|waiting| {
+            div()
+                .debug_selector(|| "post-image-placeholder".into())
+                .w(theme.space(120.))
+                .child(MessageEmbed::new((element_id.clone(), "image")).image_placeholder(waiting))
+                .into_any_element()
+        });
+    let picture = shown(Some(image))
+        .filter(|_| !collapsed && waiting.is_none())
         .map(|(source, width, height)| {
             let mut picture = Attachment::new((element_id.clone(), "image"), name)
                 .image(source)
@@ -506,7 +536,10 @@ fn image_element(
                 let url = image.url.clone();
                 picture = picture.on_click(move |_, window, cx| on_image(url.clone(), window, cx));
             }
-            div().debug_selector(|| "post-image".into()).child(picture)
+            div()
+                .debug_selector(|| "post-image".into())
+                .child(picture)
+                .into_any_element()
         });
     div()
         .id(element_id)
@@ -515,7 +548,7 @@ fn image_element(
         .items_start()
         .gap(theme.space(1.))
         .child(header)
-        .children(picture)
+        .children(waiting.or(picture))
         .into_any_element()
 }
 
@@ -564,7 +597,9 @@ fn attachment_element(
             field.short,
         );
     }
-    if let Some((source, width, height)) = shown(attachment.image.as_ref()) {
+    if let Some(waiting) = attachment.image.as_ref().and_then(|i| placeholder(i, cx)) {
+        card = card.image_placeholder(waiting);
+    } else if let Some((source, width, height)) = shown(attachment.image.as_ref()) {
         card = card.image(source, width, height);
     }
     if !attachment.footer.is_empty() {
@@ -917,6 +952,38 @@ mod tests {
             opened,
             [SharedString::from("https://example.com/shots/a.png")]
         );
+    }
+
+    /// #159: under "Load remote images: Ask" a linked image is a
+    /// placeholder sized from the server's metadata, and a click loads it
+    /// instead of opening it.
+    #[gpui_kit::test]
+    fn with_ask_on_a_click_loads_the_image(cx: &mut gpui_kit::TestAppContext) {
+        let fetched = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let log = fetched.clone();
+        let images = crate::remote_images::RemoteImages::new(
+            Rc::new(move |url: &str| log.borrow_mut().push(url.to_owned())),
+            true,
+        );
+        cx.update(|cx| cx.set_global(images.clone()));
+        let image = Embed::Image(EmbedImage {
+            url: "https://example.com/shots/a.png".into(),
+            width: 640,
+            height: 400,
+            loaded: None,
+        });
+        let (probe, _, mut cx) = probe(cx, vec![image], false);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("post-image").is_none());
+        let placeholder = cx.debug_bounds("post-image-placeholder").unwrap();
+        assert!(placeholder.size.height > placeholder.size.width * 0.5);
+        cx.simulate_click(placeholder.center(), Default::default());
+        assert_eq!(*fetched.borrow(), ["https://example.com/shots/a.png"]);
+        assert!(cx.update(|_, cx| probe.read(cx).opened.borrow().is_empty()));
+        // Loading: the image's box takes the placeholder's place.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("post-image-placeholder").is_none());
+        assert!(cx.debug_bounds("post-image").is_some());
     }
 
     #[test]
