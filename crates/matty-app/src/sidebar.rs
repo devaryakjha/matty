@@ -50,6 +50,9 @@ pub struct ChannelRow {
     pub muted: bool,
     /// A direct message's other person, whose picture the row shows.
     pub person: Option<SharedString>,
+    /// A direct message's other person's username, so the quick switcher
+    /// finds the row by it whatever the name format shows (#156).
+    pub handle: Option<SharedString>,
 }
 
 impl ChannelRow {
@@ -66,12 +69,19 @@ impl ChannelRow {
             mentions: 0,
             muted: false,
             person: None,
+            handle: None,
         }
     }
 
     /// The direct message's other person, by user id.
     pub fn person(mut self, user_id: impl Into<SharedString>) -> Self {
         self.person = Some(user_id.into());
+        self
+    }
+
+    /// The direct message's other person's username.
+    pub fn handle(mut self, username: impl Into<SharedString>) -> Self {
+        self.handle = Some(username.into());
         self
     }
 
