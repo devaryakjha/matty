@@ -599,6 +599,19 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   shares the main window's sync, closes with Cmd/Ctrl+W, and opens again
   where it was at the next launch. A thread moved out of the right pane
   closes the pane.
+- **Split view** (#222): "Open in split view" on a sidebar row, or
+  Cmd/Ctrl+\\, opens a second channel beside the open one in the main
+  window, split by the same Resizable handle as the sidebar and right pane
+  (labelled "Resize split view"). Each pane is a full channel view with its
+  own header, composer and unread line. The focused pane carries a 2px
+  `ring` line along its top and is named like "Left pane, general,
+  focused" to screen readers; F6 or a click moves focus. Sidebar clicks open in the
+  focused pane, the sidebar marks its channel, and only it counts as read.
+  Each header gains Swap panes (`ArrowLeftRight`) and Close pane (`X`)
+  while split; Cmd/Ctrl+Alt+\\ and Cmd/Ctrl+Alt+W do the same for the
+  focused pane. Threads from either pane open in the right pane. The second
+  channel and the divider's share are saved per server and come back at
+  launch.
 - **Tooltips on icon-only buttons** (PLAN §5 visual direction, §8): every
   icon-only button shows a tooltip naming it, with the shortcut after two
   spaces when the keymap has one: the channel header's favorite,

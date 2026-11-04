@@ -1053,6 +1053,10 @@ pub enum ChannelEvent {
     /// The user added these people from the Add members dialog; the view
     /// already counts them.
     AddMembers(Vec<UserProfile>),
+    /// "Swap panes" in a split view header (#222).
+    SwapPanes,
+    /// "Close pane" in a split view header (#222).
+    ClosePane,
 }
 
 /// A post being edited in place: its own composer sits where the body was.
@@ -1173,6 +1177,9 @@ pub struct ChannelView {
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
+    /// The channel is one of split view's two panes: the header offers
+    /// Swap panes and Close pane (#222).
+    split_controls: bool,
     /// Interactive messages' menus (#211).
     action_menus: crate::interactive::Menus,
     _subscriptions: Vec<gpui_kit::Subscription>,
@@ -1457,6 +1464,7 @@ impl ChannelView {
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             profile_cards: 0,
+            split_controls: false,
             action_menus: Default::default(),
             _subscriptions: subscriptions,
         };
@@ -1466,6 +1474,14 @@ impl ChannelView {
 
     pub fn model(&self) -> Option<&ChannelModel> {
         self.model.as_ref()
+    }
+
+    /// Shows or hides the header's split view buttons (#222).
+    pub fn set_split_controls(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.split_controls != shown {
+            self.split_controls = shown;
+            cx.notify();
+        }
     }
 
     /// Puts the caret in the composer (Ctrl+Shift+L).
@@ -3697,7 +3713,26 @@ impl ChannelView {
                         actions::tooltip_text("Channel info", "Channel info"),
                         action("channel.info", "Channel info", LucideIcon::Info)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
-                    )),
+                    ))
+                    .when(self.split_controls, |row| {
+                        row.child(style::tipped(
+                            "channel.swap-panes.tip",
+                            actions::tooltip_text("Swap panes", "Swap panes"),
+                            action(
+                                "channel.swap-panes",
+                                "Swap panes",
+                                LucideIcon::ArrowLeftRight,
+                            )
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::SwapPanes))),
+                        ))
+                        .child(style::tipped(
+                            "channel.close-pane.tip",
+                            actions::tooltip_text("Close pane", "Close pane"),
+                            action("channel.close-pane", "Close pane", LucideIcon::X).on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::ClosePane)),
+                            ),
+                        ))
+                    }),
             )
     }
 

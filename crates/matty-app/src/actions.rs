@@ -95,6 +95,15 @@ gpui_kit::actions!(
         OpenInNewWindow,
         /// Close a channel or thread window. (Matty, #222)
         CloseWindow,
+        /// Open a channel beside the current one in split view. (Matty, #222)
+        OpenInSplitView,
+        /// Move focus to split view's other pane. (Matty, #222)
+        FocusOtherPane,
+        /// Swap split view's two channels. (Matty, #222)
+        SwapPanes,
+        /// Close split view's focused pane; the other fills the window.
+        /// (Matty, #222)
+        ClosePane,
     ]
 );
 
@@ -319,6 +328,8 @@ pub const COMPOSER: &str = "Composer";
 pub const COMPOSER_EMPTY: &str = "Composer && empty";
 /// A channel or thread in a window of its own (#222).
 pub const POP_OUT: &str = "PopOut";
+/// Split view's second pane, in the main window (#222).
+pub const SPLIT_PANE: &str = "SplitPane";
 
 macro_rules! row {
     ($label:literal, $action:ident, $context:expr, $mac:literal, $other:literal) => {
@@ -540,6 +551,16 @@ pub fn bindings() -> Vec<Binding> {
             "cmd-w",
             "ctrl-w"
         ),
+        row!(
+            "Open in split view",
+            OpenInSplitView,
+            main,
+            "cmd-\\",
+            "ctrl-\\"
+        ),
+        row!("Focus other pane", FocusOtherPane, main, "f6", "f6"),
+        row!("Swap panes", SwapPanes, main, "cmd-alt-\\", "ctrl-alt-\\"),
+        row!("Close pane", ClosePane, main, "cmd-alt-w", "ctrl-alt-w"),
     ]
 }
 
@@ -664,6 +685,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 41);
+        assert_eq!(count, 45);
     }
 }
