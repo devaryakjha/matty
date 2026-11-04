@@ -8,6 +8,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use matty_api::models::{Post as ApiPost, User};
 
+use crate::attachments::PostFile;
 use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
 use crate::sidebar::ChannelRow;
 
@@ -113,7 +114,18 @@ fn display_post(
             PostStatus::Sent
         },
         replies: None,
-        files: Vec::new(),
+        files: post
+            .metadata
+            .files
+            .iter()
+            .filter(|file| file.delete_at == 0)
+            .map(|file| PostFile {
+                id: file.id.clone().into(),
+                name: file.name.clone().into(),
+                size: u64::try_from(file.size).unwrap_or(0),
+                preview: None,
+            })
+            .collect(),
     }
 }
 
@@ -291,6 +303,32 @@ mod tests {
         let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
         assert_eq!(model.posts[0].status, PostStatus::Sent);
         assert_eq!(model.posts[1].status, PostStatus::Pending);
+    }
+
+    #[test]
+    fn a_post_lists_its_files() {
+        let zone = TimeZone::UTC;
+        let mut p = post("p1", "ada", NOON, "the notes");
+        for (id, deleted) in [("f1", 0), ("f2", 5)] {
+            p.metadata.files.push(matty_api::models::FileInfo {
+                id: id.into(),
+                name: "notes.pdf".into(),
+                size: 2048,
+                delete_at: deleted,
+                ..Default::default()
+            });
+        }
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let model = channel_model(&row, Some(&[p]), &HashMap::new(), &viewer(&zone), None);
+        assert_eq!(
+            model.posts[0].files,
+            vec![PostFile {
+                id: "f1".into(),
+                name: "notes.pdf".into(),
+                size: 2048,
+                preview: None,
+            }]
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ async fn the_cache_shows_offline_from_the_database_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("account.sqlite");
     {
-        let sync = matty_sync::spawn_at(path.clone()).unwrap();
+        let sync = matty_sync::spawn_at(path.clone(), None).unwrap();
         let changes = sync.subscribe();
         sync.send(connect(&server));
         next(&changes, |c| {
@@ -41,7 +41,7 @@ async fn the_cache_shows_offline_from_the_database_file() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let before = server.received_requests().await.unwrap().len();
 
-    let sync = matty_sync::spawn_at(path).unwrap();
+    let sync = matty_sync::spawn_at(path, None).unwrap();
     let changes = sync.subscribe();
     sync.send(Command::ShowCache);
     next(&changes, sidebar_shows_c1).await;
@@ -64,7 +64,7 @@ async fn the_cache_shows_offline_from_the_database_file() {
 async fn a_database_that_will_not_open_still_gives_a_running_engine() {
     let dir = tempfile::tempdir().unwrap();
     // A directory is not a database.
-    let sync = matty_sync::spawn_at(dir.path().to_path_buf()).unwrap();
+    let sync = matty_sync::spawn_at(dir.path().to_path_buf(), None).unwrap();
     let changes = sync.subscribe();
     sync.send(Command::SignOut);
     next(&changes, |c| {

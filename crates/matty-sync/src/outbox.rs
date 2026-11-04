@@ -145,6 +145,46 @@ pub(crate) async fn send(client: Client, outgoing: Outgoing, results: UnboundedS
     });
 }
 
+/// Sends a file, reporting progress in steps of at least 5% so the views
+/// redraw a few dozen times, not once per chunk.
+pub(crate) async fn upload(
+    client: Client,
+    upload: matty_api::Upload,
+    results: UnboundedSender<Loaded>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use crate::change::UploadState;
+
+    let upload_id = upload.client_id.clone();
+    let reported = Arc::new(AtomicU32::new(0));
+    let progress: matty_api::Progress = {
+        let results = results.clone();
+        let upload_id = upload_id.clone();
+        Arc::new(move |sent, total| {
+            let percent =
+                u32::try_from((sent * 100).checked_div(total).unwrap_or(100)).unwrap_or(100);
+            let last = reported.load(Ordering::Relaxed);
+            if percent >= last + 5 && percent < 100 {
+                reported.store(percent, Ordering::Relaxed);
+                let _ = results.send(Loaded::Upload {
+                    upload_id: upload_id.clone(),
+                    state: UploadState::Sending(percent as f32 / 100.0),
+                });
+            }
+        })
+    };
+    let state = match client.upload_file(upload, progress).await {
+        Ok(uploaded) => match uploaded.file_infos.into_iter().next() {
+            Some(file) => UploadState::Done { file_id: file.id },
+            None => UploadState::Failed("the server kept no file".into()),
+        },
+        Err(error) => UploadState::Failed(error.to_string()),
+    };
+    let _ = results.send(Loaded::Upload { upload_id, state });
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
