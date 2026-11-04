@@ -4673,6 +4673,7 @@ dependencies = [
  "keyring",
  "matty-api",
  "matty-markdown",
+ "matty-notify",
  "matty-sync",
  "regex",
  "serde",
