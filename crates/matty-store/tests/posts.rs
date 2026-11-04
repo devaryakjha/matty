@@ -351,3 +351,39 @@ fn cursors_are_kept_and_since_only_moves_forward() {
     assert_eq!(posts::advance_since(conn, &key, 50).unwrap(), 100);
     assert_eq!(posts::advance_since(conn, &key, 150).unwrap(), 150);
 }
+
+#[test]
+fn clearing_the_outbox_drops_queued_sends_and_their_rows_only() {
+    use matty_store::outbox::{self, Outgoing};
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    posts::insert_posts(
+        conn,
+        &[
+            post("sent", "c", 10),
+            post("me:1", "c", 20),
+            post("me:2", "d", 30),
+        ],
+    )
+    .unwrap();
+    posts::upsert_files(conn, &[file("f1", "me:1", 20)]).unwrap();
+    for (id, channel) in [("me:1", "c"), ("me:2", "d")] {
+        outbox::push(
+            conn,
+            &Outgoing {
+                pending_post_id: id.into(),
+                channel_id: channel.into(),
+                message: "queued".into(),
+                ..Outgoing::default()
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(outbox::clear(conn).unwrap(), 2);
+    assert!(outbox::channels(conn).unwrap().is_empty());
+    assert!(posts::post(conn, "me:1").unwrap().is_none());
+    assert!(posts::post(conn, "me:2").unwrap().is_none());
+    assert!(posts::files_for_post(conn, "me:1").unwrap().is_empty());
+    assert!(posts::post(conn, "sent").unwrap().is_some());
+    assert_eq!(outbox::clear(conn).unwrap(), 0);
+}

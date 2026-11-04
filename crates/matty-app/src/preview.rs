@@ -1178,7 +1178,16 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
                 "Thanks. The pill should give way first; I'll cap it at the remaining width and let it shrink to the icon.",
                 false,
             ),
-            reply("r3", "Arya", "08:13", "Tracking it in #79.", true),
+            // Offline, Arya's last reply waits to send under the one
+            // before it (#195).
+            Post {
+                status: if queued() > 0 {
+                    PostStatus::Pending
+                } else {
+                    PostStatus::Sent
+                },
+                ..reply("r3", "Arya", "08:13", "Tracking it in #79.", true)
+            },
         ],
         root: Post {
             continues: false,
