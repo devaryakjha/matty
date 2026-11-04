@@ -444,21 +444,26 @@ impl EventEmitter<PaneEvent> for PopOutView {}
 impl PopOutView {
     /// `channel` as the second pane of split view, in the main window.
     /// `live` is a fork of the main window's sync; `None` in the preview.
+    /// Its toasts join the main window's `toasts`, so there is one stack.
     pub fn in_split(
         channel: SharedString,
         server: String,
         live: Option<(Live, async_channel::Receiver<matty_sync::ChangeSet>)>,
+        toasts: Entity<ToastState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new(
-            Target::Channel(channel),
-            server,
-            live,
-            Host::Split,
-            window,
-            cx,
-        )
+        Self {
+            toasts,
+            ..Self::new(
+                Target::Channel(channel),
+                server,
+                live,
+                Host::Split,
+                window,
+                cx,
+            )
+        }
     }
 
     fn new(
@@ -1628,7 +1633,6 @@ impl Render for PopOutView {
                 .flex()
                 .flex_col()
                 .child(content)
-                .child(self.toasts.clone())
                 .into_any_element();
         }
         let title = self.title(cx);

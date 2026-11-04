@@ -2277,6 +2277,9 @@ impl MainWindow {
         if !self.show_notified_server(&clicked, window, cx) {
             return;
         }
+        if self.show_notified_in_split(&clicked, window, cx) {
+            return;
+        }
         self.open_channel(clicked.channel_id.into(), window, cx);
         if !clicked.root_id.is_empty() {
             // A thread reply opens its thread at the reply (#141): with
@@ -2641,6 +2644,12 @@ impl MainWindow {
         self.browse
             .update(cx, |browse, cx| browse.set_joined(&id, false, cx));
         self.right_pane_open = false;
+        // A split pane showing it closes; the main pane moves on only if
+        // it showed it.
+        self.close_split_showing(&id, window, cx);
+        if self.selected_channel.as_ref() != Some(&id) {
+            return cx.notify();
+        }
         match next {
             Some(next) => self.open_channel(next, window, cx),
             None => {
@@ -2798,16 +2807,22 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Opens the direct message with `display_name`; until sync can create
-    /// one, only an existing sidebar row can be opened.
+    /// Opens the direct message with `display_name` in the focused pane;
+    /// until sync can create one, only an existing sidebar row can be opened.
     fn open_direct(
         &mut self,
         display_name: gpui_kit::SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = self
-            .sidebar
+        if let Some(id) = self.direct_channel(&display_name, cx) {
+            self.open_in_focused_pane(id, window, cx);
+        }
+    }
+
+    /// The sidebar's direct message with `display_name`.
+    fn direct_channel(&self, display_name: &str, cx: &gpui_kit::App) -> Option<SharedString> {
+        self.sidebar
             .read(cx)
             .model()
             .categories
@@ -2817,10 +2832,7 @@ impl MainWindow {
                 matches!(row.kind, crate::sidebar::ChannelKind::Direct { .. })
                     && row.name == display_name
             })
-            .map(|row| row.id.clone());
-        if let Some(id) = id {
-            self.open_channel(id, window, cx);
-        }
+            .map(|row| row.id.clone())
     }
 
     /// The right pane moves on from a thread: sync stops publishing it.

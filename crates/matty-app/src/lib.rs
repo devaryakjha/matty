@@ -243,6 +243,50 @@ pub mod test_support {
             .ok()?;
         main.read(cx).split_for_tests(cx)
     }
+
+    fn main(view: &AnyView) -> gpui_kit::Entity<crate::main_window::MainWindow> {
+        view.clone()
+            .downcast::<crate::main_window::MainWindow>()
+            .unwrap_or_else(|_| panic!("not the main window"))
+    }
+
+    /// The main pane's channel.
+    pub fn main_channel(view: &AnyView, cx: &App) -> Option<String> {
+        main(view).read(cx).main_channel_for_tests()
+    }
+
+    /// Whether split view's second pane shows and has focus.
+    pub fn second_pane_focused(view: &AnyView, cx: &App) -> bool {
+        main(view).read(cx).second_focused_for_tests()
+    }
+
+    /// Whether the main window's toast area holds a toast.
+    pub fn toasts_shown(view: &AnyView, cx: &App) -> bool {
+        main(view).read(cx).toasts_shown_for_tests(cx)
+    }
+
+    /// A click on the notification about `post` in `channel`.
+    pub fn click_notification(
+        view: &AnyView,
+        channel: &str,
+        post: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        main(view).update(cx, |main, cx| {
+            main.click_notification_for_tests(channel, post, window, cx)
+        });
+    }
+
+    /// Split view's second pane asks the main window for `ask`.
+    pub fn split_ask(view: &AnyView, ask: crate::popout::Ask, cx: &mut App) {
+        main(view).update(cx, |main, cx| main.split_ask_for_tests(ask, cx));
+    }
+
+    /// Split view's second pane asks to copy `post`'s link.
+    pub fn split_copy_link(view: &AnyView, post: &str, cx: &mut App) {
+        main(view).update(cx, |main, cx| main.split_copy_link_for_tests(post, cx));
+    }
 }
 
 /// Keeps the logger's level in step with the `log_level` setting.
