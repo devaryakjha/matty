@@ -17,7 +17,8 @@ use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
     HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel, OpenPreferences, Platform,
     PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
+    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
+    ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -1649,7 +1650,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let next = self.sidebar.read(cx).model().neighbor(step, unread_only);
+        let next = self.sidebar.read(cx).shown().neighbor(step, unread_only);
         if let Some(id) = next {
             self.open_channel(id, window, cx);
         }
@@ -2702,6 +2703,10 @@ impl Render for MainWindow {
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
                 this.step_channel(Step::Next, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnreadsFilter, _, cx| {
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
             }))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| {
                 this.sidebar
