@@ -701,11 +701,17 @@ impl RightPaneView {
                     .items_center()
                     .flex_shrink_0()
                     .gap(theme.space(0.5))
-                    .child(action("right-pane.expand", "Expand", LucideIcon::Maximize2))
-                    .child(
+                    .child(style::tipped(
+                        "right-pane.expand.tip",
+                        actions::tooltip_text("Expand", "Expand right pane"),
+                        action("right-pane.expand", "Expand", LucideIcon::Maximize2),
+                    ))
+                    .child(style::tipped(
+                        "right-pane.close.tip",
+                        actions::tooltip_text("Close", "Close right pane"),
                         action("right-pane.close", "Close", LucideIcon::X)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::Close))),
-                    ),
+                    )),
             )
     }
 
@@ -896,6 +902,7 @@ impl RightPaneView {
                         .ok();
                 }
             });
+        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
         let send = Button::new("right-pane.send")
             .variant(ButtonVariant::Default)
             .size(ButtonSize::IconSm)
@@ -935,8 +942,14 @@ impl RightPaneView {
                     .child(
                         Composer::new(&self.composer)
                             .rounded(theme.radius.lg)
-                            .child(tool("right-pane.attach", "Attach files", LucideIcon::Plus))
-                            .child(
+                            .child(style::tipped(
+                                "right-pane.attach.tip",
+                                actions::tooltip_text("Attach files", "Upload files"),
+                                tool("right-pane.attach", "Attach files", LucideIcon::Plus),
+                            ))
+                            .child(style::tipped(
+                                "right-pane.emoji.tip",
+                                "Emoji",
                                 tool("right-pane.emoji", "Emoji", LucideIcon::FaceSlightlySmiling)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.composer.update(cx, |composer, cx| {
@@ -944,9 +957,13 @@ impl RightPaneView {
                                             composer.focus(window, cx);
                                         })
                                     })),
-                            )
+                            ))
                             .child(div().flex_1())
-                            .child(send),
+                            .child(style::tipped(
+                                "right-pane.send.tip",
+                                actions::send_tooltip("Reply", send_on),
+                                send,
+                            )),
                     ),
             )
     }

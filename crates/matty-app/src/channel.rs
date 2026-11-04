@@ -14,7 +14,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::actions::{EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
+use crate::actions::{self, EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
@@ -2404,6 +2404,11 @@ impl ChannelView {
                 .aria_label(label)
                 .child(icon(glyph))
         };
+        let favorite_label = if channel.favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        };
         let kind_icon = match channel.kind {
             ChannelKind::Public => Some(LucideIcon::Hash),
             ChannelKind::Private => Some(LucideIcon::Lock),
@@ -2470,15 +2475,13 @@ impl ChannelView {
                                 }
                             }),
                     )
-                    .child(
+                    .child(style::tipped(
+                        "channel.star.tip",
+                        favorite_label,
                         Button::new("channel.star")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::IconSm)
-                            .aria_label(if channel.favorite {
-                                "Remove from favorites"
-                            } else {
-                                "Add to favorites"
-                            })
+                            .aria_label(favorite_label)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let favorite = this.model.as_ref().is_some_and(|m| !m.favorite);
                                 this.set_favorite(favorite, cx);
@@ -2493,7 +2496,7 @@ impl ChannelView {
                                         muted
                                     }),
                             ),
-                    )
+                    ))
                     .children(channel.header.clone().map(|text| {
                         div()
                             .min_w_0()
@@ -2512,7 +2515,9 @@ impl ChannelView {
                     .items_center()
                     .flex_shrink_0()
                     .gap(theme.space(0.5))
-                    .child(
+                    .child(style::tipped(
+                        "channel.members.tip",
+                        actions::tooltip_text("Members", "Channel info"),
                         count(
                             "channel.members",
                             format!("{} members", channel.members),
@@ -2520,8 +2525,10 @@ impl ChannelView {
                             channel.members,
                         )
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
-                    )
-                    .child(
+                    ))
+                    .child(style::tipped(
+                        "channel.pinned.tip",
+                        "Pinned messages",
                         count(
                             "channel.pinned",
                             format!("{} pinned messages", channel.pinned),
@@ -2529,11 +2536,13 @@ impl ChannelView {
                             channel.pinned,
                         )
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenPinned))),
-                    )
-                    .child(
+                    ))
+                    .child(style::tipped(
+                        "channel.info.tip",
+                        actions::tooltip_text("Channel info", "Channel info"),
                         action("channel.info", "Channel info", LucideIcon::Info)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
-                    ),
+                    )),
             )
     }
 
@@ -2621,7 +2630,9 @@ impl ChannelView {
         let more_items = Self::more_items_for(post, cx);
         let save_id = id.clone();
         let actions = message_actions(cx)
-            .child(
+            .child(style::tipped(
+                gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
+                "Add reaction",
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
                     LucideIcon::FaceSlightlySmilingPlus,
@@ -2633,8 +2644,10 @@ impl ChannelView {
                         this.open_menu(react_items.clone(), event.position(), window, cx)
                     },
                 )),
-            )
-            .child(
+            ))
+            .child(style::tipped(
+                gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
+                "Reply in thread",
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
                     LucideIcon::MessageSquareReply,
@@ -2644,8 +2657,10 @@ impl ChannelView {
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
                 })),
-            )
-            .child(
+            ))
+            .child(style::tipped(
+                gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
+                if post.saved { "Unsave" } else { "Save" },
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
                     if post.saved {
@@ -2657,8 +2672,10 @@ impl ChannelView {
                     cx,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
-            )
-            .child(
+            ))
+            .child(style::tipped(
+                gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
+                "More actions",
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
                     LucideIcon::Ellipsis,
@@ -2670,7 +2687,7 @@ impl ChannelView {
                         this.open_menu(more_items.clone(), event.position(), window, cx)
                     },
                 )),
-            );
+            ));
         let reaction_post = id.clone();
         let view = cx.entity().downgrade();
         let add_view = view.clone();
@@ -3074,6 +3091,7 @@ impl ChannelView {
                         .text_color(theme.colors.muted_foreground),
                 )
         };
+        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
         let max = self.max_post_size();
         let over = self.draft_len > max;
         // The counter appears in the last tenth and stays while over.
@@ -3093,7 +3111,9 @@ impl ChannelView {
         let emoji_popover = popover("composer.emoji.popover")
             .open(picker_open)
             .offset(px(6.))
-            .trigger_with(move |_, _, _| emoji_tool.into_any_element())
+            .trigger_with(move |_, _, _| {
+                style::tipped("composer.emoji.tip", "Emoji", emoji_tool).into_any_element()
+            })
             .on_open_change(cx.listener(|this, open: &bool, window, cx| {
                 if *open {
                     this.open_picker(None, cx);
@@ -3148,24 +3168,38 @@ impl ChannelView {
             .child(
                 Composer::new(&self.composer)
                     .rounded(theme.radius.lg)
-                    .child(
+                    .child(style::tipped(
+                        "composer.attach.tip",
+                        actions::tooltip_text("Attach files", "Upload files"),
                         tool("composer.attach", "Attach files", LucideIcon::Plus).on_click(
                             |_, window, cx| window.dispatch_action(Box::new(UploadFiles), cx),
                         ),
-                    )
-                    .child(tool("composer.bold", "Bold", LucideIcon::Bold).on_click(
-                        cx.listener(|this, _, window, cx| this.wrap("**", "**", window, cx)),
                     ))
-                    .child(
+                    .child(style::tipped(
+                        "composer.bold.tip",
+                        actions::tooltip_text("Bold", "Bold"),
+                        tool("composer.bold", "Bold", LucideIcon::Bold).on_click(
+                            cx.listener(|this, _, window, cx| this.wrap("**", "**", window, cx)),
+                        ),
+                    ))
+                    .child(style::tipped(
+                        "composer.italic.tip",
+                        actions::tooltip_text("Italic", "Italic"),
                         tool("composer.italic", "Italic", LucideIcon::Italic).on_click(
                             cx.listener(|this, _, window, cx| this.wrap("_", "_", window, cx)),
                         ),
-                    )
-                    .child(tool("composer.code", "Code", LucideIcon::Code).on_click(
-                        cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
+                    ))
+                    .child(style::tipped(
+                        "composer.code.tip",
+                        actions::tooltip_text("Code", "Inline code"),
+                        tool("composer.code", "Code", LucideIcon::Code).on_click(
+                            cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
+                        ),
                     ))
                     .child(emoji_popover)
-                    .child(
+                    .child(style::tipped(
+                        "composer.mention.tip",
+                        "Mention someone",
                         tool("composer.mention", "Mention someone", LucideIcon::AtSign).on_click(
                             cx.listener(|this, _, window, cx| {
                                 this.composer.update(cx, |composer, cx| {
@@ -3174,10 +3208,12 @@ impl ChannelView {
                                 })
                             }),
                         ),
-                    )
+                    ))
                     .child(div().flex_1())
                     .children(counter)
-                    .child(
+                    .child(style::tipped(
+                        "composer.send.tip",
+                        actions::send_tooltip("Send", send_on),
                         Button::new("composer.send")
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::IconSm)
@@ -3192,7 +3228,7 @@ impl ChannelView {
                                     .size(scaled(&theme, metrics::ICON))
                                     .text_color(theme.colors.primary_foreground),
                             ),
-                    ),
+                    )),
             )
     }
 

@@ -7,6 +7,8 @@
 
 use gpui_kit::{Action, App, KeyBinding};
 
+use crate::ui::kbd::format_shortcut;
+
 gpui_kit::actions!(
     matty,
     [
@@ -102,6 +104,14 @@ impl Platform {
             Self::Other
         }
     }
+
+    /// The operating system gpuicn formats shortcuts for.
+    pub fn os(self) -> gpui_kit::OperatingSystem {
+        match self {
+            Self::MacOs => gpui_kit::OperatingSystem::Mac,
+            Self::Other => gpui_kit::OperatingSystem::Linux,
+        }
+    }
 }
 
 /// One row of the keymap: an action, its label in the shortcut sheet, the
@@ -121,6 +131,46 @@ impl Binding {
             Platform::MacOs => self.macos,
             Platform::Other => self.other,
         }
+    }
+}
+
+/// The keystrokes bound to the row labelled `label`, formatted for this
+/// platform (`⌘⇧I` on macOS, `Ctrl+Shift+I` elsewhere), or `None` when the
+/// keymap has no such row.
+pub fn shortcut_for(label: &str) -> Option<gpui_kit::SharedString> {
+    let platform = Platform::current();
+    bindings()
+        .into_iter()
+        .find(|row| row.label == label)
+        .map(|row| format_shortcut(row.keys(platform), platform.os()))
+}
+
+/// `macos` or `other`, whichever this platform uses, formatted like
+/// [`shortcut_for`]; for keys the composer handles outside the keymap.
+pub fn format_keys(macos: &str, other: &str) -> gpui_kit::SharedString {
+    let platform = Platform::current();
+    let keys = match platform {
+        Platform::MacOs => macos,
+        Platform::Other => other,
+    };
+    format_shortcut(keys, platform.os())
+}
+
+/// Tooltip text for the send button: `label` and the key that sends.
+pub fn send_tooltip(label: &str, send_on: crate::settings::SendKey) -> gpui_kit::SharedString {
+    let keys = match send_on {
+        crate::settings::SendKey::Enter => format_keys("enter", "enter"),
+        crate::settings::SendKey::ModEnter => format_keys("cmd-enter", "ctrl-enter"),
+    };
+    format!("{label}  {keys}").into()
+}
+
+/// Tooltip text for an icon-only control (DESIGN.md §5): `label`, followed
+/// by the shortcut of the keymap row labelled `binding` when there is one.
+pub fn tooltip_text(label: &str, binding: &str) -> gpui_kit::SharedString {
+    match shortcut_for(binding) {
+        Some(keys) => format!("{label}  {keys}").into(),
+        None => label.to_string().into(),
     }
 }
 

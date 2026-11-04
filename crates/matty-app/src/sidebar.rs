@@ -557,7 +557,7 @@ impl SidebarView {
             .items_center()
             .justify_between()
             .child(team)
-            .child(compose)
+            .child(style::tipped("sidebar.compose.tip", "New…", compose))
     }
 
     /// The icon slot: `#` and lock for channels, an avatar with a presence
