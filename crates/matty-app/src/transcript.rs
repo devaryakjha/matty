@@ -64,6 +64,7 @@ pub fn channel_model(
         rows.push(display_post(post, users, viewer, mention, stamp, continues));
     }
     ChannelModel {
+        offline: false,
         id: row.id.clone(),
         name: row.name.clone(),
         kind: row.kind.clone(),
