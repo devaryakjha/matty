@@ -479,7 +479,7 @@ impl RightPaneView {
         let open = Button::new("right-pane.lightbox.open")
             .size(ButtonSize::Icon)
             .variant(ButtonVariant::Ghost)
-            .aria_label("Open file")
+            .aria_label("Download")
             .child(
                 lucide(LucideIcon::Download)
                     .size(theme.space(4.5))
