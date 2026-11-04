@@ -905,14 +905,14 @@ impl Live {
             user_id: user.id.clone().into(),
             username: user.username.clone().into(),
             display_name: crate::transcript::display_name(user).into(),
-            position: None,
+            position: (!user.position.is_empty()).then(|| user.position.clone().into()),
             presence: self
                 .presence
                 .get(&user.id)
                 .copied()
                 .unwrap_or(Presence::Offline),
             status_text: None,
-            local_time: None,
+            time_zone: crate::profile::time_zone(&user.timezone),
         }
     }
 

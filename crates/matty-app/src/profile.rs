@@ -26,8 +26,34 @@ pub struct UserProfile {
     pub presence: Presence,
     /// The custom status text, when set.
     pub status_text: Option<SharedString>,
-    /// "14:32", when the user shares a time zone.
-    pub local_time: Option<SharedString>,
+    /// The user's IANA time zone, such as `Europe/Berlin`, when they
+    /// share one; the card shows the time there.
+    pub time_zone: Option<SharedString>,
+}
+
+/// The time now in `zone`, the way the user's clock setting prints times;
+/// `None` for a zone this system does not know.
+pub fn local_time(zone: &str, clock: crate::settings::ClockFormat) -> Option<String> {
+    let zone = jiff::tz::TimeZone::get(zone).ok()?;
+    let now = jiff::Timestamp::now().to_zoned(zone);
+    Some(clock.format(now.hour() as u16 * 60 + now.minute() as u16))
+}
+
+/// The zone a user's `timezone` props name: the automatic one when they
+/// chose it, else the manual one; `None` when neither is set.
+pub fn time_zone(props: &std::collections::HashMap<String, String>) -> Option<SharedString> {
+    let automatic = props
+        .get("useAutomaticTimezone")
+        .is_some_and(|v| v == "true");
+    let key = if automatic {
+        "automaticTimezone"
+    } else {
+        "manualTimezone"
+    };
+    props
+        .get(key)
+        .filter(|zone| !zone.is_empty())
+        .map(|zone| SharedString::from(zone.clone()))
 }
 
 impl UserProfile {
@@ -169,15 +195,21 @@ pub fn profile_card(
                     None => profile.presence_label().to_string(),
                 },
             ))
-            .children(profile.local_time.clone().map(|time| {
-                detail(
-                    lucide(LucideIcon::Clock)
-                        .size(scaled(&theme, metrics::ICON_SMALL))
-                        .text_color(theme.colors.muted_foreground)
-                        .into_any_element(),
-                    format!("{time} local time"),
-                )
-            })),
+            .children(
+                profile
+                    .time_zone
+                    .as_ref()
+                    .and_then(|zone| local_time(zone, crate::settings::ClockFormat::current(cx)))
+                    .map(|time| {
+                        detail(
+                            lucide(LucideIcon::Clock)
+                                .size(scaled(&theme, metrics::ICON_SMALL))
+                                .text_color(theme.colors.muted_foreground)
+                                .into_any_element(),
+                            format!("{time} local time"),
+                        )
+                    }),
+            ),
     )
     .child(
         div()
@@ -217,4 +249,41 @@ pub fn profile_card(
                 .on_click(move |_, window, cx| on_mention(window, cx)),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn the_zone_is_the_one_the_user_chose() {
+        let props = |auto: &str, automatic: &str, manual: &str| {
+            HashMap::from([
+                ("useAutomaticTimezone".to_string(), auto.to_string()),
+                ("automaticTimezone".to_string(), automatic.to_string()),
+                ("manualTimezone".to_string(), manual.to_string()),
+            ])
+        };
+        assert_eq!(
+            time_zone(&props("true", "Europe/Berlin", "Asia/Tokyo")).as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            time_zone(&props("false", "Europe/Berlin", "Asia/Tokyo")).as_deref(),
+            Some("Asia/Tokyo")
+        );
+        assert_eq!(time_zone(&props("false", "Europe/Berlin", "")), None);
+        assert_eq!(time_zone(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn local_time_follows_the_clock_setting() {
+        use crate::settings::ClockFormat;
+        let time = local_time("UTC", ClockFormat::TwentyFourHour).unwrap();
+        assert_eq!(time.len(), 5, "{time}");
+        let time = local_time("UTC", ClockFormat::TwelveHour).unwrap();
+        assert!(time.ends_with("AM") || time.ends_with("PM"), "{time}");
+        assert_eq!(local_time("Not/AZone", ClockFormat::TwentyFourHour), None);
+    }
 }

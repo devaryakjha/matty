@@ -788,14 +788,14 @@ pub fn profiles() -> Vec<UserProfile> {
                    position: Option<&str>,
                    presence,
                    status_text: Option<&str>,
-                   local_time: Option<&str>| UserProfile {
+                   time_zone: Option<&str>| UserProfile {
         user_id: format!("u-{username}").into(),
         username: username.into(),
         display_name: display_name.into(),
         position: position.map(Into::into),
         presence,
         status_text: status_text.map(Into::into),
-        local_time: local_time.map(Into::into),
+        time_zone: time_zone.map(Into::into),
     };
     vec![
         profile(
@@ -804,7 +804,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Product designer"),
             Presence::Online,
             Some("In a review until 3"),
-            Some("14:32"),
+            Some("Asia/Kolkata"),
         ),
         profile(
             "sam",
@@ -812,7 +812,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Release manager"),
             Presence::Away,
             None,
-            Some("10:02"),
+            Some("Africa/Lagos"),
         ),
         profile(
             "lena",
@@ -820,7 +820,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Engineer, Windows"),
             Presence::Dnd,
             Some("Heads down"),
-            Some("10:02"),
+            Some("Europe/Berlin"),
         ),
         profile(
             "jonas",
