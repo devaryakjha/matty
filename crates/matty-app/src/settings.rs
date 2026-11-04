@@ -162,6 +162,9 @@ pub struct Settings {
     /// Enter sends by default; Ctrl+Enter for people who write in paragraphs.
     pub send_on: SendKey,
     pub display: MessageDisplay,
+    /// Turns off the eases on panes, banners and disclosures (DESIGN.md §1);
+    /// the OS reduced-motion setting does the same on its own.
+    pub reduce_motion: bool,
     pub account: Option<SavedAccount>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
@@ -187,6 +190,7 @@ impl Default for Settings {
             clock: ClockFormat::TwentyFourHour,
             send_on: SendKey::Enter,
             display: MessageDisplay::Standard,
+            reduce_motion: false,
             account: None,
             unknown: serde_json::Map::new(),
         }

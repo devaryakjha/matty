@@ -97,6 +97,17 @@ pub fn install(mode: ThemeMode, cx: &mut App) {
     UiTheme::set(cx, next);
 }
 
+/// Applies the "Reduce motion" preference to the installed theme, so every
+/// gpuicn transition snaps to its target; a no-op when nothing changes.
+pub fn set_reduced_motion(reduced: bool, cx: &mut App) {
+    let theme = UiTheme::read(cx);
+    if theme.motion.reduced != reduced {
+        let mut next = theme.clone();
+        next.motion.reduced = reduced;
+        UiTheme::set(cx, next);
+    }
+}
+
 /// A role in the type scale (DESIGN.md §3): size and line height in px at
 /// text scale 1, and the weight.
 #[derive(Clone, Copy, Debug, PartialEq)]

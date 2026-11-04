@@ -492,6 +492,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   link) to `#6688f2` with near-black text on buttons; light `destructive`
   to `#d42020` so sign-in errors pass on the sidebar surface; light `away`
   to `#cc7a00` for the presence dot and favorite star (`design-53`).
+- **Motion** (DESIGN §1, PLAN §5 and §8): the connection banner slides open
+  and closed over 200ms and a sidebar category's chevron turns from right to
+  down over 150ms, both through gpuicn's `transition_value`, so the theme's
+  timing and the OS reduced-motion setting govern them. Preferences → Window
+  gains "Reduce motion", which sets the theme's `motion.reduced` and snaps
+  every gpuicn transition (drawers, switches, the sidebar) as well. Nothing
+  in the message list moves (`design-54`).
 
 ## 5. Components
 

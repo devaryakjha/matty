@@ -17,7 +17,7 @@ use crate::ui::{
     collapsible::{collapsible, collapsible_trigger},
     menu::{Menu, MenuItem, MenuState},
     sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_action, sidebar_menu_skeleton},
-    theme::UiTheme,
+    theme::{UiTheme, transition_value},
 };
 
 /// A user's presence, as Mattermost reports it.
@@ -818,6 +818,13 @@ impl SidebarView {
         let theme = UiTheme::read(cx).clone();
         let open = !category.collapsed;
         let id = category.id.clone();
+        let turn = transition_value(
+            element_id("sidebar.category.chevron", &category.id),
+            if open { 1. } else { 0. },
+            theme.motion.fast,
+            window,
+            cx,
+        );
         let trigger = collapsible_trigger(element_id("sidebar.category", &category.id), open, cx)
             .w_full()
             .h(theme.space(6.))
@@ -831,13 +838,14 @@ impl SidebarView {
             .text_color(theme.colors.muted_foreground)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_category(&id, cx)))
             .child(
-                lucide(if open {
-                    LucideIcon::ChevronDown
-                } else {
-                    LucideIcon::ChevronRight
-                })
-                .size(scaled(&theme, 12.))
-                .text_color(theme.colors.muted_foreground),
+                // The chevron turns from right to down as the category opens
+                // (DESIGN.md §1 motion), snapping under reduced motion.
+                lucide(LucideIcon::ChevronRight)
+                    .size(scaled(&theme, 12.))
+                    .text_color(theme.colors.muted_foreground)
+                    .with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
+                        turn * std::f32::consts::FRAC_PI_2,
+                    ))),
             )
             .child(category.name.to_uppercase());
         // Collapsed categories keep their unread rows visible, as Mattermost does.

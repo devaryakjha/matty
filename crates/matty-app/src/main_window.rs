@@ -42,7 +42,7 @@ use crate::ui::{
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
     switch::Switch,
-    theme::UiTheme,
+    theme::{UiTheme, transition_value},
     title_bar::TitleBar,
     toast::{Notice, ToastState},
     toggle_group::{ToggleGroup, ToggleGroupItem},
@@ -144,6 +144,8 @@ pub struct MainWindow {
     drafts: Entity<DraftsView>,
     drafts_open: bool,
     connection: ConnectionState,
+    /// What the banner last said, kept while it slides away after reconnecting.
+    banner_last: ConnectionState,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
     history: Vec<SharedString>,
@@ -636,6 +638,7 @@ impl MainWindow {
             drafts,
             drafts_open: false,
             connection: crate::preview::connection(),
+            banner_last: crate::preview::connection(),
             history,
             history_at: 0,
             live: None,
@@ -2097,6 +2100,9 @@ impl MainWindow {
     /// Replaces the connection state; sync calls this as it goes.
     pub fn set_connection(&mut self, state: ConnectionState, cx: &mut Context<Self>) {
         if self.connection != state {
+            if state != ConnectionState::Online {
+                self.banner_last = state.clone();
+            }
             self.connection = state;
             cx.notify();
         }
@@ -2104,72 +2110,100 @@ impl MainWindow {
 
     /// A 32px strip under the title bar: `muted` while reconnecting with a
     /// spinner, `destructive`-tinted once offline with a Retry button.
-    fn connection_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn connection_banner(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
         let theme = UiTheme::read(cx).clone();
-        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) =
-            match &self.connection {
-                ConnectionState::Online => return None,
-                ConnectionState::Reconnecting { attempt } => (
-                    crate::ui::spinner::Spinner::new("banner.spinner")
-                        .color(theme.colors.muted_foreground)
-                        .into_any_element(),
-                    if *attempt <= 1 {
-                        "Connection lost. Reconnecting…".into()
-                    } else {
-                        format!("Connection lost. Reconnecting (attempt {attempt})…").into()
-                    },
-                    false,
-                ),
-                ConnectionState::Offline => (
-                    lucide(LucideIcon::WifiOff)
-                        .size(scaled(&theme, 14.))
-                        .text_color(theme.colors.destructive)
-                        .into_any_element(),
-                    "You're offline. Matty shows what it has and sends when you're back.".into(),
-                    true,
-                ),
-            };
+        // The strip slides open and closed (DESIGN.md §1 motion); its row keeps
+        // its full height inside and is clipped, so the text never squashes.
+        let full = f32::from(theme.space(8.));
+        let shown = self.connection != ConnectionState::Online;
+        let height = transition_value(
+            "banner.height",
+            if shown { full } else { 0. },
+            theme.motion.normal,
+            window,
+            cx,
+        );
+        if height <= 0. {
+            return None;
+        }
+        let state = if shown {
+            &self.connection
+        } else {
+            &self.banner_last
+        };
+        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) = match state {
+            ConnectionState::Online => return None,
+            ConnectionState::Reconnecting { attempt } => (
+                crate::ui::spinner::Spinner::new("banner.spinner")
+                    .color(theme.colors.muted_foreground)
+                    .into_any_element(),
+                if *attempt <= 1 {
+                    "Connection lost. Reconnecting…".into()
+                } else {
+                    format!("Connection lost. Reconnecting (attempt {attempt})…").into()
+                },
+                false,
+            ),
+            ConnectionState::Offline => (
+                lucide(LucideIcon::WifiOff)
+                    .size(scaled(&theme, 14.))
+                    .text_color(theme.colors.destructive)
+                    .into_any_element(),
+                "You're offline. Matty shows what it has and sends when you're back.".into(),
+                true,
+            ),
+        };
         let foreground = if offline {
             theme.colors.destructive
         } else {
             theme.colors.foreground
         };
+        let row = div()
+            .flex_shrink_0()
+            .h(theme.space(8.))
+            .px(scaled(&theme, metrics::GUTTER))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .bg(if offline {
+                theme.colors.destructive.opacity(0.1)
+            } else {
+                theme.colors.muted
+            })
+            .border_b(style::hairline())
+            .border_color(theme.colors.border)
+            .type_style(style::UI, &theme)
+            .text_color(foreground)
+            .child(icon)
+            .child(text)
+            .when(offline, |row| {
+                row.child(
+                    Button::new("banner.retry")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Xs)
+                        .aria_label("Retry now")
+                        .text_color(theme.colors.destructive)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_connection(ConnectionState::Reconnecting { attempt: 1 }, cx)
+                        }))
+                        .child("Retry now"),
+                )
+            });
         Some(
             div()
                 .flex_shrink_0()
-                .h(theme.space(8.))
-                .px(scaled(&theme, metrics::GUTTER))
+                .w_full()
+                .h(px(height))
+                .overflow_hidden()
                 .flex()
-                .items_center()
-                .justify_center()
-                .gap(theme.space(2.))
-                .bg(if offline {
-                    theme.colors.destructive.opacity(0.1)
-                } else {
-                    theme.colors.muted
-                })
-                .border_b(style::hairline())
-                .border_color(theme.colors.border)
-                .type_style(style::UI, &theme)
-                .text_color(foreground)
-                .child(icon)
-                .child(text)
-                .when(offline, |row| {
-                    row.child(
-                        Button::new("banner.retry")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Xs)
-                            .aria_label("Retry now")
-                            .text_color(theme.colors.destructive)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_connection(
-                                    ConnectionState::Reconnecting { attempt: 1 },
-                                    cx,
-                                )
-                            }))
-                            .child("Retry now"),
-                    )
-                }),
+                .flex_col()
+                .justify_end()
+                .child(row),
         )
     }
 
@@ -2459,7 +2493,7 @@ impl MainWindow {
             };
         // Taller than gpuicn's default so every section shows at once.
         let popup = dialog_popup("preferences.popup", "Preferences", cx)
-            .max_h(theme.space(170.))
+            .max_h(theme.space(182.))
             .child(dialog_title("preferences.title", cx).child("Preferences"))
             .child(
                 dialog_description("preferences.description", cx)
@@ -2502,6 +2536,13 @@ impl MainWindow {
                                 settings.launch_at_login,
                                 |s, v| s.launch_at_login = v,
                             ))
+                            .child(switch_row(
+                                "preferences.reduce-motion",
+                                "Reduce motion",
+                                "Panes and banners change without sliding.",
+                                settings.reduce_motion,
+                                |s, v| s.reduce_motion = v,
+                            ))
                             .into_any_element(),
                     )),
             )
@@ -2542,10 +2583,17 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let reduce_motion = self.settings.read(cx).get().reduce_motion;
+        style::set_reduced_motion(reduce_motion, cx);
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
         self.sync_drawers(window, cx);
+        let banner = if self.login.is_none() {
+            self.connection_banner(window, cx)
+        } else {
+            None
+        };
         let narrow_sidebar = Self::narrow_sidebar(window);
         let content = self.content(window, cx);
         let frame = if self.sidebar_visible && !narrow_sidebar {
@@ -2646,11 +2694,7 @@ impl Render for MainWindow {
             .font_family(theme.fonts.body.clone())
             .type_style(style::UI, &theme)
             .child(self.title_bar(narrow_sidebar, cx))
-            .children(if self.login.is_none() {
-                self.connection_banner(cx)
-            } else {
-                None
-            })
+            .children(banner)
             .child(match &self.login {
                 Some(login) => div()
                     .flex_1()
