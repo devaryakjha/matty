@@ -28,6 +28,7 @@ jobs:
       code: ${{ steps.code.outputs.code }}
       live: ${{ steps.filter.outputs.live }}
       macos: ${{ steps.filter.outputs.macos }}
+      bundle: ${{ steps.filter.outputs.bundle }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -64,8 +65,13 @@ jobs:
               - 'crates/matty/**'
               - 'packaging/**'
               - 'scripts/dev-bundle'
+              - 'scripts/macos-bundle'
               - 'Cargo.toml'
               - 'rust-toolchain.toml'
+            bundle:
+              - 'packaging/macos/**'
+              - 'scripts/macos-bundle'
+              - 'scripts/release-bundle'
 
   # fmt, clippy and the unit tests of the whole workspace on Linux. This is
   # the check every pull request waits for.
@@ -160,6 +166,55 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           fi
 
+  macos-universal:
+    # The release bundle (#177): both slices, lipo, Info.plist, ad hoc
+    # signature. The release workflow builds the same thing from a tag and
+    # signs it for real when the secrets are there. It is slow and macOS
+    # runners are scarce, so pull requests run it only when the bundle
+    # scripts change or with the `macos` label.
+    name: macos universal bundle
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'macos') ||
+      needs.changes.outputs.bundle == 'true'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: universal
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Build target/dist/Matty.app
+        run: MATTY_BUILD_NUMBER=${{ github.run_number }} scripts/release-bundle
+      - name: The bundle is universal, signed and runs
+        run: |
+          app=target/dist/Matty.app
+          file "$app/Contents/MacOS/matty"
+          lipo "$app/Contents/MacOS/matty" -verify_arch arm64 x86_64
+          codesign --verify --strict --verbose=2 "$app"
+          plutil -p "$app/Contents/Info.plist"
+          "$app/Contents/MacOS/matty" --version
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 "$app/Contents/MacOS/matty" --version
+          else
+            echo "Rosetta is not installed: skipping the x86_64 slice run"
+          fi
+      - name: Zip the bundle
+        # ditto keeps the executable bit and the signature, which the
+        # artifact upload would otherwise lose.
+        run: ditto -c -k --keepParent target/dist/Matty.app target/dist/Matty-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-macos-universal
+          path: target/dist/Matty-macos-universal.zip
+          if-no-files-found: error
+
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
     # Mattermost server (docs/dev-server.md). Pull requests run them only
@@ -215,7 +270,7 @@ jobs:
   # were skipped on purpose.
   ci:
     if: always()
-    needs: [changes, linux, deny, macos, integration]
+    needs: [changes, linux, deny, macos, macos-universal, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

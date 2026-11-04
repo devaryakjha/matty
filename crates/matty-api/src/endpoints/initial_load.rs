@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use crate::{
     ApiError, Client, Fetched,
     models::{
-        Channel, ChannelMember, ChannelStats, Emoji, Preference, SidebarCategories, Status, Team,
-        TeamMember, TeamUnread, User,
+        Channel, ChannelMember, ChannelStats, Emoji, Preference, SidebarCategories,
+        SidebarCategory, Status, Team, TeamMember, TeamUnread, User,
     },
 };
 
@@ -50,6 +50,45 @@ impl Client {
     pub async fn sidebar_categories(&self, team_id: &str) -> Result<SidebarCategories, ApiError> {
         self.get(&format!("users/me/teams/{team_id}/channels/categories"))
             .await
+    }
+
+    /// `POST users/me/teams/{team_id}/channels/categories`: a new custom
+    /// category, with any `channel_ids` moved into it.
+    pub async fn create_category(
+        &self,
+        team_id: &str,
+        category: &SidebarCategory,
+    ) -> Result<SidebarCategory, ApiError> {
+        self.post(
+            &format!("users/me/teams/{team_id}/channels/categories"),
+            category,
+        )
+        .await
+    }
+
+    /// `PUT users/me/teams/{team_id}/channels/categories`: saves
+    /// `categories` whole. A channel listed in one leaves the category it
+    /// was in.
+    pub async fn update_categories(
+        &self,
+        team_id: &str,
+        categories: &[SidebarCategory],
+    ) -> Result<Vec<SidebarCategory>, ApiError> {
+        self.put(
+            &format!("users/me/teams/{team_id}/channels/categories"),
+            categories,
+        )
+        .await
+    }
+
+    /// `DELETE users/me/teams/{team_id}/channels/categories/{category_id}`;
+    /// its channels go back to their default categories.
+    pub async fn delete_category(&self, team_id: &str, category_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!(
+            "users/me/teams/{team_id}/channels/categories/{category_id}"
+        ))
+        .await
+        .map(|_| ())
     }
 
     /// `GET users/me/preferences`.

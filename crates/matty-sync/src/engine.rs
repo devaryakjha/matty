@@ -23,6 +23,7 @@ use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
 use crate::outbox;
+use crate::presence::StatusBatcher;
 use crate::typing::TypingThrottle;
 use matty_store::outbox::{self as queue, Outgoing};
 
@@ -262,6 +263,12 @@ pub enum Command {
         /// Every key, changed or not: the server replaces the map.
         notify_props: std::collections::HashMap<String, String>,
     },
+    /// Changes the user's own names, nickname, position or username;
+    /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
+    UpdateProfile {
+        /// The fields to change.
+        patch: matty_api::ProfilePatch,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -283,6 +290,18 @@ pub enum Command {
     },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Archives a channel (#208); it leaves the sidebar as a left channel
+    /// does.
+    ArchiveChannel {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Makes a public channel private (#208); the channel comes back in
+    /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
+    ConvertToPrivate {
         /// The channel.
         channel_id: String,
     },
@@ -398,6 +417,37 @@ pub enum Command {
         /// The caller's id for it.
         upload_id: String,
     },
+    /// A new custom sidebar category named `name`, with `channel_id`
+    /// moved into it when given (#208). The team's categories come back
+    /// in the sidebar change sets.
+    CreateCategory {
+        /// The team whose sidebar gets it.
+        team_id: String,
+        /// Its title.
+        name: String,
+        /// A channel to move into it.
+        channel_id: Option<String>,
+    },
+    /// Renames a category.
+    RenameCategory {
+        /// The category.
+        category_id: String,
+        /// Its new title.
+        name: String,
+    },
+    /// Deletes a custom category; the server moves its channels back to
+    /// their default categories.
+    DeleteCategory {
+        /// The category.
+        category_id: String,
+    },
+    /// Moves a channel to the top of another category.
+    MoveToCategory {
+        /// The channel.
+        channel_id: String,
+        /// Where it goes.
+        category_id: String,
+    },
     /// Renames a channel or changes its header or purpose; `None` leaves
     /// a field alone. The channel comes back in
     /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
@@ -426,6 +476,14 @@ pub enum Command {
         channel_id: String,
         /// The people.
         user_ids: Vec<String>,
+    },
+    /// Removes someone from a channel (#208); the new counts come back in
+    /// [`ChangeSet::Stats`](crate::ChangeSet::Stats).
+    RemoveMember {
+        /// The channel.
+        channel_id: String,
+        /// The person.
+        user_id: String,
     },
     /// Searches the team's messages;
     /// [`ChangeSet::Search`](crate::ChangeSet::Search) answers.
@@ -623,6 +681,7 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
+            Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -636,6 +695,14 @@ impl std::fmt::Debug for Command {
             }
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::ArchiveChannel { channel_id } => f
+                .debug_struct("ArchiveChannel")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::ConvertToPrivate { channel_id } => f
+                .debug_struct("ConvertToPrivate")
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
@@ -678,6 +745,31 @@ impl std::fmt::Debug for Command {
                 .debug_struct("CancelUpload")
                 .field("upload_id", upload_id)
                 .finish(),
+            Self::CreateCategory {
+                team_id,
+                channel_id,
+                ..
+            } => f
+                .debug_struct("CreateCategory")
+                .field("team_id", team_id)
+                .field("channel_id", channel_id)
+                .finish_non_exhaustive(),
+            Self::RenameCategory { category_id, .. } => f
+                .debug_struct("RenameCategory")
+                .field("category_id", category_id)
+                .finish_non_exhaustive(),
+            Self::DeleteCategory { category_id } => f
+                .debug_struct("DeleteCategory")
+                .field("category_id", category_id)
+                .finish(),
+            Self::MoveToCategory {
+                channel_id,
+                category_id,
+            } => f
+                .debug_struct("MoveToCategory")
+                .field("channel_id", channel_id)
+                .field("category_id", category_id)
+                .finish(),
             Self::PatchChannel { channel_id, .. } => f
                 .debug_struct("PatchChannel")
                 .field("channel_id", channel_id)
@@ -694,6 +786,14 @@ impl std::fmt::Debug for Command {
                 .debug_struct("AddMembers")
                 .field("channel_id", channel_id)
                 .field("user_ids", user_ids)
+                .finish(),
+            Self::RemoveMember {
+                channel_id,
+                user_id,
+            } => f
+                .debug_struct("RemoveMember")
+                .field("channel_id", channel_id)
+                .field("user_id", user_id)
                 .finish(),
             Self::Search { team_id, .. } => f
                 .debug_struct("Search")
@@ -792,6 +892,8 @@ pub(crate) struct Engine {
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
     typing: TypingThrottle,
+    /// Post authors whose statuses are still to be asked for (#135).
+    statuses: StatusBatcher,
     /// Uploads still sending, by the caller's id; aborting one cancels it.
     uploads: std::collections::HashMap<String, JoinHandle<()>>,
     /// Where images are kept between runs; without it they are fetched
@@ -837,6 +939,7 @@ impl Engine {
             loaded,
             loaded_inbox: Some(loaded_inbox),
             typing: TypingThrottle::default(),
+            statuses: StatusBatcher::default(),
             uploads: std::collections::HashMap::new(),
             media: None,
             fetching: BTreeSet::new(),
@@ -919,6 +1022,7 @@ impl Engine {
                     if let Some(old) = self.session.take() {
                         old.load.abort();
                     }
+                    self.statuses.clear();
                     // Publish the cache before the first round trip ends.
                     dirty.all_teams = true;
                     dirty.unreads = true;
@@ -1289,6 +1393,9 @@ impl Engine {
                 Message::Command(Command::SetNotifyProps { notify_props }) => {
                     writes.push(Write::NotifyProps(notify_props))
                 }
+                Message::Command(Command::UpdateProfile { patch }) => {
+                    writes.push(Write::Profile(patch))
+                }
                 Message::Command(Command::SetCollapsedThreads { on }) => {
                     if let Some(me) = &self.me {
                         let preference = Preference {
@@ -1357,6 +1464,15 @@ impl Engine {
                 Message::Command(Command::LeaveChannel { channel_id }) => {
                     writes.push(Write::Leave { channel_id });
                 }
+                Message::Command(Command::ArchiveChannel { channel_id }) => {
+                    writes.push(Write::Archive { channel_id });
+                }
+                Message::Command(Command::ConvertToPrivate { channel_id }) => {
+                    writes.push(Write::Privacy {
+                        channel_id,
+                        private: true,
+                    });
+                }
                 Message::Command(Command::ResolveLink { query }) => {
                     match cached_link(&tx, &query)? {
                         Some(answer) => dirty.direct.push(ChangeSet::LinkResolved {
@@ -1403,6 +1519,48 @@ impl Engine {
                         task.abort();
                     }
                 }
+                Message::Command(Command::CreateCategory {
+                    team_id,
+                    name,
+                    channel_id,
+                }) => {
+                    let category = matty_api::models::SidebarCategory {
+                        user_id: self.me.clone().unwrap_or_default(),
+                        team_id: team_id.clone(),
+                        kind: "custom".into(),
+                        display_name: name,
+                        channel_ids: channel_id.into_iter().collect(),
+                        ..Default::default()
+                    };
+                    writes.push(Write::CreateCategory {
+                        team_id,
+                        category: Box::new(category),
+                    });
+                }
+                Message::Command(Command::RenameCategory { category_id, name }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)? {
+                        category.display_name = name;
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
+                Message::Command(Command::MoveToCategory {
+                    channel_id,
+                    category_id,
+                }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)? {
+                        category.channel_ids.retain(|id| *id != channel_id);
+                        category.channel_ids.insert(0, channel_id);
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
+                Message::Command(Command::DeleteCategory { category_id }) => {
+                    if let Some(category) = sidebar::category(&tx, &category_id)? {
+                        writes.push(Write::DeleteCategory {
+                            team_id: category.team_id,
+                            category_id,
+                        });
+                    }
+                }
                 Message::Command(Command::PatchChannel {
                     channel_id,
                     display_name,
@@ -1425,6 +1583,13 @@ impl Engine {
                 }) => writes.push(Write::AddMembers {
                     channel_id,
                     user_ids,
+                }),
+                Message::Command(Command::RemoveMember {
+                    channel_id,
+                    user_id,
+                }) => writes.push(Write::RemoveMember {
+                    channel_id,
+                    user_id,
                 }),
                 Message::Command(Command::Search {
                     team_id,
@@ -2359,6 +2524,7 @@ impl Engine {
             Loaded::Statuses(statuses) => {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
+            Loaded::StatusesDue => self.fetch_statuses(),
             Loaded::Done => {
                 // The server answered the whole load, so what waits from an
                 // earlier run goes now, even before the socket is up (#194).
@@ -2660,6 +2826,7 @@ impl Engine {
                             dirty.resync = true;
                         }
                         session.was_connected = true;
+                        self.refresh_statuses();
                         // What was written while offline, or before a
                         // restart, goes now, channel by channel.
                         for channel_id in queue::channels(self.store.conn())? {
@@ -3066,6 +3233,7 @@ impl Engine {
                 _ => {}
             }
         }
+        self.watch_statuses(&ids);
         ids.retain(|id| !id.is_empty() && !self.sent_users.contains(id));
         if ids.is_empty() {
             return None;
@@ -3100,6 +3268,71 @@ impl Engine {
 }
 
 impl Engine {
+    /// Queues the statuses of `ids` (but the user's own, which the account
+    /// load and `status_change` keep) and wakes the engine when the batch
+    /// window closes.
+    fn watch_statuses(&mut self, ids: &BTreeSet<String>) {
+        if self.session.is_none() {
+            return;
+        }
+        let me = self.me.as_deref();
+        let ids = ids.iter().map(String::as_str).filter(|id| Some(*id) != me);
+        let Some(due) = self.statuses.add(ids, Instant::now()) else {
+            return;
+        };
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(due.into()).await;
+            let _ = loaded.send(Loaded::StatusesDue);
+        });
+    }
+
+    /// The batch window closed: asks for its statuses in one request.
+    fn fetch_statuses(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(ids) = self.statuses.take(Instant::now()) else {
+            return;
+        };
+        let client = session.client.clone();
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            match client.statuses(&ids).await {
+                Ok(statuses) => {
+                    let _ = loaded.send(Loaded::Statuses(statuses));
+                }
+                Err(error) => tracing::warn!(%error, "could not fetch statuses"),
+            }
+        });
+    }
+
+    /// After a reconnect: statuses changed while the socket was down went
+    /// unannounced, so asks again for everyone shown, over the socket.
+    fn refresh_statuses(&self) {
+        let Some(connection) = self.session.as_ref().and_then(|s| s.socket.connection()) else {
+            return;
+        };
+        let ids: Vec<String> = self.statuses.known().map(str::to_owned).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            match connection.get_statuses_by_ids(&ids).await {
+                Ok(reply) if reply.is_ok() => {
+                    let statuses = crate::presence::statuses_reply(reply.data);
+                    if !statuses.is_empty() {
+                        let _ = loaded.send(Loaded::Statuses(statuses));
+                    }
+                }
+                Ok(reply) => tracing::debug!(?reply.error, "statuses were refused"),
+                Err(error) => tracing::debug!(%error, "could not refresh statuses"),
+            }
+        });
+    }
+
     /// Preferences changed: the collapsed-threads choice may have too, which
     /// changes every count and the channel windows.
     fn preferences_changed(&mut self, dirty: &mut Dirty) {
@@ -3394,6 +3627,15 @@ fn snapshot(
             }
             Ok(posts)
         }
+    }
+}
+
+/// Saves `category` back to the server as the user's (`me`).
+fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCategory) -> Write {
+    category.user_id = me.unwrap_or_default().to_owned();
+    Write::UpdateCategory {
+        team_id: category.team_id.clone(),
+        category: Box::new(category),
     }
 }
 

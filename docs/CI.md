@@ -8,6 +8,7 @@
 | `deny` | always (skipped for docs-only changes) | always |
 | `integration` (live Mattermost) | only when `matty-api`, `matty-store`, `matty-sync`, `docker/`, the seed script or the lockfile change; 12.0 and 10.5 | every supported version |
 | `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
+| `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
 | `ci` | the one check to wait on | |
 
 Why: macOS runners are scarce (a handful at a time per account), and three
