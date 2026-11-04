@@ -5431,6 +5431,101 @@ mod tests {
         assert!(cx.update(|_, cx| DraftBook::get(cx, &DraftKey::channel("general")).is_none()));
     }
 
+    /// #188: the draft's link is asked about once typing pauses, once per
+    /// link; its card shows above the composer, Remove preview hides it,
+    /// and the sent post goes without a preview.
+    #[gpui_kit::test]
+    fn a_drafts_link_is_previewed_once_and_removing_it_sends_without_one(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::draft_link::PAUSE;
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            ChannelView::new(Some(general.clone()), "me", window, cx)
+        });
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| match event {
+                ChannelEvent::PreviewLink(_) | ChannelEvent::Send { .. } => {
+                    events.borrow_mut().push(event.clone());
+                }
+                _ => {}
+            })
+            .detach();
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        let url = "https://github.com/devaryakjha/matty";
+        let shown = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.link
+                        .preview("composer.link-preview", cx, |_, _, _| {})
+                        .is_some()
+                })
+            })
+        };
+
+        // Nothing is asked before typing pauses, then the link once.
+        cx.simulate_input("see https://github.com/devaryakjha/matty");
+        cx.run_until_parked();
+        cx.executor().advance_clock(PAUSE / 2);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "nothing before the pause");
+        cx.executor().advance_clock(PAUSE);
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [ChannelEvent::PreviewLink(url.into())]
+        );
+
+        // More words around the same link ask nothing more.
+        cx.simulate_input(" today");
+        cx.executor().advance_clock(PAUSE * 2);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "same link, no new ask");
+
+        // The answer shows the card; Remove preview hides it.
+        assert!(!shown(cx), "no card before the answer");
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.set_link_preview(
+                    url,
+                    Some(crate::embeds::LinkCard {
+                        url: url.into(),
+                        site_name: "GitHub".into(),
+                        title: "devaryakjha/matty".into(),
+                        description: SharedString::default(),
+                        image: None,
+                    }),
+                    cx,
+                )
+            })
+        });
+        assert!(shown(cx));
+        cx.update(|_, cx| view.update(cx, |view, _| view.link.remove()));
+        assert!(!shown(cx));
+
+        // Sent without its preview.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let text = view.composer.read(cx).value(cx);
+                view.send(text, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [ChannelEvent::Send { unfurl: false, .. }]
+        ));
+    }
+
     /// #114: a draft changed on another device replaces the composer only
     /// while the user has nothing unsaved in it.
     #[gpui_kit::test]

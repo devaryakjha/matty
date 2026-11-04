@@ -3328,4 +3328,81 @@ mod tests {
             [(root(&first), String::new())]
         );
     }
+
+    /// #188: the reply composer asks about its link once typing pauses,
+    /// and a reply whose preview was removed goes without one.
+    #[gpui_kit::test]
+    fn a_reply_drafts_link_is_previewed_once_and_can_be_removed(cx: &mut gpui_kit::TestAppContext) {
+        use crate::draft_link::PAUSE;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let posts = crate::preview::channel("general").unwrap().posts;
+        let thread = RightPaneContent::Thread(Box::new(
+            crate::preview::thread("general", &posts[0].id).unwrap(),
+        ));
+        let (pane, cx) = cx.add_window_view(|window, cx| RightPaneView::new("me", window, cx));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let events = events.clone();
+            cx.subscribe(&pane, move |_, event: &RightPaneEvent, _| match event {
+                RightPaneEvent::PreviewLink(_) | RightPaneEvent::Reply { .. } => {
+                    events.borrow_mut().push(event.clone());
+                }
+                _ => {}
+            })
+            .detach();
+            pane.update(cx, |pane, cx| pane.set_content(Some(thread), cx));
+            let composer = pane.read(cx).composer.clone();
+            composer.update(cx, |composer, cx| composer.focus(window, cx));
+        });
+        cx.run_until_parked();
+        let url = "https://github.com/devaryakjha/matty";
+
+        cx.simulate_input("see https://github.com/devaryakjha/matty");
+        cx.executor().advance_clock(PAUSE / 2);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "nothing before the pause");
+        cx.executor().advance_clock(PAUSE);
+        cx.run_until_parked();
+        cx.simulate_input(" too");
+        cx.executor().advance_clock(PAUSE * 2);
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [RightPaneEvent::PreviewLink(url.into())],
+            "one ask for the link"
+        );
+
+        let card = crate::embeds::LinkCard {
+            url: url.into(),
+            site_name: "GitHub".into(),
+            title: "devaryakjha/matty".into(),
+            description: SharedString::default(),
+            image: None,
+        };
+        let shown = cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_link_preview(url, Some(card), cx);
+                pane.link
+                    .preview("thread.link-preview", cx, |_, _, _| {})
+                    .is_some()
+            })
+        });
+        assert!(shown, "the card shows above the reply composer");
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.link.remove();
+                let text = pane.composer.read(cx).value(cx);
+                pane.reply(text, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [RightPaneEvent::Reply { unfurl: false, .. }]
+        ));
+    }
 }
