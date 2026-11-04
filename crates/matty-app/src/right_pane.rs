@@ -399,6 +399,7 @@ impl RightPaneView {
             status: PostStatus::Pending,
             replies: None,
             files: vec![],
+            embeds: vec![],
         };
         thread.replies.push(reply);
         let content = self.content.clone();
