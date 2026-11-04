@@ -1174,6 +1174,7 @@ impl MainWindow {
             user_id: demo.user_id,
             username: demo.username,
             display_name: demo.display_name,
+            ..crate::settings::SavedAccount::default()
         };
         self.login = None;
         self.connection = ConnectionState::Demo;
