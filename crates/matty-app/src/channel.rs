@@ -2032,19 +2032,27 @@ impl ChannelView {
         }
     }
 
-    /// Collapses or expands the images in a post's previews. The row's
-    /// height changes, so the list measures its rows again, as a density
-    /// change does.
+    /// Collapses or expands the images in a post's previews; the row's
+    /// height changes, so the list measures it again.
     fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
         let changed = if collapsed {
-            self.collapsed_previews.insert(id)
+            self.collapsed_previews.insert(id.clone())
         } else {
             self.collapsed_previews.remove(&id)
         };
-        if changed {
-            self.list.update(cx, |list, cx| list.remeasure(cx));
-            cx.notify();
+        if !changed {
+            return;
         }
+        let posts = self.model.as_ref().map(|model| &model.posts);
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if posts.and_then(|posts| posts.get(*index)).is_some_and(|post| post.id == id))
+        });
+        if let Some(row) = row {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(row..row + 1, cx));
+        }
+        cx.notify();
     }
 
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
