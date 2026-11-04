@@ -589,7 +589,7 @@ the database.
   device (`<platform>:<token>`), so the desktop app leaves it out: from 12.0
   the server refuses a sign-in with any other value. An MFA requirement is detected by
   the error id `mfa.validate_token.authenticate.app_error`, not by the HTTP
-  status.
+  status; a wrong code answers `api.user.check_user_mfa.bad_code.app_error`.
 - **Rate limits:** respect `X-RateLimit-*` and back off on 429.
 
 ### 6.4 WebSocket and sync
