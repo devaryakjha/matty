@@ -1,6 +1,6 @@
 //! The account menu behind the title bar avatar (PLAN §3 M1 "Presence and
 //! typing": set own status; §4.5: signing out confirms). Presence, a custom
-//! status, Preferences and Sign out, nothing else.
+//! status, Preferences, Add a server and Sign out, nothing else.
 
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, IntoElement,
@@ -8,7 +8,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::actions::OpenPreferences;
+use crate::actions::{AddServer, OpenPreferences};
 use crate::dnd::{self, DURATIONS, DndDuration};
 use crate::settings::ClockFormat;
 use crate::sidebar::Presence;
@@ -326,6 +326,11 @@ impl AccountView {
             }),
         );
         items.push(MenuItem::separator());
+        items.push(
+            MenuItem::new("account.add-server", "Add a server…").on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(AddServer), cx);
+            }),
+        );
         let sign_out = self.sign_out.clone();
         items.push(
             MenuItem::new("account.sign-out", "Sign out…")
