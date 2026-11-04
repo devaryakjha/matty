@@ -17,7 +17,8 @@ use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
     HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel, OpenPreferences, Platform,
     PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, ZoomIn, ZoomOut,
+    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
+    ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -38,9 +39,12 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
+    field::Field,
+    input::{InputEvent, InputState},
     kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
+    scroll_area::ScrollArea,
     switch::Switch,
     theme::{UiTheme, transition_value},
     title_bar::TitleBar,
@@ -94,6 +98,9 @@ const TEXT_SIZES: &[(&str, f32)] = &[
     ("larger", 1.3),
 ];
 
+/// What a toast's Retry button runs.
+type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
+
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     /// Shown until a session exists; sync replaces it with the workspace.
@@ -111,6 +118,11 @@ pub struct MainWindow {
     sidebar_visible: bool,
     shortcuts: DialogHandle,
     preferences: DialogHandle,
+    /// Preferences' mention keywords, saved to the server on Enter or when
+    /// the field loses focus (#192).
+    keywords: Entity<InputState>,
+    /// The user's `notify_props` as the server last sent them.
+    notify_props: Option<std::collections::HashMap<String, String>>,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -140,12 +152,17 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
+    /// Files asked for and not yet saved, oldest first, so a failed
+    /// download can offer Retry when only one was in flight.
+    downloads: std::collections::VecDeque<SharedString>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
     connection: ConnectionState,
     /// What the banner last said, kept while it slides away after reconnecting.
     banner_last: ConnectionState,
+    /// Messages waiting to send, for the banner (#195).
+    queued: usize,
     /// Channels opened in order, for Back and Forward; `history_at` is the
     /// one shown now.
     history: Vec<SharedString>,
@@ -253,11 +270,11 @@ impl MainWindow {
             window,
             |this, _, event: &AccountEvent, window, cx| match event {
                 // The menu already shows the change.
-                AccountEvent::SetPresence(presence) => {
+                AccountEvent::SetPresence(presence, dnd_end) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::SetStatus {
                             status: crate::live::status(*presence).into(),
-                            dnd_end_time: None,
+                            dnd_end_time: *dnd_end,
                         });
                     }
                 }
@@ -448,6 +465,14 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::JumpLatest => {
+                    if let (Some(live), Some(id)) = (&this.live, this.selected_channel.clone()) {
+                        live.send(matty_sync::Command::LoadLatest {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -498,9 +523,22 @@ impl MainWindow {
                             .update(cx, |view, cx| view.set_full_image(id, image, cx));
                     }
                 }
+                ChannelEvent::Retry(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Retry {
+                            pending_post_id: post.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::Discard(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Discard {
+                            pending_post_id: post.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
-                | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
             },
         )
@@ -559,6 +597,13 @@ impl MainWindow {
                             .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
                     }
                 }
+                RightPaneEvent::Retry(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Retry {
+                            pending_post_id: post.to_string(),
+                        });
+                    }
+                }
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -607,6 +652,21 @@ impl MainWindow {
             },
         )
         .detach();
+        let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
+        let keywords = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
+            if let Some(props) = &preview_props {
+                let text = matty_notify::mention::keywords_text("arya", props);
+                input.set_value(text, window, cx);
+            }
+            input
+        });
+        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.save_keywords(cx);
+            }
+        })
+        .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         let mut this = Self {
             settings,
@@ -621,6 +681,8 @@ impl MainWindow {
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
+            keywords,
+            notify_props: preview_props,
             browse,
             new_message,
             create_channel,
@@ -634,11 +696,13 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
+            downloads: Default::default(),
             threads_open: false,
             drafts,
             drafts_open: false,
             connection: crate::preview::connection(),
             banner_last: crate::preview::connection(),
+            queued: crate::preview::queued(),
             history,
             history_at: 0,
             live: None,
@@ -702,6 +766,7 @@ impl MainWindow {
                         crate::sidebar::Presence::Online
                     },
                     status_text: None,
+                    dnd_end: None,
                 },
                 cx,
             )
@@ -798,6 +863,7 @@ impl MainWindow {
             .or_else(dirs::download_dir)
             .or_else(dirs::home_dir)
             .unwrap_or_else(std::env::temp_dir);
+        self.downloads.push_back(file_id.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
             folder,
@@ -805,9 +871,8 @@ impl MainWindow {
         });
     }
 
-    /// Tells the user a file was saved: the file name as the title and the
-    /// folder below it. A "Show in folder" action waits on gpuicn's toast
-    /// growing action buttons; until then the file opens on its own.
+    /// Tells the user a file was saved: the file name as the title, the
+    /// folder below it, and "Show in folder" to reveal it.
     pub fn push_download_toast(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         let name = path
             .file_name()
@@ -828,22 +893,65 @@ impl MainWindow {
                 format!("download.{}", path.display()),
                 Notice::new(name)
                     .description(folder)
+                    .action("Show in folder", {
+                        let path = path.to_path_buf();
+                        move |_, cx| cx.reveal_path(&path)
+                    })
                     .timeout(std::time::Duration::from_secs(6)),
                 cx,
             );
         });
     }
 
-    /// Tells the user something failed, in one sentence, for eight seconds.
-    /// Retry waits on gpuicn toast actions; the message says what to do.
-    pub fn push_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        let text = text.into();
-        self.toasts.update(cx, |toasts, cx| {
-            toasts.push(
-                format!("error.{text}"),
-                Notice::new(text).timeout(std::time::Duration::from_secs(8)),
+    /// Puts a post's permalink on the clipboard and says so (#133).
+    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        let link = self.live.as_ref().and_then(|live| {
+            let channel = self.selected_channel.as_ref()?;
+            live.permalink(channel, post_id)
+        });
+        let link = link.or_else(|| {
+            crate::preview::enabled()
+                .then(|| format!("https://chat.example.com/matty/pl/{post_id}"))
+        });
+        let Some(link) = link else {
+            self.push_error_with(
+                "Couldn't copy the link. Try again once you're connected.",
+                None,
                 cx,
             );
+            return;
+        };
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(link));
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "copy-link",
+                Notice::new("Link copied").timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
+    /// Tells the user something failed, in one sentence, for eight seconds,
+    /// with a Dismiss button.
+    pub fn push_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.push_error_with(text, None, cx);
+    }
+
+    /// `push_error` with a Retry button when there is something to retry.
+    fn push_error_with(
+        &mut self,
+        text: impl Into<SharedString>,
+        retry: Option<Retry>,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
+        let notice = Notice::new(text.clone()).timeout(std::time::Duration::from_secs(8));
+        let notice = match retry {
+            Some(retry) => notice.action("Retry", retry),
+            None => notice.cancel("Dismiss"),
+        };
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(format!("error.{text}"), notice, cx);
         });
     }
 
@@ -990,12 +1098,35 @@ impl MainWindow {
         if let Some(download) = update.download {
             match download {
                 matty_sync::DownloadState::Done(path) => {
+                    self.downloads.pop_front();
                     open_download(&path, cx);
                     self.push_download_toast(&path, cx);
                 }
                 matty_sync::DownloadState::Failed(error) => {
                     tracing::warn!(%error, "download failed");
-                    self.push_error(format!("Couldn't download the file: {error}"), cx);
+                    // Sync does not say which file failed, so Retry only
+                    // shows when there was one.
+                    let only = (self.downloads.len() == 1)
+                        .then(|| self.downloads.pop_front())
+                        .flatten();
+                    if only.is_none() {
+                        self.downloads.pop_front();
+                    }
+                    let text = format!("Couldn't download the file: {error}");
+                    match only {
+                        Some(file_id) => {
+                            let view = cx.entity().downgrade();
+                            self.push_error_with(
+                                text,
+                                Some(Box::new(move |_, cx| {
+                                    view.update(cx, |this, cx| this.download_file(&file_id, cx))
+                                        .ok();
+                                })),
+                                cx,
+                            );
+                        }
+                        None => self.push_error(text, cx),
+                    }
                 }
             }
         }
@@ -1010,6 +1141,24 @@ impl MainWindow {
             if someone {
                 self.expire_typing_later(cx);
             }
+        }
+        if let Some(queued) = update.queued {
+            self.queued = queued;
+            cx.notify();
+        }
+        if let Some(props) = update.notify_props {
+            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
+            self.keywords.update(cx, |input, cx| {
+                if input.value() != text.as_str() {
+                    input.set_value(text, window, cx);
+                }
+            });
+            self.notify_props = Some(props);
+        }
+        if let Some((presence, dnd_end)) = update.own_presence {
+            self.account.update(cx, |view, cx| {
+                view.set_server_presence(presence, dnd_end, cx)
+            });
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
@@ -1597,7 +1746,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let next = self.sidebar.read(cx).model().neighbor(step, unread_only);
+        let next = self.sidebar.read(cx).shown().neighbor(step, unread_only);
         if let Some(id) = next {
             self.open_channel(id, window, cx);
         }
@@ -2104,6 +2253,8 @@ impl MainWindow {
                 self.banner_last = state.clone();
             }
             self.connection = state;
+            let away = self.connection != ConnectionState::Online;
+            self.channel.update(cx, |view, cx| view.set_away(away, cx));
             cx.notify();
         }
     }
@@ -2156,6 +2307,12 @@ impl MainWindow {
                 "You're offline. Matty shows what it has and sends when you're back.".into(),
                 true,
             ),
+        };
+        // What is waiting goes when the connection is back (#195).
+        let text: SharedString = match self.queued {
+            0 => text,
+            1 => format!("{text} 1 message waiting to send.").into(),
+            n => format!("{text} {n} messages waiting to send.").into(),
         };
         let foreground = if offline {
             theme.colors.destructive
@@ -2235,6 +2392,25 @@ impl MainWindow {
     /// Preferences (DESIGN.md §5): appearance first, with every control a
     /// gpuicn one and every change written to settings straight away so
     /// the window re-themes behind the dialog.
+    fn username(&self, cx: &gpui_kit::App) -> String {
+        self.account.read(cx).account().username.to_string()
+    }
+
+    /// Sends the typed keywords when they differ from the server's.
+    fn save_keywords(&mut self, cx: &mut Context<Self>) {
+        let (Some(live), Some(props)) = (&self.live, &self.notify_props) else {
+            return;
+        };
+        let typed = self.keywords.read(cx).value().to_string();
+        let next = matty_notify::mention::with_keywords(&self.username(cx), props, &typed);
+        if next != *props {
+            live.send(matty_sync::Command::SetNotifyProps {
+                notify_props: next.clone(),
+            });
+            self.notify_props = Some(next);
+        }
+    }
+
     fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let settings = self.settings.read(cx).get().clone();
@@ -2491,60 +2667,80 @@ impl MainWindow {
                             }),
                     )
             };
-        // Taller than gpuicn's default so every section shows at once.
+        // The sections scroll inside the popup, which stays within the
+        // window: the title and Done above them take about space(24.).
+        let body_height = theme
+            .space(158.)
+            .min(window.viewport_size().height - theme.space(40.));
         let popup = dialog_popup("preferences.popup", "Preferences", cx)
-            .max_h(theme.space(182.))
             .child(dialog_title("preferences.title", cx).child("Preferences"))
             .child(
                 dialog_description("preferences.description", cx)
                     .child("Changes apply right away and are saved for next time."),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(5.))
-                    .pt(theme.space(1.))
-                    .child(section("Theme", theme_group.into_any_element()))
-                    .child(section("Text size", size_group.into_any_element()))
-                    .child(section("Clock", clock_group.into_any_element()))
-                    .child(section(
-                        "Send message with",
-                        send_section.into_any_element(),
-                    ))
-                    .child(section(
-                        "Message display",
-                        display_section.into_any_element(),
-                    ))
-                    .child(section(
-                        "Window",
+                ScrollArea::new("preferences.body")
+                    .aria_label("Preferences")
+                    .h(body_height)
+                    .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(theme.space(3.))
-                            .child(switch_row(
-                                "preferences.close-to-tray",
-                                "Keep running when closed",
-                                "Closing the window leaves Matty in the tray.",
-                                settings.close_to_tray,
-                                |s, v| s.close_to_tray = v,
+                            .gap(theme.space(5.))
+                            .pt(theme.space(1.))
+                            .child(section("Theme", theme_group.into_any_element()))
+                            .child(section("Text size", size_group.into_any_element()))
+                            .child(section("Clock", clock_group.into_any_element()))
+                            .child(section(
+                                "Send message with",
+                                send_section.into_any_element(),
                             ))
-                            .child(switch_row(
-                                "preferences.launch-at-login",
-                                "Open at login",
-                                "Start Matty when you sign in.",
-                                settings.launch_at_login,
-                                |s, v| s.launch_at_login = v,
+                            .child(section(
+                                "Message display",
+                                display_section.into_any_element(),
                             ))
-                            .child(switch_row(
-                                "preferences.reduce-motion",
-                                "Reduce motion",
-                                "Panes and banners change without sliding.",
-                                settings.reduce_motion,
-                                |s, v| s.reduce_motion = v,
-                            ))
-                            .into_any_element(),
-                    )),
+                            .when(self.notify_props.is_some(), |list| {
+                                list.child(section(
+                            "Notifications",
+                            Field::new("preferences.keywords", &self.keywords)
+                                .label("Mention keywords")
+                                .description(
+                                    "Words that count as mentioning you, separated by commas. \
+                                     @username always does.",
+                                )
+                                .into_any_element(),
+                        ))
+                            })
+                            .child(section(
+                                "Window",
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(theme.space(3.))
+                                    .child(switch_row(
+                                        "preferences.close-to-tray",
+                                        "Keep running when closed",
+                                        "Closing the window leaves Matty in the tray.",
+                                        settings.close_to_tray,
+                                        |s, v| s.close_to_tray = v,
+                                    ))
+                                    .child(switch_row(
+                                        "preferences.launch-at-login",
+                                        "Open at login",
+                                        "Start Matty when you sign in.",
+                                        settings.launch_at_login,
+                                        |s, v| s.launch_at_login = v,
+                                    ))
+                                    .child(switch_row(
+                                        "preferences.reduce-motion",
+                                        "Reduce motion",
+                                        "Panes and banners change without sliding.",
+                                        settings.reduce_motion,
+                                        |s, v| s.reduce_motion = v,
+                                    ))
+                                    .into_any_element(),
+                            )),
+                    ),
             )
             .child(dialog_close("preferences.close", cx).label("Done"));
         dialog("preferences", &self.preferences, popup, window, cx)
@@ -2650,6 +2846,10 @@ impl Render for MainWindow {
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
                 this.step_channel(Step::Next, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnreadsFilter, _, cx| {
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
             }))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| {
                 this.sidebar

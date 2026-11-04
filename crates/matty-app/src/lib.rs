@@ -12,6 +12,7 @@ pub mod attachments;
 pub mod channel;
 pub mod channel_settings;
 pub mod directory;
+pub mod dnd;
 pub mod drafts;
 pub mod emoji;
 pub mod live;

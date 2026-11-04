@@ -7,6 +7,7 @@ use gpui_kit::SharedString;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use matty_api::models::{Post as ApiPost, User};
+use matty_notify::MentionKeys;
 
 use crate::attachments::PostFile;
 use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
@@ -18,7 +19,8 @@ const GROUP_MS: i64 = 5 * 60 * 1000;
 /// Who is looking, and where.
 pub struct Viewer<'a> {
     pub user_id: &'a str,
-    pub username: &'a str,
+    /// What counts as mentioning the viewer, for the mention highlight.
+    pub keys: &'a MentionKeys,
     pub zone: &'a TimeZone,
     pub now: Timestamp,
 }
@@ -45,19 +47,18 @@ pub fn channel_model(
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
     let mut previous: Option<(&str, i64, SharedString)> = None;
-    let mention = format!("@{}", viewer.username);
+    let mention = viewer.keys;
     for post in posts.unwrap_or_default() {
         if post.delete_at != 0 || !post.kind.is_empty() && post.kind.starts_with("system_") {
             continue;
         }
-        let (time, day) = when(post.create_at, viewer.zone, today);
+        let stamp = when(post.create_at, viewer.zone, today);
+        let day = stamp.1.clone();
         let continues = previous.as_ref().is_some_and(|(user, at, last_day)| {
             *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
         });
         previous = Some((&post.user_id, post.create_at, day.clone()));
-        rows.push(display_post(
-            post, users, viewer, &mention, day, time, continues,
-        ));
+        rows.push(display_post(post, users, viewer, mention, stamp, continues));
     }
     ChannelModel {
         id: row.id.clone(),
@@ -84,9 +85,8 @@ fn display_post(
     post: &ApiPost,
     users: &HashMap<String, User>,
     viewer: &Viewer<'_>,
-    mention: &str,
-    day: SharedString,
-    time: u16,
+    mention: &MentionKeys,
+    (time, day, date): (u16, SharedString, SharedString),
     continues: bool,
 ) -> Post {
     let author = users
@@ -98,9 +98,10 @@ fn display_post(
         author: author.into(),
         time,
         day,
+        date,
         body: post.message.clone().into(),
         reactions: reactions(post, viewer.user_id, users),
-        mentions_me: !viewer.username.is_empty() && mentions(&post.message, mention),
+        mentions_me: mention.mentioned(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
@@ -124,6 +125,8 @@ fn display_post(
                 name: file.name.clone().into(),
                 size: u64::try_from(file.size).unwrap_or(0),
                 preview: None,
+                width: u32::try_from(file.width).unwrap_or(0),
+                height: u32::try_from(file.height).unwrap_or(0),
             })
             .collect(),
     }
@@ -132,15 +135,26 @@ fn display_post(
 /// A post shown on its own, as in search results: never a continuation.
 pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Post {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
-    let (time, day) = when(post.create_at, viewer.zone, today);
-    let mention = format!("@{}", viewer.username);
-    display_post(post, users, viewer, &mention, day, time, false)
+    let mention = viewer.keys;
+    display_post(
+        post,
+        users,
+        viewer,
+        mention,
+        when(post.create_at, viewer.zone, today),
+        false,
+    )
 }
 
-/// Minutes since local midnight, and the day label the post falls under.
-fn when(millis: i64, zone: &TimeZone, today: jiff::civil::Date) -> (u16, SharedString) {
+/// Minutes since local midnight, the day label the post falls under, and
+/// the full date for the time's tooltip.
+fn when(
+    millis: i64,
+    zone: &TimeZone,
+    today: jiff::civil::Date,
+) -> (u16, SharedString, SharedString) {
     let Ok(at) = Timestamp::from_millisecond(millis) else {
-        return (0, "Today".into());
+        return (0, "Today".into(), SharedString::default());
     };
     let local = at.to_zoned(zone.clone());
     let minutes =
@@ -155,18 +169,8 @@ fn when(millis: i64, zone: &TimeZone, today: jiff::civil::Date) -> (u16, SharedS
     } else {
         date.strftime("%B %-d, %Y").to_string()
     };
-    (minutes, day.into())
-}
-
-/// `@name` as a word: not followed by more of a username.
-fn mentions(message: &str, mention: &str) -> bool {
-    message.match_indices(mention).any(|(at, _)| {
-        let rest = &message[at + mention.len()..];
-        !rest
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    })
+    let full = date.strftime("%A, %B %-d, %Y").to_string();
+    (minutes, day.into(), full.into())
 }
 
 /// Reaction chips in the order each emoji was first used.
@@ -234,12 +238,15 @@ mod tests {
         }
     }
 
+    static KEYS: std::sync::LazyLock<MentionKeys> =
+        std::sync::LazyLock::new(|| MentionKeys::username("arya"));
+
     fn viewer(zone: &TimeZone) -> Viewer<'_> {
         Viewer {
             user_id: "me",
-            username: "arya",
+            keys: &KEYS,
             zone,
-            // 2026-11-03 12:00 UTC.
+            // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),
         }
     }
@@ -284,6 +291,9 @@ mod tests {
             ]
         );
         assert_eq!(model.posts[2].time, 12 * 60);
+        // The time's tooltip names the full date, even under "Today".
+        assert_eq!(model.posts[2].date, "Wednesday, November 4, 2026");
+        assert_eq!(model.posts[0].date, "Tuesday, November 3, 2026");
         assert!(model.posts[2].mentions_me && !model.posts[1].mentions_me);
         assert!(model.posts[3].mine);
         assert_eq!(model.posts[3].status, PostStatus::Sent);
@@ -314,6 +324,8 @@ mod tests {
                 id: id.into(),
                 name: "notes.pdf".into(),
                 size: 2048,
+                width: 640,
+                height: 400,
                 delete_at: deleted,
                 ..Default::default()
             });
@@ -327,6 +339,8 @@ mod tests {
                 name: "notes.pdf".into(),
                 size: 2048,
                 preview: None,
+                width: 640,
+                height: 400,
             }]
         );
     }
@@ -373,12 +387,5 @@ mod tests {
         assert_eq!(emoji_name("👍"), "+1");
         assert_eq!(emoji_name(":partyparrot:"), "partyparrot");
         assert_eq!(emoji_name("tada"), "tada");
-    }
-
-    #[test]
-    fn a_mention_must_end_the_name() {
-        assert!(mentions("hey @arya!", "@arya"));
-        assert!(!mentions("hey @arya.jha", "@arya"));
-        assert!(mentions("@arya", "@arya"));
     }
 }

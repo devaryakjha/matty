@@ -29,10 +29,17 @@ pub struct Live {
     /// they pick another.
     team: Option<String>,
     teams: Vec<TeamWithUnreads>,
+    /// The server's address, for message links.
+    server: String,
     sections: HashMap<String, Arc<[SidebarSection]>>,
     presence: HashMap<String, Presence>,
     /// The signed-in user's id and username.
     me: (String, String),
+    /// What counts as mentioning the user, from their `notify_props`.
+    keys: matty_notify::MentionKeys,
+    /// The user's own `notify_props`, the whole map, for Preferences to
+    /// edit and send back.
+    notify_props: HashMap<String, String>,
     /// Everyone whose posts have been on screen.
     users: HashMap<String, User>,
     /// The channel on screen and its latest posts snapshot.
@@ -42,6 +49,11 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
+    /// The open channel's sends that failed and wait for Retry or Delete;
+    /// their rows read "Not sent".
+    failed: std::collections::HashSet<String>,
+    /// Per channel, sends still waiting to go.
+    queued: HashMap<String, usize>,
     /// The open channel as stored, the user's membership, and its counts
     /// once fetched.
     channel: Option<Arc<Channel>>,
@@ -115,6 +127,14 @@ pub struct Update {
     /// Who is typing in the open channel now; the window checks again
     /// after [`TYPING_FOR`].
     pub typing: Option<Vec<SharedString>>,
+    /// Messages waiting to send across every channel, failed ones left
+    /// out, for the connection banner (#195).
+    pub queued: Option<usize>,
+    /// The user's own presence from the server, with when Do not disturb
+    /// ends if the server said (#190).
+    pub own_presence: Option<(Presence, Option<i64>)>,
+    /// The user's own `notify_props` from the server, for Preferences.
+    pub notify_props: Option<HashMap<String, String>>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
     /// The shown team's public channels, for Browse channels.
@@ -309,15 +329,20 @@ impl Live {
                 sync,
                 team: None,
                 teams: Vec::new(),
+                server: account.server.clone(),
                 sections: HashMap::new(),
                 presence: HashMap::new(),
                 me: (account.user_id.clone(), account.username.clone()),
+                keys: matty_notify::MentionKeys::username(account.username.clone()),
+                notify_props: HashMap::new(),
                 users: HashMap::new(),
                 open: None,
                 posts: None,
                 max_post_size: None,
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
+                failed: Default::default(),
+                queued: HashMap::new(),
                 channel: None,
                 member: None,
                 stats: None,
@@ -379,6 +404,7 @@ impl Live {
         });
         self.posts = None;
         self.shown = None;
+        self.failed.clear();
         self.channel = None;
         self.member = None;
         self.stats = None;
@@ -403,11 +429,25 @@ impl Live {
         Some(update.unwrap_or(ChannelUpdate::Replace(model)))
     }
 
+    /// Takes the user's own `notify_props` from `user`. Other fetches of
+    /// the user leave the map out, so an empty one changes nothing.
+    fn take_notify_props(&mut self, user: &User, update: &mut Update) {
+        if user.id == self.me.0 && !user.notify_props.is_empty() {
+            self.keys = matty_notify::MentionKeys::from_props(
+                &user.username,
+                &user.first_name,
+                &user.notify_props,
+            );
+            self.notify_props = user.notify_props.clone();
+            update.notify_props = Some(self.notify_props.clone());
+        }
+    }
+
     fn channel_model(&self) -> Option<ChannelModel> {
         let row = self.open.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            username: &self.me.1,
+            keys: &self.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -428,6 +468,11 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        for post in &mut model.posts {
+            if self.failed.contains(post.id.as_ref()) {
+                post.status = crate::channel::PostStatus::Failed;
+            }
+        }
         for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
             if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
                 file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
@@ -556,7 +601,7 @@ impl Live {
         let (terms, posts) = self.search.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            username: &self.me.1,
+            keys: &self.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -663,6 +708,10 @@ impl Live {
                 for status in statuses.iter() {
                     self.presence
                         .insert(status.user_id.clone(), presence(&status.status));
+                    if status.user_id == self.me.0 {
+                        let end = (status.dnd_end_time > 0).then_some(status.dnd_end_time);
+                        update.own_presence = Some((presence(&status.status), end));
+                    }
                 }
                 update.categories = self.shown_categories();
                 if self.shown.is_some() {
@@ -802,6 +851,34 @@ impl Live {
                 self.typing.push((user_id.clone(), Instant::now()));
                 update.typing = Some(self.typing_names());
             }
+            ChangeSet::Outbox { channel_id, sends } => {
+                let waiting = sends
+                    .iter()
+                    .filter(|send| send.last_error.is_none())
+                    .count();
+                let before: usize = self.queued.values().sum();
+                if waiting == 0 {
+                    self.queued.remove(channel_id);
+                } else {
+                    self.queued.insert(channel_id.clone(), waiting);
+                }
+                let now: usize = self.queued.values().sum();
+                if now != before {
+                    update.queued = Some(now);
+                }
+                if !self.is_open(channel_id) {
+                    return update;
+                }
+                let failed = sends
+                    .iter()
+                    .filter(|send| send.last_error.is_some())
+                    .map(|send| send.pending_post_id.clone())
+                    .collect();
+                if failed != self.failed {
+                    self.failed = failed;
+                    update.channel = self.channel_update();
+                }
+            }
             ChangeSet::Posts { channel_id, posts } => {
                 if self
                     .open
@@ -820,9 +897,16 @@ impl Live {
                     update.profiles = self.shown.is_some().then(|| self.profiles());
                 }
             }
+            ChangeSet::Me(user) => {
+                self.take_notify_props(user, &mut update);
+                if self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
+            }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
+                    self.take_notify_props(user, &mut update);
                 }
                 if self
                     .search
@@ -868,6 +952,31 @@ impl Live {
     fn shown_categories(&self) -> Option<Vec<Category>> {
         let sections = self.sections.get(self.team.as_ref()?)?;
         Some(self.categories(sections))
+    }
+
+    /// The link to a post, `{server}/{team}/pl/{post_id}` (#133). The team
+    /// is the one whose sidebar holds the channel; direct and group
+    /// messages, which belong to no team, use the team on screen, as the
+    /// webapp does.
+    pub fn permalink(&self, channel_id: &str, post_id: &str) -> Option<String> {
+        let team_id = self
+            .sections
+            .iter()
+            .find(|(_, sections)| {
+                sections.iter().any(|section| {
+                    section.channels.iter().any(|channel| {
+                        channel.id == channel_id && !matches!(channel.kind.as_str(), "D" | "G")
+                    })
+                })
+            })
+            .map(|(team_id, _)| team_id)
+            .or(self.team.as_ref())?;
+        let team = self.teams.iter().find(|team| &team.id == team_id)?;
+        Some(format!(
+            "{}/{}/pl/{post_id}",
+            self.server.trim_end_matches('/'),
+            team.name
+        ))
     }
 
     fn team_name(&self) -> Option<SharedString> {
@@ -1201,6 +1310,90 @@ mod tests {
     }
 
     #[test]
+    fn a_permalink_uses_the_channels_team() {
+        let mut live = live();
+        let team = |id: &str, name: &str| TeamWithUnreads {
+            id: id.into(),
+            name: name.into(),
+            display_name: name.into(),
+            has_unreads: false,
+            mentions: 0,
+        };
+        live.teams = vec![team("t1", "core"), team("t2", "design")];
+        live.sections.insert(
+            "t2".into(),
+            Arc::from(vec![section(
+                "s",
+                vec![channel("c2", "O", 0, 0), channel("dm", "D", 0, 0)],
+            )]),
+        );
+        live.team = Some("t1".into());
+        assert_eq!(
+            live.permalink("c2", "p1").as_deref(),
+            Some("http://localhost/design/pl/p1")
+        );
+        // A direct message belongs to no team: the team on screen.
+        assert_eq!(
+            live.permalink("dm", "p2").as_deref(),
+            Some("http://localhost/core/pl/p2")
+        );
+    }
+
+    #[test]
+    fn the_users_notify_props_set_the_mention_keys() {
+        let mut live = live();
+        let me = User {
+            id: live.me.0.clone(),
+            username: "me".into(),
+            notify_props: [("mention_keys".to_string(), "me,@me,deploy".to_string())]
+                .into_iter()
+                .collect(),
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::Me(Arc::new(me.clone())));
+        assert_eq!(update.notify_props.as_ref().map(|p| p.len()), Some(1));
+        assert!(live.keys.mentioned("the deploy is out"));
+        // A later fetch without the map keeps the keywords.
+        let bare = User {
+            notify_props: Default::default(),
+            ..me
+        };
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![bare])));
+        assert_eq!(update.notify_props, None);
+        assert!(live.keys.mentioned("the deploy is out"));
+    }
+
+    #[test]
+    fn the_users_own_status_reaches_the_account_menu() {
+        let mut live = live();
+        let me = live.me.0.clone();
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: me.clone(),
+            status: "dnd".into(),
+            dnd_end_time: 1_800_000_000,
+            ..Status::default()
+        }])));
+        assert_eq!(
+            update.own_presence,
+            Some((Presence::Dnd, Some(1_800_000_000)))
+        );
+        // A status_change event carries no end time.
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: me,
+            status: "online".into(),
+            ..Status::default()
+        }])));
+        assert_eq!(update.own_presence, Some((Presence::Online, None)));
+        // Someone else's status leaves the menu alone.
+        let update = live.apply(&ChangeSet::Presence(Arc::from(vec![Status {
+            user_id: "someone".into(),
+            status: "away".into(),
+            ..Status::default()
+        }])));
+        assert_eq!(update.own_presence, None);
+    }
+
+    #[test]
     fn the_connection_and_sign_out_reach_the_window() {
         let mut live = live();
         let update = live.apply(&ChangeSet::Connection(Connection::Socket(
@@ -1246,6 +1439,7 @@ mod tests {
             author: "a".into(),
             time: 600,
             day: "Today".into(),
+            date: SharedString::default(),
             body: body.into(),
             reactions: vec![],
             mentions_me: false,
@@ -1313,6 +1507,69 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn the_banner_counts_waiting_sends_across_channels() {
+        let mut live = live();
+        let outbox = |channel: &str, errors: &[Option<&str>]| ChangeSet::Outbox {
+            channel_id: channel.into(),
+            sends: errors
+                .iter()
+                .enumerate()
+                .map(|(at, error)| matty_sync::Outgoing {
+                    pending_post_id: format!("{channel}:{at}"),
+                    channel_id: channel.into(),
+                    last_error: error.map(str::to_owned),
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        assert_eq!(live.apply(&outbox("c1", &[None, None])).queued, Some(2));
+        // A failed send waits for the user, not the connection.
+        assert_eq!(
+            live.apply(&outbox("c2", &[None, Some("no")])).queued,
+            Some(3)
+        );
+        assert_eq!(live.apply(&outbox("c1", &[None, None])).queued, None);
+        assert_eq!(live.apply(&outbox("c1", &[])).queued, Some(1));
+    }
+
+    #[test]
+    fn a_failed_send_reads_not_sent_until_it_goes_again() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![matty_api::models::Post {
+                id: "me:1".into(),
+                pending_post_id: "me:1".into(),
+                user_id: "ada".into(),
+                ..Default::default()
+            }]),
+        });
+        let outbox = |error: Option<&str>| ChangeSet::Outbox {
+            channel_id: "c1".into(),
+            sends: Arc::from(vec![matty_sync::Outgoing {
+                pending_post_id: "me:1".into(),
+                channel_id: "c1".into(),
+                last_error: error.map(str::to_owned),
+                ..Default::default()
+            }]),
+        };
+        let status = |update: Update| match update.channel {
+            Some(ChannelUpdate::Patch { updated, .. }) => updated.first().map(|post| post.status),
+            _ => None,
+        };
+        assert_eq!(
+            status(live.apply(&outbox(Some("refused")))),
+            Some(crate::channel::PostStatus::Failed)
+        );
+        // Retry: queued again, so it reads "Sending…".
+        assert_eq!(
+            status(live.apply(&outbox(None))),
+            Some(crate::channel::PostStatus::Pending)
+        );
     }
 
     #[test]

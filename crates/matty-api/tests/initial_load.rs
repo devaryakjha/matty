@@ -200,6 +200,30 @@ async fn avatar_is_not_modified_when_the_etag_matches() {
 }
 
 #[tokio::test]
+async fn patch_notify_props_sends_the_whole_map() {
+    use wiremock::matchers::body_json;
+    let server = MockServer::start().await;
+    let props = json!({"desktop": "mention", "mention_keys": "deploy,@arya"});
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/u1/patch"))
+        .and(body_json(json!({ "notify_props": props })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"id": "u1", "username": "arya", "notify_props": props})),
+        )
+        .mount(&server)
+        .await;
+    let map: std::collections::HashMap<String, String> =
+        serde_json::from_value(props.clone()).unwrap();
+    let user = Client::new(server.uri())
+        .unwrap()
+        .patch_notify_props("u1", &map)
+        .await
+        .unwrap();
+    assert_eq!(user.notify_props["mention_keys"], "deploy,@arya");
+}
+
+#[tokio::test]
 async fn set_status_sends_the_dnd_end_time() {
     use wiremock::matchers::body_partial_json;
     let server = MockServer::start().await;

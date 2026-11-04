@@ -140,9 +140,27 @@ pub(crate) async fn send(client: Client, outgoing: Outgoing, results: UnboundedS
         },
         Err(error) => Loaded::SendFailed {
             pending_post_id: outgoing.pending_post_id,
+            transient: transient(&error),
             error: error.to_string(),
         },
     });
+}
+
+/// Whether a failed send should go again by itself: the server was not
+/// reached, was busy, or failed on its side. A refusal (4xx) needs the user.
+pub(crate) fn transient(error: &ApiError) -> bool {
+    match error {
+        ApiError::Network(_) | ApiError::Timeout | ApiError::RateLimited => true,
+        ApiError::Server { status, .. } => *status >= 500,
+        _ => false,
+    }
+}
+
+/// How long to wait before trying again after `attempts` tries: doubling
+/// from two seconds up to about a minute.
+pub(crate) fn backoff(attempts: i64) -> std::time::Duration {
+    let exponent = u32::try_from(attempts.clamp(1, 6)).unwrap_or(6);
+    std::time::Duration::from_secs(2u64.pow(exponent))
 }
 
 /// Sends a file, reporting progress in steps of at least 5% so the views

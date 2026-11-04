@@ -113,6 +113,10 @@ pub struct PostFile {
     /// Where the bytes are when the file is an image, for its thumbnail
     /// and the lightbox; sync fills it as thumbnails arrive.
     pub preview: Option<UploadSource>,
+    /// Pixel size from the server's file metadata, for sizing the image
+    /// thumbnail before it loads; 0 when unknown or not an image.
+    pub width: u32,
+    pub height: u32,
 }
 
 impl PostFile {
@@ -124,6 +128,8 @@ impl PostFile {
             name: upload.name,
             size: upload.size,
             preview,
+            width: 0,
+            height: 0,
         }
     }
 
@@ -166,6 +172,7 @@ pub fn post_files(
                 images.push(
                     Attachment::new(id, file.name.clone())
                         .image(image)
+                        .dimensions(file.width, file.height)
                         .on_click(move |_, window, cx| open(index, window, cx)),
                 );
             }

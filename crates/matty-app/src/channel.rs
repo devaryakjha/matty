@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use gpui_kit::{
     App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -163,6 +163,10 @@ pub struct Post {
     pub time: u16,
     /// The day divider label this post falls under ("Today", "Yesterday", a date).
     pub day: SharedString,
+    /// The full date for the time's tooltip, such as "Tuesday, November 3,
+    /// 2026"; the view adds " at " and the clock time. Empty while a send
+    /// is pending.
+    pub date: SharedString,
     /// Markdown body.
     pub body: SharedString,
     pub reactions: Vec<PostReaction>,
@@ -461,6 +465,9 @@ pub enum ChannelEvent {
     /// U on a selected post: unread from this post on (PLAN §4.2); sync
     /// tells the server.
     MarkUnread(SharedString),
+    /// "Copy link" on a post: the window puts its permalink on the
+    /// clipboard, since only sync knows the server and the team (#133).
+    CopyLink(SharedString),
     /// The transcript showed its top row and wants an older page; sync
     /// answers with `prepend_posts` and `set_history`. Fired once per page:
     /// the view marks itself loading until one of those arrives.
@@ -473,6 +480,10 @@ pub enum ChannelEvent {
     /// A jump named a post the loaded channel does not hold; sync loads the
     /// posts around it and the jump lands when the new snapshot arrives.
     JumpMissing(SharedString),
+    /// The jump pill was pressed while the transcript stops short of the
+    /// newest post; sync drops the history window and sends the latest
+    /// snapshot, which `set_model` opens at the end.
+    JumpLatest,
     /// The user asked for the channel's pinned messages.
     OpenPinned,
     /// The user asked for the channel info pane (header info button or the
@@ -505,6 +516,9 @@ pub enum ChannelEvent {
     Delete(SharedString),
     /// Retry a failed send; the view shows it pending again.
     Retry(SharedString),
+    /// Delete on a send that never reached the server: sync drops it
+    /// from the outbox. The row is already gone.
+    Discard(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
     /// The user renamed the channel from its header menu; the view already
@@ -612,6 +626,12 @@ pub struct ChannelView {
     draft_len: usize,
     /// Numbers the optimistic rows until sync assigns ids.
     pending_seq: usize,
+    /// Set by the jump pill so the latest snapshot opens at the end.
+    open_at_end: bool,
+    /// `style::composer_cap` as of the last render.
+    composer_cap: Pixels,
+    /// The connection is down: sends wait, and their rows say so.
+    away: bool,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -847,6 +867,9 @@ impl ChannelView {
             me: me.into(),
             draft_len: 0,
             pending_seq: 0,
+            open_at_end: false,
+            composer_cap: px(320.),
+            away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -872,7 +895,9 @@ impl ChannelView {
         self.editing = None;
         // Open at the "New messages" line when there is one, as Mattermost
         // does, so nothing unread scrolls past; the pill leads to the end.
-        if let Some(divider) = self.rows.iter().position(|row| *row == Row::NewMessages) {
+        let at_end = std::mem::take(&mut self.open_at_end);
+        let divider = self.rows.iter().position(|row| *row == Row::NewMessages);
+        if let Some(divider) = divider.filter(|_| !at_end) {
             self.list.update(cx, |list, cx| {
                 list.scroll_to_item(divider, cx);
             });
@@ -1025,11 +1050,35 @@ impl ChannelView {
             failed_newer: failed && newer,
         };
         let last = self.rows.len();
+        // After the jump pill, sync's latest posts arrive as a patch that
+        // swaps every row, so the scroll goes to the end here.
+        let to_end = at_end && std::mem::take(&mut self.open_at_end);
         self.list.update(cx, |list, cx| {
             list.remeasure_items(0..1, cx);
             list.remeasure_items(last.saturating_sub(1)..last, cx);
+            if to_end {
+                list.scroll_to_end(cx);
+            }
         });
         cx.notify();
+    }
+
+    /// The connection went down or came back: waiting sends read "Will
+    /// send when back online" meanwhile (#195).
+    pub fn set_away(&mut self, away: bool, cx: &mut Context<Self>) {
+        if self.away != away {
+            self.away = away;
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// The jump pill while the newest posts are not loaded: asks sync for
+    /// them and scrolls to the end once they are in (`set_history`, or
+    /// `set_model` when they come as a new model).
+    fn jump_latest(&mut self, cx: &mut Context<Self>) {
+        self.open_at_end = true;
+        cx.emit(ChannelEvent::JumpLatest);
     }
 
     /// Asks for a newer page when the bottom row shows after a jump into
@@ -1548,6 +1597,7 @@ impl ChannelView {
             author: self.me.clone(),
             time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
+            date: SharedString::default(),
             body: body.clone(),
             reactions: vec![],
             mentions_me: false,
@@ -1708,6 +1758,7 @@ impl ChannelView {
     /// Cancel and Save buttons.
     fn editor(
         composer: &Entity<ComposerState>,
+        cap: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -1717,7 +1768,11 @@ impl ChannelView {
             .flex_col()
             .gap(theme.space(2.))
             .pt(theme.space(1.))
-            .child(Composer::new(composer).rounded(theme.radius.md))
+            .child(
+                Composer::new(composer)
+                    .max_height(cap)
+                    .rounded(theme.radius.md),
+            )
             .child(
                 div()
                     .flex()
@@ -1950,7 +2005,7 @@ impl ChannelView {
         let Some(at) = model.posts.iter().position(|post| post.id == id) else {
             return;
         };
-        let reached_server = model.posts[at].status == PostStatus::Sent;
+        let status = model.posts[at].status;
         model.posts.remove(at);
         // The "New messages" line stays above the same post.
         model.first_unread = model.first_unread.and_then(|first| {
@@ -1958,8 +2013,10 @@ impl ChannelView {
             (first < model.posts.len()).then_some(first)
         });
         self.set_model(Some(model), window, cx);
-        if reached_server {
-            cx.emit(ChannelEvent::Delete(id));
+        match status {
+            PostStatus::Sent => cx.emit(ChannelEvent::Delete(id)),
+            PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
+            PostStatus::Pending => {}
         }
     }
 
@@ -2045,6 +2102,14 @@ impl ChannelView {
             {
                 let id = id.clone();
                 act(
+                    "copy-link",
+                    "Copy link".into(),
+                    Box::new(move |_, _, cx| cx.emit(ChannelEvent::CopyLink(id.clone()))),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
                     "pin",
                     if post.pinned {
                         "Unpin from channel".into()
@@ -2117,9 +2182,9 @@ impl ChannelView {
             MenuItem::separator(),
         ];
         let more = Self::more_items_for(post, cx);
-        // `more` is copy, copy as Markdown, pin, save, then the owner's
-        // edit and delete.
-        let (keep, own) = more.split_at(4.min(more.len()));
+        // `more` is copy, copy as Markdown, copy link, pin, save, then the
+        // owner's edit and delete.
+        let (keep, own) = more.split_at(5.min(more.len()));
         items.extend(keep.iter().cloned());
         items.push(act(
             "unread",
@@ -2617,9 +2682,9 @@ impl ChannelView {
     fn post_row(
         post: &Post,
         profile: Option<&UserProfile>,
-        editor: Option<&Entity<ComposerState>>,
+        editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        menu_open: bool,
+        (menu_open, away): (bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2700,13 +2765,25 @@ impl ChannelView {
         let retry_id = id.clone();
         let time: SharedString = match post.status {
             PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+            PostStatus::Pending if away => "Will send when back online".into(),
             PostStatus::Pending => "Sending…".into(),
             PostStatus::Failed => "Not sent".into(),
         };
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
             .timestamp(time.clone())
-            .gutter_time(time)
+            .gutter_time(time.clone())
+            .when(
+                post.status == PostStatus::Sent && !post.date.is_empty(),
+                |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
+            )
+            .on_gutter_click({
+                let (view, id) = (cx.entity().downgrade(), id.clone());
+                move |_, window, cx| {
+                    view.update(cx, |this, cx| this.select_post(&id, window, cx))
+                        .ok();
+                }
+            })
             .continuation(post.continues)
             .highlight(highlight)
             .avatar(avatar)
@@ -2743,7 +2820,7 @@ impl ChannelView {
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
             .child(match editor {
-                Some(composer) => Self::editor(composer, cx).into_any_element(),
+                Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
                 None => markdown(
                     gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
                     post.body.clone(),
@@ -2959,17 +3036,31 @@ impl ChannelView {
                             .editing
                             .as_ref()
                             .filter(|editing| editing.post == post.id)
-                            .map(|editing| editing.composer.clone());
+                            .map(|editing| (editing.composer.clone(), this.composer_cap));
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
-                        Self::post_row(&post, profile, editor.as_ref(), highlight, menu_open, cx)
-                            .into_any_element()
+                        let away = this.away;
+                        Self::post_row(
+                            &post,
+                            profile,
+                            editor.as_ref(),
+                            highlight,
+                            (menu_open, away),
+                            cx,
+                        )
+                        .into_any_element()
                     })
                 }
                 None => div().into_any_element(),
             },
         )
         .unseen(self.unseen)
+        .when(!self.history.at_end, |list| {
+            let view = cx.entity().downgrade();
+            list.show_jump(true).on_jump(move |_, cx| {
+                view.update(cx, |this, cx| this.jump_latest(cx)).ok();
+            })
+        })
         .track_focus(&self.list_focus)
         .selected(self.selection)
         .selectable({
@@ -3176,6 +3267,7 @@ impl ChannelView {
             .children(tray)
             .child(
                 Composer::new(&self.composer)
+                    .max_height(self.composer_cap)
                     .rounded(theme.radius.lg)
                     .child(style::tipped(
                         "composer.attach.tip",
@@ -3391,6 +3483,7 @@ impl ChannelView {
 
 impl Render for ChannelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.composer_cap = style::composer_cap(window);
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .size_full()
@@ -3487,6 +3580,7 @@ mod tests {
             author: "a".into(),
             time: 600,
             day: day.into(),
+            date: SharedString::default(),
             body: "hi".into(),
             reactions: vec![],
             mentions_me: false,

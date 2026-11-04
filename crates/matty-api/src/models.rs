@@ -31,6 +31,9 @@ pub struct User {
     pub is_bot: bool,
     /// The user's locale, such as `en`.
     pub locale: String,
+    /// Notification preferences such as `desktop` and `mention_keys`;
+    /// the server sends them only for the signed-in user.
+    pub notify_props: std::collections::HashMap<String, String>,
 }
 
 /// A session, as `users/{id}/sessions` returns it.

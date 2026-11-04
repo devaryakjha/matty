@@ -210,6 +210,8 @@ pub mod metrics {
     pub const THREADS_LIST_WIDTH: f32 = 360.;
     /// The widest a Drafts card runs.
     pub const DRAFTS_MAX_WIDTH: f32 = 760.;
+    /// A short field such as a time picker.
+    pub const FIELD_NARROW_WIDTH: f32 = 140.;
     /// Post avatars in the channel view and threads.
     pub const AVATAR: f32 = 32.;
 }
@@ -311,6 +313,12 @@ pub fn tipped_when(
             this.tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
         })
         .child(child)
+}
+
+/// The tallest a composer's text box grows before it scrolls: 40% of the
+/// window, read on every render so it follows resizes.
+pub fn composer_cap(window: &gpui_kit::Window) -> gpui_kit::Pixels {
+    window.viewport_size().height * 0.4
 }
 
 #[cfg(test)]

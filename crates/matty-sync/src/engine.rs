@@ -209,6 +209,13 @@ pub enum Command {
         /// For `dnd` with a duration: when it ends, in seconds since the epoch.
         dnd_end_time: Option<i64>,
     },
+    /// Replaces the user's notification preferences, such as
+    /// `mention_keys`, with this whole map;
+    /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
+    SetNotifyProps {
+        /// Every key, changed or not: the server replaces the map.
+        notify_props: std::collections::HashMap<String, String>,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -478,6 +485,8 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SetStatus")
                 .field("status", status)
                 .finish_non_exhaustive(),
+            // Keywords are the user's own words: keep them out of logs.
+            Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -601,6 +610,10 @@ struct Session {
     /// The socket has been connected before, so the next connect is a
     /// reconnect that needs a catch-up.
     was_connected: bool,
+    /// False once a socket that was connected drops; queued sends wait
+    /// for it to come back. Before the first connect sends go over REST
+    /// as soon as they are written.
+    online: bool,
     /// A resync is running; another request waits for it.
     resyncing: bool,
     resync_again: bool,
@@ -634,6 +647,14 @@ pub(crate) struct Engine {
     /// How far back each open channel's snapshot reaches beyond the
     /// latest [`POSTS_WINDOW`] posts.
     history: std::collections::HashMap<String, History>,
+    /// Per channel, the queued send on its way. A channel sends one at a
+    /// time so its posts reach the server in order (#194).
+    sending: std::collections::HashMap<String, String>,
+    /// Per channel, the creation time at or before which stored posts are
+    /// left over from a jump into the past that was given up (Jump to
+    /// latest, or leaving the channel) and may not join the latest posts;
+    /// the latest snapshot leaves them out until older pages reach them.
+    floors: std::collections::HashMap<String, i64>,
     /// Thumbnails on their way from the server.
     fetching: BTreeSet<String>,
 }
@@ -661,6 +682,8 @@ impl Engine {
             media: None,
             fetching: BTreeSet::new(),
             history: std::collections::HashMap::new(),
+            sending: std::collections::HashMap::new(),
+            floors: std::collections::HashMap::new(),
         }
     }
 
@@ -754,9 +777,12 @@ impl Engine {
                         load,
                         socket,
                         was_connected: false,
+                        online: true,
                         resyncing: false,
                         resync_again: false,
                     });
+                    // Tell the app what is still waiting from an earlier run.
+                    dirty.outbox.extend(queue::channels(&tx)?);
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;
@@ -784,6 +810,11 @@ impl Engine {
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
                     to_fetch.push(channel_id.clone());
+                    // Which of its rows failed to send, even from an
+                    // earlier run.
+                    if !queue::for_channel(&tx, &channel_id)?.is_empty() {
+                        dirty.outbox.insert(channel_id.clone());
+                    }
                     dirty.channels.insert(channel_id);
                 }
                 Message::Command(Command::LoadOlder { channel_id }) => {
@@ -799,7 +830,8 @@ impl Engine {
                     pages.push((channel_id, Page::Around(post_id)));
                 }
                 Message::Command(Command::LoadLatest { channel_id }) => {
-                    if self.history.remove(&channel_id).is_some() {
+                    if let Some(history) = self.history.remove(&channel_id) {
+                        give_up(&mut self.floors, &channel_id, &history);
                         dirty.direct.push(ChangeSet::History {
                             channel_id: channel_id.clone(),
                             at_start: false,
@@ -810,7 +842,9 @@ impl Engine {
                     }
                 }
                 Message::Command(Command::CloseChannel { channel_id }) => {
-                    self.history.remove(&channel_id);
+                    if let Some(history) = self.history.remove(&channel_id) {
+                        give_up(&mut self.floors, &channel_id, &history);
+                    }
                     self.open_channels.remove(&channel_id);
                     self.sent_channels.remove(&channel_id);
                 }
@@ -859,11 +893,13 @@ impl Engine {
                         ..Outgoing::default()
                     };
                     outbox::queue(&tx, &outgoing, &me, dirty)?;
-                    sends.push(outgoing.pending_post_id);
+                    sends.push(outgoing.channel_id);
                 }
                 Message::Command(Command::Retry { pending_post_id }) => {
-                    if queue::get(&tx, &pending_post_id)?.is_some() {
-                        sends.push(pending_post_id);
+                    if let Some(outgoing) = queue::get(&tx, &pending_post_id)? {
+                        queue::unfail(&tx, &pending_post_id)?;
+                        dirty.outbox.insert(outgoing.channel_id.clone());
+                        sends.push(outgoing.channel_id);
                     }
                 }
                 Message::Command(Command::Discard { pending_post_id }) => {
@@ -986,6 +1022,9 @@ impl Engine {
                     status,
                     dnd_end_time,
                 }),
+                Message::Command(Command::SetNotifyProps { notify_props }) => {
+                    writes.push(Write::NotifyProps(notify_props))
+                }
                 Message::Command(Command::SetFavorite {
                     channel_id,
                     favorite,
@@ -1130,8 +1169,8 @@ impl Engine {
         for upload in uploads {
             self.upload(upload, dirty);
         }
-        for pending_post_id in sends {
-            self.send(&pending_post_id, dirty)?;
+        for channel_id in sends {
+            self.drain(&channel_id, dirty)?;
         }
         for write in writes {
             self.write(write, dirty);
@@ -1139,23 +1178,45 @@ impl Engine {
         Ok(())
     }
 
-    /// Starts sending a queued post, or fails it when offline.
-    fn send(&mut self, pending_post_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
-        let conn = self.store.conn();
-        let Some(outgoing) = queue::get(conn, pending_post_id)? else {
+    /// Starts sending a channel's oldest queued post, unless one is on its
+    /// way or the socket is down; the rest follow one by one as each is
+    /// confirmed (#194). Failed sends wait for Retry and do not hold up
+    /// the ones after them.
+    fn drain(&mut self, channel_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
+        if self.sending.contains_key(channel_id) {
+            return Ok(());
+        }
+        let Some(session) = self.session.as_ref().filter(|session| session.online) else {
             return Ok(());
         };
-        let Some(session) = &self.session else {
-            return outbox::fail(conn, pending_post_id, "not connected", dirty);
+        let conn = self.store.conn();
+        let Some(outgoing) = queue::for_channel(conn, channel_id)?
+            .into_iter()
+            .find(|outgoing| outgoing.last_error.is_none())
+        else {
+            return Ok(());
         };
-        queue::attempt(conn, pending_post_id)?;
+        queue::attempt(conn, &outgoing.pending_post_id)?;
         dirty.outbox.insert(outgoing.channel_id.clone());
+        self.sending
+            .insert(channel_id.to_owned(), outgoing.pending_post_id.clone());
         tokio::spawn(outbox::send(
             session.client.clone(),
             outgoing,
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// A send came back: the channel may send its next one.
+    fn sent(&mut self, pending_post_id: &str) -> Option<String> {
+        let channel_id = self
+            .sending
+            .iter()
+            .find(|(_, id)| id.as_str() == pending_post_id)
+            .map(|(channel_id, _)| channel_id.clone())?;
+        self.sending.remove(&channel_id);
+        Some(channel_id)
     }
 
     /// Starts saving a file; it reports back as [`Loaded::Download`].
@@ -1209,7 +1270,14 @@ impl Engine {
         let edge = if matches!(page, Page::Around(_)) {
             None
         } else {
-            match snapshot(self.store.conn(), &channel_id, Some(history), roots_only) {
+            let floor = self.floors.get(&channel_id).copied();
+            match snapshot(
+                self.store.conn(),
+                &channel_id,
+                Some(history),
+                floor,
+                roots_only,
+            ) {
                 Ok(window) => {
                     let post = match page {
                         Page::Older => window.first(),
@@ -1544,7 +1612,17 @@ impl Engine {
                     Some((from, _)) => {
                         *from = fetched.iter().map(|p| p.create_at).fold(*from, i64::min);
                     }
-                    None => history.extra += list.order.len(),
+                    None => {
+                        history.extra += list.order.len();
+                        // The page joins the latest posts, reaching below
+                        // a given-up jump's leftovers it overlaps.
+                        if let (Some(floor), Some(oldest)) = (
+                            self.floors.get_mut(&channel_id),
+                            fetched.iter().map(|p| p.create_at).min(),
+                        ) {
+                            *floor = (*floor).min(oldest - 1);
+                        }
+                    }
                 }
             }
             (_, Some((_, to))) => {
@@ -1578,6 +1656,10 @@ impl Engine {
         let Some((from, _)) = history.anchor.take() else {
             return;
         };
+        // Everything from `from` on now joins the newest post.
+        if let Some(floor) = self.floors.get_mut(channel_id) {
+            *floor = (*floor).min(from - 1);
+        }
         let shown = posts::posts_window(
             self.store.conn(),
             channel_id,
@@ -1631,6 +1713,9 @@ impl Engine {
                 }
                 self.me = Some(me.id.clone());
                 self.capabilities = Some((*capabilities).clone());
+                // The window reads the user's own notification preferences
+                // (mention keywords) from here.
+                dirty.direct.push(ChangeSet::Me(Arc::from(me)));
                 dirty
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
@@ -1879,15 +1964,25 @@ impl Engine {
             }
             Loaded::Ws(signal) => match signal {
                 WsSignal::State(state) => {
-                    if let ConnectionState::Connected { .. } = state
-                        && let Some(session) = &mut self.session
+                    let online = matches!(state, ConnectionState::Connected { .. });
+                    if let Some(session) = &mut self.session
+                        && (online || session.was_connected)
+                        && !matches!(state, ConnectionState::Connecting)
                     {
+                        session.online = online;
+                    }
+                    if online && let Some(session) = &mut self.session {
                         // Even a resumed stream can miss channel events, so
                         // every reconnect catches up (WsSignal docs).
                         if session.was_connected {
                             dirty.resync = true;
                         }
                         session.was_connected = true;
+                        // What was written while offline, or before a
+                        // restart, goes now, channel by channel.
+                        for channel_id in queue::channels(self.store.conn())? {
+                            self.drain(&channel_id, dirty)?;
+                        }
                     }
                     dirty
                         .direct
@@ -1949,14 +2044,37 @@ impl Engine {
                 let tx = self.store.conn_mut().transaction()?;
                 outbox::confirm(&tx, &pending_post_id, &post, self.me.as_deref(), dirty)?;
                 tx.commit()?;
+                self.sent(&pending_post_id);
+                self.drain(&post.channel_id, dirty)?;
             }
             Loaded::SendFailed {
                 pending_post_id,
                 error,
+                transient,
             } => {
-                tracing::warn!(%pending_post_id, %error, "a send failed");
-                outbox::fail(self.store.conn(), &pending_post_id, &error, dirty)?;
+                tracing::warn!(%pending_post_id, %error, transient, "a send failed");
+                let channel_id = self.sent(&pending_post_id);
+                let queued = queue::get(self.store.conn(), &pending_post_id)?;
+                match (queued, channel_id) {
+                    // Still queued, first in line: it goes again after a
+                    // pause, or when the socket is back.
+                    (Some(outgoing), Some(channel_id)) if transient => {
+                        let loaded = self.loaded.clone();
+                        let wait = outbox::backoff(outgoing.attempts);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(wait).await;
+                            let _ = loaded.send(Loaded::Drain { channel_id });
+                        });
+                    }
+                    (_, channel_id) => {
+                        outbox::fail(self.store.conn(), &pending_post_id, &error, dirty)?;
+                        if let Some(channel_id) = channel_id {
+                            self.drain(&channel_id, dirty)?;
+                        }
+                    }
+                }
             }
+            Loaded::Drain { channel_id } => self.drain(&channel_id, dirty)?,
             Loaded::Edited(post) => {
                 let mut fetches = Vec::new();
                 events::apply(
@@ -2147,7 +2265,14 @@ impl Engine {
                 Ok(None) => {}
                 Err(error) => tracing::error!(%error, "could not read a channel"),
             }
-            match snapshot(conn, &channel_id, self.history.get(&channel_id), roots_only) {
+            let floor = self.floors.get(&channel_id).copied();
+            match snapshot(
+                conn,
+                &channel_id,
+                self.history.get(&channel_id),
+                floor,
+                roots_only,
+            ) {
                 Ok(window) => changes.push(ChangeSet::Posts {
                     channel_id,
                     posts: Arc::from(window),
@@ -2341,6 +2466,20 @@ impl History {
     }
 }
 
+/// Leaving a history window before it reached the newest post: what it
+/// loaded stays stored but out of the latest snapshot, which would
+/// otherwise show it above a gap.
+fn give_up(
+    floors: &mut std::collections::HashMap<String, i64>,
+    channel_id: &str,
+    history: &History,
+) {
+    if let Some((_, to)) = history.anchor {
+        let floor = floors.entry(channel_id.to_owned()).or_insert(to);
+        *floor = (*floor).max(to);
+    }
+}
+
 /// Which page of history to fetch.
 #[derive(Debug)]
 enum Page {
@@ -2350,11 +2489,13 @@ enum Page {
 }
 
 /// An open channel's posts snapshot: its history window, or else the
-/// latest posts reaching back as far as history has loaded.
+/// latest posts reaching back as far as history has loaded, newer than
+/// `floor` (see `Engine::floors`).
 fn snapshot(
     conn: &rusqlite::Connection,
     channel_id: &str,
     history: Option<&History>,
+    floor: Option<i64>,
     roots_only: bool,
 ) -> Result<Vec<matty_api::models::Post>, StoreError> {
     match history.and_then(|h| h.anchor) {
@@ -2365,12 +2506,18 @@ fn snapshot(
             usize::MAX,
             roots_only,
         ),
-        None => posts::posts_window(
-            conn,
-            channel_id,
-            Window::Latest,
-            POSTS_WINDOW + history.map_or(0, |h| h.extra),
-            roots_only,
-        ),
+        None => {
+            let mut posts = posts::posts_window(
+                conn,
+                channel_id,
+                Window::Latest,
+                POSTS_WINDOW + history.map_or(0, |h| h.extra),
+                roots_only,
+            )?;
+            if let Some(floor) = floor {
+                posts.retain(|post| post.create_at > floor);
+            }
+            Ok(posts)
+        }
     }
 }

@@ -4,7 +4,7 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
 };
@@ -18,6 +18,7 @@ use crate::ui::{
     menu::{Menu, MenuItem, MenuState},
     sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_action, sidebar_menu_skeleton},
     theme::{UiTheme, transition_value},
+    toggle::{Toggle, ToggleSize},
 };
 
 /// A user's presence, as Mattermost reports it.
@@ -182,6 +183,32 @@ impl SidebarModel {
         Some(order[next].clone())
     }
 
+    /// What the Unreads filter shows (PLAN §4.4): rows with unread posts
+    /// (muted ones only for a mention) and the open channel, in their
+    /// categories; categories left empty drop out.
+    pub fn unreads(&self) -> SidebarModel {
+        let mut model = self.clone();
+        for category in &mut model.categories {
+            category.rows.retain(|row| {
+                (row.unread && !row.muted)
+                    || row.mentions > 0
+                    || self.selected.as_ref() == Some(&row.id)
+            });
+        }
+        model
+            .categories
+            .retain(|category| !category.rows.is_empty());
+        model
+    }
+
+    /// No row needs reading; the open channel does not count.
+    pub fn caught_up(&self) -> bool {
+        self.rows().all(|row| {
+            self.selected.as_ref() == Some(&row.id)
+                || (!row.unread || row.muted) && row.mentions == 0
+        })
+    }
+
     fn row_mut(&mut self, id: &str) -> Option<&mut ChannelRow> {
         self.categories
             .iter_mut()
@@ -302,6 +329,8 @@ pub struct SidebarView {
     menu: Entity<MenuState>,
     /// The per-row options menu, refilled for the row it opens on.
     row_menu: Entity<MenuState>,
+    /// The Unreads filter is on: only rows that need reading show.
+    unreads_only: bool,
 }
 
 impl EventEmitter<SidebarEvent> for SidebarView {}
@@ -348,6 +377,28 @@ impl SidebarView {
             team_name: team_name.into(),
             menu,
             row_menu,
+            unreads_only: false,
+        }
+    }
+
+    /// Turns the Unreads filter on or off (`Cmd+Shift+U` or the header
+    /// toggle).
+    pub fn toggle_unreads(&mut self, cx: &mut Context<Self>) {
+        self.set_unreads_only(!self.unreads_only, cx);
+    }
+
+    fn set_unreads_only(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.unreads_only = on;
+        cx.notify();
+    }
+
+    /// The rows as drawn: the whole model, or what the Unreads filter
+    /// leaves, so Alt+Up/Down walks what the user sees.
+    pub fn shown(&self) -> std::borrow::Cow<'_, SidebarModel> {
+        if self.unreads_only {
+            std::borrow::Cow::Owned(self.model.unreads())
+        } else {
+            std::borrow::Cow::Borrowed(&self.model)
         }
     }
 
@@ -519,7 +570,7 @@ impl SidebarView {
         }
     }
 
-    fn header(&self, cx: &App) -> impl IntoElement + use<> {
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let team = Button::new("sidebar.team")
             .variant(ButtonVariant::Ghost)
@@ -551,13 +602,47 @@ impl SidebarView {
                     &button_theme,
                 )
             });
+        let on = self.unreads_only;
+        let filter = Toggle::new("sidebar.unreads")
+            .size(ToggleSize::Sm)
+            .pressed(on)
+            .disabled(loading)
+            .aria_label("Unreads filter")
+            .on_change({
+                let view = cx.weak_entity();
+                move |on, _, _, cx| {
+                    view.update(cx, |this, cx| this.set_unreads_only(on, cx))
+                        .ok();
+                }
+            })
+            .child(
+                lucide(LucideIcon::ListFilter)
+                    .size(scaled(&theme, metrics::ICON))
+                    .text_color(if on {
+                        theme.colors.foreground
+                    } else {
+                        theme.colors.muted_foreground
+                    }),
+            );
+        let filter_tip = if on {
+            "Show all channels"
+        } else {
+            "Show unreads only"
+        };
         div()
             .h(scaled(&theme, metrics::HEADER_HEIGHT) - theme.space(4.))
             .flex()
             .items_center()
             .justify_between()
             .child(team)
-            .child(style::tipped("sidebar.compose.tip", "New…", compose))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(0.5))
+                    .child(style::tipped("sidebar.unreads.tip", filter_tip, filter))
+                    .child(style::tipped("sidebar.compose.tip", "New…", compose)),
+            )
     }
 
     /// The icon slot: `#` and lock for channels, an avatar with a presence
@@ -905,9 +990,19 @@ impl Render for SidebarView {
             return sidebar;
         }
         sidebar = sidebar.child(self.fixed_entries(cx));
-        let categories: Vec<_> = self.model.categories.clone();
+        let categories: Vec<_> = self.shown().categories.clone();
         for category in &categories {
             sidebar = sidebar.child(self.category(category, window, cx));
+        }
+        // Under the filter with nothing to read, only the open channel is
+        // left; say so rather than look broken.
+        if self.unreads_only && self.model.caught_up() {
+            sidebar = sidebar.child(div().pt(theme.space(4.)).child(style::empty_state(
+                LucideIcon::CircleCheck,
+                "You're all caught up",
+                "Nothing unread. Turn the filter off to see every channel.",
+                cx,
+            )));
         }
         sidebar.child(
             Menu::new(&self.row_menu, "Channel options")
@@ -965,6 +1060,38 @@ mod tests {
         assert_eq!(model.categories[2].rows[0].id, "d");
         assert_eq!(model.remove("b").map(|row| row.id), Some("b".into()));
         assert!(model.remove("b").is_none());
+    }
+
+    fn ids(model: &SidebarModel) -> Vec<Vec<&str>> {
+        model
+            .categories
+            .iter()
+            .map(|category| category.rows.iter().map(|row| row.id.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_unreads_filter_keeps_unread_rows_and_the_open_channel() {
+        // Muted c is left out; the open channel stays though it is read.
+        assert_eq!(ids(&model("a").unreads()), [vec!["a", "b"], vec!["e"]]);
+        assert_eq!(ids(&model("d").unreads()), [vec!["b"], vec!["d", "e"]]);
+        // Alt+Down walks the filtered rows: from b straight to e.
+        assert_eq!(
+            model("b").unreads().neighbor(Step::Next, false),
+            Some("e".into())
+        );
+    }
+
+    #[test]
+    fn the_unreads_filter_is_empty_when_everything_is_read() {
+        let mut all_read = model("a");
+        assert!(!all_read.caught_up());
+        all_read.mark_all_read();
+        // Only the open channel is left, and that is all caught up.
+        assert_eq!(ids(&all_read.unreads()), [vec!["a"]]);
+        assert!(all_read.caught_up());
+        all_read.selected = None;
+        assert!(all_read.unreads().categories.is_empty());
     }
 
     fn model(selected: &str) -> SidebarModel {
