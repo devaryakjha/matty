@@ -870,6 +870,7 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_model(Some(model), window, cx)),
             Some(ChannelUpdate::Patch {
                 removed,
+                prepended,
                 updated,
                 appended,
             }) => self.channel.update(cx, |view, cx| {
@@ -888,9 +889,16 @@ impl MainWindow {
                 for post in updated {
                     view.update_post(post, cx);
                 }
+                if !prepended.is_empty() {
+                    view.prepend_posts(prepended, cx);
+                }
                 view.append_posts(appended, cx);
             }),
             None => {}
+        }
+        if let Some((at_start, failed)) = update.history {
+            self.channel
+                .update(cx, |view, cx| view.set_history(at_start, failed, cx));
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {
