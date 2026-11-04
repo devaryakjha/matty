@@ -32,7 +32,7 @@ fn media_goes_least_recently_used_first() {
     let cache = MediaCache::new(dir.path());
     let blob = vec![7u8; MB as usize];
     let keys: Vec<String> = (0..20)
-        .map(|i| media::emoji_key(&format!("e{i:02}")))
+        .map(|i| media::emoji_key(&format!("e{i:02}"), 0))
         .collect();
     for key in &keys {
         cache.put(conn, key, &blob, "image/png").unwrap();
@@ -181,7 +181,7 @@ fn outbox_rows_survive_eviction() {
     cache
         .put(
             conn,
-            &media::emoji_key("big"),
+            &media::emoji_key("big", 0),
             &vec![1u8; MB as usize],
             "image/png",
         )
