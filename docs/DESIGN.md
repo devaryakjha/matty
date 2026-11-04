@@ -354,6 +354,18 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `PostReaction::summary` (`design-30`). "You" comes first, three names at
   most, and while sync still has only the count the text falls back to
   "3 others reacted".
+- **Post markers** (PLAN §4.2): a pinned or saved post says so after its
+  time, "Pinned" with the pin icon and "Saved" with the bookmark, in
+  Mattermost's order and before "(edited)" (`design-34`). The markers use
+  the meta style in the muted color so the author stays the loudest word,
+  and the same `post_markers` helper serves the channel and the thread
+  pane. The icon is its own header child because the header aligns on
+  baselines; a nested row sat two pixels low.
+- **Dialog shortcuts** (PLAN §4.4): Cmd/Ctrl+Shift+K opens New message,
+  as in Mattermost, and two Matty additions open the other sidebar-menu
+  dialogs: Cmd/Ctrl+Shift+J for Browse channels and Cmd/Ctrl+Shift+N for
+  Create channel (`design-35`). The shortcut sheet lists them from the
+  same table, so the sheet and the bindings cannot drift apart.
 
 ## 5. Components
 

@@ -12,7 +12,7 @@ use gpui_kit::{
 
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
-use crate::channel::{ChannelModel, Post, PostStatus, reaction_tooltip};
+use crate::channel::{ChannelModel, Post, PostStatus, post_markers, reaction_tooltip};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
@@ -555,7 +555,7 @@ impl RightPaneView {
         let (retry_view, retry_id) = (view.clone(), id.clone());
         let (delete_view, delete_id) = (view.clone(), id.clone());
         let (react_view, react_id) = (view.clone(), id.clone());
-        Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
+        let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
             .status(match post.status {
                 PostStatus::Sent => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
@@ -616,7 +616,11 @@ impl RightPaneView {
                     },
                     cx,
                 )
-            }))
+            }));
+        for marker in post_markers(post, &theme) {
+            row = row.header_child(marker);
+        }
+        row
     }
 
     fn replies_divider(
