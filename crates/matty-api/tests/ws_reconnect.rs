@@ -371,6 +371,34 @@ async fn reconnect_now_skips_the_wait_and_replaces_a_live_connection() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_burst_of_reconnect_requests_dials_once() {
+    let down = || Plan::Refuse(ApiError::Network("down".into()));
+    let dialer = ScriptedDialer::new(vec![down(), down(), down(), down(), down()]);
+    let (client, mut signals) = WsClient::start(dialer.clone(), Backoff::default(), Max);
+    let attempt = |n: u32| {
+        move |s: &[WsSignal]| {
+            s.iter().any(|x| {
+                matches!(x, WsSignal::State(ConnectionState::Reconnecting { attempt, .. }) if *attempt == n)
+            })
+        }
+    };
+    collect(&mut signals, attempt(3)).await;
+    assert_eq!(dialer.dials.lock().unwrap().len(), 3);
+    // A flapping network: many requests while waiting to retry.
+    for _ in 0..10 {
+        client.reconnect_now();
+    }
+    collect(&mut signals, attempt(4)).await;
+    assert_eq!(dialer.dials.lock().unwrap().len(), 4);
+    // The rest were dropped, not left to cut the next wait short: the
+    // fifth attempt waits out its full backoff.
+    let before = Instant::now();
+    collect(&mut signals, attempt(5)).await;
+    assert_eq!(Instant::now() - before, Duration::from_secs(8));
+    assert_eq!(dialer.dials.lock().unwrap().len(), 5);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_refused_token_stops_reconnecting() {
     let dialer = ScriptedDialer::new(vec![Plan::Refuse(ApiError::Server {
         status: 401,
