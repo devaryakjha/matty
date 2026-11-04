@@ -36,6 +36,8 @@ jobs:
         run: scripts/check-app-no-db.sh
       - run: cargo build --release --locked -p matty --features runtime_shaders
       - run: target/release/matty --version
+      - name: The development app bundle builds and verifies
+        run: MATTY_BIN=target/release/matty scripts/dev-bundle
       - uses: actions/upload-artifact@v4
         with:
           name: matty-macos-arm64
