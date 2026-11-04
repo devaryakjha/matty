@@ -6,7 +6,7 @@ use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    div, px,
 };
 
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -710,12 +710,6 @@ impl SidebarView {
                     .into_any_element(),
             ),
             ChannelKind::Direct { presence } => {
-                let dot = match presence {
-                    Presence::Online => Some(palette.online),
-                    Presence::Away => Some(palette.away),
-                    Presence::Dnd => Some(palette.dnd),
-                    Presence::Offline => None,
-                };
                 let initial: String = row.name.chars().take(1).collect();
                 div()
                     .relative()
@@ -724,31 +718,18 @@ impl SidebarView {
                         Avatar::new(element_id("sidebar.avatar", &row.id))
                             .size(AvatarSize::Sm)
                             .fallback(initial)
-                            .aria_label(row.name.clone())
+                            .aria_label(crate::style::presence_name(&row.name, *presence))
                             .w(slot)
                             .h(slot)
                             .text_size(theme.text(9.)),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom(px(-2.))
-                            .right(px(-2.))
-                            .size(scaled(theme, 8.))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(theme.colors.sidebar)
-                            .map(|dot_el| match dot {
-                                Some(color) => dot_el.bg(color),
-                                None => dot_el.bg(theme.colors.sidebar).child(
-                                    div()
-                                        .size_full()
-                                        .rounded_full()
-                                        .border_1()
-                                        .border_color(theme.colors.muted_foreground),
-                                ),
-                            }),
-                    )
+                    .child(crate::style::presence_dot(
+                        *presence,
+                        scaled(theme, 8.),
+                        theme.colors.sidebar,
+                        theme,
+                        palette,
+                    ))
                     .into_any_element()
             }
         }

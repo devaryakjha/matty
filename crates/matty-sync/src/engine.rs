@@ -23,6 +23,7 @@ use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
 use crate::outbox;
+use crate::presence::StatusBatcher;
 use crate::typing::TypingThrottle;
 use matty_store::outbox::{self as queue, Outgoing};
 
@@ -723,6 +724,8 @@ pub(crate) struct Engine {
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
     typing: TypingThrottle,
+    /// Post authors whose statuses are still to be asked for (#135).
+    statuses: StatusBatcher,
     /// Uploads still sending, by the caller's id; aborting one cancels it.
     uploads: std::collections::HashMap<String, JoinHandle<()>>,
     /// Where images are kept between runs; without it they are fetched
@@ -764,6 +767,7 @@ impl Engine {
             loaded,
             loaded_inbox: Some(loaded_inbox),
             typing: TypingThrottle::default(),
+            statuses: StatusBatcher::default(),
             uploads: std::collections::HashMap::new(),
             media: None,
             fetching: BTreeSet::new(),
@@ -842,6 +846,7 @@ impl Engine {
                     if let Some(old) = self.session.take() {
                         old.load.abort();
                     }
+                    self.statuses.clear();
                     // Publish the cache before the first round trip ends.
                     dirty.all_teams = true;
                     dirty.unreads = true;
@@ -2082,6 +2087,7 @@ impl Engine {
             Loaded::Statuses(statuses) => {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
+            Loaded::StatusesDue => self.fetch_statuses(),
             Loaded::Done => dirty.direct.push(ChangeSet::Connection(Connection::Loaded)),
             Loaded::SignedOut => dirty
                 .direct
@@ -2320,6 +2326,7 @@ impl Engine {
                             dirty.resync = true;
                         }
                         session.was_connected = true;
+                        self.refresh_statuses();
                         // What was written while offline, or before a
                         // restart, goes now, channel by channel.
                         for channel_id in queue::channels(self.store.conn())? {
@@ -2660,6 +2667,7 @@ impl Engine {
                 _ => {}
             }
         }
+        self.watch_statuses(&ids);
         ids.retain(|id| !id.is_empty() && !self.sent_users.contains(id));
         if ids.is_empty() {
             return None;
@@ -2694,6 +2702,71 @@ impl Engine {
 }
 
 impl Engine {
+    /// Queues the statuses of `ids` (but the user's own, which the account
+    /// load and `status_change` keep) and wakes the engine when the batch
+    /// window closes.
+    fn watch_statuses(&mut self, ids: &BTreeSet<String>) {
+        if self.session.is_none() {
+            return;
+        }
+        let me = self.me.as_deref();
+        let ids = ids.iter().map(String::as_str).filter(|id| Some(*id) != me);
+        let Some(due) = self.statuses.add(ids, Instant::now()) else {
+            return;
+        };
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(due.into()).await;
+            let _ = loaded.send(Loaded::StatusesDue);
+        });
+    }
+
+    /// The batch window closed: asks for its statuses in one request.
+    fn fetch_statuses(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let Some(ids) = self.statuses.take(Instant::now()) else {
+            return;
+        };
+        let client = session.client.clone();
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            match client.statuses(&ids).await {
+                Ok(statuses) => {
+                    let _ = loaded.send(Loaded::Statuses(statuses));
+                }
+                Err(error) => tracing::warn!(%error, "could not fetch statuses"),
+            }
+        });
+    }
+
+    /// After a reconnect: statuses changed while the socket was down went
+    /// unannounced, so asks again for everyone shown, over the socket.
+    fn refresh_statuses(&self) {
+        let Some(connection) = self.session.as_ref().and_then(|s| s.socket.connection()) else {
+            return;
+        };
+        let ids: Vec<String> = self.statuses.known().map(str::to_owned).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let loaded = self.loaded.clone();
+        tokio::spawn(async move {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            match connection.get_statuses_by_ids(&ids).await {
+                Ok(reply) if reply.is_ok() => {
+                    let statuses = crate::presence::statuses_reply(reply.data);
+                    if !statuses.is_empty() {
+                        let _ = loaded.send(Loaded::Statuses(statuses));
+                    }
+                }
+                Ok(reply) => tracing::debug!(?reply.error, "statuses were refused"),
+                Err(error) => tracing::debug!(%error, "could not refresh statuses"),
+            }
+        });
+    }
+
     /// Preferences changed: the collapsed-threads choice may have too, which
     /// changes every count and the channel windows.
     fn preferences_changed(&mut self, dirty: &mut Dirty) {

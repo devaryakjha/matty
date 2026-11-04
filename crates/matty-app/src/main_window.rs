@@ -1163,6 +1163,8 @@ impl MainWindow {
             });
         }
         if let Some(profiles) = update.profiles {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_profiles(profiles.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
         }
@@ -1897,6 +1899,16 @@ impl MainWindow {
         let Some(channel_id) = self.selected_channel.clone() else {
             return;
         };
+        // The thread is in the open channel: its people have the presence
+        // the pane's avatars show.
+        let profiles = self
+            .channel
+            .read(cx)
+            .model()
+            .map(|model| model.profiles.clone())
+            .unwrap_or_default();
+        self.right_pane
+            .update(cx, |pane, cx| pane.set_profiles(profiles, cx));
         if let Some(live) = &mut self.live {
             // Sync publishes the thread from the cache at once and again as
             // replies arrive; until then the pane is empty.

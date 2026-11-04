@@ -2683,11 +2683,22 @@ impl ChannelView {
             format!("post.{id}.avatar").into(),
         ))
         .size(AvatarSize::Default)
-        .fallback(initial)
-        .aria_label(post.author.clone());
+        .fallback(initial);
         let Some(profile) = profile.cloned() else {
-            return avatar.into_any_element();
+            return avatar.aria_label(post.author.clone()).into_any_element();
         };
+        // The author's presence on the avatar (#135).
+        let theme = UiTheme::read(cx);
+        let avatar = div()
+            .relative()
+            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
+            .child(crate::style::presence_dot(
+                profile.presence,
+                scaled(theme, 10.),
+                theme.colors.background,
+                theme,
+                &crate::style::Palette::read(cx),
+            ));
         let view = cx.entity().downgrade();
         let card_id = id.clone();
         popover(gpui_kit::ElementId::Name(
