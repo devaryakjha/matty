@@ -12,7 +12,7 @@ use std::sync::Arc;
 use matty_api::ServerCapabilities;
 use matty_api::models::{Emoji, Preference, Status, User};
 use matty_api::ws::ConnectionState as Socket;
-use matty_sync::{ChangeSet, Connection, SidebarSection, SyncHandle};
+use matty_sync::{ChangeSet, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
 
 use crate::live::Arrival;
 use crate::settings::SavedAccount;
@@ -28,6 +28,8 @@ pub struct ServerWatch {
     prefs: matty_notify::UserPrefs,
     /// Every team's sidebar, for the server's unread and mention totals.
     sections: HashMap<String, Arc<[SidebarSection]>>,
+    /// The teams, in rail order.
+    teams: Option<Arc<[TeamWithUnreads]>>,
     /// The engine has started a session or shown its cache.
     started: bool,
     /// What a window showing the server needs from before it subscribed.
@@ -70,6 +72,7 @@ impl ServerWatch {
                 me: account.user_id.clone(),
                 prefs: matty_notify::UserPrefs::from_props(&account.username, "", &HashMap::new()),
                 sections: HashMap::new(),
+                teams: None,
                 started: false,
                 me_user: None,
                 config: None,
@@ -150,6 +153,7 @@ impl ServerWatch {
                 // A team the user left takes its channels with it.
                 self.sections
                     .retain(|id, _| id.is_empty() || teams.iter().any(|team| &team.id == id));
+                self.teams = Some(teams.clone());
                 return Heard::Unreads;
             }
             ChangeSet::Me(user) => {
@@ -206,10 +210,12 @@ impl ServerWatch {
         }
     }
 
-    /// What the engine said once that a window showing the server from
-    /// now on would have missed, in the order the engine first says it.
-    /// [`matty_sync::Command::ShowCache`] brings the sidebars, unreads,
-    /// saved posts and drafts.
+    /// What the engine said that a window showing the server from now on
+    /// would have missed, in the order the engine first says it, so the
+    /// server shows at once: its sidebars and teams among them, so a
+    /// notification's channel can open straight after a switch.
+    /// [`matty_sync::Command::ShowCache`] then brings the saved posts and
+    /// drafts, and the sidebars again.
     pub fn replay(&self) -> Vec<ChangeSet> {
         let mut changes = Vec::new();
         if let Some(on) = self.collapsed_threads {
@@ -243,6 +249,18 @@ impl ServerWatch {
         }
         if let Some(state) = &self.socket {
             changes.push(ChangeSet::Connection(Connection::Socket(state.clone())));
+        }
+        // Sidebars ahead of the teams, whose change picks the team to show.
+        for (team_id, sections) in &self.sections {
+            changes.push(ChangeSet::Sidebar {
+                team_id: team_id.clone(),
+                sections: sections.clone(),
+            });
+        }
+        if let Some(teams) = &self.teams {
+            changes.push(ChangeSet::Unreads {
+                teams: teams.clone(),
+            });
         }
         changes
     }
@@ -369,6 +387,10 @@ mod tests {
         }])));
         assert!(watch.started());
         assert!(watch.dnd(0));
+        let teams = ChangeSet::Unreads {
+            teams: Arc::from(Vec::new()),
+        };
+        watch.apply(&teams);
         assert_eq!(
             watch.replay(),
             vec![
@@ -379,8 +401,27 @@ mod tests {
                     status: "dnd".into(),
                     ..Status::default()
                 }])),
+                teams,
             ]
         );
+    }
+
+    #[test]
+    fn sidebars_replay_ahead_of_the_teams() {
+        let mut watch = watch();
+        let t1 = sidebar("t1", vec![channel("a", 1, 0, false)]);
+        let teams = ChangeSet::Unreads {
+            teams: Arc::from(vec![TeamWithUnreads {
+                id: "t1".into(),
+                name: "one".into(),
+                display_name: "One".into(),
+                has_unreads: true,
+                mentions: 0,
+            }]),
+        };
+        watch.apply(&t1);
+        watch.apply(&teams);
+        assert_eq!(watch.replay(), vec![t1, teams]);
     }
 
     #[test]
