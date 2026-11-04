@@ -2348,7 +2348,13 @@ impl ChannelView {
             .as_ref()
             .and_then(|model| model.posts.iter().find(|post| post.id == id))
             .is_none_or(|post| post.body == body);
-        if body.is_empty() || body.chars().count() > self.max_post_size() || unchanged {
+        if body.is_empty() {
+            // Emptying a message asks to delete it, as the webapp does.
+            self.cancel_edit(window, cx);
+            self.ask_delete(id, window, cx);
+            return;
+        }
+        if body.chars().count() > self.max_post_size() || unchanged {
             self.cancel_edit(window, cx);
             return;
         }
