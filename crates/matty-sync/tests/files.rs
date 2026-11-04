@@ -230,3 +230,96 @@ async fn an_outside_image_is_fetched_directly_once_then_cached() {
             .any(|path| path.contains("/image"))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_picture_is_fetched_once_per_version_and_kept() {
+    use matty_sync::Connection;
+
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/u2/image"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(b"\x89PNGface".to_vec()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/gone/image"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("media");
+    let connect = |sync: &matty_sync::SyncHandle| {
+        sync.send(Command::Connect {
+            client: matty_api::Client::new(server.uri())
+                .unwrap()
+                .with_token("token"),
+        })
+    };
+    let fetches = || async {
+        common::requested(&server)
+            .await
+            .iter()
+            .filter(|path| path.ends_with("/u2/image"))
+            .count()
+    };
+    let avatar = |user_id: &str, version| Command::LoadAvatar {
+        user_id: user_id.into(),
+        last_picture_update: Some(version),
+    };
+    type Answer = (String, i64, Option<(std::sync::Arc<[u8]>, String)>);
+    async fn answer(changes: &async_channel::Receiver<ChangeSet>) -> Answer {
+        let ChangeSet::Avatar {
+            user_id,
+            last_picture_update,
+            image,
+        } = next(changes, |c| matches!(c, ChangeSet::Avatar { .. })).await
+        else {
+            unreachable!()
+        };
+        (user_id, last_picture_update, image)
+    }
+
+    {
+        let sync = matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(media.clone())).unwrap();
+        let changes = sync.subscribe();
+        connect(&sync);
+        next(&changes, |c| {
+            matches!(c, ChangeSet::Connection(Connection::Loaded))
+        })
+        .await;
+        for _ in 0..2 {
+            sync.send(avatar("u2", 10));
+            let (user_id, version, image) = answer(&changes).await;
+            assert_eq!((user_id.as_str(), version), ("u2", 10));
+            let (bytes, content_type) = image.unwrap();
+            assert_eq!(
+                (&*bytes, content_type.as_str()),
+                (&b"\x89PNGface"[..], "image/png")
+            );
+        }
+        assert_eq!(fetches().await, 1, "the second ask came from the cache");
+        // A new picture time is a new picture.
+        sync.send(avatar("u2", 20));
+        assert_eq!(answer(&changes).await.1, 20);
+        assert_eq!(fetches().await, 2);
+        // No picture: an empty answer, so the app keeps the initials.
+        sync.send(avatar("gone", 1));
+        let (user_id, _, image) = answer(&changes).await;
+        assert_eq!((user_id.as_str(), image), ("gone", None));
+    }
+
+    // Offline, with no session at all, the kept picture still shows.
+    let sync = matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(media)).unwrap();
+    let changes = sync.subscribe();
+    sync.send(avatar("u2", 20));
+    let (_, version, image) = answer(&changes).await;
+    assert_eq!(version, 20);
+    assert!(image.is_some());
+    sync.send(avatar("u3", 1));
+    assert_eq!(answer(&changes).await.2, None);
+    assert_eq!(fetches().await, 2);
+}

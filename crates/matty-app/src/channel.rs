@@ -17,7 +17,9 @@ use gpui_kit::{
 use crate::actions::{
     self, EditLastMessage, FocusComposer, MarkChannelRead, ReplyToLastMessage, UploadFiles,
 };
-use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
+use crate::attachments::{
+    AttachmentStatus, PostFile, SendGate, Upload, UploadSource, UploadTray, post_files,
+};
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
 };
@@ -28,15 +30,15 @@ use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
-    attachment::{Attachment, attachment_group},
+    attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant, style_button},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
+    embed::MessageEmbed,
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::EmptyContent,
     lightbox::{LightboxImage, LightboxState, lightbox},
-    markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{
         Message, MessageDensity, MessageHighlight, MessageStatus, Reaction, day_divider,
@@ -126,6 +128,205 @@ pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
     markers
 }
 
+/// Whether the post is the user's own and in the outbox but not on its
+/// way: queued while offline, or refused. It can be edited in place or
+/// discarded before it is sent (#195).
+pub fn waiting_to_send(post: &Post, away: bool) -> bool {
+    post.mine
+        && post.kind == PostKind::Regular
+        && match post.status {
+            PostStatus::Sent => false,
+            PostStatus::Pending => away,
+            PostStatus::Failed => true,
+        }
+}
+
+/// Whether the post waits for the connection to come back (#195). It
+/// never folds under the post before it, so its clock and "Will send
+/// when back online" show even in a run of the user's own posts.
+pub fn queued(post: &Post, away: bool) -> bool {
+    post.status == PostStatus::Pending && away
+}
+
+/// The clock in a queued post's header (#195).
+pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
+    lucide(LucideIcon::Clock)
+        .size(scaled(theme, metrics::ICON_TINY))
+        .text_color(theme.colors.muted_foreground)
+}
+
+/// A post's header time, or where it is on its way to the server.
+pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
+    match post.status {
+        PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+        PostStatus::Pending if away => "Will send when back online".into(),
+        PostStatus::Pending => "Sending…".into(),
+        PostStatus::Failed => "Not sent".into(),
+    }
+}
+
+/// Edit and Discard… for a post waiting to send (#195), after a
+/// separator; nothing for any other post. `prefix` scopes the item ids.
+pub(crate) fn waiting_items(
+    prefix: &str,
+    post: &Post,
+    away: bool,
+    edit: impl Fn(&mut Window, &mut App) + 'static,
+    discard: impl Fn(&mut Window, &mut App) + 'static,
+) -> Vec<MenuItem> {
+    if !waiting_to_send(post, away) {
+        return Vec::new();
+    }
+    vec![
+        MenuItem::separator(),
+        MenuItem::new(
+            gpui_kit::ElementId::Name(format!("{prefix}.edit").into()),
+            "Edit",
+        )
+        .on_click(move |_, window, cx| edit(window, cx)),
+        MenuItem::new(
+            gpui_kit::ElementId::Name(format!("{prefix}.discard").into()),
+            "Discard…",
+        )
+        .on_click(move |_, window, cx| discard(window, cx)),
+    ]
+}
+
+/// A composer holding `body` to edit a post in place: the format
+/// shortcuts apply and Escape runs `cancel`.
+pub(crate) fn edit_composer(
+    body: SharedString,
+    cancel: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ComposerState> {
+    let composer = cx.new(|cx| {
+        let this = cx.weak_entity();
+        let mut state = ComposerState::new(12, window, cx);
+        state.set_value(body, window, cx);
+        state.set_on_key(move |keystroke, window, cx| {
+            if keystroke.key == "escape" {
+                cancel(window, cx);
+                return true;
+            }
+            this.upgrade()
+                .is_some_and(|editor| apply_format(&editor, keystroke, window, cx))
+        });
+        state
+    });
+    let focus = composer.clone();
+    window.on_next_frame(move |window, cx| {
+        focus.update(cx, |composer, cx| {
+            let end = composer.value(cx).len();
+            composer.set_selection(end..end, cx);
+            composer.focus(window, cx);
+        });
+    });
+    composer
+}
+
+/// The in-place editor for a post: its composer, the key hint and the
+/// Cancel and Save buttons. `prefix` scopes the button ids.
+pub(crate) fn post_editor(
+    prefix: &str,
+    composer: &Entity<ComposerState>,
+    cap: Pixels,
+    cancel: impl Fn(&mut Window, &mut App) + 'static,
+    save: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx).clone();
+    let text = composer.clone();
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme.space(2.))
+        .pt(theme.space(1.))
+        .child(
+            Composer::new(composer)
+                .max_height(cap)
+                .rounded(theme.radius.md),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(theme.space(2.))
+                .child(
+                    div()
+                        .flex_1()
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child("Enter to save · Escape to cancel"),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(format!("{prefix}.cancel").into()))
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label("Cancel")
+                        .on_click(move |_, window, cx| cancel(window, cx)),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(format!("{prefix}.save").into()))
+                        .variant(ButtonVariant::Default)
+                        .size(ButtonSize::Sm)
+                        .label("Save")
+                        .on_click(move |_, window, cx| {
+                            let value = text.read(cx).value(cx);
+                            save(value, window, cx)
+                        }),
+                ),
+        )
+}
+
+/// "Delete this message?", or "Discard this message?" for one the server
+/// never got (#195), naming `place` it is removed from. `prefix` scopes
+/// the ids.
+pub(crate) fn delete_popup(
+    prefix: &str,
+    unsent: bool,
+    place: &str,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let theme = UiTheme::read(cx).clone();
+    let id = |part: &str| gpui_kit::ElementId::Name(format!("{prefix}.{part}").into());
+    let (label, title, description, action): (_, _, SharedString, _) = if unsent {
+        (
+            "Discard message",
+            "Discard this message?",
+            "It has not been sent, so nobody else has seen it. This cannot be undone.".into(),
+            "Discard",
+        )
+    } else {
+        (
+            "Delete message",
+            "Delete this message?",
+            format!("It is removed for everyone in {place}. This cannot be undone.").into(),
+            "Delete",
+        )
+    };
+    dialog_popup(id("popup"), label, cx)
+        .child(dialog_title(id("title"), cx).child(title))
+        .child(dialog_description(id("description"), cx).child(description))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(theme.space(2.))
+                .pt(theme.space(2.))
+                .child(
+                    alert_dialog_cancel(id("cancel"))
+                        .variant(ButtonVariant::Outline)
+                        .label("Cancel"),
+                )
+                .child(
+                    alert_dialog_action(id("confirm"))
+                        .variant(ButtonVariant::Destructive)
+                        .label(action),
+                ),
+        )
+}
+
 /// The tooltip builder for a message's reaction chips, looking each chip
 /// up in `reactions` by emoji.
 pub fn reaction_tooltip(
@@ -155,12 +356,31 @@ pub enum PostStatus {
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
 pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
+/// How a post draws (#104).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PostKind {
+    /// A message someone wrote.
+    #[default]
+    Regular,
+    /// A system message, already worded in `body`: a muted line with no
+    /// author, actions or reactions that ends the run of grouped posts.
+    /// `activity` marks joins and leaves, which arrive combined into one
+    /// row ("Ada, Sam and 3 others joined the channel.").
+    System { activity: bool },
+    /// A type Matty does not draw yet, such as a plugin's `custom_*`
+    /// post: a card that offers to open it in the browser. Holds the type.
+    Unsupported(SharedString),
+}
+
 /// One post, already formatted for display: sync does the time zone and
 /// Markdown rewriting, the view only draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Post {
     pub id: SharedString,
     pub author: SharedString,
+    /// The author's user id, for their profile picture; empty when unknown.
+    pub author_id: SharedString,
+    pub kind: PostKind,
     /// Minutes since midnight in the user's zone; `ClockFormat` prints it.
     pub time: u16,
     /// The day divider label this post falls under ("Today", "Yesterday", a date).
@@ -185,10 +405,37 @@ pub struct Post {
     /// The thread under this post, when it has one, for the reply footer
     /// (Collapsed Reply Threads, PLAN §4.4).
     pub replies: Option<ReplySummary>,
+    /// The root post's id when this post is a reply; empty for a root.
+    pub root_id: SharedString,
+    /// What a reply answers, drawn above it in the channel while collapsed
+    /// reply threads are off (#123); `None` when the row above is already
+    /// in the same thread.
+    pub reply_to: Option<ReplyContext>,
     /// Files on the post (PLAN §4.6).
     pub files: Vec<PostFile>,
     /// Link previews and message attachments under the body (#187).
     pub embeds: Vec<crate::embeds::Embed>,
+}
+
+/// The root a reply answers, for "Commented on Ada's message: …" above the
+/// reply while collapsed reply threads are off (#123).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyContext {
+    /// The root author's display name.
+    pub author: SharedString,
+    /// The root's words as plain text, for one truncated line.
+    pub excerpt: SharedString,
+}
+
+impl Post {
+    /// The thread this post opens: its root's, or its own.
+    pub fn thread_root(&self) -> SharedString {
+        if self.root_id.is_empty() {
+            self.id.clone()
+        } else {
+            self.root_id.clone()
+        }
+    }
 }
 
 /// What the channel shows about a post's thread without loading it.
@@ -203,6 +450,8 @@ pub struct ReplySummary {
     pub last_day: SharedString,
     /// Display names of the people who replied, newest first, at most three.
     pub participants: Vec<SharedString>,
+    /// Their user ids, in the same order, for their pictures.
+    pub participant_ids: Vec<SharedString>,
     pub following: bool,
     /// Replies the user has not read yet.
     pub unread: bool,
@@ -240,6 +489,9 @@ pub struct ChannelModel {
     pub typing: Vec<SharedString>,
     /// The user's notification settings for this channel.
     pub notifications: ChannelNotifications,
+    /// Matty is offline, so no posts may only mean none were saved here
+    /// yet (#163).
+    pub offline: bool,
 }
 
 /// When a channel notifies, per surface; `Default` follows the account
@@ -303,6 +555,8 @@ enum Row {
     Day(SharedString),
     NewMessages,
     Post(usize),
+    /// A system message (#104); never selectable.
+    System(usize),
     /// The bottom row: loading newer messages after a jump into the past,
     /// or a failed page with Retry. Empty while the transcript runs to the
     /// newest post.
@@ -374,6 +628,17 @@ pub(crate) fn apply_format(
     true
 }
 
+/// The user's own id, from a post of theirs on screen, for a send that
+/// has not come back from sync yet.
+pub fn own_id(posts: &[Post]) -> SharedString {
+    posts
+        .iter()
+        .rev()
+        .find(|post| post.mine && !post.author_id.is_empty())
+        .map(|post| post.author_id.clone())
+        .unwrap_or_default()
+}
+
 impl ReplySummary {
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
@@ -385,7 +650,52 @@ impl ReplySummary {
     }
 }
 
+/// A row as it compares across edits: a post by its id, since its index
+/// shifts when a post above it goes.
+#[derive(Debug, PartialEq, Eq)]
+enum RowKey {
+    Post(SharedString),
+    Other(Row),
+}
+
+/// The rows of `before` that differ from `after`, and how many rows of
+/// `after` take their place: everything between the common head and tail.
+fn changed_rows(before: &[RowKey], after: &[RowKey]) -> (std::ops::Range<usize>, usize) {
+    let head = before
+        .iter()
+        .zip(after)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let tail = before[head..]
+        .iter()
+        .rev()
+        .zip(after[head..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    (head..before.len() - tail, after.len() - head - tail)
+}
+
 impl ChannelModel {
+    fn row_keys(&self, rows: &[Row]) -> Vec<RowKey> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Post(index) | Row::System(index) => {
+                    RowKey::Post(self.posts[*index].id.clone())
+                }
+                other => RowKey::Other(other.clone()),
+            })
+            .collect()
+    }
+
+    /// The newest post someone wrote, for Shift+Up's reply: system rows
+    /// have no thread.
+    fn last_message(&self) -> Option<&Post> {
+        self.posts
+            .iter()
+            .rev()
+            .find(|post| !matches!(post.kind, PostKind::System { .. }))
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(self.posts.len() + 4);
         rows.push(Row::History);
@@ -398,7 +708,10 @@ impl ChannelModel {
             if self.first_unread == Some(index) {
                 rows.push(Row::NewMessages);
             }
-            rows.push(Row::Post(index));
+            rows.push(match post.kind {
+                PostKind::System { .. } => Row::System(index),
+                _ => Row::Post(index),
+            });
         }
         rows.push(Row::Newer);
         rows
@@ -478,6 +791,9 @@ pub enum ChannelEvent {
     /// "Copy link" on a post: the window puts its permalink on the
     /// clipboard, since only sync knows the server and the team (#133).
     CopyLink(SharedString),
+    /// "Open in browser" on a post Matty cannot draw: the window opens its
+    /// permalink (#104).
+    OpenInBrowser(SharedString),
     /// The transcript showed its top row and wants an older page; sync
     /// answers with `prepend_posts` and `set_history`. Fired once per page:
     /// the view marks itself loading until one of those arrives.
@@ -496,6 +812,8 @@ pub enum ChannelEvent {
     JumpLatest,
     /// The user asked for the channel's pinned messages.
     OpenPinned,
+    /// The user clicked a link or an entity chip in a message (#103).
+    OpenLink(SharedString),
     /// The user asked for the channel info pane (header info button or the
     /// members count).
     OpenInfo,
@@ -595,9 +913,8 @@ pub struct ChannelView {
     recent_emoji: Vec<SharedString>,
     /// The sidebar's channels, for `~` autocomplete.
     directory: Vec<ChannelRow>,
-    /// Files waiting in the composer tray.
-    uploads: Vec<Upload>,
-    upload_seq: usize,
+    /// Files waiting in the composer tray, and a send waiting on them.
+    tray: UploadTray,
     /// The image viewer over the clicked post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -647,10 +964,26 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
+    /// Posts whose preview images the user collapsed (#187), as the web
+    /// app's per-post toggle; they expand again with the toggle.
+    collapsed_previews: std::collections::HashSet<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl EventEmitter<ChannelEvent> for ChannelView {}
+
+/// Points Enter in `composer` at sending or at a new line, for the send
+/// key the user chose and the text typed so far (#157).
+pub(crate) fn follow_send_key(
+    composer: &Entity<ComposerState>,
+    send_on: SendKey,
+    cx: &mut gpui_kit::App,
+) {
+    composer.update(cx, |composer, cx| {
+        let submit = send_on.submits_on_enter(&composer.value(cx));
+        composer.set_submit_on_enter(submit);
+    });
+}
 
 impl ChannelView {
     pub fn new(
@@ -663,9 +996,7 @@ impl ChannelView {
             &SettingsStore::global(cx),
             |this, store, _: &SettingsChanged, cx| {
                 let send_on = store.read(cx).get().send_on;
-                this.composer.update(cx, |composer, _| {
-                    composer.set_submit_on_enter(send_on == SendKey::Enter)
-                });
+                crate::channel::follow_send_key(&this.composer, send_on, cx);
                 // Display density changes every row's height.
                 this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
@@ -677,10 +1008,11 @@ impl ChannelView {
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let view = cx.weak_entity();
         let keys = view.clone();
+        let people = view.clone();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
             state.set_triggers(['@', '~', ':'], cx);
-            state.set_submit_on_enter(send_on == SendKey::Enter);
+            state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Up in an empty composer edits the last own post, Shift+Up
             // replies to the newest one; the editor sees arrows first, so
             // the keymap rows alone never fire. Ctrl+Enter (Cmd+Enter on
@@ -721,8 +1053,8 @@ impl ChannelView {
                         return false;
                     }
                     if keystroke.modifiers.shift {
-                        if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
-                            cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                        if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
+                            cx.emit(ChannelEvent::OpenThread(post.thread_root()));
                         }
                     } else if let Some(id) = this.last_own_post() {
                         this.start_edit(id, window, cx);
@@ -753,24 +1085,35 @@ impl ChannelView {
                 if sources.is_empty() {
                     return false;
                 }
-                view.update(cx, |this, cx| {
-                    for source in sources {
-                        this.add_upload(source, cx);
-                    }
-                })
-                .is_ok()
+                view.update(cx, |this, cx| this.add_sources(sources, cx))
+                    .is_ok()
             });
             // People get their avatar, emoji their glyph; channels keep the
             // suggestion's icon.
-            state.set_suggestion_leading(|suggestion, _, _| {
+            state.set_suggestion_leading(move |suggestion, _, cx| {
                 if let Some(username) = suggestion.value.strip_prefix('@') {
                     let initial: String = suggestion.label.chars().take(1).collect();
+                    let user_id = people
+                        .upgrade()
+                        .and_then(|view| {
+                            view.read(cx)
+                                .model
+                                .iter()
+                                .flat_map(|model| model.profiles.iter())
+                                .find(|profile| profile.username.as_ref() == username)
+                                .map(|profile| profile.user_id.clone())
+                        })
+                        .unwrap_or_default();
                     Some(
-                        Avatar::new(gpui_kit::ElementId::Name(
-                            format!("suggest.{username}").into(),
-                        ))
-                        .size(AvatarSize::Sm)
-                        .fallback(initial)
+                        crate::avatars::with_picture(
+                            Avatar::new(gpui_kit::ElementId::Name(
+                                format!("suggest.{username}").into(),
+                            ))
+                            .size(AvatarSize::Sm)
+                            .fallback(initial),
+                            &user_id,
+                            cx,
+                        )
                         .into_any_element(),
                     )
                 } else if suggestion.value.starts_with('~') {
@@ -820,6 +1163,8 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                        follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
@@ -863,8 +1208,7 @@ impl ChannelView {
             picker_target: None,
             recent_emoji: Vec::new(),
             directory: Vec::new(),
-            uploads: Vec::new(),
-            upload_seq: 0,
+            tray: UploadTray::new("upload"),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -889,6 +1233,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            collapsed_previews: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1002,7 +1347,11 @@ impl ChannelView {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let arrived = posts.iter().filter(|post| !post.mine).count();
+        // Joins and other system rows are not messages to catch up on.
+        let arrived = posts
+            .iter()
+            .filter(|post| !post.mine && !matches!(post.kind, PostKind::System { .. }))
+            .count();
         model.posts.extend(posts);
         let rows = model.rows();
         let before = self.rows.len();
@@ -1255,20 +1604,40 @@ impl ChannelView {
         self.mutate_post(&id, |current| *current = post, cx);
     }
 
-    /// Removes a post the server deleted; the rows above keep their place.
-    pub fn remove_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut model) = self.model.clone() else {
+    /// Removes a post the server deleted. Only its rows leave the list, so
+    /// the scroll and the New messages line stay where they were (#164).
+    pub fn remove_post(&mut self, id: &SharedString, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_mut() else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
             return;
         };
+        let before = model.row_keys(&self.rows);
         model.posts.remove(at);
         model.first_unread = model.first_unread.and_then(|first| {
             let first = if at < first { first - 1 } else { first };
             (first < model.posts.len()).then_some(first)
         });
-        self.set_model(Some(model), window, cx);
+        self.rows = model.rows();
+        let (range, count) = changed_rows(&before, &model.row_keys(&self.rows));
+        let rows = self.rows.len();
+        self.list.update(cx, |list, cx| {
+            if !list.splice(range.clone(), count, cx) {
+                list.reset(rows, cx);
+            }
+        });
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| &editing.post == id)
+        {
+            self.editing = None;
+        }
+        if self.selection.is_some_and(|row| row >= range.start) {
+            self.selection = None;
+        }
+        cx.notify();
     }
 
     /// In preview, a couple of posts land in #general a while after it
@@ -1391,16 +1760,23 @@ impl ChannelView {
     }
 
     fn can_send(&self) -> bool {
-        let files_ready = self.uploads.iter().all(Upload::is_ready);
-        let something = self.draft_len > 0 || !self.uploads.is_empty();
-        self.model.is_some() && something && files_ready && self.draft_len <= self.max_post_size()
+        self.model.is_some()
+            && self.tray.gate(self.draft_len > 0) == SendGate::Now
+            && self.draft_len <= self.max_post_size()
+    }
+
+    /// The server's `MaxFileSize`, for checking files before they upload.
+    pub fn set_max_file_size(&mut self, bytes: u64) {
+        self.tray.set_max_file_size(bytes);
     }
 
     /// Opens the file picker; in preview it fills the tray with fixtures
-    /// instead, since no dialog can open there.
-    fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// instead, since no dialog can open there, and offers one file over
+    /// the limit so the tray says why it stayed out.
+    pub fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::preview::enabled() {
-            self.uploads.extend(crate::preview::uploads());
+            self.tray.extend(crate::preview::uploads());
+            self.tray.admit(vec![crate::preview::oversize_upload()]);
             cx.notify();
             return;
         }
@@ -1420,53 +1796,60 @@ impl ChannelView {
 
     /// Adds files to the tray and asks sync to upload them.
     pub fn add_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
-        for path in paths {
-            self.add_upload(UploadSource::Path(path), cx);
-        }
+        self.add_sources(paths.into_iter().map(UploadSource::Path), cx);
     }
 
-    fn add_upload(&mut self, source: UploadSource, cx: &mut Context<Self>) {
-        self.upload_seq += 1;
-        let id: SharedString = format!("upload-{}", self.upload_seq).into();
-        let upload = match source {
-            UploadSource::Path(path) => Upload::from_path(id.clone(), path),
-            UploadSource::Image(image) => Upload::from_image(id.clone(), image),
-        };
-        cx.emit(ChannelEvent::Upload {
-            id,
-            name: upload.name.clone(),
-            source: upload.source.clone(),
-        });
-        self.uploads.push(upload);
+    /// Adds what passes the size and count checks to the tray and asks
+    /// sync to upload it; the tray says why the rest stayed out.
+    fn add_sources(
+        &mut self,
+        sources: impl IntoIterator<Item = UploadSource>,
+        cx: &mut Context<Self>,
+    ) {
+        for upload in self.tray.add(sources) {
+            cx.emit(ChannelEvent::Upload {
+                id: upload.id,
+                name: upload.name,
+                source: upload.source,
+            });
+        }
         cx.notify();
     }
 
-    /// Sync reports progress, completion or failure for a tray file.
+    /// Sync reports progress, completion or failure for a tray file; a
+    /// send that waited on it goes once the last one is up.
     pub fn set_upload_status(
         &mut self,
         id: &str,
         status: AttachmentStatus,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(upload) = self
-            .uploads
-            .iter_mut()
-            .find(|upload| upload.id.as_ref() == id)
-        {
-            upload.status = status;
-            cx.notify();
+        if self.tray.set_status(id, status) {
+            self.send_queued(window, cx);
         }
+        cx.notify();
     }
 
-    fn remove_upload(&mut self, id: &SharedString, cx: &mut Context<Self>) {
-        self.uploads.retain(|upload| &upload.id != id);
+    fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let due = self.tray.remove(id);
         cx.emit(ChannelEvent::CancelUpload(id.clone()));
+        if due {
+            self.send_queued(window, cx);
+        }
         cx.notify();
     }
 
     fn retry_upload(&mut self, id: &SharedString, cx: &mut Context<Self>) {
-        self.set_upload_status(id, AttachmentStatus::Uploading(0.), cx);
+        self.tray.set_status(id, AttachmentStatus::Uploading(0.));
         cx.emit(ChannelEvent::RetryUpload(id.clone()));
+        cx.notify();
+    }
+
+    /// Sends what the composer holds now, for a send that waited on uploads.
+    fn send_queued(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value(cx);
+        self.send(text, window, cx);
     }
 
     /// Opens the lightbox over the images of `post`, at image `index`.
@@ -1578,25 +1961,14 @@ impl ChannelView {
         )
     }
 
-    /// A tray chip: a thumbnail for images, a card for anything else.
+    /// A tray chip with its remove and Retry wired to this view.
     fn upload_chip(&self, upload: &Upload, cx: &mut Context<Self>) -> Attachment {
-        let id = upload.id.clone();
-        let remove = id.clone();
-        let mut chip = Attachment::new(
-            gpui_kit::ElementId::Name(format!("upload.{id}").into()),
-            upload.name.clone(),
+        let (remove, retry) = (upload.id.clone(), upload.id.clone());
+        upload.chip(
+            "upload",
+            cx.listener(move |this, _, window, cx| this.remove_upload(&remove, window, cx)),
+            cx.listener(move |this, _, _, cx| this.retry_upload(&retry, cx)),
         )
-        .meta(upload.meta())
-        .icon(upload.icon())
-        .status(upload.status)
-        .on_remove(cx.listener(move |this, _, _, cx| this.remove_upload(&remove, cx)));
-        if let Some(image) = upload.image() {
-            chip = chip.image(image);
-        }
-        if upload.status == AttachmentStatus::Failed {
-            chip = chip.on_retry(cx.listener(move |this, _, _, cx| this.retry_upload(&id, cx)));
-        }
-        chip
     }
 
     /// Follows the draft's first link: a new one is asked about after a
@@ -1635,13 +2007,20 @@ impl ChannelView {
     /// outbox). Blank text and text over the limit stay in the composer.
     fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let body: SharedString = text.trim().to_string().into();
-        if (body.is_empty() && self.uploads.is_empty())
-            || body.chars().count() > self.max_post_size()
-            || !self.uploads.iter().all(Upload::is_ready)
-        {
+        if body.chars().count() > self.max_post_size() {
             return;
         }
-        let files: Vec<PostFile> = self.uploads.drain(..).map(PostFile::from_upload).collect();
+        // Enter while files upload waits for them (#149).
+        if self.tray.request_send(!body.is_empty()) != SendGate::Now {
+            cx.notify();
+            return;
+        }
+        let files: Vec<PostFile> = self
+            .tray
+            .take()
+            .into_iter()
+            .map(PostFile::from_upload)
+            .collect();
         let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
         let Some(mut model) = self.model.clone() else {
             return;
@@ -1651,6 +2030,8 @@ impl ChannelView {
         let post = Post {
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
+            author_id: own_id(&model.posts),
+            kind: PostKind::Regular,
             time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
             date: SharedString::default(),
@@ -1665,6 +2046,8 @@ impl ChannelView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files,
             embeds: Vec::new(),
         };
@@ -1699,42 +2082,36 @@ impl ChannelView {
 
     fn last_own_post(&self) -> Option<SharedString> {
         self.model.as_ref()?.posts.iter().rev().find_map(|post| {
-            (post.mine && post.status == PostStatus::Sent).then(|| post.id.clone())
+            (post.mine && post.status == PostStatus::Sent && post.kind == PostKind::Regular)
+                .then(|| post.id.clone())
         })
     }
 
     /// Turns the post's body into a composer holding its text. Enter saves,
-    /// Escape cancels; only the user's own sent posts qualify.
+    /// Escape cancels; only the user's own posts qualify, sent or waiting
+    /// to send (#195).
     fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(post) = self.model.as_ref().and_then(|model| {
-            model
-                .posts
-                .iter()
-                .find(|post| post.id == id && post.mine && post.status == PostStatus::Sent)
+            model.posts.iter().find(|post| {
+                post.id == id
+                    && post.mine
+                    && post.kind == PostKind::Regular
+                    && (post.status == PostStatus::Sent || waiting_to_send(post, self.away))
+            })
         }) else {
             return;
         };
         let body = post.body.clone();
         let view = cx.weak_entity();
-        let composer = cx.new(|cx| {
-            let mut state = ComposerState::new(12, window, cx);
-            state.set_value(body, window, cx);
-            state.set_on_key(move |keystroke, window, cx| {
-                if keystroke.key == "escape" {
-                    view.update(cx, |this, cx| this.cancel_edit(window, cx))
-                        .ok();
-                    return true;
-                }
-                let editor = view.upgrade().and_then(|view| {
-                    view.read(cx)
-                        .editing
-                        .as_ref()
-                        .map(|editing| editing.composer.clone())
-                });
-                editor.is_some_and(|editor| apply_format(&editor, keystroke, window, cx))
-            });
-            state
-        });
+        let composer = edit_composer(
+            body,
+            move |window, cx| {
+                view.update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
         let subscription = cx.subscribe_in(
             &composer,
             window,
@@ -1744,14 +2121,6 @@ impl ChannelView {
                 }
             },
         );
-        let focus = composer.clone();
-        window.on_next_frame(move |window, cx| {
-            focus.update(cx, |composer, cx| {
-                let end = composer.value(cx).len();
-                composer.set_selection(end..end, cx);
-                composer.focus(window, cx);
-            });
-        });
         let row = self.rows.iter().position(|row| match row {
             Row::Post(index) => self
                 .model
@@ -1803,7 +2172,8 @@ impl ChannelView {
             &id,
             |post| {
                 post.body = body.clone();
-                post.edited = true;
+                // A waiting send just goes with the new text.
+                post.edited = post.status == PostStatus::Sent;
             },
             cx,
         );
@@ -1821,50 +2191,22 @@ impl ChannelView {
         cap: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let save = composer.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .pt(theme.space(1.))
-            .child(
-                Composer::new(composer)
-                    .max_height(cap)
-                    .rounded(theme.radius.md),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme.space(2.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .type_style(style::META, &theme)
-                            .text_color(theme.colors.muted_foreground)
-                            .child("Enter to save · Escape to cancel"),
-                    )
-                    .child(
-                        Button::new("post.edit.cancel")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Sm)
-                            .label("Cancel")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.cancel_edit(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("post.edit.save")
-                            .variant(ButtonVariant::Default)
-                            .size(ButtonSize::Sm)
-                            .label("Save")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let text = save.read(cx).value(cx);
-                                this.save_edit(text, window, cx)
-                            })),
-                    ),
-            )
+        let (cancel, save) = (cx.weak_entity(), cx.weak_entity());
+        post_editor(
+            "post.edit",
+            composer,
+            cap,
+            move |window, cx| {
+                cancel
+                    .update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            move |text, window, cx| {
+                save.update(cx, |this, cx| this.save_edit(text, window, cx))
+                    .ok();
+            },
+            cx,
+        )
     }
 
     /// Applies `change` to the post with `id`, if it is loaded, and redraws.
@@ -1902,23 +2244,11 @@ impl ChannelView {
         const LIMIT: usize = 8;
         let query = query.to_lowercase();
         match trigger {
-            '@' => self
-                .model
-                .iter()
-                .flat_map(|model| model.profiles.iter())
-                .filter(|profile| {
-                    profile.username.to_lowercase().starts_with(&query)
-                        || profile.display_name.to_lowercase().contains(&query)
-                })
-                .take(LIMIT)
-                .map(|profile| {
-                    ComposerSuggestion::new(
-                        format!("@{}", profile.username),
-                        profile.display_name.clone(),
-                    )
-                    .description(format!("@{}", profile.username))
-                })
-                .collect(),
+            '@' => people_suggestions(
+                self.model.iter().flat_map(|model| model.profiles.iter()),
+                &query,
+                LIMIT,
+            ),
             '~' => self
                 .directory
                 .iter()
@@ -2028,6 +2358,29 @@ impl ChannelView {
         }
     }
 
+    /// Collapses or expands the images in a post's previews; the row's
+    /// height changes, so the list measures it again.
+    fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
+        let changed = if collapsed {
+            self.collapsed_previews.insert(id.clone())
+        } else {
+            self.collapsed_previews.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        let posts = self.model.as_ref().map(|model| &model.posts);
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if posts.and_then(|posts| posts.get(*index)).is_some_and(|post| post.id == id))
+        });
+        if let Some(row) = row {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(row..row + 1, cx));
+        }
+        cx.notify();
+    }
+
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
         if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
             cx.emit(ChannelEvent::ToggleSave(id));
@@ -2075,8 +2428,7 @@ impl ChannelView {
         self.set_model(Some(model), window, cx);
         match status {
             PostStatus::Sent => cx.emit(ChannelEvent::Delete(id)),
-            PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
-            PostStatus::Pending => {}
+            PostStatus::Pending | PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
         }
     }
 
@@ -2127,7 +2479,9 @@ impl ChannelView {
             .collect()
     }
 
-    fn more_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+    /// The "More" menu. A post the server does not have yet only offers
+    /// its text, plus Edit and Discard while it waits to send (#195).
+    fn more_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: SharedString, run: MenuAction| {
@@ -2159,6 +2513,30 @@ impl ChannelView {
                     ))
                 }),
             ),
+        ];
+        if post.status != PostStatus::Sent {
+            let (edit_view, edit_id) = (view.clone(), id.clone());
+            let (discard_view, discard_id) = (view.clone(), id.clone());
+            items.extend(waiting_items(
+                "post.menu",
+                post,
+                away,
+                move |window, cx| {
+                    edit_view
+                        .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                        .ok();
+                },
+                move |window, cx| {
+                    discard_view
+                        .update(cx, |this, cx| {
+                            this.ask_delete(discard_id.clone(), window, cx)
+                        })
+                        .ok();
+                },
+            ));
+            return items;
+        }
+        items.extend([
             {
                 let id = id.clone();
                 act(
@@ -2191,7 +2569,7 @@ impl ChannelView {
                     Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
                 )
             },
-        ];
+        ]);
         if post.mine {
             let edit_id = id.clone();
             let delete_id = id.clone();
@@ -2212,7 +2590,11 @@ impl ChannelView {
 
     /// The right-click menu: reply and react first, then everything the
     /// "More" button offers, with "Mark as unread" after Save.
-    fn context_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn context_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+        // The server does not have it yet: nothing to reply to or react to.
+        if post.status != PostStatus::Sent {
+            return Self::more_items_for(post, away, cx);
+        }
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: &'static str, run: MenuAction| {
@@ -2225,7 +2607,7 @@ impl ChannelView {
                 view.update(cx, |this, cx| run(this, window, cx)).ok();
             })
         };
-        let reply_id = id.clone();
+        let reply_id = post.thread_root();
         let react_id = id.clone();
         let unread_id = id.clone();
         let mut items = vec![
@@ -2241,7 +2623,7 @@ impl ChannelView {
             ),
             MenuItem::separator(),
         ];
-        let more = Self::more_items_for(post, cx);
+        let more = Self::more_items_for(post, away, cx);
         // `more` is copy, copy as Markdown, copy link, pin, save, then the
         // owner's edit and delete.
         let (keep, own) = more.split_at(5.min(more.len()));
@@ -2272,7 +2654,6 @@ impl ChannelView {
 
     /// "Delete message?" with the action named in the button (PLAN §4.5).
     fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = UiTheme::read(cx).clone();
         let channel: SharedString = match self.model.as_ref() {
             Some(channel) => match channel.kind {
                 ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
@@ -2282,30 +2663,16 @@ impl ChannelView {
             },
             None => "the channel".into(),
         };
-        let popup = dialog_popup("post.delete.popup", "Delete message", cx)
-            .child(dialog_title("post.delete.title", cx).child("Delete this message?"))
-            .child(
-                dialog_description("post.delete.description", cx).child(format!(
-                    "It is removed for everyone in {channel}. This cannot be undone."
-                )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(theme.space(2.))
-                    .pt(theme.space(2.))
-                    .child(
-                        alert_dialog_cancel("post.delete.cancel")
-                            .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
-                    )
-                    .child(
-                        alert_dialog_action("post.delete.confirm")
-                            .variant(ButtonVariant::Destructive)
-                            .label("Delete"),
-                    ),
-            );
+        // A post the server never got is discarded, not deleted (#195).
+        let unsent = self.deleting.as_ref().is_some_and(|id| {
+            self.model.as_ref().is_some_and(|model| {
+                model
+                    .posts
+                    .iter()
+                    .any(|post| &post.id == id && post.status != PostStatus::Sent)
+            })
+        });
+        let popup = delete_popup("post.delete", unsent, &channel, cx);
         let view = cx.entity().downgrade();
         alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
             view.update(cx, |this, cx| {
@@ -2679,11 +3046,15 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let initial: String = post.author.chars().take(1).collect();
-        let avatar = Avatar::new(gpui_kit::ElementId::Name(
-            format!("post.{id}.avatar").into(),
-        ))
-        .size(AvatarSize::Default)
-        .fallback(initial);
+        let avatar = crate::avatars::with_picture(
+            Avatar::new(gpui_kit::ElementId::Name(
+                format!("post.{id}.avatar").into(),
+            ))
+            .size(AvatarSize::Default)
+            .fallback(initial),
+            &post.author_id,
+            cx,
+        );
         let Some(profile) = profile.cloned() else {
             return avatar.aria_label(post.author.clone()).into_any_element();
         };
@@ -2755,64 +3126,74 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away): (bool, bool),
+        (menu_open, away, previews_collapsed): (bool, bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let avatar = Self::avatar(id.clone(), post, profile, cx);
-        let thread_id = id.clone();
+        let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, cx);
+        let more_items = Self::more_items_for(post, away, cx);
         let save_id = id.clone();
+        // A post the server does not have yet can only be copied, edited
+        // or discarded, all in More (#195).
+        let sent = post.status == PostStatus::Sent;
         let actions = message_actions(cx)
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
-                "Add reaction",
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                    LucideIcon::FaceSlightlySmilingPlus,
-                    "Add reaction",
-                    cx,
-                )
-                .on_click(cx.listener(
-                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        this.open_menu(react_items.clone(), event.position(), window, cx)
-                    },
-                )),
-            ))
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
-                "Reply in thread",
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
-                    LucideIcon::MessageSquareReply,
-                    "Reply in thread",
-                    cx,
-                )
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
-                })),
-            ))
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                if post.saved { "Unsave" } else { "Save" },
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                    if post.saved {
-                        LucideIcon::BookmarkCheck
-                    } else {
-                        LucideIcon::Bookmark
-                    },
-                    if post.saved { "Unsave" } else { "Save" },
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
-            ))
+            .when(sent, |actions| {
+                actions
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
+                        "Add reaction",
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                            LucideIcon::FaceSlightlySmilingPlus,
+                            "Add reaction",
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                this.open_menu(react_items.clone(), event.position(), window, cx)
+                            },
+                        )),
+                    ))
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
+                        "Reply in thread",
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
+                            LucideIcon::MessageSquareReply,
+                            "Reply in thread",
+                            cx,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
+                        })),
+                    ))
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
+                        if post.saved { "Unsave" } else { "Save" },
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                            if post.saved {
+                                LucideIcon::BookmarkCheck
+                            } else {
+                                LucideIcon::Bookmark
+                            },
+                            if post.saved { "Unsave" } else { "Save" },
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.toggle_save(save_id.clone(), cx)
+                            }),
+                        ),
+                    ))
+            })
             .child(style::tipped_when(
                 !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
@@ -2834,12 +3215,7 @@ impl ChannelView {
         let add_view = view.clone();
         let retry_view = view.clone();
         let retry_id = id.clone();
-        let time: SharedString = match post.status {
-            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
-            PostStatus::Pending if away => "Will send when back online".into(),
-            PostStatus::Pending => "Sending…".into(),
-            PostStatus::Failed => "Not sent".into(),
-        };
+        let time = post_time(post, away, cx);
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
             .timestamp(time.clone())
@@ -2855,7 +3231,7 @@ impl ChannelView {
                         .ok();
                 }
             })
-            .continuation(post.continues)
+            .continuation(post.continues && !queued(post, away))
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
@@ -2890,15 +3266,32 @@ impl ChannelView {
             .actions(actions)
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
+            .when_some(post.reply_to.as_ref(), |row, context| {
+                row.child(Self::reply_context(post, context, cx))
+            })
             .child(match editor {
                 Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
-                None => markdown(
-                    gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
-                    post.body.clone(),
-                    cx,
-                )
-                .into_any_element(),
+                None => match &post.kind {
+                    PostKind::Unsupported(_) => Self::unsupported_card(&id, cx).into_any_element(),
+                    _ => {
+                        let link_view = cx.entity().downgrade();
+                        crate::links::message_body(
+                            gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
+                            &post.body,
+                            move |url, _, cx| {
+                                let event = ChannelEvent::OpenLink(url.clone());
+                                link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                            },
+                            cx,
+                        )
+                        .into_any_element()
+                    }
+                },
             });
+        if queued(post, away) {
+            // Queued: a clock marks "Will send when back online" (#195).
+            row = row.header_child(queued_marker(&theme));
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
@@ -2915,7 +3308,18 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
-            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+            let (view, post_id) = (cx.entity().downgrade(), id.clone());
+            row = row.child(crate::embeds::post_embeds(
+                &id,
+                &post.embeds,
+                previews_collapsed,
+                std::rc::Rc::new(move |collapsed, _, cx| {
+                    let post_id = post_id.clone();
+                    view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
+                        .ok();
+                }),
+                cx,
+            ));
         }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
@@ -2942,7 +3346,7 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, cx);
+        let context_items = Self::context_items_for(post, away, cx);
         div()
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
@@ -2954,8 +3358,123 @@ impl ChannelView {
             .child(row)
     }
 
+    /// A system message (#104): a muted line in the body column, with the
+    /// time in the gutter on hover like a continuation, and no actions.
+    fn system_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let time: SharedString = ClockFormat::current(cx).format(post.time).into();
+        Message::new(gpui_kit::ElementId::Name(
+            format!("post.{}", post.id).into(),
+        ))
+        .continuation(true)
+        .timestamp(time.clone())
+        .gutter_time(time.clone())
+        .when(!post.date.is_empty(), |row| {
+            row.timestamp_tooltip(format!("{} at {time}", post.date))
+        })
+        .density(message_density(cx))
+        .px(scaled(&theme, metrics::GUTTER))
+        .py(theme.space(1.))
+        .child(
+            div()
+                .text_size(theme.text(13.))
+                .line_height(theme.text(20.))
+                .text_color(theme.colors.muted_foreground)
+                .child(post.body.clone()),
+        )
+    }
+
+    /// The body of a post whose type Matty does not draw yet (#104): a card
+    /// that says so and opens the post in the web app.
+    fn unsupported_card(id: &SharedString, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let open = id.clone();
+        MessageEmbed::new(gpui_kit::ElementId::Name(
+            format!("post.{id}.unsupported").into(),
+        ))
+        .density(message_density(cx))
+        .mt(theme.space(1.))
+        .body(
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(theme.space(2.))
+                .child(
+                    div()
+                        .text_color(theme.colors.muted_foreground)
+                        .child("This message type isn't supported yet."),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("post.{id}.open-in-browser").into(),
+                    ))
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .label("Open in browser")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ChannelEvent::OpenInBrowser(open.clone()))
+                    })),
+                ),
+        )
+    }
+
     /// The thread line under a post with replies: who replied, how many,
     /// when last, and Follow. Clicking it opens the thread.
+    /// The line above a reply while collapsed reply threads are off
+    /// (#123): "Commented on Ada's message: …", which opens the thread.
+    fn reply_context(
+        post: &Post,
+        context: &ReplyContext,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let root = post.thread_root();
+        let whose = format!("{}'s", context.author);
+        div()
+            .id(gpui_kit::ElementId::Name(
+                format!("post.{}.replying", post.id).into(),
+            ))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!(
+                "Open thread: commented on {whose} message: {}",
+                context.excerpt
+            ))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(theme.space(1.))
+            .pb(theme.space(0.5))
+            .cursor_pointer()
+            .type_style(style::META, &theme)
+            .text_color(theme.colors.muted_foreground)
+            .hover(|style| style.text_color(theme.colors.foreground))
+            .on_click(
+                cx.listener(move |_, _, _, cx| cx.emit(ChannelEvent::OpenThread(root.clone()))),
+            )
+            .child(
+                lucide(LucideIcon::MessageSquareReply)
+                    .flex_shrink_0()
+                    .size(scaled(&theme, metrics::ICON_TINY)),
+            )
+            .child(div().flex_shrink_0().child("Commented on"))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(whose),
+            )
+            .child(div().flex_shrink_0().child("message:"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(context.excerpt.clone()),
+            )
+    }
+
     fn reply_footer(
         id: &SharedString,
         summary: &ReplySummary,
@@ -2997,13 +3516,22 @@ impl ChannelView {
                         .enumerate()
                         .map(|(index, name)| {
                             let initial: String = name.chars().take(1).collect();
+                            let user_id = summary
+                                .participant_ids
+                                .get(index)
+                                .map(SharedString::as_ref)
+                                .unwrap_or_default();
                             div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                Avatar::new(gpui_kit::ElementId::Name(
-                                    format!("post.{id}.thread.{index}").into(),
-                                ))
-                                .size(AvatarSize::Sm)
-                                .fallback(initial)
-                                .aria_label(name.clone()),
+                                crate::avatars::with_picture(
+                                    Avatar::new(gpui_kit::ElementId::Name(
+                                        format!("post.{id}.thread.{index}").into(),
+                                    ))
+                                    .size(AvatarSize::Sm)
+                                    .fallback(initial)
+                                    .aria_label(name.clone()),
+                                    user_id,
+                                    cx,
+                                ),
                             )
                         }),
                 ),
@@ -3100,6 +3628,10 @@ impl ChannelView {
                 Some(Row::NewMessages) => {
                     new_messages_divider("new-messages", "New messages", cx).into_any_element()
                 }
+                Some(Row::System(post)) => {
+                    let post = posts[*post].clone();
+                    view.update(cx, |_, cx| Self::system_row(&post, cx).into_any_element())
+                }
                 Some(Row::Post(post)) => {
                     let post = posts[*post].clone();
                     let profile = profiles
@@ -3114,12 +3646,13 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
                         Self::post_row(
                             &post,
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away),
+                            (menu_open, away, previews_collapsed),
                             cx,
                         )
                         .into_any_element()
@@ -3214,12 +3747,17 @@ impl ChannelView {
         };
         let id = post.id.clone();
         match keystroke.key.as_str() {
-            "r" => cx.emit(ChannelEvent::OpenThread(id)),
+            "r" => cx.emit(ChannelEvent::OpenThread(post.thread_root())),
             "e" if post.mine => {
                 self.selection = None;
                 self.start_edit(id, window, cx);
             }
-            "delete" | "backspace" if post.mine => self.ask_delete(id, window, cx),
+            "delete" | "backspace"
+                if post.mine
+                    && (post.status == PostStatus::Sent || waiting_to_send(&post, self.away)) =>
+            {
+                self.ask_delete(id, window, cx)
+            }
             "+" | "=" if keystroke.key == "+" || modifiers.shift => self.open_picker(Some(id), cx),
             "p" => self.toggle_pin(id, cx),
             "s" => self.toggle_save(id, cx),
@@ -3307,14 +3845,13 @@ impl ChannelView {
                 cx.notify();
             }),
         );
-        let tray = (!self.uploads.is_empty()).then(|| {
-            let chips: Vec<Attachment> = self
-                .uploads
-                .iter()
-                .map(|upload| self.upload_chip(upload, cx))
-                .collect();
-            attachment_group("composer.uploads", chips, cx).pb(theme.space(2.))
-        });
+        let chips: Vec<Attachment> = self
+            .tray
+            .uploads()
+            .iter()
+            .map(|upload| self.upload_chip(upload, cx))
+            .collect();
+        let tray = crate::attachments::upload_tray("composer", &self.tray, chips, cx);
         let mut key = gpui_kit::KeyContext::new_with_defaults(cx.platform_info().os);
         key.add("Composer");
         if self.draft_len == 0 {
@@ -3328,20 +3865,13 @@ impl ChannelView {
                 }
             }))
             .on_action(cx.listener(|this, _: &ReplyToLastMessage, _, cx| {
-                if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
-                    cx.emit(ChannelEvent::OpenThread(post.id.clone()));
+                if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
+                    cx.emit(ChannelEvent::OpenThread(post.thread_root()));
                 }
             }))
             .on_action(
                 cx.listener(|this, _: &UploadFiles, window, cx| this.choose_files(window, cx)),
             )
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.add_paths(paths.paths().iter().cloned(), cx)
-            }))
-            .drag_over::<ExternalPaths>({
-                let accent = theme.colors.accent;
-                move |style, _, _, _| style.bg(accent)
-            })
             .flex_shrink_0()
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
@@ -3407,11 +3937,16 @@ impl ChannelView {
                                 let text = this.composer.read(cx).value(cx);
                                 this.send(text, window, cx)
                             }))
-                            .child(
+                            .child(if self.tray.is_queued() {
+                                Spinner::new("composer.send.spinner")
+                                    .color(theme.colors.primary_foreground)
+                                    .into_any_element()
+                            } else {
                                 lucide(LucideIcon::SendHorizontal)
                                     .size(scaled(&theme, metrics::ICON))
-                                    .text_color(theme.colors.primary_foreground),
-                            ),
+                                    .text_color(theme.colors.primary_foreground)
+                                    .into_any_element()
+                            }),
                     )),
             )
     }
@@ -3467,6 +4002,36 @@ impl ChannelView {
             .child(row(1, &[0.55]))
             .child(row(2, &[0.8, 0.64, 0.3]))
             .child(row(3, &[0.46]))
+    }
+
+    /// A channel with nothing saved on this computer while offline: saying
+    /// it is empty would be wrong, so it says why and that it will load.
+    fn offline_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let place: SharedString = match channel.kind {
+            ChannelKind::Direct { .. } => format!("your conversation with {}", channel.name).into(),
+            _ => format!("#{}", channel.name).into(),
+        };
+        let empty = style::empty_state(
+            LucideIcon::WifiOff,
+            "You're offline",
+            format!(
+                "Matty hasn't saved {place} on this computer yet. Its messages load when you're back online."
+            ),
+            cx,
+        );
+        div()
+            .size_full()
+            .flex()
+            .items_end()
+            .justify_center()
+            .p(theme.space(6.))
+            .pb(theme.space(8.))
+            .child(
+                div()
+                    .max_w(scaled(&theme, metrics::EMPTY_MAX_WIDTH))
+                    .child(empty),
+            )
     }
 
     /// A channel with no posts yet: its purpose and a way to bring people in.
@@ -3599,15 +4164,30 @@ impl Render for ChannelView {
         }
         let body = if channel.loading && channel.posts.is_empty() {
             Self::loading(cx).into_any_element()
+        } else if channel.posts.is_empty() && channel.offline {
+            Self::offline_channel(&channel, cx).into_any_element()
         } else if channel.posts.is_empty() {
             Self::empty_channel(&channel, cx).into_any_element()
         } else {
             self.transcript(&channel, cx).into_any_element()
         };
-        root.child(self.header(&channel, cx))
+        // Files dropped anywhere on the view go to its composer (#150).
+        let overlay = crate::attachments::drop_overlay(
+            "channel.drop",
+            crate::attachments::drop_title(&channel.name),
+            "Files go into the message you are writing.",
+            crate::attachments::preview_drop(),
+            cx,
+        );
+        root.relative()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.add_paths(paths.paths().iter().cloned(), cx)
+            }))
+            .child(self.header(&channel, cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))
+            .children(overlay)
             // Zero-size host for the shared post menu; it opens at the pointer.
             // Disabled so the empty host is not a tab stop.
             .child(
@@ -3638,9 +4218,81 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .child(picker)
 }
 
+/// `@` suggestions from `profiles` for `query` (lowercase): a person
+/// matches by username prefix or anywhere in the name the user's format
+/// shows (#156). The row reads that name, with the username under it
+/// when it says something more.
+fn people_suggestions<'a>(
+    profiles: impl Iterator<Item = &'a UserProfile>,
+    query: &str,
+    limit: usize,
+) -> Vec<ComposerSuggestion> {
+    profiles
+        .filter(|profile| {
+            profile.username.to_lowercase().starts_with(query)
+                || profile.display_name.to_lowercase().contains(query)
+        })
+        .take(limit)
+        .map(|profile| {
+            let suggestion = ComposerSuggestion::new(
+                format!("@{}", profile.username),
+                profile.display_name.clone(),
+            );
+            if profile.display_name == profile.username {
+                suggestion
+            } else {
+                suggestion.description(format!("@{}", profile.username))
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mention_suggestions_name_people_in_the_users_format() {
+        use crate::settings::NameFormat;
+        let user = matty_api::models::User {
+            id: "u1".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            nickname: "Countess".into(),
+            ..Default::default()
+        };
+        let profile = |format| UserProfile {
+            user_id: "u1".into(),
+            username: "ada".into(),
+            display_name: crate::transcript::display_name_as(&user, format).into(),
+            position: None,
+            presence: crate::sidebar::Presence::Offline,
+            status_text: None,
+            local_time: None,
+        };
+        let shown = |format, query: &str| {
+            people_suggestions(std::iter::once(&profile(format)), query, 8)
+                .into_iter()
+                .map(|s| (s.value, s.label, s.description))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shown(NameFormat::FullName, "love"),
+            vec![("@ada".into(), "Ada Lovelace".into(), Some("@ada".into()))]
+        );
+        assert_eq!(
+            shown(NameFormat::NicknameFullName, "ad"),
+            vec![("@ada".into(), "Countess".into(), Some("@ada".into()))]
+        );
+        // The username alone needs no second line saying it again.
+        assert_eq!(
+            shown(NameFormat::Username, "ad"),
+            vec![("@ada".into(), "ada".into(), None)]
+        );
+        // A name the format hides no longer matches.
+        assert!(shown(NameFormat::Username, "love").is_empty());
+    }
 
     #[test]
     fn reaction_summaries_read_like_a_sentence() {
@@ -3673,6 +4325,8 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
+            author_id: SharedString::default(),
+            kind: PostKind::Regular,
             time: 600,
             day: day.into(),
             date: SharedString::default(),
@@ -3686,14 +4340,139 @@ mod tests {
             pinned: false,
             status: PostStatus::Sent,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files: vec![],
             embeds: vec![],
         }
     }
 
     #[test]
+    fn only_a_waiting_send_of_ones_own_can_be_changed() {
+        let mine = |status| Post {
+            mine: true,
+            status,
+            ..post("p", "Today")
+        };
+        // Offline, a pending send is queued; online it is on its way.
+        assert!(waiting_to_send(&mine(PostStatus::Pending), true));
+        assert!(!waiting_to_send(&mine(PostStatus::Pending), false));
+        assert!(waiting_to_send(&mine(PostStatus::Failed), false));
+        assert!(!waiting_to_send(&mine(PostStatus::Sent), true));
+        let theirs = Post {
+            status: PostStatus::Pending,
+            ..post("p", "Today")
+        };
+        assert!(!waiting_to_send(&theirs, true));
+    }
+
+    /// #195: a message queued while offline is edited in place, unmarked,
+    /// or discarded, before it sends.
+    #[gpui_kit::test]
+    fn a_queued_post_can_be_edited_or_discarded(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let queued = Post {
+            mine: true,
+            status: PostStatus::Pending,
+            body: "Pushing the fix now.".into(),
+            ..post("me:1", "Today")
+        };
+        let model = ChannelModel {
+            purpose: None,
+            offline: true,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![post("1", "Today"), queued],
+            first_unread: None,
+        };
+        let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if matches!(
+                    event,
+                    ChannelEvent::SaveEdit { .. }
+                        | ChannelEvent::Discard(_)
+                        | ChannelEvent::Delete(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let body = |view: &ChannelView| {
+            view.model
+                .as_ref()
+                .and_then(|model| model.posts.iter().find(|post| post.id == "me:1"))
+                .map(|post| (post.body.to_string(), post.edited))
+        };
+
+        // Online, it is on its way and cannot be edited.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_away(false, cx);
+                view.start_edit("me:1".into(), window, cx);
+                assert!(view.editing.is_none());
+            })
+        });
+
+        // Offline, it waits: the edit changes the text, not "(edited)".
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_away(true, cx);
+                view.start_edit("me:1".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Pushing the fix tonight.".into(), window, cx);
+                assert_eq!(
+                    body(view),
+                    Some(("Pushing the fix tonight.".to_owned(), false))
+                );
+            })
+        });
+
+        // Discard asks first, then the row goes and sync drops the send.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.ask_delete("me:1".into(), window, cx);
+                assert_eq!(view.deleting.as_deref(), Some("me:1"));
+                let id = view.deleting.take().unwrap();
+                view.delete_post(id, window, cx);
+                assert_eq!(body(view), None);
+            })
+        });
+        assert_eq!(
+            *events.borrow(),
+            [
+                ChannelEvent::SaveEdit {
+                    post: "me:1".into(),
+                    text: "Pushing the fix tonight.".into(),
+                },
+                ChannelEvent::Discard("me:1".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn rows_interleave_day_and_new_message_dividers() {
         let channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -3731,6 +4510,90 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_post_changes_only_its_rows() {
+        let mut channel = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![
+                post("1", "Yesterday"),
+                post("2", "Today"),
+                post("3", "Today"),
+                post("4", "Today"),
+            ],
+            first_unread: Some(2),
+        };
+        let before = channel.row_keys(&channel.rows());
+        // The post above the New messages line goes: one row, and the
+        // marker stays on post 3.
+        channel.posts.remove(1);
+        channel.first_unread = Some(1);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (4..5, 0));
+        // The only post of a day takes its divider with it.
+        let before = after;
+        channel.posts.remove(0);
+        channel.first_unread = Some(0);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (1..3, 0));
+    }
+
+    #[test]
+    fn system_posts_get_their_own_rows_and_no_replies() {
+        let system = |id: &str| Post {
+            kind: PostKind::System { activity: true },
+            author: SharedString::default(),
+            ..post(id, "Today")
+        };
+        let channel = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![post("1", "Today"), system("2")],
+            first_unread: None,
+        };
+        assert_eq!(
+            channel.rows(),
+            vec![
+                Row::History,
+                Row::Day("Today".into()),
+                Row::Post(0),
+                Row::System(1),
+                Row::Newer,
+            ]
+        );
+        // Shift+Up replies to the newest message, not the join under it.
+        assert_eq!(
+            channel.last_message().map(|post| post.id.as_ref()),
+            Some("1")
+        );
+    }
+
+    #[test]
     fn formatting_shortcuts_follow_mattermost_and_slack() {
         fn wrap(keys: &'static str) -> Option<(&'static str, &'static str)> {
             format_shortcut(&gpui_kit::Keystroke::parse(keys).unwrap())
@@ -3749,6 +4612,7 @@ mod tests {
     #[test]
     fn prepending_history_keeps_the_unread_marker_and_skips_known_posts() {
         let mut channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -3777,5 +4641,52 @@ mod tests {
         assert_eq!(channel.first_unread, Some(3));
         assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
         assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
+    }
+
+    #[gpui_kit::test]
+    fn enter_follows_the_send_key_as_the_text_changes(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let (composer, cx) =
+            cx.add_window_view(|window, cx| super::ComposerState::new(4, window, cx));
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|window, cx| {
+            let sent = sent.clone();
+            cx.subscribe(&composer, move |_, event: &super::ComposerEvent, _| {
+                if let super::ComposerEvent::Submit(text) = event {
+                    sent.borrow_mut().push(text.to_string());
+                }
+            })
+            .detach();
+            let input = composer.read(cx).input().clone();
+            let focus = input.read(cx).focus_handle(cx);
+            focus.focus(window, cx);
+        });
+        let mut type_then_enter = |text: &str, send_on: super::SendKey| {
+            cx.update(|window, cx| {
+                composer.update(cx, |composer, cx| composer.set_value(text, window, cx));
+                super::follow_send_key(&composer, send_on, cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.simulate_keystrokes("enter");
+            sent.borrow_mut().pop()
+        };
+        assert_eq!(
+            type_then_enter("hi", super::SendKey::Enter).as_deref(),
+            Some("hi")
+        );
+        assert_eq!(type_then_enter("hi", super::SendKey::ModEnter), None);
+        assert_eq!(
+            type_then_enter("```rust", super::SendKey::CodeBlocks),
+            None,
+            "Enter is a new line in an open code block"
+        );
+        assert_eq!(
+            type_then_enter("```\nfn x() {}\n```", super::SendKey::CodeBlocks).as_deref(),
+            Some("```\nfn x() {}\n```")
+        );
     }
 }
