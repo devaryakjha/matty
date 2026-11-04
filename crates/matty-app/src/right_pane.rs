@@ -1057,7 +1057,7 @@ impl RightPaneView {
         let place: SharedString = thread
             .map(|thread| format!("#{}", thread.channel_name).into())
             .unwrap_or_else(|| "the channel".into());
-        let popup = delete_popup("thread.discard", unsent, &place, cx);
+        let popup = delete_popup("thread.discard", unsent, &place, 0, cx);
         let view = cx.entity().downgrade();
         alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
             view.update(cx, |this, cx| {

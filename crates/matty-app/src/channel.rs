@@ -283,10 +283,25 @@ pub(crate) fn post_editor(
 /// "Delete this message?", or "Discard this message?" for one the server
 /// never got (#195), naming `place` it is removed from. `prefix` scopes
 /// the ids.
+/// What deleting a sent post does: gone for everyone in `place`, and a
+/// root takes its `replies` with it, as on the server (#118).
+fn delete_description(place: &str, replies: usize) -> String {
+    match replies {
+        0 => format!("It is removed for everyone in {place}. This cannot be undone."),
+        1 => format!(
+            "It is removed for everyone in {place}, along with its reply. This cannot be undone."
+        ),
+        n => format!(
+            "It is removed for everyone in {place}, along with its {n} replies. This cannot be undone."
+        ),
+    }
+}
+
 pub(crate) fn delete_popup(
     prefix: &str,
     unsent: bool,
     place: &str,
+    replies: usize,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx).clone();
@@ -302,7 +317,7 @@ pub(crate) fn delete_popup(
         (
             "Delete message",
             "Delete this message?",
-            format!("It is removed for everyone in {place}. This cannot be undone.").into(),
+            delete_description(place, replies).into(),
             "Delete",
         )
     };
@@ -2889,7 +2904,21 @@ impl ChannelView {
                     .any(|post| &post.id == id && post.status != PostStatus::Sent)
             })
         });
-        let popup = delete_popup("post.delete", unsent, &channel, cx);
+        let replies = self
+            .deleting
+            .as_ref()
+            .and_then(|id| {
+                self.model
+                    .as_ref()?
+                    .posts
+                    .iter()
+                    .find(|post| &post.id == id)?
+                    .replies
+                    .as_ref()
+                    .map(|summary| summary.count)
+            })
+            .unwrap_or(0);
+        let popup = delete_popup("post.delete", unsent, &channel, replies, cx);
         let view = cx.entity().downgrade();
         alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
             view.update(cx, |this, cx| {
@@ -4794,6 +4823,19 @@ mod tests {
             ]
         );
         assert!(values("ada").is_empty());
+    }
+
+    #[test]
+    fn deleting_a_root_names_the_replies_it_takes() {
+        assert_eq!(
+            delete_description("#town", 0),
+            "It is removed for everyone in #town. This cannot be undone."
+        );
+        assert_eq!(
+            delete_description("#town", 1),
+            "It is removed for everyone in #town, along with its reply. This cannot be undone."
+        );
+        assert!(delete_description("#town", 3).contains("along with its 3 replies"));
     }
 
     #[test]
