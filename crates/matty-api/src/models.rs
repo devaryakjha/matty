@@ -34,7 +34,9 @@ pub struct User {
     /// Job title, when the user set one.
     pub position: String,
     /// `useAutomaticTimezone` (`"true"` or `"false"`), `automaticTimezone`
-    /// and `manualTimezone`, each an IANA zone name or empty.
+    /// and `manualTimezone`, each an IANA zone name or empty. Some
+    /// endpoints send `null`.
+    #[serde(deserialize_with = "null_as_default")]
     pub timezone: std::collections::HashMap<String, String>,
     /// Notification preferences such as `desktop` and `mention_keys`;
     /// the server sends them only for the signed-in user.
