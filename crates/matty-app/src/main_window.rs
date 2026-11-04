@@ -37,6 +37,7 @@ use crate::threads::{ThreadsEvent, ThreadsModel, ThreadsView};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
+    drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
     kbd::{Kbd, format_shortcut},
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
@@ -76,6 +77,9 @@ fn event_url(event: &LoginEvent) -> String {
 
 /// The channel view's minimum width beside the sidebar.
 const CONTENT_MIN: f32 = 260.;
+/// Below this window width the right pane overlays the channel as a drawer
+/// instead of splitting it (PLAN §4.1 narrow windows).
+const NARROW_RIGHT_PANE: f32 = 900.;
 /// The width of gpuicn's Resizable handle, counted when turning the
 /// persisted right-pane width into the channel width the split wants.
 const SPLIT_HANDLE: f32 = 8.;
@@ -116,6 +120,12 @@ pub struct MainWindow {
     rail: Entity<RailView>,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
+    /// In a narrow window the right pane is this drawer over the channel;
+    /// `right_drawer_shown` says whether the handle was opened for the
+    /// current `right_pane_open`, so a dismissal from the drawer (Escape,
+    /// the backdrop) closes the pane too.
+    right_drawer: DrawerHandle,
+    right_drawer_shown: bool,
     /// The Threads view stands in for the channel while the sidebar's
     /// Threads row is chosen.
     threads: Entity<ThreadsView>,
@@ -600,6 +610,8 @@ impl MainWindow {
             joined: Vec::new(),
             rail,
             right_pane_open: false,
+            right_drawer: DrawerHandle::new(false),
+            right_drawer_shown: false,
             threads,
             toasts,
             threads_open: false,
@@ -1728,7 +1740,7 @@ impl MainWindow {
         if self.drafts_open {
             return self.drafts.clone().into_any_element();
         }
-        if !self.right_pane_open {
+        if !self.right_pane_open || Self::narrow_right_pane(window) {
             return self.channel.clone().into_any_element();
         }
         let settings = self.settings.read(cx).get().clone();
@@ -1758,6 +1770,52 @@ impl MainWindow {
                 });
             })
             .into_any_element()
+    }
+
+    /// Whether the window is too narrow to split the channel and the right
+    /// pane side by side.
+    fn narrow_right_pane(window: &Window) -> bool {
+        f32::from(window.viewport_size().width) < NARROW_RIGHT_PANE
+    }
+
+    /// Keeps the right-pane drawer in step with `right_pane_open` in a
+    /// narrow window, and lets a dismissal from the drawer close the pane.
+    fn sync_right_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.right_pane_open
+            && Self::narrow_right_pane(window)
+            && self.login.is_none()
+            && !self.threads_open
+            && !self.drafts_open;
+        if wanted && !self.right_drawer_shown {
+            self.right_drawer.open(window, cx);
+            self.right_drawer_shown = true;
+        } else if wanted && !self.right_drawer.is_open() {
+            self.right_pane_open = false;
+            self.right_drawer_shown = false;
+        } else if !wanted && self.right_drawer_shown {
+            self.right_drawer.close(window, cx);
+            self.right_drawer_shown = false;
+        }
+    }
+
+    /// The right pane as a drawer from the right edge, mounted always and
+    /// shown only in a narrow window (PLAN §4.1).
+    fn right_drawer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = f32::from(window.viewport_size().width);
+        let width = self
+            .settings
+            .read(cx)
+            .get()
+            .right_pane_width
+            .min(viewport - CONTENT_MIN / 2.)
+            .max(RIGHT_PANE_MIN.min(viewport * 0.85));
+        Drawer::new("main.right-drawer", &self.right_drawer)
+            .direction(DrawerSide::Right)
+            .content(
+                DrawerContent::new("main.right-drawer.panel", "Right pane")
+                    .w(px(width))
+                    .child(self.right_pane.clone()),
+            )
     }
 
     fn remember_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2440,6 +2498,7 @@ impl Render for MainWindow {
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
+        self.sync_right_drawer(window, cx);
         let content = self.content(window, cx);
         let frame = if self.sidebar_visible {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
@@ -2564,6 +2623,7 @@ impl Render for MainWindow {
                     )
                     .into_any_element(),
             })
+            .child(self.right_drawer(window, cx))
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
             .child(self.browse(window, cx))

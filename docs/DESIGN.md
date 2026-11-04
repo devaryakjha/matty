@@ -459,6 +459,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   "url" selected so typing replaces it. They work in the channel, thread
   and edit composers and are listed in the shortcut sheet; Cmd/Ctrl+K alone
   stays the quick switcher (`design-48`).
+- **Narrow windows, right pane** (PLAN §4.1): below 900px the right pane
+  no longer splits the channel; it opens as a gpuicn drawer from the right
+  edge at its saved width over the channel, with the usual scrim. Escape,
+  the backdrop and the pane's own close button all close it, and widening
+  the window past 900px turns it back into the split with nothing lost
+  (`design-49`).
 
 ## 5. Components
 
