@@ -92,6 +92,12 @@ pub fn login() -> Option<LoginModel> {
     })
 }
 
+/// `MATTY_PREVIEW=thumbnails-loading` shows Lena's images before their
+/// thumbnails arrive (#105).
+fn thumbnails_arrived() -> bool {
+    std::env::var("MATTY_PREVIEW").as_deref() != Ok("thumbnails-loading")
+}
+
 /// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
 pub fn connection() -> crate::main_window::ConnectionState {
     use crate::main_window::ConnectionState;
@@ -450,9 +456,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup".into(),
                 name: "sidebar-mockup.png".into(),
                 size: 48_312,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },
@@ -460,9 +468,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup-dark".into(),
                 name: "sidebar-mockup-dark.png".into(),
                 size: 51_904,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup-dark.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup-dark.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },

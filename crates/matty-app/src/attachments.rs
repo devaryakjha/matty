@@ -383,10 +383,37 @@ impl PostFile {
             .and_then(|source| thumbnail(&self.name, source))
     }
 
+    /// How the file shows under its post: an image thumbnail, an image
+    /// whose thumbnail has not arrived yet (#105), or a file card.
+    pub fn shown_as(&self) -> Shown {
+        match self.image() {
+            Some(image) => Shown::Image(image),
+            None if self.preview.is_none() && is_image(&self.name) => Shown::Loading,
+            None => Shown::Card,
+        }
+    }
+
     /// "PDF · 2.4 MB".
     pub fn meta(&self) -> SharedString {
         format!("{} · {}", kind(&self.name), format_size(self.size)).into()
     }
+}
+
+/// How a post's file shows; see [`PostFile::shown_as`].
+#[derive(Clone)]
+pub enum Shown {
+    Image(ImageSource),
+    /// An image whose thumbnail sync has not fetched yet: a tile of the
+    /// image's size holds its place, so the transcript does not jump when
+    /// it arrives.
+    Loading,
+    Card,
+}
+
+/// A source that is still loading: the attachment tile shows its muted
+/// fill until the post's thumbnail replaces it.
+fn loading_image() -> ImageSource {
+    ImageSource::Custom(Arc::new(|_, _| None))
 }
 
 type ImageHandler = dyn Fn(usize, &mut Window, &mut App);
@@ -406,11 +433,20 @@ pub fn post_files(
     let on_file: Rc<FileHandler> = Rc::new(on_file);
     let mut images = Vec::new();
     let mut cards = Vec::new();
+    let mut loaded = 0;
     for file in files {
         let id = ElementId::Name(format!("{prefix}.file.{}", file.id).into());
-        match file.image() {
-            Some(image) => {
-                let index = images.len();
+        match file.shown_as() {
+            // Not in the lightbox until its thumbnail arrives, so it takes
+            // no lightbox index and opens nothing.
+            Shown::Loading => images.push(
+                Attachment::new(id, file.name.clone())
+                    .image(loading_image())
+                    .dimensions(file.width, file.height),
+            ),
+            Shown::Image(image) => {
+                let index = loaded;
+                loaded += 1;
                 let open = on_image.clone();
                 images.push(
                     Attachment::new(id, file.name.clone())
@@ -419,7 +455,7 @@ pub fn post_files(
                         .on_click(move |_, window, cx| open(index, window, cx)),
                 );
             }
-            None => {
+            Shown::Card => {
                 let file_id = file.id.clone();
                 let open = on_file.clone();
                 cards.push(
@@ -644,6 +680,88 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type Seen = std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>;
+
+    /// A post's files in an 800px column, recording their laid-out bounds.
+    struct FilesView {
+        files: Vec<PostFile>,
+        seen: Seen,
+    }
+
+    impl gpui_kit::Render for FilesView {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            let seen = self.seen.clone();
+            div()
+                .w(gpui_kit::px(800.))
+                .on_children_prepainted(move |children, _, _| seen.set(children.first().copied()))
+                .child(post_files(
+                    "test",
+                    &self.files,
+                    |_, _, _| {},
+                    |_, _, _| {},
+                    cx,
+                ))
+        }
+    }
+
+    /// The laid-out size of a post's files.
+    fn files_size(
+        files: Vec<PostFile>,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> gpui_kit::Size<gpui_kit::Pixels> {
+        let seen = Seen::default();
+        let recorded = seen.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| FilesView {
+            files,
+            seen: recorded,
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        seen.get().expect("the files were laid out").size
+    }
+
+    #[gpui_kit::test]
+    fn an_image_holds_its_size_until_its_thumbnail_arrives(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let file = |preview: Option<UploadSource>, width, height| PostFile {
+            id: "f1".into(),
+            name: "mockup.png".into(),
+            size: 120_000,
+            preview,
+            width,
+            height,
+        };
+        // The thumbnail is still on its way, then it lands.
+        let waiting = files_size(vec![file(None, 1200, 800)], cx);
+        let arrived = files_size(
+            vec![file(Some(UploadSource::Image(png(&[0; 8]))), 1200, 800)],
+            cx,
+        );
+        assert_eq!(waiting, arrived, "the transcript does not jump");
+        assert!(waiting.height > gpui_kit::px(100.), "{waiting:?}");
+        // Without a size from the server, a fixed tile holds the place.
+        let unsized_waiting = files_size(vec![file(None, 0, 0)], cx);
+        let unsized_arrived = files_size(
+            vec![file(Some(UploadSource::Image(png(&[0; 8]))), 0, 0)],
+            cx,
+        );
+        assert_eq!(unsized_waiting, unsized_arrived);
+        // A file that is not an image stays a card.
+        let pdf = PostFile {
+            name: "plan.pdf".into(),
+            ..file(None, 0, 0)
+        };
+        assert!(matches!(pdf.shown_as(), Shown::Card));
+        assert!(matches!(file(None, 0, 0).shown_as(), Shown::Loading));
+    }
 
     #[test]
     fn sizes_read_like_a_finder_window() {
