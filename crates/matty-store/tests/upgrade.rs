@@ -71,6 +71,14 @@ fn every_fixture_migrates_to_the_latest_version() {
         assert_eq!(count(&store, "media"), media, "media in fixture v{version}");
 
         let conn = store.conn();
+        // Files attached offline are kept from v4; older rows have none.
+        let queued = matty_store::outbox::get(conn, "pending1").unwrap().unwrap();
+        let local: &[&str] = if version >= 4 {
+            &["/home/me/notes.txt"]
+        } else {
+            &[]
+        };
+        assert_eq!(queued.local_files, local, "fixture v{version}");
         let window = posts::posts_window(conn, "town", Window::Latest, 10, true).unwrap();
         let ids: Vec<&str> = window.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["p1", "p2", "p5"], "fixture v{version}");

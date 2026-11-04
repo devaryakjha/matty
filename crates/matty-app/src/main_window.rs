@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
-    SettingsStore, WindowGeometry, ZOOM_STEP,
+    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, RemoteImages, SIDEBAR_MAX, SIDEBAR_MIN,
+    SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -302,9 +302,17 @@ impl MainWindow {
             |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
                 let names = store.read(cx).get().name_format;
+                let ask_images = store.read(cx).get().load_remote_images == RemoteImages::Ask;
                 if let Some(live) = this.live.as_mut() {
                     let update = live.set_names(names);
                     this.apply_update(update, window, cx);
+                }
+                if let Some(live) = this.live.as_mut() {
+                    let update = live.set_ask_remote_images(ask_images);
+                    this.apply_update(update, window, cx);
+                } else if crate::preview::enabled() {
+                    cx.global::<crate::remote_images::RemoteImages>()
+                        .set_ask_first(ask_images);
                 }
                 cx.notify();
             },
@@ -322,6 +330,15 @@ impl MainWindow {
         .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        if crate::preview::enabled() {
+            // Nothing to fetch in preview: its cards bring their images,
+            // and "Ask" shows the placeholders (#159).
+            let ask = settings.read(cx).get().load_remote_images == RemoteImages::Ask;
+            cx.set_global(crate::remote_images::RemoteImages::new(
+                std::rc::Rc::new(|_: &str| {}),
+                ask,
+            ));
+        }
         let model = if crate::preview::enabled() {
             crate::preview::sidebar()
         } else {
@@ -372,6 +389,7 @@ impl MainWindow {
         });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
+            crate::preview::share_pictures(cx);
             cx.set_global(crate::preview::downloads());
         }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
@@ -562,13 +580,14 @@ impl MainWindow {
                     unfurl,
                 } => {
                     if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
-                        let file_ids = live.take_file_ids(files);
+                        let (file_ids, local_files) = live.take_files(files);
                         live.send(matty_sync::Command::SendPost {
                             pending_post_id: String::new(),
                             channel_id: channel.to_string(),
                             root_id: String::new(),
                             message: text.to_string(),
                             file_ids,
+                            local_files,
                             props: crate::embeds::send_props(*unfurl),
                         });
                     }
@@ -1101,10 +1120,14 @@ impl MainWindow {
                 return;
             }
         };
-        cx.set_global(live.avatars());
+        live.share_pictures(cx);
+        cx.set_global(live.remote_images());
         let mut live = live;
         // Nothing is on screen yet, so the update has nothing to show.
         let _ = live.set_names(self.settings.read(cx).get().name_format);
+        let _ = live.set_ask_remote_images(
+            self.settings.read(cx).get().load_remote_images == RemoteImages::Ask,
+        );
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
@@ -1149,6 +1172,22 @@ impl MainWindow {
             return;
         };
         live.track_upload(&id, job.clone());
+        if live.is_offline() {
+            // Offline: the file waits here and goes with its post through
+            // the outbox, or uploads when the connection is back (#194).
+            match crate::attachments::keep_for_outbox(&id, &job.name, &job.source) {
+                Ok(path) => {
+                    live.queue_upload(&id, path);
+                    self.set_upload_queued(&id, window, cx);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not keep a file to upload later");
+                    let failed = crate::attachments::AttachmentStatus::Failed;
+                    self.set_upload_status(&id, failed, window, cx);
+                }
+            }
+            return;
+        }
         cx.spawn_in(window, async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move {
@@ -1203,6 +1242,17 @@ impl MainWindow {
             self.channel.update(cx, |view, cx| {
                 view.set_upload_status(id, status, window, cx)
             });
+        }
+    }
+
+    /// Tells the tray a file waits for the connection (#194).
+    fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id.starts_with(crate::right_pane::UPLOAD_PREFIX) {
+            self.right_pane
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
+        } else {
+            self.channel
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
         }
     }
 
@@ -1344,6 +1394,7 @@ impl MainWindow {
             root_id: String::new(),
             message: link,
             file_ids: Vec::new(),
+            local_files: Vec::new(),
             props: crate::embeds::send_props(true),
         });
         let name = self.channel_name(to, cx);
@@ -1726,6 +1777,13 @@ impl MainWindow {
         if let Some((id, status)) = update.upload {
             self.set_upload_status(&id, status, window, cx);
         }
+        for id in update.resume_uploads {
+            if let Some(job) = self.live.as_ref().and_then(|live| live.upload_job(&id)) {
+                let sending = crate::attachments::AttachmentStatus::Uploading(0.);
+                self.set_upload_status(&id, sending, window, cx);
+                self.start_upload(id, job, window, cx);
+            }
+        }
         if let Some(bytes) = update.max_file_size {
             self.channel
                 .update(cx, |view, _| view.set_max_file_size(bytes));
@@ -1828,6 +1886,7 @@ impl MainWindow {
         }
         if update.signed_out {
             cx.set_global(crate::avatars::Avatars::default());
+            cx.set_global(crate::remote_images::RemoteImages::default());
             cx.set_global(crate::composer_draft::DraftBook::default());
             self.live = None;
             self._live_task = None;
@@ -2702,13 +2761,14 @@ impl MainWindow {
                 if let Some(live) = &mut self.live
                     && let Some(channel_id) = live.thread_channel()
                 {
-                    let file_ids = live.take_file_ids(files);
+                    let (file_ids, local_files) = live.take_files(files);
                     live.send(matty_sync::Command::SendPost {
                         pending_post_id: String::new(),
                         channel_id,
                         root_id: root.to_string(),
                         message: text.to_string(),
                         file_ids,
+                        local_files,
                         props: crate::embeds::send_props(*unfurl),
                     });
                 }

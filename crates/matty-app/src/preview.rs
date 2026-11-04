@@ -132,7 +132,9 @@ pub fn queued() -> usize {
 pub fn teams() -> Vec<Team> {
     vec![
         Team::new("matty", "Matty"),
-        Team::new("design-guild", "Design Guild").mentions(3),
+        Team::new("design-guild", "Design Guild")
+            .mentions(3)
+            .icon(1),
         Team::new("open-source", "Open Source").unread(),
     ]
 }
@@ -320,6 +322,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     &["Sam Okafor", "Lena Fischer", "Jonas Weber"],
                 ),
                 reaction("🚀", 2, false, &["Sam Okafor", "Priya Nair"]),
+                reaction(
+                    ":shipit:",
+                    3,
+                    false,
+                    &["Lena Fischer", "Priya Nair", "Jonas Weber"],
+                ),
             ],
             replies: Some(ReplySummary {
                 count: 1,
@@ -336,7 +344,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "Sam Okafor",
                 "09:14",
                 "Yesterday",
-                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there.",
+                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there. :shipit:",
             )
         },
         Post {
@@ -903,8 +911,6 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
     ]
 }
 
-/// What the composer tray shows after Attach: a thumbnail, a file still
-/// uploading and one that failed.
 /// The team's public channels for Browse: the sidebar's plus five more.
 pub fn directory() -> Vec<DirectoryChannel> {
     let joined: Vec<SharedString> = sidebar()
@@ -1022,6 +1028,8 @@ pub fn empty_channel(
     }
 }
 
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed; offline, all three queued.
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -1029,7 +1037,7 @@ pub fn uploads() -> Vec<Upload> {
     )
     .ready(48_312);
     mockup.name = "sidebar-mockup.png".into();
-    vec![
+    let uploads = vec![
         mockup,
         Upload {
             id: "u-notes".into(),
@@ -1037,6 +1045,7 @@ pub fn uploads() -> Vec<Upload> {
             size: 2_516_582,
             source: UploadSource::Path("release-notes.pdf".into()),
             status: AttachmentStatus::Uploading(0.6),
+            queued: false,
         },
         Upload {
             id: "u-log".into(),
@@ -1044,8 +1053,15 @@ pub fn uploads() -> Vec<Upload> {
             size: 918_000,
             source: UploadSource::Path("matty-2026-11-03.log".into()),
             status: AttachmentStatus::Failed,
+            queued: false,
         },
-    ]
+    ];
+    // `MATTY_PREVIEW=offline`: each file waits for the connection (#194).
+    if connection() == crate::main_window::ConnectionState::Offline {
+        uploads.into_iter().map(Upload::queued).collect()
+    } else {
+        uploads
+    }
 }
 
 /// A screen recording over the default 100 MB limit, which the tray
@@ -1057,6 +1073,7 @@ pub fn oversize_upload() -> Upload {
         size: 251_658_240,
         source: UploadSource::Path("screen-recording.mov".into()),
         status: AttachmentStatus::Uploading(0.),
+        queued: false,
     }
 }
 
@@ -1134,6 +1151,35 @@ pub fn avatars() -> crate::avatars::Avatars {
         }
     }
     avatars
+}
+
+/// The fixtures' custom emoji (`:shipit:`) and team icon (Design Guild),
+/// as sync would hand them over (#153).
+pub fn share_pictures(cx: &mut gpui_kit::App) {
+    let custom = crate::emoji::CustomEmoji::default();
+    custom.set(&[matty_api::models::Emoji {
+        id: "e-shipit".into(),
+        name: "shipit".into(),
+        update_at: 1,
+        ..Default::default()
+    }]);
+    let emoji = crate::avatars::EmojiImages::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/emoji-shipit.png"),
+        "image/png",
+    ) {
+        emoji.landed("e-shipit", 1, Some(image));
+    }
+    let icons = crate::avatars::TeamIcons::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/team-design-guild.png"),
+        "image/png",
+    ) {
+        icons.landed("design-guild", 1, Some(image));
+    }
+    cx.set_global(custom);
+    cx.set_global(emoji);
+    cx.set_global(icons);
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
