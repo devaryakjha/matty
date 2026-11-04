@@ -532,6 +532,29 @@ impl RightPaneView {
         cx.notify();
     }
 
+    /// Sync's latest of the open thread. The same thread keeps its scroll
+    /// and its composer; new replies join the end of the list.
+    pub fn set_thread(&mut self, thread: ThreadModel, cx: &mut Context<Self>) {
+        let same = matches!(
+            &self.content,
+            Some(RightPaneContent::Thread(shown)) if shown.root.id == thread.root.id
+        );
+        let before = self.thread_rows();
+        if !same || thread.replies.len() + 2 < before {
+            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+            return;
+        }
+        self.content = Some(RightPaneContent::Thread(thread));
+        let added = self.thread_rows() - before;
+        self.list.update(cx, |list, cx| {
+            if added > 0 {
+                list.append(added, cx);
+            }
+            list.remeasure(cx);
+        });
+        cx.notify();
+    }
+
     /// Rows of the thread transcript: the root, the divider, then replies.
     fn thread_rows(&self) -> usize {
         match &self.content {

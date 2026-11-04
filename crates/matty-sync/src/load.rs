@@ -61,6 +61,8 @@ pub(crate) enum Loaded {
     Done,
     /// An opened channel's posts around the first unread.
     Posts { channel_id: String, posts: PostList },
+    /// An opened thread's root and replies from the server.
+    Thread { root_id: String, posts: PostList },
     /// An opened channel's counts.
     Stats(ChannelStats),
     /// A team's public channels and their member counts.
