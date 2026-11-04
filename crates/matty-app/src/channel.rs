@@ -822,6 +822,8 @@ pub enum ChannelEvent {
     OpenInfo,
     /// The user starred or unstarred the channel; the header shows it.
     ToggleFavorite(bool),
+    /// The user chose View profile on someone's profile card (#212).
+    ViewProfile(UserProfile),
     /// The user chose Message on someone's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -3201,7 +3203,9 @@ impl ChannelView {
         .content(move |_, _, cx| {
             let (message_view, mention_view) = (view.clone(), view.clone());
             let (message_profile, mention_profile) = (profile.clone(), profile.clone());
-            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            let (close_message, close_mention, close_view) =
+                (cx.entity(), cx.entity(), cx.entity());
+            let (view_view, view_profile) = (view.clone(), profile.clone());
             profile_card(
                 &card_id,
                 &profile,
@@ -3227,6 +3231,11 @@ impl ChannelView {
                             })
                             .ok();
                     }),
+                    on_view: Some(Box::new(move |window, cx| {
+                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = ChannelEvent::ViewProfile(view_profile.clone());
+                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })),
                 },
                 cx,
             )

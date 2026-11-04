@@ -485,6 +485,9 @@ impl MainWindow {
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
+                ChannelEvent::ViewProfile(profile) => {
+                    this.show_listing(RightPaneContent::Profile(profile.clone()), cx)
+                }
                 ChannelEvent::Send {
                     text,
                     files,
@@ -2269,6 +2272,9 @@ impl MainWindow {
             }
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
+            }
+            RightPaneEvent::ViewProfile(profile) => {
+                self.show_listing(RightPaneContent::Profile(profile.clone()), cx)
             }
             RightPaneEvent::Mention(username) => {
                 let text = format!("@{username} ");
