@@ -12,6 +12,8 @@ mod client;
 mod endpoints;
 pub(crate) mod error;
 pub mod models;
+pub mod rt;
+#[cfg(not(target_family = "wasm"))]
 mod tls;
 pub mod ws;
 

@@ -17,8 +17,8 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 
 /// The local clock in ms, for `touched_at`.
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |since| {
             i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
         })

@@ -22,7 +22,6 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tracing-appender.workspace = true
 regex.workspace = true
 emojis.workspace = true
 matty-api.workspace = true
@@ -32,7 +31,17 @@ matty-notify.workspace = true
 async-channel.workspace = true
 url.workspace = true
 jiff.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tracing-appender.workspace = true
 keyring.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Storage", "Window", "console"] }
+# The browser's clock and time zone, and a bundled zone database, since the
+# web has no /usr/share/zoneinfo.
+jiff = { workspace = true, features = ["js", "tzdb-bundle-always"] }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

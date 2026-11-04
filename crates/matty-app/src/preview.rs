@@ -8,16 +8,31 @@
 use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
 
+static WEB_VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the preview value where there is no environment (the web build reads
+/// it from the page's `?preview=` query).
+pub fn set(value: String) {
+    let _ = WEB_VALUE.set(value);
+}
+
+fn value() -> Option<String> {
+    WEB_VALUE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("MATTY_PREVIEW").ok())
+}
+
 /// Whether the preview fixtures are on for this process.
 pub fn enabled() -> bool {
-    std::env::var_os("MATTY_PREVIEW").is_some_and(|value| !value.is_empty() && value != "0")
+    value().is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
 pub fn login() -> Option<LoginModel> {
-    let value = std::env::var("MATTY_PREVIEW").ok()?;
+    let value = value()?;
     let error = match value.as_str() {
         "login" => None,
         "login-error" => Some("That password is not right. Check it and try again.".into()),
@@ -40,7 +55,7 @@ pub fn login() -> Option<LoginModel> {
 /// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
 pub fn connection() -> crate::main_window::ConnectionState {
     use crate::main_window::ConnectionState;
-    match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+    match value().as_deref() {
         Some("offline") => ConnectionState::Offline,
         Some("reconnecting") => ConnectionState::Reconnecting { attempt: 3 },
         _ => ConnectionState::Online,

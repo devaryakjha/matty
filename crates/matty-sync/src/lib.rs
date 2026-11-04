@@ -20,6 +20,8 @@ pub mod io;
 mod load;
 mod outbox;
 mod typing;
+#[cfg(target_family = "wasm")]
+mod web;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{

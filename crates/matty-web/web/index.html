@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1" />
+    <title>Matty</title>
+    <meta name="description" content="Matty, an unofficial Mattermost client." />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #f4f5f7; }
+      @media (prefers-color-scheme: dark) { html, body { background: #111214; } }
+      canvas { display: block; width: 100%; height: 100%; outline: 0; touch-action: none; }
+      #loading { position: fixed; inset: 0; display: grid; place-items: center;
+        font: 14px/1.4 system-ui, sans-serif; color: #6b7280; }
+      #loading[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">Loading Matty…</div>
+    <script type="module">
+      import init from "./matty-web.js";
+      const loading = document.getElementById("loading");
+      if (!crossOriginIsolated) {
+        loading.textContent = "Matty needs a cross-origin isolated page (COOP and COEP headers).";
+      } else {
+        init({ module_or_path: "./matty-web_bg.wasm" })
+          .then(() => { loading.hidden = true; })
+          .catch((error) => { loading.textContent = "Matty could not start: " + error; });
+      }
+    </script>
+  </body>
+</html>

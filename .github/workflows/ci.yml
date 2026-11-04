@@ -44,6 +44,37 @@ jobs:
           path: target/release/matty
           if-no-files-found: error
 
+  web:
+    # The browser build (docs/web.md): it compiles, links, fits Cloudflare's
+    # 25 MiB file limit, and the result is kept for a manual deploy.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-17
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+          cache-directories: target/web
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          curl -sSfL "https://github.com/rustwasm/wasm-bindgen/releases/download/$version/wasm-bindgen-$version-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local/bin "wasm-bindgen-$version-x86_64-unknown-linux-musl/wasm-bindgen"
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+            | tar xz --strip-components=2 -C /usr/local/bin binaryen-version_132/bin/wasm-opt
+      - run: scripts/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-web
+          path: crates/matty-web/dist
+          if-no-files-found: error
+
   deny:
     runs-on: ubuntu-latest
     steps:

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use matty_api::capabilities::CollapsedThreads;
 use matty_api::models::{Draft, PostChange, Preference, Reaction};
@@ -849,11 +849,11 @@ impl Engine {
                     dirty
                         .direct
                         .push(ChangeSet::Connection(Connection::Loading));
-                    let load = tokio::spawn(load::run(client.clone(), self.loaded.clone()));
+                    let load = matty_api::rt::spawn(load::run(client.clone(), self.loaded.clone()));
                     // Events from now on queue behind the load's results.
                     let (socket, mut signals) = WsClient::connect(client.clone());
                     let forward = self.loaded.clone();
-                    tokio::spawn(async move {
+                    matty_api::rt::spawn(async move {
                         while let Some(signal) = signals.recv().await {
                             if forward.send(Loaded::Ws(signal)).is_err() {
                                 break;
@@ -887,7 +887,7 @@ impl Engine {
                         let client = old.client.clone();
                         drop(old);
                         let loaded = self.loaded.clone();
-                        tokio::spawn(async move {
+                        matty_api::rt::spawn(async move {
                             if let Err(error) = client.logout().await {
                                 tracing::warn!(%error, "the server did not end the session");
                             }
@@ -1136,7 +1136,7 @@ impl Engine {
                     if let Some(connection) = connection
                         && self.typing.allow(&channel_id, &parent_id, Instant::now())
                     {
-                        tokio::spawn(async move {
+                        matty_api::rt::spawn(async move {
                             if let Err(error) =
                                 connection.user_typing(&channel_id, &parent_id).await
                             {
@@ -1361,7 +1361,7 @@ impl Engine {
         dirty.outbox.insert(outgoing.channel_id.clone());
         self.sending
             .insert(channel_id.to_owned(), outgoing.pending_post_id.clone());
-        tokio::spawn(outbox::send(
+        matty_api::rt::spawn(outbox::send(
             session.client.clone(),
             outgoing,
             self.loaded.clone(),
@@ -1395,7 +1395,7 @@ impl Engine {
             });
             return;
         };
-        tokio::spawn(crate::download::download(
+        matty_api::rt::spawn(crate::download::download(
             session.client.clone(),
             file_id,
             folder,
@@ -1458,7 +1458,7 @@ impl Engine {
         history.loading = true;
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let page_of = |query: matty_api::PostsQuery| matty_api::PostsQuery {
                 collapsed_threads: roots_only,
                 ..query
@@ -1551,7 +1551,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let fetched = match size {
                 ImageSize::Thumbnail => client.file_thumbnail(&file_id, None).await,
                 ImageSize::Preview => client.file_preview(&file_id, None).await,
@@ -1595,7 +1595,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let graph = match client.opengraph(&url).await {
                 Ok(graph) if !graph.title.is_empty() || !graph.description.is_empty() => {
                     Some(graph)
@@ -1622,7 +1622,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let posts = match client
                 .post_thread(&root_id, &matty_api::ThreadQuery::all())
                 .await
@@ -1650,7 +1650,7 @@ impl Engine {
         let client = session.client.clone();
         let user_id = session.user_id.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let query = matty_api::ThreadsQuery {
                 since,
                 deleted: since.is_some(),
@@ -1697,7 +1697,7 @@ impl Engine {
             .is_some_and(|capabilities| capabilities.image_proxy);
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let fetched = if proxy {
                 client.proxied_image(&url).await
             } else {
@@ -1732,7 +1732,7 @@ impl Engine {
         if let Some(old) = self.uploads.remove(&upload_id) {
             old.abort();
         }
-        let task = tokio::spawn(outbox::upload(
+        let task = matty_api::rt::spawn(outbox::upload(
             session.client.clone(),
             upload,
             self.loaded.clone(),
@@ -1747,7 +1747,7 @@ impl Engine {
             dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
             return;
         };
-        tokio::spawn(commands::run(
+        matty_api::rt::spawn(commands::run(
             session.client.clone(),
             session.user_id.clone(),
             write,
@@ -1764,14 +1764,14 @@ impl Engine {
         if session.user_id.is_empty() || !session.fetched.insert(channel_id.to_owned()) {
             return;
         }
-        tokio::spawn(load::open_channel(
+        matty_api::rt::spawn(load::open_channel(
             session.client.clone(),
             session.user_id.clone(),
             channel_id.to_owned(),
             session.collapsed_threads,
             self.loaded.clone(),
         ));
-        tokio::spawn(load::channel_stats(
+        matty_api::rt::spawn(load::channel_stats(
             session.client.clone(),
             channel_id.to_owned(),
             self.loaded.clone(),
@@ -1867,7 +1867,7 @@ impl Engine {
         match plan {
             Ok(plan) => {
                 session.resyncing = true;
-                tokio::spawn(load::resync(
+                matty_api::rt::spawn(load::resync(
                     session.client.clone(),
                     plan,
                     self.loaded.clone(),
@@ -1881,7 +1881,7 @@ impl Engine {
     /// the next initial load covers it.
     fn fetch(&self, what: Fetch) {
         if let Some(session) = &self.session {
-            tokio::spawn(load::fetch(
+            matty_api::rt::spawn(load::fetch(
                 session.client.clone(),
                 session.user_id.clone(),
                 what,
@@ -2404,8 +2404,8 @@ impl Engine {
                     (Some(outgoing), Some(channel_id)) if transient => {
                         let loaded = self.loaded.clone();
                         let wait = outbox::backoff(outgoing.attempts);
-                        tokio::spawn(async move {
-                            tokio::time::sleep(wait).await;
+                        matty_api::rt::spawn(async move {
+                            matty_api::rt::sleep(wait).await;
                             let _ = loaded.send(Loaded::Drain { channel_id });
                         });
                     }
@@ -2680,7 +2680,7 @@ impl Engine {
             self.asked_users.extend(missing.iter().cloned());
             let client = session.client.clone();
             let loaded = self.loaded.clone();
-            tokio::spawn(async move {
+            matty_api::rt::spawn(async move {
                 match client.users_by_ids(&missing).await {
                     Ok(users) => {
                         let _ = loaded.send(Loaded::Users(users));

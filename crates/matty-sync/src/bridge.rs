@@ -2,6 +2,7 @@
 
 use std::io;
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 use matty_store::Store;
@@ -11,6 +12,7 @@ use crate::change::ChangeSet;
 use crate::engine::{Command, Engine, Message};
 
 /// How long the runtime waits for its tasks when the engine stops.
+#[cfg(not(target_family = "wasm"))]
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// The app's side of the sync engine. Cheap to clone and usable from any
@@ -64,6 +66,23 @@ pub fn spawn_at(path: PathBuf, media: Option<PathBuf>) -> io::Result<SyncHandle>
     )
 }
 
+/// On the web the engine runs on the page's event loop: the browser has
+/// no threads to give it, and its fetch and WebSocket handles stay on the
+/// page anyway.
+#[cfg(target_family = "wasm")]
+fn start(
+    open: impl FnOnce() -> Store + 'static,
+    media: Option<matty_store::media::MediaCache>,
+) -> io::Result<SyncHandle> {
+    let (messages, inbox) = mpsc::unbounded_channel();
+    matty_api::rt::run_local(async move {
+        Engine::new(open()).with_media(media).run(inbox).await;
+        tracing::debug!("sync engine stopped");
+    });
+    Ok(SyncHandle { messages })
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn start(
     open: impl FnOnce() -> Store + Send + 'static,
     media: Option<matty_store::media::MediaCache>,
