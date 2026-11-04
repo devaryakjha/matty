@@ -274,6 +274,7 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
+                SwitcherEvent::Forward { post, channel } => this.forward(post, channel, cx),
             },
         )
         .detach();
@@ -668,6 +669,15 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
+                ChannelEvent::Forward(post) => {
+                    // After the menu has closed and handed focus back, so
+                    // the switcher's field keeps it.
+                    let post = post.clone();
+                    let switcher = this.switcher.clone();
+                    window.on_next_frame(move |window, cx| {
+                        switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                    });
+                }
             },
         )
         .detach();
@@ -1007,6 +1017,47 @@ impl MainWindow {
     }
 
     /// Puts a post's permalink on the clipboard and says so (#133).
+    /// Forwards a post from the open channel as a new post holding its
+    /// permalink, which the server and the webapp show as the quoted post.
+    fn forward(&mut self, post_id: &str, to: &SharedString, cx: &mut Context<Self>) {
+        let link = self.live.as_ref().and_then(|live| {
+            let from = self.selected_channel.as_ref()?;
+            live.permalink(from, post_id)
+        });
+        let (Some(live), Some(link)) = (&self.live, link) else {
+            self.push_error(
+                "Couldn't forward the message. Try again once you're connected.",
+                cx,
+            );
+            return;
+        };
+        live.send(matty_sync::Command::SendPost {
+            pending_post_id: String::new(),
+            channel_id: to.to_string(),
+            root_id: String::new(),
+            message: link,
+            file_ids: Vec::new(),
+            props: crate::embeds::send_props(true),
+        });
+        let name: SharedString = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| row.id == *to)
+            .map_or_else(|| "the channel".into(), |row| row.name.clone());
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "forward",
+                Notice::new(format!("Forwarded to {name}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
     /// Asks the server to remind the user of a post, and says when.
     fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
         let Some(live) = &self.live else {

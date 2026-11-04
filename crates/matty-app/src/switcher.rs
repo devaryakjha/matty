@@ -24,6 +24,11 @@ pub enum SwitcherEvent {
     Open(SharedString),
     /// The user chose "Search messages for …" with this query.
     Search(SharedString),
+    /// The user picked where to forward `post` (#213).
+    Forward {
+        post: SharedString,
+        channel: SharedString,
+    },
 }
 
 /// The value of the search row; the query follows it.
@@ -34,6 +39,8 @@ pub struct Switcher {
     command: Entity<CommandState>,
     /// The channel rows; the search row is added behind them per query.
     items: Vec<CommandItem>,
+    /// The post being forwarded, while the switcher picks its destination.
+    forwarding: Option<SharedString>,
     _subscription: Subscription,
 }
 
@@ -56,14 +63,19 @@ impl Switcher {
                 move |this, _, event, window, cx| match event {
                     CommandEvent::Confirm(value) => {
                         close.close(window, cx);
-                        match value.strip_prefix(SEARCH_PREFIX) {
-                            Some(query) => cx.emit(SwitcherEvent::Search(query.into())),
-                            None => cx.emit(SwitcherEvent::Open(value.clone())),
+                        match (this.forwarding.take(), value.strip_prefix(SEARCH_PREFIX)) {
+                            (Some(post), _) => cx.emit(SwitcherEvent::Forward {
+                                post,
+                                channel: value.clone(),
+                            }),
+                            (None, Some(query)) => cx.emit(SwitcherEvent::Search(query.into())),
+                            (None, None) => cx.emit(SwitcherEvent::Open(value.clone())),
                         }
                         this.reset(window, cx);
                     }
                     CommandEvent::Cancel => {
                         close.close(window, cx);
+                        this.forwarding = None;
                         this.reset(window, cx);
                     }
                     CommandEvent::Query(query) => this.offer_search(query.clone(), cx),
@@ -73,6 +85,7 @@ impl Switcher {
             handle,
             command,
             items: Self::items(model),
+            forwarding: None,
             _subscription: subscription,
         }
     }
@@ -81,7 +94,7 @@ impl Switcher {
     fn offer_search(&mut self, query: SharedString, cx: &mut Context<Self>) {
         let query = query.trim().to_string();
         let mut items = self.items.clone();
-        if !query.is_empty() {
+        if !query.is_empty() && self.forwarding.is_none() {
             items.push(
                 CommandItem::new(
                     format!("{SEARCH_PREFIX}{query}"),
@@ -114,9 +127,25 @@ impl Switcher {
         });
     }
 
+    /// Opens the switcher to pick where to forward `post`.
+    pub fn open_forward(
+        &mut self,
+        post: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.forwarding = Some(post);
+        self.command.update(cx, |state, cx| {
+            state.set_placeholder("Forward to a channel or person\u{2026}", window, cx)
+        });
+        self.open(window, cx);
+    }
+
     fn reset(&self, window: &mut Window, cx: &mut App) {
-        self.command
-            .update(cx, |state, cx| state.set_query("", window, cx));
+        self.command.update(cx, |state, cx| {
+            state.set_query("", window, cx);
+            state.set_placeholder("Jump to a channel or person\u{2026}", window, cx);
+        });
     }
 
     /// One row per sidebar channel, grouped as the sidebar groups them.

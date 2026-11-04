@@ -579,6 +579,8 @@ pub enum ChannelEvent {
     Discard(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
+    /// The user wants to forward `post` to another channel (#213).
+    Forward(SharedString),
     /// The user asked to be reminded of `post` (#213).
     Remind { post: SharedString, at: RemindAt },
     /// The user renamed the channel from its header menu; the view already
@@ -2254,6 +2256,12 @@ impl ChannelView {
                 Box::new(move |this, _, cx| this.toggle_follow(follow_id.clone(), cx)),
             ));
         }
+        let forward_id = id.clone();
+        items.push(act(
+            "forward",
+            "Forward\u{2026}".into(),
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::Forward(forward_id.clone()))),
+        ));
         items.push(MenuItem::submenu(
             gpui_kit::ElementId::Name("post.menu.remind".into()),
             "Remind me",
