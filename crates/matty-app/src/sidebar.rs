@@ -14,9 +14,10 @@ use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant, style_button},
-    collapsible::{collapsible, collapsible_trigger},
+    collapsible::collapsible_trigger,
     menu::{Menu, MenuItem, MenuState},
     sidebar::{Sidebar, SidebarItem, SidebarItemSize, sidebar_menu_action, sidebar_menu_skeleton},
+    sortable::{Sortable, SortableGroup, SortableMove, SortableRow, move_group},
     theme::{UiTheme, transition_value},
     toggle::{Toggle, ToggleSize},
 };
@@ -442,6 +443,16 @@ pub enum SidebarEvent {
         category_id: SharedString,
         channel_id: SharedString,
         up: bool,
+    },
+    /// A category dragged, or moved with Alt+Shift+Up/Down, to `index`;
+    /// the sidebar already shows it there.
+    PlaceCategory { id: SharedString, index: usize },
+    /// A row dragged, or moved with Alt+Shift+Up/Down, to `index` among
+    /// all of `category_id`'s rows; the sidebar already shows it there.
+    PlaceChannel {
+        channel_id: SharedString,
+        category_id: SharedString,
+        index: usize,
     },
 }
 
@@ -1044,11 +1055,19 @@ impl SidebarView {
                 Self::row_icon(row, &theme, &palette, cx).into_any_element()
             })
             .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
-            .on_activate(cx.listener(move |this, _, _, cx| {
-                this.model.selected = Some(id.clone());
-                cx.emit(SidebarEvent::Select(id.clone()));
-                cx.notify();
-            }));
+            .on_activate(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.model.selected = Some(id.clone());
+                    cx.emit(SidebarEvent::Select(id.clone()));
+                    // A click lands in the composer, as in Mattermost, so the
+                    // row keeps focus (and Alt+Shift+Up/Down moves it) only
+                    // when the list was reached from the keyboard.
+                    if !event.is_keyboard() {
+                        window.dispatch_action(Box::new(crate::actions::FocusComposer), cx);
+                    }
+                    cx.notify();
+                }),
+            );
         if !strong && !selected {
             item = item.text_color(theme.colors.muted_foreground);
         }
@@ -1205,7 +1224,9 @@ impl SidebarView {
             ))
     }
 
-    fn category(
+    /// A category's header: the collapsible trigger, which also opens the
+    /// category's menu and is the handle for dragging the category.
+    fn category_header(
         &self,
         category: &Category,
         window: &mut Window,
@@ -1222,7 +1243,7 @@ impl SidebarView {
             window,
             cx,
         );
-        let trigger = collapsible_trigger(element_id("sidebar.category", &category.id), open, cx)
+        collapsible_trigger(element_id("sidebar.category", &category.id), open, cx)
             .aria_label(category.name.clone())
             .w_full()
             .h(theme.space(6.))
@@ -1251,33 +1272,138 @@ impl SidebarView {
                         turn * std::f32::consts::FRAC_PI_2,
                     ))),
             )
-            .child(category.name.to_uppercase());
-        // Collapsed categories keep their unread rows visible, as Mattermost does.
-        let shown: Vec<_> = category
+            .child(category.name.to_uppercase())
+    }
+
+    /// The rows a category shows: all of them when open, and only unread
+    /// rows and the open channel when collapsed, as Mattermost does.
+    fn shown_rows<'a>(&self, category: &'a Category) -> Vec<&'a ChannelRow> {
+        category
             .rows
             .iter()
-            .filter(|row| open || row.unread || self.model.selected.as_ref() == Some(&row.id))
-            .map(|row| self.row(row, cx).into_any_element())
-            .collect();
-        let rows = div().flex().flex_col().gap(px(1.)).children(shown);
-        div()
-            .flex()
-            .flex_col()
-            .pb(theme.space(3.))
-            .child(trigger)
-            .child(if open {
-                collapsible(
-                    element_id("sidebar.category.body", &category.id),
-                    true,
-                    window,
-                    cx,
+            .filter(|row| {
+                !category.collapsed || row.unread || self.model.selected.as_ref() == Some(&row.id)
+            })
+            .collect()
+    }
+
+    /// The categories as one list whose rows and headers drag, or move
+    /// with Alt+Shift+Up and Down (#121).
+    fn sortable(&self, cx: &mut Context<Self>) -> Sortable {
+        let view = cx.entity();
+        let groups = self.model.categories.iter().map(|category| {
+            let header = {
+                let (view, category) = (view.clone(), category.clone());
+                move |window: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| {
+                        this.category_header(&category, window, cx)
+                            .into_any_element()
+                    })
+                }
+            };
+            SortableGroup::new(
+                element_id("sidebar.group", &category.id),
+                category.name.clone(),
+            )
+            .header(header)
+            .rows(self.shown_rows(category).into_iter().map(|row| {
+                let (view, row) = (view.clone(), row.clone());
+                SortableRow::new(
+                    element_id("sidebar.drag", &row.id),
+                    row.name.clone(),
+                    move |_: &mut Window, cx: &mut App| {
+                        // The 1px under each row keeps the static list's spacing.
+                        let row = view.update(cx, |this, cx| this.row(&row, cx));
+                        div().pb(px(1.)).child(row)
+                    },
                 )
-                .child(rows)
-                .into_any_element()
-            } else {
-                rows.into_any_element()
+            }))
+        });
+        let (rows, groups_moved) = (view.downgrade(), view.downgrade());
+        let theme = UiTheme::read(cx);
+        Sortable::new("sidebar.categories", "Categories")
+            .gap(theme.space(3.))
+            .reorder_groups(true)
+            .groups(groups.collect::<Vec<_>>())
+            .on_reorder(move |movement, _, cx| {
+                rows.update(cx, |this, cx| this.place_channel(movement, cx))
+                    .ok();
+            })
+            .on_reorder_group(move |from, to, _, cx| {
+                groups_moved
+                    .update(cx, |this, cx| this.place_category(from, to, cx))
+                    .ok();
             })
     }
+
+    /// Applies a dragged or Alt+Shift-moved row to the model and asks the
+    /// window to save it. Rows a category may not hold stay put.
+    fn place_channel(&mut self, movement: &SortableMove, cx: &mut Context<Self>) {
+        let categories = &self.model.categories;
+        let (Some(from), Some(to)) = (
+            categories.get(movement.from.group),
+            categories.get(movement.to.group),
+        ) else {
+            return;
+        };
+        let Some(row) = self
+            .shown_rows(from)
+            .get(movement.from.index)
+            .map(|row| (*row).clone())
+        else {
+            return;
+        };
+        if from.id != to.id && !to.kind.takes(&row.kind) {
+            return;
+        }
+        let full: Vec<SharedString> = to
+            .rows
+            .iter()
+            .filter(|other| other.id != row.id)
+            .map(|other| other.id.clone())
+            .collect();
+        let shown: Vec<SharedString> = self
+            .shown_rows(to)
+            .into_iter()
+            .filter(|other| other.id != row.id)
+            .map(|other| other.id.clone())
+            .collect();
+        let index = placed_index(&full, &shown, movement.to.index);
+        let category_id = to.id.clone();
+        self.model.remove(&row.id);
+        let channel_id = row.id.clone();
+        if let Some(category) = self.model.categories.get_mut(movement.to.group) {
+            let index = index.min(category.rows.len());
+            category.rows.insert(index, row);
+        }
+        cx.emit(SidebarEvent::PlaceChannel {
+            channel_id,
+            category_id,
+            index,
+        });
+        cx.notify();
+    }
+
+    /// Applies a dragged or Alt+Shift-moved category header.
+    fn place_category(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from >= self.model.categories.len() {
+            return;
+        }
+        let id = self.model.categories[from].id.clone();
+        move_group(&mut self.model.categories, from, to);
+        cx.emit(SidebarEvent::PlaceCategory { id, index: to });
+        cx.notify();
+    }
+}
+
+/// Where a row dropped at `index` among a category's `shown` rows goes in
+/// all of its rows, `full`; both leave the moved row out. Past the last
+/// shown row, as on a collapsed category, it goes to the end.
+fn placed_index(full: &[SharedString], shown: &[SharedString], index: usize) -> usize {
+    shown
+        .get(index)
+        .and_then(|id| full.iter().position(|other| other == id))
+        .unwrap_or(full.len())
 }
 
 impl Render for SidebarView {
@@ -1309,9 +1435,30 @@ impl Render for SidebarView {
             return sidebar;
         }
         sidebar = sidebar.child(self.fixed_entries(cx));
-        let categories: Vec<_> = self.shown().categories.clone();
-        for category in &categories {
-            sidebar = sidebar.child(self.category(category, window, cx));
+        if self.unreads_only {
+            // The filtered list leaves rows out, so it does not reorder.
+            for category in &self.shown().categories {
+                let header = self.category_header(category, window, cx);
+                let rows: Vec<_> = self
+                    .shown_rows(category)
+                    .into_iter()
+                    .map(|row| self.row(row, cx).into_any_element())
+                    .collect();
+                sidebar = sidebar.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .pb(theme.space(3.))
+                        .child(header)
+                        .child(div().flex().flex_col().gap(px(1.)).children(rows)),
+                );
+            }
+        } else {
+            sidebar = sidebar.child(
+                div()
+                    .key_context(crate::actions::SIDEBAR_SORTABLE)
+                    .child(self.sortable(cx)),
+            );
         }
         // Under the filter with nothing to read, only the open channel is
         // left; say so rather than look broken.
@@ -1334,6 +1481,27 @@ impl Render for SidebarView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_dropped_among_shown_rows_land_between_the_same_rows_in_the_full_list() {
+        let ids = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| SharedString::from(*id))
+                .collect::<Vec<_>>()
+        };
+        let full = ids(&["a", "b", "c", "d"]);
+        // An open category shows every row: the index is unchanged.
+        assert_eq!(placed_index(&full, &full, 0), 0);
+        assert_eq!(placed_index(&full, &full, 2), 2);
+        assert_eq!(placed_index(&full, &full, 4), 4);
+        // A collapsed one shows only b and d: before d is before d.
+        let shown = ids(&["b", "d"]);
+        assert_eq!(placed_index(&full, &shown, 0), 1);
+        assert_eq!(placed_index(&full, &shown, 1), 3);
+        // Past the last shown row, or into an empty group, is the end.
+        assert_eq!(placed_index(&full, &shown, 2), 4);
+        assert_eq!(placed_index(&full, &[], 0), 4);
+    }
 
     #[test]
     fn favorite_moves_rows_between_categories() {
