@@ -219,6 +219,9 @@ pub struct MainWindow {
     /// The sync engine, once there is an account to show.
     live: Option<Live>,
     _live_task: Option<gpui_kit::Task<()>>,
+    /// The signed-out account's database and media folder, deleted once
+    /// sync has ended the session (#160).
+    forget: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
     /// Clears typing notices as they run out.
     _typing_task: Option<gpui_kit::Task<()>>,
     /// Views the open channel a moment after a post arrives in it, if the
@@ -802,6 +805,7 @@ impl MainWindow {
             history_at: 0,
             live: None,
             _live_task: None,
+            forget: None,
             _typing_task: None,
             _view_task: None,
             kept_unread: None,
@@ -844,6 +848,12 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = crate::live::database_path(account);
+        // Signed in again before the last sign out finished: keep the cache
+        // if it is this account's, else delete it now.
+        if self.forget.as_ref().is_some_and(|(old, _)| *old == path) {
+            self.forget = None;
+        }
+        self.forget_signed_out(cx);
         let (live, changes) = match Live::start(path, account) {
             Ok(started) => started,
             Err(error) => {
@@ -1276,6 +1286,7 @@ impl MainWindow {
         if update.signed_out {
             self.live = None;
             self._live_task = None;
+            self.forget_signed_out(cx);
         }
         if update.expired && self.login.is_none() {
             self.session_expired(window, cx);
@@ -2307,17 +2318,31 @@ impl MainWindow {
     }
 
     /// Sign out returns to the sign-in card at once; sync ends the session
-    /// on the server and then stops. The cache stays on disk until #160.
+    /// on the server and then stops, and the account's cache is deleted
+    /// (#160). Offline, the server is told nothing but the cache still goes.
     fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.login.is_some() {
             return;
         }
+        let account = self.settings.read(cx).get().account.clone();
+        if let Some(account) = &account
+            && !crate::preview::enabled()
+            && !crate::offline()
+        {
+            self.forget = Some((
+                crate::live::database_path(account),
+                crate::live::media_dir(account),
+            ));
+        }
         match &self.live {
             Some(live) => live.send(matty_sync::Command::SignOut),
-            None => self._live_task = None,
+            None => {
+                self._live_task = None;
+                self.forget_signed_out(cx);
+            }
         }
-        if let Some(account) = self.settings.read(cx).get().account.clone() {
-            crate::secrets::delete(&account);
+        if let Some(account) = &account {
+            crate::secrets::delete(account);
         }
         self.settings
             .update(cx, |settings, cx| settings.update(cx, |s| s.account = None));
@@ -2331,6 +2356,29 @@ impl MainWindow {
         self.login = Some(view);
         self.right_pane_open = false;
         cx.notify();
+    }
+
+    /// Deletes the signed-out account's cache. Sync may still be closing
+    /// the database, so a failed delete is tried again for a few seconds.
+    fn forget_signed_out(&mut self, cx: &mut Context<Self>) {
+        let Some((database, media)) = self.forget.take() else {
+            return;
+        };
+        let executor = cx.background_executor().clone();
+        cx.background_executor()
+            .spawn(async move {
+                for _ in 0..20 {
+                    match matty_sync::forget_account(&database, media.as_deref()) {
+                        Ok(()) => return,
+                        Err(error) => {
+                            tracing::debug!(%error, "the cache is still in use");
+                            executor.timer(std::time::Duration::from_millis(250)).await;
+                        }
+                    }
+                }
+                tracing::warn!(path = %database.display(), "could not delete the signed-out cache");
+            })
+            .detach();
     }
 
     /// The server refused the saved session: forget it and ask the user to
