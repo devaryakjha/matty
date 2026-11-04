@@ -123,6 +123,16 @@ pub(crate) enum Loaded {
     Suggested { term: String, users: Vec<User> },
     /// The server took an interactive message's button press or choice.
     PostActionDone { post_id: String, action_id: String },
+    CommandSuggestions {
+        channel_id: String,
+        root_id: String,
+        user_input: String,
+        suggestions: Vec<matty_api::models::CommandSuggestion>,
+    },
+    CommandRan {
+        command: matty_api::models::ExecuteCommand,
+        outcome: Result<matty_api::models::CommandResponse, String>,
+    },
     /// The server passed on a dialog's submission or cancellation.
     DialogSubmitted {
         callback_id: String,

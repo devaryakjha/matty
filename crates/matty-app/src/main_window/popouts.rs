@@ -83,7 +83,10 @@ impl MainWindow {
             tracing::info!("a pop-out of a server not shown asked the main window");
             return;
         }
-        if !matches!(request.ask, Ask::Offline(_)) {
+        if !matches!(
+            request.ask,
+            Ask::Offline(_) | Ask::Slash(crate::slash::Request::CollapsePreviews(_))
+        ) {
             cx.activate(true);
             window.activate_window();
         }
@@ -122,6 +125,7 @@ impl MainWindow {
             Ask::Leave(channel) => self.leave_channel(channel, window, cx),
             Ask::Archive(channel) => self.archive_channel(channel, window, cx),
             Ask::Offline(action) => self.say_offline(action, cx),
+            Ask::Slash(request) => self.slash(&request, window, cx),
         }
     }
 }

@@ -49,6 +49,7 @@ pub mod server_links;
 pub mod servers;
 pub mod settings;
 pub mod sidebar;
+pub mod slash;
 pub mod style;
 pub mod switcher;
 pub mod threads;

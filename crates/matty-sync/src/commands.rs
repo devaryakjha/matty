@@ -93,6 +93,15 @@ pub(crate) enum Write {
         post_id: String,
         target_time: i64,
     },
+    /// A slash command's suggestions (#210).
+    SuggestCommands {
+        team_id: String,
+        channel_id: String,
+        root_id: String,
+        user_input: String,
+    },
+    /// Runs a slash command (#210).
+    ExecuteCommand(matty_api::models::ExecuteCommand),
     /// An interactive dialog's values or cancellation (#211); the user id
     /// is filled in as it goes.
     SubmitDialog(Box<matty_api::models::SubmitDialogRequest>),
@@ -203,6 +212,8 @@ impl Write {
             Self::Reminder { .. } => "set reminder",
             Self::PostAction { .. } => "run action",
             Self::SubmitDialog(_) => "submit dialog",
+            Self::SuggestCommands { .. } => "suggest commands",
+            Self::ExecuteCommand(_) => "run command",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -265,6 +276,8 @@ impl Write {
             Self::Create(channel) => channel.name.clone(),
             Self::Suggest { term, .. } => term.clone(),
             Self::SubmitDialog(submit) => submit.callback_id.clone(),
+            Self::SuggestCommands { channel_id, .. } => channel_id.clone(),
+            Self::ExecuteCommand(command) => command.channel_id.clone(),
             Self::Resolve(query) => match query {
                 crate::LinkQuery::Post { post_id } => post_id.clone(),
                 crate::LinkQuery::Channel { name, .. } => name.clone(),
@@ -636,6 +649,35 @@ pub(crate) async fn run(
                     .await?;
                 Some(Loaded::PostActionDone { post_id, action_id })
             }
+            Write::SuggestCommands {
+                team_id,
+                channel_id,
+                root_id,
+                user_input,
+            } => {
+                let suggestions =
+                    suggest_commands(&client, &team_id, &channel_id, &root_id, &user_input).await;
+                Some(Loaded::CommandSuggestions {
+                    channel_id,
+                    root_id,
+                    user_input,
+                    suggestions,
+                })
+            }
+            Write::ExecuteCommand(command) => {
+                let outcome = match client.execute_command(&command).await {
+                    Ok(mut response) => {
+                        response.goto_location =
+                            on_server(client.base_url().as_str(), &response.goto_location);
+                        Ok(response)
+                    }
+                    // Unknown, refused or broken: the server's words show
+                    // where it was typed. Offline is the usual toast.
+                    Err(ApiError::Server { message, .. }) => Err(message),
+                    Err(error) => return Err(error),
+                };
+                Some(Loaded::CommandRan { command, outcome })
+            }
             Write::SubmitDialog(mut submit) => {
                 submit.user_id.clone_from(&user_id);
                 let answer = client.submit_dialog(&submit).await?;
@@ -721,6 +763,76 @@ fn told(error: &ApiError) -> Option<String> {
     }
 }
 
+/// What may come next in a slash command: the server's suggestions, or on
+/// a server without them, the team's commands that start with what was
+/// typed. Suggestions are a nicety, so a failure is none.
+async fn suggest_commands(
+    client: &Client,
+    team_id: &str,
+    channel_id: &str,
+    root_id: &str,
+    user_input: &str,
+) -> Vec<matty_api::models::CommandSuggestion> {
+    match client
+        .command_suggestions(team_id, user_input, channel_id, root_id)
+        .await
+    {
+        Ok(found) => return found,
+        Err(error) => tracing::debug!(%error, "no command suggestions; listing commands"),
+    }
+    // Only a command name has suggestions this way.
+    let Some(typed) = user_input
+        .strip_prefix('/')
+        .filter(|typed| !typed.contains(char::is_whitespace))
+    else {
+        return Vec::new();
+    };
+    match client.autocomplete_commands(team_id).await {
+        Ok(commands) => command_names(&commands, typed),
+        Err(error) => {
+            tracing::warn!(%error, "could not list commands");
+            Vec::new()
+        }
+    }
+}
+
+/// The commands whose trigger starts with `typed`, as suggestions.
+pub(crate) fn command_names(
+    commands: &[matty_api::models::SlashCommand],
+    typed: &str,
+) -> Vec<matty_api::models::CommandSuggestion> {
+    let typed = typed.to_lowercase();
+    let mut found: Vec<_> = commands
+        .iter()
+        .filter(|command| command.auto_complete && command.delete_at == 0)
+        .filter(|command| command.trigger.to_lowercase().starts_with(&typed))
+        .map(|command| matty_api::models::CommandSuggestion {
+            complete: command.trigger.clone(),
+            suggestion: command.trigger.clone(),
+            hint: command.auto_complete_hint.clone(),
+            description: if command.auto_complete_desc.is_empty() {
+                command.description.clone()
+            } else {
+                command.auto_complete_desc.clone()
+            },
+            icon_data: String::new(),
+        })
+        .collect();
+    found.sort_by(|a, b| a.complete.cmp(&b.complete));
+    found.dedup_by(|a, b| a.complete == b.complete);
+    found
+}
+
+/// `location` as a URL: a path such as `/team/channels/name` is on the
+/// server at `base`; anything else stays as it is.
+pub(crate) fn on_server(base: &str, location: &str) -> String {
+    if !location.starts_with('/') || location.starts_with("//") {
+        return location.to_owned();
+    }
+    let root = base.trim_end_matches('/');
+    format!("{root}{location}")
+}
+
 /// A team's categories after a change to them, so the sidebar shows the
 /// server's result without waiting for the socket.
 async fn categories(client: &Client, team_id: String) -> Result<Option<Loaded>, ApiError> {
@@ -769,6 +881,41 @@ mod tests {
             message: message.into(),
             ..Draft::default()
         }
+    }
+
+    #[test]
+    fn command_paths_are_on_the_server() {
+        let base = "https://chat.example.com/mm/";
+        assert_eq!(
+            on_server(base, "/team/channels/town-square"),
+            "https://chat.example.com/mm/team/channels/town-square"
+        );
+        assert_eq!(
+            on_server(base, "https://example.org/x"),
+            "https://example.org/x"
+        );
+        assert_eq!(on_server(base, ""), "");
+    }
+
+    #[test]
+    fn listed_commands_suggest_names() {
+        let command = |trigger: &str, auto_complete: bool| matty_api::models::SlashCommand {
+            trigger: trigger.into(),
+            auto_complete,
+            auto_complete_desc: format!("{trigger} it"),
+            ..Default::default()
+        };
+        let commands = [
+            command("shrug", true),
+            command("shortcuts", true),
+            command("secret", false),
+            command("me", true),
+        ];
+        let names: Vec<String> = command_names(&commands, "Sh")
+            .into_iter()
+            .map(|found| found.complete)
+            .collect();
+        assert_eq!(names, ["shortcuts", "shrug"]);
     }
 
     #[test]

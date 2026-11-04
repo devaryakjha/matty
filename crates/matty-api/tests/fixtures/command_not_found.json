@@ -1,0 +1,7 @@
+{
+  "id": "api.command.execute_command.not_found.app_error",
+  "message": "Command with a trigger of 'nope' not found.",
+  "detailed_error": "",
+  "request_id": "kd8sm1ctfjbf9xbmyk8f9mhd8c",
+  "status_code": 404
+}

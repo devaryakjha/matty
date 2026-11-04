@@ -22,6 +22,8 @@
 //! ask of the main window, or decide about the window, goes to that window
 //! as a [`PaneEvent`] instead.
 
+mod slash;
+
 use std::collections::HashSet;
 
 use gpui_kit::{
@@ -121,6 +123,9 @@ pub enum Ask {
     Archive(SharedString),
     /// Offline, the user asked for this action (as sync names it).
     Offline(&'static str),
+    /// A slash command for the main window: search, sign out, or a
+    /// preference (#210).
+    Slash(crate::slash::Request),
 }
 
 /// Where a [`PopOutView`] lives.
@@ -788,6 +793,7 @@ impl PopOutView {
         }
         let update = live.apply(change);
         self.apply_update(update, window, cx);
+        self.slash_change(change, window, cx);
     }
 
     /// Shows what sync's latest change means for this window.
@@ -1263,6 +1269,7 @@ impl PopOutView {
                 return self.pop_out_thread(root.clone(), cx);
             }
             ChannelEvent::SwapPanes => return cx.emit(PaneEvent::Swap),
+            ChannelEvent::Slash(request) => return self.slash(request, cx),
             ChannelEvent::ClosePane => return cx.emit(PaneEvent::ClosePane),
             _ => {}
         }
@@ -1473,6 +1480,7 @@ impl PopOutView {
         let channel = self.target.channel().clone();
         let ask = match event {
             RightPaneEvent::Close => return self.close(window, cx),
+            RightPaneEvent::Slash(request) => return self.slash(request, cx),
             RightPaneEvent::Offline(action) => Some(Ask::Offline(action)),
             RightPaneEvent::OpenLink(url) => Some(Ask::OpenLink(url.clone())),
             RightPaneEvent::OpenDirect { display_name, .. } => {
