@@ -16,8 +16,9 @@ use crate::attachments::{
     AttachmentStatus, PostFile, SendGate, UploadSource, UploadTray, post_files,
 };
 use crate::channel::{
-    ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, plain_text, post_markers,
-    reaction_tooltip,
+    ChannelModel, Post, PostKind, PostStatus, QUICK_REACTIONS, delete_popup, edit_composer,
+    message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
+    reaction_tooltip, waiting_items, waiting_to_send,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
@@ -127,6 +128,15 @@ pub enum RightPaneEvent {
     PreviewLink(SharedString),
     /// Retry a reply that failed; the pane shows it pending again.
     Retry(SharedString),
+    /// The user edited a reply waiting to send; it goes with this text
+    /// (#195).
+    SaveEdit {
+        post: SharedString,
+        text: SharedString,
+    },
+    /// The user discarded a reply the server never got; the row is
+    /// already gone and sync drops it from the outbox (#195).
+    Discard(SharedString),
     /// The user toggled following the thread under `root`.
     ToggleFollow {
         root: SharedString,
@@ -214,7 +224,24 @@ pub struct RightPaneView {
     lightbox_files: Vec<SharedString>,
     /// The "Leave channel?" confirmation.
     leave: DialogHandle,
+    /// The connection is down, so pending replies wait for it (#195).
+    away: bool,
+    /// The reply being edited in place, waiting to send (#195).
+    editing: Option<ReplyEdit>,
+    /// "Discard this message?" and the reply it is about.
+    discard: DialogHandle,
+    discarding: Option<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
+}
+
+/// An open reply editor's composer and height cap, for `post_row`.
+type ReplyEditor = (Entity<ComposerState>, gpui_kit::Pixels);
+
+/// A reply open in its in-place editor.
+struct ReplyEdit {
+    post: SharedString,
+    composer: Entity<ComposerState>,
+    _subscription: gpui_kit::Subscription,
 }
 
 impl EventEmitter<RightPaneEvent> for RightPaneView {}
@@ -347,6 +374,10 @@ impl RightPaneView {
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
             leave: DialogHandle::new(false),
+            away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            editing: None,
+            discard: DialogHandle::new(false),
+            discarding: None,
             _subscriptions: subscriptions,
         }
     }
@@ -684,14 +715,127 @@ impl RightPaneView {
         }
     }
 
-    /// Removes a reply that never reached the server.
+    /// Removes a reply that never reached the server and tells sync.
     fn discard(&mut self, id: SharedString, cx: &mut Context<Self>) {
         let Some(thread) = self.thread_mut() else {
             return;
         };
         thread.replies.retain(|post| post.id != id);
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| editing.post == id)
+        {
+            self.editing = None;
+        }
         let content = self.content.clone();
         self.set_content(content, cx);
+        cx.emit(RightPaneEvent::Discard(id));
+    }
+
+    /// The connection went down or came back: waiting replies read "Will
+    /// send when back online" meanwhile (#195).
+    pub fn set_away(&mut self, away: bool, cx: &mut Context<Self>) {
+        if self.away != away {
+            self.away = away;
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Opens "Discard this message?" for a reply waiting to send.
+    fn ask_discard(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.discarding = Some(id);
+        self.discard.open(window, cx);
+        cx.notify();
+    }
+
+    fn reply_post(&self, id: &SharedString) -> Option<&Post> {
+        match self.content.as_ref()? {
+            RightPaneContent::Thread(thread) => thread.replies.iter().find(|post| &post.id == id),
+            _ => None,
+        }
+    }
+
+    /// Turns a reply waiting to send into a composer holding its text, as
+    /// in the channel (#195). Enter saves, Escape cancels.
+    fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(post) = self.reply_post(&id).filter(|post| {
+            post.mine && post.kind == PostKind::Regular && waiting_to_send(post, self.away)
+        }) else {
+            return;
+        };
+        let view = cx.weak_entity();
+        let composer = edit_composer(
+            post.body.clone(),
+            move |window, cx| {
+                view.update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, event: &ComposerEvent, window, cx| {
+                if let ComposerEvent::Submit(text) = event {
+                    this.save_edit(text.clone(), window, cx);
+                }
+            },
+        );
+        self.editing = Some(ReplyEdit {
+            post: id,
+            composer,
+            _subscription: subscription,
+        });
+        self.list.update(cx, |list, cx| list.remeasure(cx));
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Keeps the new text and tells sync; an unchanged or emptied body just
+    /// closes the editor, since discarding has its own confirmation.
+    fn save_edit(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref() else {
+            return;
+        };
+        let id = editing.post.clone();
+        let body: SharedString = text.trim().to_string().into();
+        let unchanged = self.reply_post(&id).is_none_or(|post| post.body == body);
+        if body.is_empty() || unchanged {
+            self.cancel_edit(window, cx);
+            return;
+        }
+        // A waiting send just goes with the new text, without "(edited)".
+        self.mutate_reply(&id, |post| post.body = body.clone(), cx);
+        cx.emit(RightPaneEvent::SaveEdit {
+            post: id,
+            text: body,
+        });
+        self.cancel_edit(window, cx);
+    }
+
+    fn discard_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let popup = delete_popup("thread.discard", true, "the thread", cx);
+        let view = cx.entity().downgrade();
+        alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |this, cx| {
+                if let Some(id) = this.discarding.take() {
+                    this.discard(id, cx);
+                }
+            })
+            .ok();
+            true
+        })
     }
 
     fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
@@ -785,6 +929,7 @@ impl RightPaneView {
             for upload in self.tray.take() {
                 cx.emit(RightPaneEvent::CancelUpload(upload.id));
             }
+            self.editing = None;
         }
         self.content = content;
         self.selection = None;
@@ -982,9 +1127,14 @@ impl RightPaneView {
         });
     }
 
-    /// The right-click menu of a thread row: copy, a reaction submenu, and
-    /// Retry and Delete on a reply that never reached the server.
-    fn thread_items_for(view: &gpui_kit::WeakEntity<Self>, post: &Post) -> Vec<MenuItem> {
+    /// The right-click menu of a thread row: a reaction submenu and copy;
+    /// on a reply the server does not have yet, copy, Retry if it failed,
+    /// and the channel's Edit and Discard… while it waits to send (#195).
+    fn thread_items_for(
+        view: &gpui_kit::WeakEntity<Self>,
+        post: &Post,
+        away: bool,
+    ) -> Vec<MenuItem> {
         let body = post.body.clone();
         let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
             let (view, id) = (view.clone(), post.id.clone());
@@ -1001,9 +1151,16 @@ impl RightPaneView {
             })
         });
         let markdown_body = post.body.clone();
-        let mut items = vec![
-            MenuItem::submenu("thread.context.react", "Add reaction", reactions),
-            MenuItem::separator(),
+        // The server does not have an unsent reply yet: nothing to react to.
+        let mut items = if post.status == PostStatus::Sent {
+            vec![
+                MenuItem::submenu("thread.context.react", "Add reaction", reactions),
+                MenuItem::separator(),
+            ]
+        } else {
+            Vec::new()
+        };
+        items.extend([
             MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
@@ -1014,10 +1171,9 @@ impl RightPaneView {
                     ))
                 },
             ),
-        ];
+        ]);
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
-            let (delete_view, delete_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
             items.push(
                 MenuItem::new("thread.context.retry", "Retry").on_click(move |_, _, cx| {
@@ -1025,13 +1181,26 @@ impl RightPaneView {
                     retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
                 }),
             );
-            items.push(MenuItem::new("thread.context.delete", "Delete").on_click(
-                move |_, _, cx| {
-                    let id = delete_id.clone();
-                    delete_view.update(cx, |this, cx| this.discard(id, cx)).ok();
-                },
-            ));
         }
+        let (edit_view, edit_id) = (view.clone(), post.id.clone());
+        let (discard_view, discard_id) = (view.clone(), post.id.clone());
+        items.extend(waiting_items(
+            "thread.context",
+            post,
+            away,
+            move |window, cx| {
+                edit_view
+                    .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                    .ok();
+            },
+            move |window, cx| {
+                discard_view
+                    .update(cx, |this, cx| {
+                        this.ask_discard(discard_id.clone(), window, cx)
+                    })
+                    .ok();
+            },
+        ));
         items
     }
 
@@ -1111,14 +1280,11 @@ impl RightPaneView {
         post: &Post,
         root: bool,
         highlight: MessageHighlight,
+        (away, editor): (bool, Option<&ReplyEditor>),
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let time: SharedString = match post.status {
-            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
-            PostStatus::Pending => "Sending…".into(),
-            PostStatus::Failed => "Not sent".into(),
-        };
+        let time = post_time(post, away, cx);
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
         let (retry_view, retry_id) = (view.clone(), id.clone());
@@ -1151,7 +1317,8 @@ impl RightPaneView {
                 |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
             )
             .gutter_time(time)
-            .continuation(post.continues && !root)
+            // A queued reply keeps its header so the clock shows (#195).
+            .continuation(post.continues && !root && !queued(post, away))
             .density(message_density(cx))
             .highlight(highlight)
             .avatar(crate::avatars::with_picture(
@@ -1169,17 +1336,39 @@ impl RightPaneView {
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))
-            .child({
-                let link_view = view.clone();
-                crate::links::message_body(
-                    gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
-                    &post.body,
-                    move |url, _, cx| {
-                        let event = RightPaneEvent::OpenLink(url.clone());
-                        link_view.update(cx, |_, cx| cx.emit(event)).ok();
-                    },
-                    cx,
-                )
+            .child(match editor {
+                Some((composer, cap)) => {
+                    let (cancel, save) = (view.clone(), view.clone());
+                    post_editor(
+                        "thread.edit",
+                        composer,
+                        *cap,
+                        move |window, cx| {
+                            cancel
+                                .update(cx, |this, cx| this.cancel_edit(window, cx))
+                                .ok();
+                        },
+                        move |text, window, cx| {
+                            save.update(cx, |this, cx| this.save_edit(text, window, cx))
+                                .ok();
+                        },
+                        cx,
+                    )
+                    .into_any_element()
+                }
+                None => {
+                    let link_view = view.clone();
+                    crate::links::message_body(
+                        gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
+                        &post.body,
+                        move |url, _, cx| {
+                            let event = RightPaneEvent::OpenLink(url.clone());
+                            link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        },
+                        cx,
+                    )
+                    .into_any_element()
+                }
             })
             .children((!post.files.is_empty()).then(|| {
                 let (image_view, image_post) = (view.clone(), post.clone());
@@ -1201,11 +1390,15 @@ impl RightPaneView {
                     cx,
                 )
             }));
+        if queued(post, away) {
+            // Queued: a clock marks "Will send when back online" (#195).
+            row = row.header_child(queued_marker(&theme));
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
         // Right-click selects the row and opens its menu (design-42).
-        let items = Self::thread_items_for(view, post);
+        let items = Self::thread_items_for(view, post, away);
         let menu_view = view.clone();
         div()
             .on_mouse_down(
@@ -1280,12 +1473,19 @@ impl RightPaneView {
                 MessageHighlight::None
             }
         };
+        let away = self.away;
+        let editing = self.editing.as_ref().map(|editing| {
+            (
+                editing.post.clone(),
+                (editing.composer.clone(), self.composer_cap),
+            )
+        });
         let transcript =
             MessageList::new(
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&view, &model.root, true, highlight(0), cx)
+                    0 => Self::post_row(&view, &model.root, true, highlight(0), (away, None), cx)
                         .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
                     2 => view
@@ -1295,8 +1495,21 @@ impl RightPaneView {
                         })
                         .unwrap_or_else(|_| div().into_any_element()),
                     index => match model.replies.get(index - THREAD_HEAD) {
-                        Some(reply) => Self::post_row(&view, reply, false, highlight(index), cx)
-                            .into_any_element(),
+                        Some(reply) => {
+                            let editor = editing
+                                .as_ref()
+                                .filter(|(post, _)| *post == reply.id)
+                                .map(|(_, editor)| editor);
+                            Self::post_row(
+                                &view,
+                                reply,
+                                false,
+                                highlight(index),
+                                (away, editor),
+                                cx,
+                            )
+                            .into_any_element()
+                        }
                         None => div().into_any_element(),
                     },
                 },
@@ -1499,6 +1712,7 @@ impl RightPaneView {
                         },
                         true,
                         MessageHighlight::None,
+                        (false, None),
                         cx,
                     ))
             }))
@@ -1939,6 +2153,7 @@ impl Render for RightPaneView {
         let root = div()
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(self.discard_dialog(window, cx))
             .child(
                 Menu::new(&self.menu, "Message actions")
                     .context_area(div())
@@ -2194,5 +2409,103 @@ mod tests {
             "at the root: nothing more to ask"
         );
         assert!(cx.debug_bounds("right-pane.older").is_none());
+    }
+
+    /// #195: a reply queued while offline is edited in place or discarded
+    /// from the thread, as in the channel, and sync hears of both.
+    #[gpui_kit::test]
+    fn a_queued_reply_can_be_edited_or_discarded(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let waiting = |id: &str, body: &str| Post {
+            mine: true,
+            status: PostStatus::Pending,
+            body: body.to_owned().into(),
+            // Grouped under the reply before it, which is also the user's.
+            continues: true,
+            ..post(id)
+        };
+        let thread = ThreadModel {
+            channel_name: "town".into(),
+            root: post("root"),
+            replies: vec![
+                waiting("me:1", "First."),
+                waiting("me:2", "Pushing the fix now."),
+            ],
+            following: true,
+            reply_count: 2,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SaveEdit { .. } | RightPaneEvent::Discard(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let body = |view: &RightPaneView, id: &str| {
+            view.reply_post(&id.into())
+                .map(|post| (post.body.to_string(), post.edited))
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                // Online, it is on its way: no menu items, no editor.
+                view.set_away(false, cx);
+                let reply = view.reply_post(&"me:2".into()).unwrap().clone();
+                assert!(!queued(&reply, view.away));
+                assert!(waiting_items("t", &reply, view.away, |_, _| {}, |_, _| {}).is_empty());
+                view.start_edit("me:2".into(), window, cx);
+                assert!(view.editing.is_none());
+
+                // Offline, it waits: the menu offers Edit and Discard…,
+                // and the row keeps its header for the clock.
+                view.set_away(true, cx);
+                assert!(queued(&reply, view.away));
+                assert_eq!(
+                    waiting_items("t", &reply, view.away, |_, _| {}, |_, _| {}).len(),
+                    3
+                );
+                view.start_edit("me:2".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Pushing the fix tonight.".into(), window, cx);
+                assert!(view.editing.is_none());
+                assert_eq!(
+                    body(view, "me:2"),
+                    Some(("Pushing the fix tonight.".to_owned(), false))
+                );
+
+                // Discard asks first, then the row goes and sync drops it.
+                view.ask_discard("me:1".into(), window, cx);
+                assert_eq!(view.discarding.as_deref(), Some("me:1"));
+                let id = view.discarding.take().unwrap();
+                view.discard(id, cx);
+                assert_eq!(body(view, "me:1"), None);
+            })
+        });
+        // The thread draws with the queued reply in it.
+        cx.run_until_parked();
+        assert_eq!(
+            *events.borrow(),
+            [
+                RightPaneEvent::SaveEdit {
+                    post: "me:2".into(),
+                    text: "Pushing the fix tonight.".into(),
+                },
+                RightPaneEvent::Discard("me:1".into()),
+            ]
+        );
     }
 }

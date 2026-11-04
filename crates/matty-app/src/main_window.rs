@@ -2214,6 +2214,21 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::SaveEdit { post, text } => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::EditPost {
+                        post_id: post.to_string(),
+                        message: text.to_string(),
+                    });
+                }
+            }
+            RightPaneEvent::Discard(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::Discard {
+                        pending_post_id: post.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::ToggleFollow { root, following } => {
                 if let Some(live) = &self.live {
                     live.follow_thread(root, *following);
@@ -2749,6 +2764,8 @@ impl MainWindow {
             self.connection = state;
             let away = self.connection != ConnectionState::Online;
             self.channel.update(cx, |view, cx| view.set_away(away, cx));
+            self.right_pane
+                .update(cx, |view, cx| view.set_away(away, cx));
             cx.notify();
         }
     }
