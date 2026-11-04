@@ -181,14 +181,30 @@ impl ComposerDraft {
         self.saved_text.as_ref() == text
     }
 
+    /// Whether switching to `key` leaves the composer's text as it is (empty
+    /// before and after), so the switch needs no window.
+    pub fn switches_quietly(
+        &self,
+        key: Option<&DraftKey>,
+        composer: &Entity<ComposerState>,
+        cx: &App,
+    ) -> bool {
+        composer.read(cx).value(cx).is_empty()
+            && key
+                .and_then(|key| DraftBook::get(cx, key))
+                .is_none_or(|kept| kept.text.is_empty())
+    }
+
     /// Points the composer at `key`: what it held goes into the book (and
     /// is returned to save when it changed) and `key`'s draft comes out.
+    /// `window` may be left out only when [`Self::switches_quietly`] says
+    /// so, since only the text needs it.
     pub fn switch(
         &mut self,
         key: Option<DraftKey>,
         composer: &Entity<ComposerState>,
         tray: &mut UploadTray,
-        window: &mut Window,
+        window: Option<&mut Window>,
         cx: &mut App,
     ) -> Option<DraftSave> {
         if key == self.key {
@@ -279,7 +295,7 @@ impl ComposerDraft {
             return false;
         }
         tray.take();
-        self.show(kept, composer, tray, window, cx);
+        self.show(kept, composer, tray, Some(window), cx);
         true
     }
 
@@ -288,14 +304,17 @@ impl ComposerDraft {
         kept: Kept,
         composer: &Entity<ComposerState>,
         tray: &mut UploadTray,
-        window: &mut Window,
+        window: Option<&mut Window>,
         cx: &mut App,
     ) {
         self.saved_files = kept.ready();
         self.saved_text = kept.text.clone();
         tray.extend(kept.uploads);
-        // The caret lands at the end of the text.
-        composer.update(cx, |composer, cx| composer.set_value(kept.text, window, cx));
+        // The caret lands at the end of the text. Without a window the text
+        // is already right (see `switches_quietly`).
+        if let Some(window) = window {
+            composer.update(cx, |composer, cx| composer.set_value(kept.text, window, cx));
+        }
     }
 }
 

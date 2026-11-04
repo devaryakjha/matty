@@ -64,8 +64,20 @@ pub(crate) enum Loaded {
     Done,
     /// An opened channel's posts around the first unread.
     Posts { channel_id: String, posts: PostList },
-    /// An opened thread's root and replies from the server.
-    Thread { root_id: String, posts: PostList },
+    /// A page of an opened thread from the server: its newest replies
+    /// with the root, or with `older` the page before the oldest reply
+    /// loaded; `None` when it failed.
+    Thread {
+        root_id: String,
+        posts: Option<PostList>,
+        older: bool,
+    },
+    /// A further page of a team's followed threads, or `None` when it
+    /// failed.
+    MoreThreads {
+        team_id: String,
+        threads: Option<matty_api::models::UserThreads>,
+    },
     /// An opened channel's counts.
     Stats(ChannelStats),
     /// A team's public channels and their member counts.
@@ -160,6 +172,9 @@ pub(crate) enum Loaded {
     Threads {
         team_id: String,
         threads: Vec<UserThread>,
+        /// The server's count of the team's followed threads, when the
+        /// answer carried it.
+        total: Option<i64>,
     },
     /// A resync finished.
     Resynced,
@@ -505,6 +520,7 @@ pub(crate) async fn resync(client: Client, plan: ResyncPlan, results: UnboundedS
                 let _ = results.send(Loaded::Threads {
                     team_id,
                     threads: threads.threads,
+                    total: Some(threads.total),
                 });
             }
             Err(error) => tracing::warn!(%team_id, %error, "could not catch up threads"),

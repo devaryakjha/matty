@@ -16,8 +16,9 @@ use crate::attachments::{
     AttachmentStatus, PostFile, SendGate, UploadSource, UploadTray, post_files,
 };
 use crate::channel::{
-    ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, plain_text, post_markers,
-    reaction_tooltip,
+    ChannelModel, Post, PostKind, PostStatus, QUICK_REACTIONS, delete_popup, edit_composer,
+    message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
+    reaction_tooltip, waiting_items, waiting_to_send,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
@@ -53,6 +54,13 @@ pub struct ThreadModel {
     pub root: Post,
     pub replies: Vec<Post>,
     pub following: bool,
+    /// The thread's replies on the server, loaded or not.
+    pub reply_count: usize,
+    /// Older replies than the first in `replies` are on the server; the
+    /// row above the replies pages them in (#122).
+    pub older: bool,
+    /// The last older page failed; that row offers Retry.
+    pub failed_older: bool,
 }
 
 /// A post listed outside its channel: saved, pinned or a mention.
@@ -75,7 +83,7 @@ pub struct SearchModel {
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
-    Thread(ThreadModel),
+    Thread(Box<ThreadModel>),
     ChannelInfo(ChannelModel),
     /// The current channel's pinned posts, newest first.
     Pinned {
@@ -125,6 +133,15 @@ pub enum RightPaneEvent {
     SaveDraft(crate::composer_draft::DraftSave),
     /// Retry a reply that failed; the pane shows it pending again.
     Retry(SharedString),
+    /// The user edited a reply waiting to send; it goes with this text
+    /// (#195).
+    SaveEdit {
+        post: SharedString,
+        text: SharedString,
+    },
+    /// The user discarded a reply the server never got; the row is
+    /// already gone and sync drops it from the outbox (#195).
+    Discard(SharedString),
     /// The user toggled following the thread under `root`.
     ToggleFollow {
         root: SharedString,
@@ -171,7 +188,14 @@ pub enum RightPaneEvent {
     Leave(SharedString),
     /// The pane lists only the loaded profiles; sync fetches the rest.
     LoadMembers(SharedString),
+    /// The thread transcript reached its oldest loaded reply under `root`;
+    /// sync pages in the replies before it (#122).
+    LoadOlderReplies(SharedString),
 }
+
+/// Rows of the thread transcript before the replies: the root, the
+/// replies divider, and the row that pages in older replies (#122).
+const THREAD_HEAD: usize = 3;
 
 pub struct RightPaneView {
     /// `style::composer_cap` as of the last render.
@@ -184,6 +208,8 @@ pub struct RightPaneView {
     thread_focus: FocusHandle,
     /// The keyboard-selected row of the thread transcript (PLAN §4.2).
     selection: Option<usize>,
+    /// An older page of the thread's replies is on its way (#122).
+    loading_older: bool,
     /// The shared right-click menu over thread rows.
     menu: Entity<MenuState>,
     /// The current user's display name, for optimistic rows.
@@ -209,7 +235,24 @@ pub struct RightPaneView {
     lightbox_files: Vec<SharedString>,
     /// The "Leave channel?" confirmation.
     leave: DialogHandle,
+    /// The connection is down, so pending replies wait for it (#195).
+    away: bool,
+    /// The reply being edited in place, waiting to send (#195).
+    editing: Option<ReplyEdit>,
+    /// "Discard this message?" and the reply it is about.
+    discard: DialogHandle,
+    discarding: Option<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
+}
+
+/// An open reply editor's composer and height cap, for `post_row`.
+type ReplyEditor = (Entity<ComposerState>, gpui_kit::Pixels);
+
+/// A reply open in its in-place editor.
+struct ReplyEdit {
+    post: SharedString,
+    composer: Entity<ComposerState>,
+    _subscription: gpui_kit::Subscription,
 }
 
 impl EventEmitter<RightPaneEvent> for RightPaneView {}
@@ -333,6 +376,7 @@ impl RightPaneView {
             focus: cx.focus_handle(),
             thread_focus: cx.focus_handle(),
             selection: None,
+            loading_older: false,
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             draft_len: 0,
@@ -348,6 +392,10 @@ impl RightPaneView {
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
             leave: DialogHandle::new(false),
+            away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            editing: None,
+            discard: DialogHandle::new(false),
+            discarding: None,
             _subscriptions: subscriptions,
         }
     }
@@ -498,6 +546,8 @@ impl RightPaneView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            root_id: root.clone(),
+            reply_to: None,
             files,
             embeds: vec![],
         };
@@ -698,14 +748,127 @@ impl RightPaneView {
         }
     }
 
-    /// Removes a reply that never reached the server.
+    /// Removes a reply that never reached the server and tells sync.
     fn discard(&mut self, id: SharedString, cx: &mut Context<Self>) {
         let Some(thread) = self.thread_mut() else {
             return;
         };
         thread.replies.retain(|post| post.id != id);
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| editing.post == id)
+        {
+            self.editing = None;
+        }
         let content = self.content.clone();
         self.set_content(content, cx);
+        cx.emit(RightPaneEvent::Discard(id));
+    }
+
+    /// The connection went down or came back: waiting replies read "Will
+    /// send when back online" meanwhile (#195).
+    pub fn set_away(&mut self, away: bool, cx: &mut Context<Self>) {
+        if self.away != away {
+            self.away = away;
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Opens "Discard this message?" for a reply waiting to send.
+    fn ask_discard(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.discarding = Some(id);
+        self.discard.open(window, cx);
+        cx.notify();
+    }
+
+    fn reply_post(&self, id: &SharedString) -> Option<&Post> {
+        match self.content.as_ref()? {
+            RightPaneContent::Thread(thread) => thread.replies.iter().find(|post| &post.id == id),
+            _ => None,
+        }
+    }
+
+    /// Turns a reply waiting to send into a composer holding its text, as
+    /// in the channel (#195). Enter saves, Escape cancels.
+    fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(post) = self.reply_post(&id).filter(|post| {
+            post.mine && post.kind == PostKind::Regular && waiting_to_send(post, self.away)
+        }) else {
+            return;
+        };
+        let view = cx.weak_entity();
+        let composer = edit_composer(
+            post.body.clone(),
+            move |window, cx| {
+                view.update(cx, |this, cx| this.cancel_edit(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(
+            &composer,
+            window,
+            |this, _, event: &ComposerEvent, window, cx| {
+                if let ComposerEvent::Submit(text) = event {
+                    this.save_edit(text.clone(), window, cx);
+                }
+            },
+        );
+        self.editing = Some(ReplyEdit {
+            post: id,
+            composer,
+            _subscription: subscription,
+        });
+        self.list.update(cx, |list, cx| list.remeasure(cx));
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Keeps the new text and tells sync; an unchanged or emptied body just
+    /// closes the editor, since discarding has its own confirmation.
+    fn save_edit(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref() else {
+            return;
+        };
+        let id = editing.post.clone();
+        let body: SharedString = text.trim().to_string().into();
+        let unchanged = self.reply_post(&id).is_none_or(|post| post.body == body);
+        if body.is_empty() || unchanged {
+            self.cancel_edit(window, cx);
+            return;
+        }
+        // A waiting send just goes with the new text, without "(edited)".
+        self.mutate_reply(&id, |post| post.body = body.clone(), cx);
+        cx.emit(RightPaneEvent::SaveEdit {
+            post: id,
+            text: body,
+        });
+        self.cancel_edit(window, cx);
+    }
+
+    fn discard_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let popup = delete_popup("thread.discard", true, "the thread", cx);
+        let view = cx.entity().downgrade();
+        alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |this, cx| {
+                if let Some(id) = this.discarding.take() {
+                    this.discard(id, cx);
+                }
+            })
+            .ok();
+            true
+        })
     }
 
     fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
@@ -782,8 +945,7 @@ impl RightPaneView {
 
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
         let rows = match &content {
-            // Root, the replies divider, then replies.
-            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
         };
         self.list = cx.new(|cx| MessageListState::new(rows, cx));
@@ -796,10 +958,22 @@ impl RightPaneView {
         if !same_thread {
             self.link = Default::default();
             self._link_task = None;
+            self.editing = None;
         }
         self.content = content;
         self.selection = None;
-        if self.draft.key() != self.draft_key().as_ref() {
+        self.loading_older = false;
+        let key = self.draft_key();
+        let moved = self.draft.key() != key.as_ref();
+        if moved
+            && self
+                .draft
+                .switches_quietly(key.as_ref(), &self.composer, cx)
+        {
+            // Nothing typed and nothing to restore: switch now, without
+            // touching the window (an update there redraws it).
+            self.switch_draft(key, None, cx);
+        } else if moved {
             // The composer needs the window to change its text.
             let window = self.window;
             let this = cx.weak_entity();
@@ -834,6 +1008,15 @@ impl RightPaneView {
         if self.draft.key() == key.as_ref() {
             return;
         }
+        self.switch_draft(key, Some(window), cx);
+    }
+
+    fn switch_draft(
+        &mut self,
+        key: Option<crate::composer_draft::DraftKey>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
         self._draft_task = None;
         let left = self
             .draft
@@ -875,32 +1058,136 @@ impl RightPaneView {
     }
 
     /// Sync's latest of the open thread. The same thread keeps its scroll
-    /// and its composer; new replies join the end of the list.
+    /// and its composer; new replies join the end of the list, and an
+    /// older page goes in above the first reply without moving what the
+    /// reader sees (#122).
     pub fn set_thread(&mut self, thread: ThreadModel, cx: &mut Context<Self>) {
-        let same = matches!(
-            &self.content,
-            Some(RightPaneContent::Thread(shown)) if shown.root.id == thread.root.id
-        );
-        let before = self.thread_rows();
-        if !same || thread.replies.len() + 2 < before {
-            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+        let Some(RightPaneContent::Thread(shown)) = &self.content else {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+            return;
+        };
+        if shown.root.id != thread.root.id {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
             return;
         }
-        self.content = Some(RightPaneContent::Thread(thread));
-        let added = self.thread_rows() - before;
+        // Replies before the one that was first came from an older page.
+        let older = match shown.replies.first() {
+            Some(first) => thread.replies.iter().position(|reply| reply.id == first.id),
+            None => Some(0),
+        };
+        let Some(older) = older.filter(|older| shown.replies.len() + older <= thread.replies.len())
+        else {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+            return;
+        };
+        let newer = thread.replies.len() - shown.replies.len() - older;
+        let paged = older > 0 || !thread.older || thread.failed_older;
+        self.content = Some(RightPaneContent::Thread(Box::new(thread)));
+        if paged {
+            self.loading_older = false;
+        }
+        if older > 0 {
+            self.selection = self
+                .selection
+                .map(|row| if row >= THREAD_HEAD { row + older } else { row });
+        }
         self.list.update(cx, |list, cx| {
-            if added > 0 {
-                list.append(added, cx);
+            if older > 0 {
+                // The list keeps the row at the top of the viewport where
+                // it was, so the reader's place holds.
+                list.splice(THREAD_HEAD..THREAD_HEAD, older, cx);
+                list.remeasure_items(0..THREAD_HEAD, cx);
+            } else {
+                list.remeasure(cx);
             }
-            list.remeasure(cx);
+            if newer > 0 {
+                list.append(newer, cx);
+            }
         });
         cx.notify();
+    }
+
+    /// Asks for the replies before the oldest loaded one when the row
+    /// above the replies shows and nothing stops it.
+    fn request_older(&mut self, cx: &mut Context<Self>) {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return;
+        };
+        if !thread.older || thread.failed_older || self.loading_older {
+            return;
+        }
+        self.loading_older = true;
+        cx.emit(RightPaneEvent::LoadOlderReplies(thread.root.id.clone()));
+        // This runs while the list lays out the row, so the remeasure
+        // waits until the list has let go of its state.
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                this.list.update(cx, |list, cx| {
+                    list.remeasure_items(THREAD_HEAD - 1..THREAD_HEAD, cx)
+                });
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The row between the divider and the replies: nothing once every
+    /// reply is loaded, otherwise the older page's progress.
+    fn older_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return div().into_any_element();
+        };
+        if !thread.older {
+            return div().into_any_element();
+        }
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .px(theme.space(4.))
+            .py(theme.space(3.))
+            .text_size(theme.text(12.))
+            .text_color(theme.colors.muted_foreground)
+            .debug_selector(|| "right-pane.older".into());
+        if thread.failed_older {
+            row.child("Couldn't load older replies.")
+                .child(
+                    div()
+                        .debug_selector(|| "right-pane.older.retry".into())
+                        .child(
+                            Button::new("right-pane.older.retry")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Sm)
+                                .label("Retry")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(RightPaneContent::Thread(thread)) =
+                                        &mut this.content
+                                    {
+                                        thread.failed_older = false;
+                                    }
+                                    this.request_older(cx);
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            row.child(
+                Spinner::new("right-pane.older.spinner")
+                    .label("Loading older replies")
+                    .size(gpui_kit::px(14.)),
+            )
+            .child("Loading older replies…")
+            .into_any_element()
+        }
     }
 
     /// Rows of the thread transcript: the root, the divider, then replies.
     fn thread_rows(&self) -> usize {
         match &self.content {
-            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
         }
     }
@@ -920,7 +1207,7 @@ impl RightPaneView {
         if rows == 0 {
             return;
         }
-        self.selection = Some(if rows > 2 { rows - 1 } else { 0 });
+        self.selection = Some(if rows > THREAD_HEAD { rows - 1 } else { 0 });
         window.focus(&self.thread_focus, cx);
         cx.notify();
     }
@@ -937,7 +1224,7 @@ impl RightPaneView {
                 .replies
                 .iter()
                 .position(|post| post.id == *id)
-                .map(|index| index + 2)
+                .map(|index| index + THREAD_HEAD)
         };
         if row.is_some() {
             self.selection = row;
@@ -960,9 +1247,14 @@ impl RightPaneView {
         });
     }
 
-    /// The right-click menu of a thread row: copy, a reaction submenu, and
-    /// Retry and Delete on a reply that never reached the server.
-    fn thread_items_for(view: &gpui_kit::WeakEntity<Self>, post: &Post) -> Vec<MenuItem> {
+    /// The right-click menu of a thread row: a reaction submenu and copy;
+    /// on a reply the server does not have yet, copy, Retry if it failed,
+    /// and the channel's Edit and Discard… while it waits to send (#195).
+    fn thread_items_for(
+        view: &gpui_kit::WeakEntity<Self>,
+        post: &Post,
+        away: bool,
+    ) -> Vec<MenuItem> {
         let body = post.body.clone();
         let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
             let (view, id) = (view.clone(), post.id.clone());
@@ -979,9 +1271,16 @@ impl RightPaneView {
             })
         });
         let markdown_body = post.body.clone();
-        let mut items = vec![
-            MenuItem::submenu("thread.context.react", "Add reaction", reactions),
-            MenuItem::separator(),
+        // The server does not have an unsent reply yet: nothing to react to.
+        let mut items = if post.status == PostStatus::Sent {
+            vec![
+                MenuItem::submenu("thread.context.react", "Add reaction", reactions),
+                MenuItem::separator(),
+            ]
+        } else {
+            Vec::new()
+        };
+        items.extend([
             MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
@@ -992,10 +1291,9 @@ impl RightPaneView {
                     ))
                 },
             ),
-        ];
+        ]);
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
-            let (delete_view, delete_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
             items.push(
                 MenuItem::new("thread.context.retry", "Retry").on_click(move |_, _, cx| {
@@ -1003,13 +1301,26 @@ impl RightPaneView {
                     retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
                 }),
             );
-            items.push(MenuItem::new("thread.context.delete", "Delete").on_click(
-                move |_, _, cx| {
-                    let id = delete_id.clone();
-                    delete_view.update(cx, |this, cx| this.discard(id, cx)).ok();
-                },
-            ));
         }
+        let (edit_view, edit_id) = (view.clone(), post.id.clone());
+        let (discard_view, discard_id) = (view.clone(), post.id.clone());
+        items.extend(waiting_items(
+            "thread.context",
+            post,
+            away,
+            move |window, cx| {
+                edit_view
+                    .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                    .ok();
+            },
+            move |window, cx| {
+                discard_view
+                    .update(cx, |this, cx| {
+                        this.ask_discard(discard_id.clone(), window, cx)
+                    })
+                    .ok();
+            },
+        ));
         items
     }
 
@@ -1089,14 +1400,11 @@ impl RightPaneView {
         post: &Post,
         root: bool,
         highlight: MessageHighlight,
+        (away, editor): (bool, Option<&ReplyEditor>),
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let time: SharedString = match post.status {
-            PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
-            PostStatus::Pending => "Sending…".into(),
-            PostStatus::Failed => "Not sent".into(),
-        };
+        let time = post_time(post, away, cx);
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
         let (retry_view, retry_id) = (view.clone(), id.clone());
@@ -1129,7 +1437,8 @@ impl RightPaneView {
                 |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
             )
             .gutter_time(time)
-            .continuation(post.continues && !root)
+            // A queued reply keeps its header so the clock shows (#195).
+            .continuation(post.continues && !root && !queued(post, away))
             .density(message_density(cx))
             .highlight(highlight)
             .avatar(crate::avatars::with_picture(
@@ -1147,17 +1456,39 @@ impl RightPaneView {
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))
-            .child({
-                let link_view = view.clone();
-                crate::links::message_body(
-                    gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
-                    &post.body,
-                    move |url, _, cx| {
-                        let event = RightPaneEvent::OpenLink(url.clone());
-                        link_view.update(cx, |_, cx| cx.emit(event)).ok();
-                    },
-                    cx,
-                )
+            .child(match editor {
+                Some((composer, cap)) => {
+                    let (cancel, save) = (view.clone(), view.clone());
+                    post_editor(
+                        "thread.edit",
+                        composer,
+                        *cap,
+                        move |window, cx| {
+                            cancel
+                                .update(cx, |this, cx| this.cancel_edit(window, cx))
+                                .ok();
+                        },
+                        move |text, window, cx| {
+                            save.update(cx, |this, cx| this.save_edit(text, window, cx))
+                                .ok();
+                        },
+                        cx,
+                    )
+                    .into_any_element()
+                }
+                None => {
+                    let link_view = view.clone();
+                    crate::links::message_body(
+                        gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
+                        &post.body,
+                        move |url, _, cx| {
+                            let event = RightPaneEvent::OpenLink(url.clone());
+                            link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        },
+                        cx,
+                    )
+                    .into_any_element()
+                }
             })
             .children((!post.files.is_empty()).then(|| {
                 let (image_view, image_post) = (view.clone(), post.clone());
@@ -1179,11 +1510,15 @@ impl RightPaneView {
                     cx,
                 )
             }));
+        if queued(post, away) {
+            // Queued: a clock marks "Will send when back online" (#195).
+            row = row.header_child(queued_marker(&theme));
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
         // Right-click selects the row and opens its menu (design-42).
-        let items = Self::thread_items_for(view, post);
+        let items = Self::thread_items_for(view, post, away);
         let menu_view = view.clone();
         div()
             .on_mouse_down(
@@ -1208,7 +1543,8 @@ impl RightPaneView {
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let view = view.clone();
-        let count = thread.replies.len();
+        // Older replies may not be loaded yet; the server's count holds.
+        let count = thread.reply_count.max(thread.replies.len());
         let label = match count {
             1 => "1 reply".to_string(),
             n => format!("{n} replies"),
@@ -1257,17 +1593,43 @@ impl RightPaneView {
                 MessageHighlight::None
             }
         };
+        let away = self.away;
+        let editing = self.editing.as_ref().map(|editing| {
+            (
+                editing.post.clone(),
+                (editing.composer.clone(), self.composer_cap),
+            )
+        });
         let transcript =
             MessageList::new(
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&view, &model.root, true, highlight(0), cx)
+                    0 => Self::post_row(&view, &model.root, true, highlight(0), (away, None), cx)
                         .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
-                    index => match model.replies.get(index - 2) {
-                        Some(reply) => Self::post_row(&view, reply, false, highlight(index), cx)
-                            .into_any_element(),
+                    2 => view
+                        .update(cx, |this, cx| {
+                            this.request_older(cx);
+                            this.older_row(cx).into_any_element()
+                        })
+                        .unwrap_or_else(|_| div().into_any_element()),
+                    index => match model.replies.get(index - THREAD_HEAD) {
+                        Some(reply) => {
+                            let editor = editing
+                                .as_ref()
+                                .filter(|(post, _)| *post == reply.id)
+                                .map(|(_, editor)| editor);
+                            Self::post_row(
+                                &view,
+                                reply,
+                                false,
+                                highlight(index),
+                                (away, editor),
+                                cx,
+                            )
+                            .into_any_element()
+                        }
                         None => div().into_any_element(),
                     },
                 },
@@ -1276,7 +1638,7 @@ impl RightPaneView {
             .pt(theme.space(2.))
             .track_focus(&self.thread_focus)
             .selected(self.selection)
-            .selectable(|index, _| index != 1)
+            .selectable(|index, _| index == 0 || index >= THREAD_HEAD)
             .on_select({
                 let view = cx.entity().downgrade();
                 move |index, window, cx| {
@@ -1470,6 +1832,7 @@ impl RightPaneView {
                         },
                         true,
                         MessageHighlight::None,
+                        (false, None),
                         cx,
                     ))
             }))
@@ -1910,6 +2273,7 @@ impl Render for RightPaneView {
         let root = div()
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(self.discard_dialog(window, cx))
             .child(
                 Menu::new(&self.menu, "Message actions")
                     .context_area(div())
@@ -2003,6 +2367,269 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn post(id: &str) -> Post {
+        Post {
+            id: id.to_string().into(),
+            author: "Ada".into(),
+            author_id: SharedString::default(),
+            kind: crate::channel::PostKind::Regular,
+            time: 600,
+            day: "Today".into(),
+            date: SharedString::default(),
+            body: format!("Reply {id}").into(),
+            reactions: vec![],
+            mentions_me: false,
+            edited: false,
+            continues: false,
+            mine: false,
+            saved: false,
+            pinned: false,
+            status: PostStatus::Sent,
+            replies: None,
+            root_id: "root".into(),
+            reply_to: None,
+            files: vec![],
+            embeds: vec![],
+        }
+    }
+
+    /// The thread with replies `r{from}` to `r{to - 1}` of 500 loaded.
+    fn thread(replies: std::ops::Range<usize>, older: bool, failed: bool) -> ThreadModel {
+        ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: Post {
+                root_id: SharedString::default(),
+                ..post("root")
+            },
+            replies: replies.map(|i| post(&format!("r{i}"))).collect(),
+            following: false,
+            reply_count: 500,
+            older,
+            failed_older: failed,
+        }
+    }
+
+    fn pane(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (
+        Entity<RightPaneView>,
+        Rc<RefCell<Vec<RightPaneEvent>>>,
+        gpui_kit::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        let cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        (view, events, cx)
+    }
+
+    fn draw(cx: &mut gpui_kit::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// #122, with S1's measurement: a 500-reply thread opens on its newest
+    /// 50, and the 450 older ones go in above without moving the reply the
+    /// reader is looking at.
+    #[gpui_kit::test]
+    fn an_older_page_goes_in_without_moving_the_reader(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(450..500, true, false), cx)
+            })
+        });
+        draw(&mut cx);
+        // Opened at the newest reply, far from the oldest loaded one.
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+
+        let list = view.read_with(&cx, |pane, _| pane.list.clone());
+        cx.update(|_, cx| list.update(cx, |list, cx| list.scroll_to_item(THREAD_HEAD + 20, cx)));
+        draw(&mut cx);
+        let before = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(before.item_ix, THREAD_HEAD + 20);
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..500, false, false), cx)
+            })
+        });
+        draw(&mut cx);
+        let after = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(after.item_ix, before.item_ix + 450);
+        assert_eq!(after.offset_in_item, before.offset_in_item);
+        let shown = view.read_with(&cx, |pane, _| match &pane.content {
+            Some(RightPaneContent::Thread(thread)) => {
+                thread.replies[after.item_ix - THREAD_HEAD].id.clone()
+            }
+            _ => SharedString::default(),
+        });
+        assert_eq!(shown.as_ref(), "r470", "the same reply is at the top");
+        assert_eq!(list.read_with(&cx, |list, _| list.item_count()), 503);
+    }
+
+    /// Reaching the oldest loaded reply asks once for the page before it;
+    /// a failed page offers Retry instead of asking again.
+    #[gpui_kit::test]
+    fn the_oldest_reply_asks_for_the_page_before_it(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(498..500, true, false), cx)
+            })
+        });
+        draw(&mut cx);
+        draw(&mut cx);
+        let asked = |events: &[RightPaneEvent]| {
+            events
+                .iter()
+                .filter(|event| matches!(event, RightPaneEvent::LoadOlderReplies(root) if root == "root"))
+                .count()
+        };
+        assert_eq!(asked(&events.borrow()), 1);
+        assert!(view.read_with(&cx, |pane, _| pane.loading_older));
+        assert!(cx.debug_bounds("right-pane.older").is_some());
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(498..500, true, true), cx)
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(asked(&events.borrow()), 1, "a failed page waits for Retry");
+        let retry = cx
+            .debug_bounds("right-pane.older.retry")
+            .expect("Retry shows");
+        cx.simulate_click(retry.center(), Default::default());
+        draw(&mut cx);
+        assert_eq!(asked(&events.borrow()), 2);
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..500, false, false), cx)
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            asked(&events.borrow()),
+            2,
+            "at the root: nothing more to ask"
+        );
+        assert!(cx.debug_bounds("right-pane.older").is_none());
+    }
+
+    /// #195: a reply queued while offline is edited in place or discarded
+    /// from the thread, as in the channel, and sync hears of both.
+    #[gpui_kit::test]
+    fn a_queued_reply_can_be_edited_or_discarded(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let waiting = |id: &str, body: &str| Post {
+            mine: true,
+            status: PostStatus::Pending,
+            body: body.to_owned().into(),
+            // Grouped under the reply before it, which is also the user's.
+            continues: true,
+            ..post(id)
+        };
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: post("root"),
+            replies: vec![
+                waiting("me:1", "First."),
+                waiting("me:2", "Pushing the fix now."),
+            ],
+            following: true,
+            reply_count: 2,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SaveEdit { .. } | RightPaneEvent::Discard(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let body = |view: &RightPaneView, id: &str| {
+            view.reply_post(&id.into())
+                .map(|post| (post.body.to_string(), post.edited))
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                // Online, it is on its way: no menu items, no editor.
+                view.set_away(false, cx);
+                let reply = view.reply_post(&"me:2".into()).unwrap().clone();
+                assert!(!queued(&reply, view.away));
+                assert!(waiting_items("t", &reply, view.away, |_, _| {}, |_, _| {}).is_empty());
+                view.start_edit("me:2".into(), window, cx);
+                assert!(view.editing.is_none());
+
+                // Offline, it waits: the menu offers Edit and Discard…,
+                // and the row keeps its header for the clock.
+                view.set_away(true, cx);
+                assert!(queued(&reply, view.away));
+                assert_eq!(
+                    waiting_items("t", &reply, view.away, |_, _| {}, |_, _| {}).len(),
+                    3
+                );
+                view.start_edit("me:2".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Pushing the fix tonight.".into(), window, cx);
+                assert!(view.editing.is_none());
+                assert_eq!(
+                    body(view, "me:2"),
+                    Some(("Pushing the fix tonight.".to_owned(), false))
+                );
+
+                // Discard asks first, then the row goes and sync drops it.
+                view.ask_discard("me:1".into(), window, cx);
+                assert_eq!(view.discarding.as_deref(), Some("me:1"));
+                let id = view.discarding.take().unwrap();
+                view.discard(id, cx);
+                assert_eq!(body(view, "me:1"), None);
+            })
+        });
+        // The thread draws with the queued reply in it.
+        cx.run_until_parked();
+        assert_eq!(
+            *events.borrow(),
+            [
+                RightPaneEvent::SaveEdit {
+                    post: "me:2".into(),
+                    text: "Pushing the fix tonight.".into(),
+                },
+                RightPaneEvent::Discard("me:1".into()),
+            ]
+        );
+    }
 
     /// #114: each thread keeps its own reply draft; switching threads saves
     /// the one left and restores the one opened, and replying clears it.
@@ -2015,7 +2642,9 @@ mod tests {
         });
         let posts = crate::preview::channel("general").unwrap().posts;
         let thread = |index: usize| {
-            RightPaneContent::Thread(crate::preview::thread("general", &posts[index].id).unwrap())
+            RightPaneContent::Thread(Box::new(
+                crate::preview::thread("general", &posts[index].id).unwrap(),
+            ))
         };
         let (first, second) = (thread(0), thread(1));
         let (pane, cx) = cx.add_window_view(|window, cx| RightPaneView::new("me", window, cx));

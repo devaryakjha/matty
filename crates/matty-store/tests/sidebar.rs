@@ -316,6 +316,33 @@ fn sidebar_snapshot_orders_categories_and_channels_and_names_dms() {
 }
 
 #[test]
+fn a_dm_row_carries_the_partners_names_for_the_name_format() {
+    let store = seeded();
+    let conn = store.conn();
+    let mut alice = user("u1", "alice");
+    alice.first_name = "Alice".into();
+    alice.last_name = "Liddell".into();
+    alice.nickname = "Al".into();
+    sidebar::upsert_users(conn, &[alice]).unwrap();
+    let sections = sidebar::sidebar_snapshot(conn, "t1", ME, UnreadMode::AllPosts).unwrap();
+    let dm = sections[2]
+        .channels
+        .iter()
+        .find(|c| c.dm_user_id.as_deref() == Some("u1"))
+        .unwrap();
+    // The stored name stays the username; the app formats from the parts.
+    assert_eq!(dm.display_name, "alice");
+    let person = dm.dm_user.as_ref().unwrap();
+    assert_eq!(person.id, "u1");
+    assert_eq!(person.username, "alice");
+    assert_eq!(person.first_name, "Alice");
+    assert_eq!(person.last_name, "Liddell");
+    assert_eq!(person.nickname, "Al");
+    // Channels other than direct messages carry no person.
+    assert!(sections[1].channels.iter().all(|c| c.dm_user.is_none()));
+}
+
+#[test]
 fn sidebar_snapshot_counts_per_crt_mode() {
     let store = seeded();
     let unread = |mode| {
