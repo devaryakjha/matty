@@ -159,7 +159,9 @@ pub fn format_keys(macos: &str, other: &str) -> gpui_kit::SharedString {
 /// Tooltip text for the send button: `label` and the key that sends.
 pub fn send_tooltip(label: &str, send_on: crate::settings::SendKey) -> gpui_kit::SharedString {
     let keys = match send_on {
-        crate::settings::SendKey::Enter => format_keys("enter", "enter"),
+        crate::settings::SendKey::Enter | crate::settings::SendKey::CodeBlocks => {
+            format_keys("enter", "enter")
+        }
         crate::settings::SendKey::ModEnter => format_keys("cmd-enter", "ctrl-enter"),
     };
     format!("{label}  {keys}").into()

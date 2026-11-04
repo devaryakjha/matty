@@ -129,6 +129,16 @@ impl ThreadQuery {
         }
     }
 
+    /// The newest `per_page` replies, with the root; page further back with
+    /// [`ThreadQuery::from`] and [`Direction::Up`] while `has_next`.
+    pub fn latest(per_page: u32) -> Self {
+        Self {
+            direction: Direction::Up,
+            per_page,
+            ..Self::default()
+        }
+    }
+
     /// `per_page` posts after `post` (created at `create_at`) in `direction`.
     pub fn from(
         post: impl Into<String>,

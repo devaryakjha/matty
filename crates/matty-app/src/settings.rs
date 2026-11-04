@@ -3,7 +3,9 @@
 //! Stored as JSON in the OS config directory. Writes are atomic (temporary
 //! file, then rename) and run on the background executor. Keys this version
 //! does not know are kept, so an older Matty never drops a newer one's
-//! settings. Server-synced preferences live in the store, not here.
+//! settings. Server-synced preferences live in the store; the few that
+//! Preferences shows (message display, clock, name format, send key) are
+//! mirrored here too, so they apply before sync connects (#156, #157).
 
 use std::{
     io,
@@ -55,7 +57,8 @@ pub enum RemoteImages {
 }
 
 /// Which key sends a message from the composer; the other inserts a
-/// newline.
+/// newline. Mirrors the account's `advanced_settings/send_on_ctrl_enter`
+/// and `code_block_ctrl_enter` (#157).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendKey {
@@ -63,6 +66,34 @@ pub enum SendKey {
     Enter,
     /// Ctrl+Enter, or Cmd+Enter on macOS.
     ModEnter,
+    /// Enter, except in a code block that is still open (an odd number of
+    /// ``` fences), where Enter starts a new line and Ctrl+Enter sends.
+    CodeBlocks,
+}
+
+impl SendKey {
+    /// Whether Enter sends `text` as typed so far.
+    pub fn submits_on_enter(self, text: &str) -> bool {
+        match self {
+            Self::Enter => true,
+            Self::ModEnter => false,
+            Self::CodeBlocks => text.matches("```").count().is_multiple_of(2),
+        }
+    }
+}
+
+/// How people's names read: Mattermost's "Teammate name display", the
+/// account's `display_settings/name_format` (#156).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameFormat {
+    /// The username.
+    Username,
+    /// The nickname, else the full name, else the username.
+    #[default]
+    NicknameFullName,
+    /// The full name, else the username.
+    FullName,
 }
 
 /// How much room a message row takes (PLAN §4.2 display).
@@ -162,6 +193,8 @@ pub struct Settings {
     /// Enter sends by default; Ctrl+Enter for people who write in paragraphs.
     pub send_on: SendKey,
     pub display: MessageDisplay,
+    /// How people's names read in messages, threads and profiles.
+    pub name_format: NameFormat,
     /// Turns off the eases on panes, banners and disclosures (DESIGN.md §1);
     /// the OS reduced-motion setting does the same on its own.
     pub reduce_motion: bool,
@@ -192,6 +225,7 @@ impl Default for Settings {
             clock: ClockFormat::TwentyFourHour,
             send_on: SendKey::Enter,
             display: MessageDisplay::Standard,
+            name_format: NameFormat::NicknameFullName,
             reduce_motion: false,
             account: None,
             recent_searches: Vec::new(),
@@ -421,6 +455,16 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn code_blocks_only_holds_enter_inside_an_open_fence() {
+        let key = SendKey::CodeBlocks;
+        assert!(key.submits_on_enter("plain text"));
+        assert!(!key.submits_on_enter("```rust\nfn main() {}"));
+        assert!(key.submits_on_enter("```rust\nfn main() {}\n```"));
+        assert!(SendKey::Enter.submits_on_enter("```"));
+        assert!(!SendKey::ModEnter.submits_on_enter("plain"));
     }
 
     #[test]
