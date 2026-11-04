@@ -390,6 +390,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   reader asked for that row. A jump to a post that is not loaded yet waits
   for the channel or page that carries it (`ChannelView::jump_to`).
 
+- **Keyboard message selection** (PLAN §4.2): Shift+Tab from the composer
+  selects the newest post and gpuicn's `MessageHighlight::Selected` marks
+  it, keeping its action bar visible; Up and Down move the selection and
+  Escape returns focus to the composer (`design-40`). Single keys act on
+  the selected post: R replies, E edits and Delete removes your own, + opens
+  the emoji picker, P pins, S saves, U marks unread from there. Keys with a
+  modifier stay with the keymap, and nothing fires while no post is
+  selected, so ordinary typing is never stolen.
+
 ## 5. Components
 
 - Every control is a gpuicn component with default styling; Matty passes

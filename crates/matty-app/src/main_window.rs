@@ -399,6 +399,17 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
+                ChannelEvent::MarkUnread(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::MarkUnread {
+                            post_id: post.to_string(),
+                        });
+                    }
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+                    }
+                }
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
