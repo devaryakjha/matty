@@ -44,7 +44,7 @@ pub fn route(url: &str, server: Option<&str>, teams: &[&str]) -> LinkTarget {
         return entity_target(entity);
     }
     server
-        .and_then(|server| server_target(url, server, teams))
+        .and_then(|server| server_target(url, server, Some(teams)))
         .unwrap_or_else(|| LinkTarget::External(url.to_owned()))
 }
 
@@ -65,9 +65,18 @@ fn entity_target(entity: &str) -> LinkTarget {
     }
 }
 
+/// Whether `url` is a post, channel or direct message page of `server`,
+/// whichever team it names: a link Matty can open once it shows that
+/// server (#206), whose teams it does not know until then.
+pub fn opens_on(url: &str, server: &str) -> bool {
+    server_target(url, server, None).is_some()
+}
+
 /// A link into this server's web app: `{server}/{team}/pl/{post_id}`,
 /// `{server}/{team}/channels/{name}` or `{server}/{team}/messages/@{user}`.
-fn server_target(url: &str, server: &str, teams: &[&str]) -> Option<LinkTarget> {
+/// With `teams`, a channel or direct message link opens only through one
+/// of them; with `None`, through any.
+fn server_target(url: &str, server: &str, teams: Option<&[&str]>) -> Option<LinkTarget> {
     let url = url::Url::parse(url).ok()?;
     let server = url::Url::parse(server).ok()?;
     if url.origin() != server.origin() {
@@ -85,7 +94,8 @@ fn server_target(url: &str, server: &str, teams: &[&str]) -> Option<LinkTarget> 
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
     };
-    let known = teams.iter().any(|known| known.eq_ignore_ascii_case(team));
+    let known =
+        teams.is_none_or(|teams| teams.iter().any(|known| known.eq_ignore_ascii_case(team)));
     match *kind {
         // A post id names one post on the server, whichever team the link
         // went through.
