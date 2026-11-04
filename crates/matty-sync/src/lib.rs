@@ -29,6 +29,8 @@ pub use change::{
 pub use engine::Command;
 /// Where an account's database lives.
 pub use matty_store::default_path as database_path;
+/// Deletes an account's database and media cache after sign out.
+pub use matty_store::forget as forget_account;
 /// Where an account's media cache lives.
 pub use matty_store::media::default_dir as media_dir;
 pub use matty_store::outbox::Outgoing;
