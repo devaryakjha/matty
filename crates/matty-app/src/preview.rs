@@ -107,6 +107,12 @@ pub fn login() -> Option<LoginModel> {
     })
 }
 
+/// `MATTY_PREVIEW=thumbnails-loading` shows Lena's images before their
+/// thumbnails arrive (#105).
+fn thumbnails_arrived() -> bool {
+    std::env::var("MATTY_PREVIEW").as_deref() != Ok("thumbnails-loading")
+}
+
 /// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
 pub fn connection() -> crate::main_window::ConnectionState {
     use crate::main_window::ConnectionState;
@@ -126,7 +132,9 @@ pub fn queued() -> usize {
 pub fn teams() -> Vec<Team> {
     vec![
         Team::new("matty", "Matty"),
-        Team::new("design-guild", "Design Guild").mentions(3),
+        Team::new("design-guild", "Design Guild")
+            .mentions(3)
+            .icon(1),
         Team::new("open-source", "Open Source").unread(),
     ]
 }
@@ -139,7 +147,10 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
-        unread_threads: 2,
+        // What `threads()` holds; it reads the channels, so it cannot be
+        // asked here.
+        unread_threads: 3,
+        thread_mentions: 1,
         drafts: 2,
         drafted: ["design".into()].into_iter().collect(),
         categories: preview_kinds(vec![
@@ -219,6 +230,25 @@ pub fn file_name(file_id: &str) -> Option<String> {
         .map(|file| file.name.to_string())
 }
 
+/// The review notes' download, for its card (#151):
+/// `MATTY_PREVIEW=downloading` shows it arriving, `downloaded` saved, and
+/// `download-failed` failed; any other preview shows none.
+pub fn downloads() -> crate::attachments::Downloads {
+    use crate::attachments::{Downloads, FileDownload};
+    let state = match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+        Some("downloading") => FileDownload::Downloading {
+            received: 1_056_965,
+            total: Some(2_516_582),
+        },
+        Some("downloaded") => {
+            FileDownload::Saved(crate::main_window::download_folder(None).join("review-notes.pdf"))
+        }
+        Some("download-failed") => FileDownload::Failed,
+        _ => return Downloads::default(),
+    };
+    Downloads([("f-notes".into(), state)].into_iter().collect())
+}
+
 /// `MATTY_PREVIEW_POSTS=<n>` fills `general` with `n` posts, the fixtures
 /// over and over, for scrolling a long channel (`scripts/perf-run`, #174).
 pub fn long_posts() -> Option<usize> {
@@ -292,6 +322,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     &["Sam Okafor", "Lena Fischer", "Jonas Weber"],
                 ),
                 reaction("🚀", 2, false, &["Sam Okafor", "Priya Nair"]),
+                reaction(
+                    ":shipit:",
+                    3,
+                    false,
+                    &["Lena Fischer", "Priya Nair", "Jonas Weber"],
+                ),
             ],
             replies: Some(ReplySummary {
                 count: 1,
@@ -300,14 +336,15 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Lena Fischer".into()],
                 participant_ids: vec![person("Lena Fischer")],
                 following: false,
-                unread: true,
+                unread_replies: 1,
+                unread_mentions: 0,
             }),
             ..post(
                 "p2",
                 "Sam Okafor",
                 "09:14",
                 "Yesterday",
-                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there.",
+                "Thanks! Notes are in ~release-2026-11, and the checklist is pinned there. :shipit:",
             )
         },
         Post {
@@ -408,7 +445,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
                 participant_ids: vec![person("Arya"), person("Jonas Weber")],
                 following: true,
-                unread: false,
+                unread_replies: 0,
+                unread_mentions: 0,
             }),
             ..post(
                 "p5",
@@ -465,9 +503,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup".into(),
                 name: "sidebar-mockup.png".into(),
                 size: 48_312,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },
@@ -475,9 +515,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 id: "f-mockup-dark".into(),
                 name: "sidebar-mockup-dark.png".into(),
                 size: 51_904,
-                preview: Some(UploadSource::Image(attachments::png(include_bytes!(
-                    "../assets/preview/mockup-dark.png"
-                )))),
+                preview: thumbnails_arrived().then(|| {
+                    UploadSource::Image(attachments::png(include_bytes!(
+                        "../assets/preview/mockup-dark.png"
+                    )))
+                }),
                 width: 640,
                 height: 400,
             },
@@ -869,8 +911,6 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
     ]
 }
 
-/// What the composer tray shows after Attach: a thumbnail, a file still
-/// uploading and one that failed.
 /// The team's public channels for Browse: the sidebar's plus five more.
 pub fn directory() -> Vec<DirectoryChannel> {
     let joined: Vec<SharedString> = sidebar()
@@ -988,6 +1028,8 @@ pub fn empty_channel(
     }
 }
 
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed; offline, all three queued.
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -995,7 +1037,7 @@ pub fn uploads() -> Vec<Upload> {
     )
     .ready(48_312);
     mockup.name = "sidebar-mockup.png".into();
-    vec![
+    let uploads = vec![
         mockup,
         Upload {
             id: "u-notes".into(),
@@ -1003,6 +1045,7 @@ pub fn uploads() -> Vec<Upload> {
             size: 2_516_582,
             source: UploadSource::Path("release-notes.pdf".into()),
             status: AttachmentStatus::Uploading(0.6),
+            queued: false,
         },
         Upload {
             id: "u-log".into(),
@@ -1010,8 +1053,15 @@ pub fn uploads() -> Vec<Upload> {
             size: 918_000,
             source: UploadSource::Path("matty-2026-11-03.log".into()),
             status: AttachmentStatus::Failed,
+            queued: false,
         },
-    ]
+    ];
+    // `MATTY_PREVIEW=offline`: each file waits for the connection (#194).
+    if connection() == crate::main_window::ConnectionState::Offline {
+        uploads.into_iter().map(Upload::queued).collect()
+    } else {
+        uploads
+    }
 }
 
 /// A screen recording over the default 100 MB limit, which the tray
@@ -1023,6 +1073,7 @@ pub fn oversize_upload() -> Upload {
         size: 251_658_240,
         source: UploadSource::Path("screen-recording.mov".into()),
         status: AttachmentStatus::Uploading(0.),
+        queued: false,
     }
 }
 
@@ -1043,6 +1094,7 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
     [
         ("desktop", "mention"),
         ("mention_keys", "arya,@arya,release,design review"),
+        ("highlight_keys", "incident"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -1099,6 +1151,35 @@ pub fn avatars() -> crate::avatars::Avatars {
         }
     }
     avatars
+}
+
+/// The fixtures' custom emoji (`:shipit:`) and team icon (Design Guild),
+/// as sync would hand them over (#153).
+pub fn share_pictures(cx: &mut gpui_kit::App) {
+    let custom = crate::emoji::CustomEmoji::default();
+    custom.set(&[matty_api::models::Emoji {
+        id: "e-shipit".into(),
+        name: "shipit".into(),
+        update_at: 1,
+        ..Default::default()
+    }]);
+    let emoji = crate::avatars::EmojiImages::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/emoji-shipit.png"),
+        "image/png",
+    ) {
+        emoji.landed("e-shipit", 1, Some(image));
+    }
+    let icons = crate::avatars::TeamIcons::default();
+    if let Some(image) = crate::avatars::picture(
+        include_bytes!("../assets/preview/team-design-guild.png"),
+        "image/png",
+    ) {
+        icons.landed("design-guild", 1, Some(image));
+    }
+    cx.set_global(custom);
+    cx.set_global(emoji);
+    cx.set_global(icons);
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
@@ -1209,40 +1290,43 @@ pub fn threads() -> ThreadsModel {
             summary,
         })
     };
-    let summary = |count, last: &str, participants: &[&str], unread| ReplySummary {
-        count,
-        last_time: if last.contains(':') { hm(last) } else { 0 },
-        last_day: if last.contains(':') {
-            "Today".into()
-        } else {
-            last.into()
-        },
-        participants: participants.iter().map(|name| (*name).into()).collect(),
-        participant_ids: participants.iter().map(|name| person(name)).collect(),
-        following: true,
-        unread,
+    let summary = |count, last: &str, participants: &[&str], (unread_replies, unread_mentions)| {
+        ReplySummary {
+            count,
+            last_time: if last.contains(':') { hm(last) } else { 0 },
+            last_day: if last.contains(':') {
+                "Today".into()
+            } else {
+                last.into()
+            },
+            participants: participants.iter().map(|name| (*name).into()).collect(),
+            participant_ids: participants.iter().map(|name| person(name)).collect(),
+            following: true,
+            unread_replies,
+            unread_mentions,
+        }
     };
     ThreadsModel {
         threads: [
             row(
                 "general",
                 "p2",
-                summary(1, "10:02", &["Lena Fischer"], true),
+                summary(1, "10:02", &["Lena Fischer"], (1, 0)),
             ),
             row(
                 "design",
                 "p6",
-                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], true),
+                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], (2, 1)),
             ),
             row(
                 "general",
                 "p5",
-                summary(12, "08:13", &["Arya", "Jonas Weber"], false),
+                summary(12, "08:13", &["Arya", "Jonas Weber"], (3, 0)),
             ),
             row(
                 "help-desk",
                 "p8",
-                summary(3, "Yesterday", &["Arya", "Sam Okafor"], false),
+                summary(3, "Yesterday", &["Arya", "Sam Okafor"], (0, 0)),
             ),
         ]
         .into_iter()
@@ -1366,6 +1450,13 @@ mod tests {
         assert!(!profiles().is_empty());
         assert!(!drafts().drafts.is_empty());
         assert!(!threads().threads.is_empty());
+    }
+
+    #[test]
+    fn the_sidebar_counts_the_preview_threads() {
+        let (sidebar, threads) = (sidebar(), threads());
+        assert_eq!(sidebar.unread_threads, threads.unread());
+        assert_eq!(sidebar.thread_mentions, threads.mentions());
     }
 
     #[test]

@@ -133,13 +133,14 @@ impl MainWindow {
             })
             .unwrap_or_default();
         if let Some(live) = self.live.as_mut() {
-            let file_ids = live.take_file_ids(&files);
+            let (file_ids, local_files) = live.take_files(&files);
             live.send(matty_sync::Command::SendPost {
                 pending_post_id: String::new(),
                 channel_id: draft.channel_id.to_string(),
                 root_id: key.root_id.to_string(),
                 message: draft.body.to_string(),
                 file_ids,
+                local_files,
                 props: crate::embeds::send_props(true),
             });
         }

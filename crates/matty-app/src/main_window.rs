@@ -72,6 +72,38 @@ pub enum ConnectionState {
     Demo,
 }
 
+/// What the connection banner says for `state` with `queued` messages
+/// waiting, and whether it is the offline one (with Retry now); `None`
+/// when online (#162).
+fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, bool)> {
+    let (text, offline): (SharedString, bool) = match state {
+        ConnectionState::Online => return None,
+        ConnectionState::Reconnecting { attempt } if *attempt <= 1 => {
+            ("Connection lost. Reconnecting…".into(), false)
+        }
+        ConnectionState::Reconnecting { attempt } => (
+            format!("Connection lost. Reconnecting (attempt {attempt})…").into(),
+            false,
+        ),
+        ConnectionState::Offline => (
+            "You're offline. Matty shows what it has and sends when you're back.".into(),
+            true,
+        ),
+        ConnectionState::Demo => (
+            "This is a demo workspace with sample data. Nothing you do here leaves your browser."
+                .into(),
+            false,
+        ),
+    };
+    // What is waiting goes when the connection is back (#195).
+    let text = match queued {
+        0 => text,
+        1 => format!("{text} 1 message waiting to send.").into(),
+        n => format!("{text} {n} messages waiting to send.").into(),
+    };
+    Some((text, offline))
+}
+
 /// `chat.example.com` from `https://chat.example.com`.
 fn host(url: &str) -> String {
     url.split_once("://")
@@ -167,9 +199,13 @@ pub struct MainWindow {
     preferences: DialogHandle,
     /// The section Preferences shows (#155).
     preferences_section: preferences::Section,
-    /// Preferences' mention keywords, saved to the server on Enter or when
-    /// the field loses focus (#192).
+    /// Preferences' field for a new mention keyword, added on Enter or
+    /// when the field loses focus (#192).
     keywords: Entity<InputState>,
+    /// Preferences' field for a new highlight-only keyword (#192).
+    highlight_keywords: Entity<InputState>,
+    /// The server takes `highlight_keys`: it is licensed (#192).
+    highlight_keys: bool,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
@@ -216,9 +252,6 @@ pub struct MainWindow {
     toasts: Entity<ToastState>,
     /// Update checks and the "Restart to update" toast (#180).
     _updater: Entity<crate::updater::UpdatePrompt>,
-    /// Files asked for and not yet saved, oldest first, so a failed
-    /// download can offer Retry when only one was in flight.
-    downloads: std::collections::VecDeque<SharedString>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
@@ -343,6 +376,8 @@ impl MainWindow {
         });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
+            crate::preview::share_pictures(cx);
+            cx.set_global(crate::preview::downloads());
         }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
@@ -471,9 +506,11 @@ impl MainWindow {
         cx.subscribe(&threads, |this, threads, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
             let unread = threads.read(cx).model().unread();
+            let mentions = threads.read(cx).model().mentions();
             this.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
             let Some(live) = &mut this.live else {
@@ -530,13 +567,14 @@ impl MainWindow {
                     unfurl,
                 } => {
                     if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
-                        let file_ids = live.take_file_ids(files);
+                        let (file_ids, local_files) = live.take_files(files);
                         live.send(matty_sync::Command::SendPost {
                             pending_post_id: String::new(),
                             channel_id: channel.to_string(),
                             root_id: String::new(),
                             message: text.to_string(),
                             file_ids,
+                            local_files,
                             props: crate::embeds::send_props(*unfurl),
                         });
                     }
@@ -894,20 +932,23 @@ impl MainWindow {
         )
         .detach();
         let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
-        let keywords = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
-            if let Some(props) = &preview_props {
-                let text = matty_notify::mention::keywords_text("arya", props);
-                input.set_value(text, window, cx);
-            }
-            input
-        });
-        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                this.save_keywords(cx);
-            }
-        })
-        .detach();
+        let keyword_input =
+            |list: matty_notify::KeywordList, window: &mut Window, cx: &mut Context<Self>| {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a keyword"));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                            this.add_keywords(list, window, cx);
+                        }
+                    },
+                )
+                .detach();
+                input
+            };
+        let keywords = keyword_input(matty_notify::KeywordList::Mention, window, cx);
+        let highlight_keywords = keyword_input(matty_notify::KeywordList::Highlight, window, cx);
         let level = settings.read(cx).get().log_level;
         let log_level = cx.new(|cx| {
             let mut state = SelectState::new(
@@ -964,6 +1005,8 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             preferences_section: preferences::Section::default(),
             keywords,
+            highlight_keywords,
+            highlight_keys: crate::preview::enabled(),
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
             badge: matty_notify::Badge::Clear,
@@ -985,7 +1028,6 @@ impl MainWindow {
             threads,
             toasts,
             _updater,
-            downloads: Default::default(),
             threads_open: false,
             drafts,
             drafts_open: false,
@@ -1109,7 +1151,7 @@ impl MainWindow {
                 return;
             }
         };
-        cx.set_global(live.avatars());
+        live.share_pictures(cx);
         let mut live = live;
         // Nothing is on screen yet, so the update has nothing to show.
         let _ = live.set_names(self.settings.read(cx).get().name_format);
@@ -1157,6 +1199,22 @@ impl MainWindow {
             return;
         };
         live.track_upload(&id, job.clone());
+        if live.is_offline() {
+            // Offline: the file waits here and goes with its post through
+            // the outbox, or uploads when the connection is back (#194).
+            match crate::attachments::keep_for_outbox(&id, &job.name, &job.source) {
+                Ok(path) => {
+                    live.queue_upload(&id, path);
+                    self.set_upload_queued(&id, window, cx);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not keep a file to upload later");
+                    let failed = crate::attachments::AttachmentStatus::Failed;
+                    self.set_upload_status(&id, failed, window, cx);
+                }
+            }
+            return;
+        }
         cx.spawn_in(window, async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move {
@@ -1214,15 +1272,38 @@ impl MainWindow {
         }
     }
 
+    /// Tells the tray a file waits for the connection (#194).
+    fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id.starts_with(crate::right_pane::UPLOAD_PREFIX) {
+            self.right_pane
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
+        } else {
+            self.channel
+                .update(cx, |view, cx| view.set_upload_queued(id, window, cx));
+        }
+    }
+
     /// Saves a post's file to the download folder; it opens once saved
-    /// (see [`open_download`]).
+    /// (see [`open_download`]). A file already saved this run opens again
+    /// from where it went, and one on its way is left to arrive (#151).
     fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
+        use crate::attachments::{Downloads, FileDownload};
+        match Downloads::get(cx, file_id) {
+            Some(FileDownload::Downloading { .. }) => return,
+            Some(FileDownload::Saved(path)) if path.exists() => {
+                let path = path.clone();
+                open_download(&path, cx);
+                return;
+            }
+            _ => {}
+        }
         let Some(live) = &self.live else {
             if let Some(name) = crate::preview::file_name(file_id) {
-                // Preview has no server: show the toast a finished download
-                // would.
-                let folder = dirs::download_dir().unwrap_or_else(fallback_folder);
-                self.push_download_toast(&folder.join(name), cx);
+                // Preview has no server: show the card and toast a finished
+                // download would.
+                let path = download_folder(None).join(name);
+                self.set_download(file_id.clone(), FileDownload::Saved(path.clone()), cx);
+                self.push_download_toast(&path, cx);
             }
             return;
         };
@@ -1230,21 +1311,63 @@ impl MainWindow {
             tracing::warn!(%file_id, "no such file on screen");
             return;
         };
-        let folder = self
-            .settings
-            .read(cx)
-            .get()
-            .download_folder
-            .clone()
-            .or_else(dirs::download_dir)
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(fallback_folder);
-        self.downloads.push_back(file_id.clone());
+        let folder = download_folder(self.settings.read(cx).get().download_folder.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
             folder,
             name,
         });
+        let starting = FileDownload::Downloading {
+            received: 0,
+            total: None,
+        };
+        self.set_download(file_id.clone(), starting, cx);
+    }
+
+    /// Records where a download is and redraws the cards that show it.
+    fn set_download(
+        &mut self,
+        file_id: SharedString,
+        state: crate::attachments::FileDownload,
+        cx: &mut Context<Self>,
+    ) {
+        crate::attachments::Downloads::set(cx, file_id, state);
+        self.channel.update(cx, |_, cx| cx.notify());
+        self.right_pane.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Takes sync's report on a download: progress on the card, then the
+    /// saved file opened with a toast, or a failure with Retry.
+    fn on_download(
+        &mut self,
+        file_id: SharedString,
+        state: matty_sync::DownloadState,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attachments::FileDownload;
+        match state {
+            matty_sync::DownloadState::Progress { received, total } => {
+                self.set_download(file_id, FileDownload::Downloading { received, total }, cx);
+            }
+            matty_sync::DownloadState::Done(path) => {
+                self.set_download(file_id, FileDownload::Saved(path.clone()), cx);
+                open_download(&path, cx);
+                self.push_download_toast(&path, cx);
+            }
+            matty_sync::DownloadState::Failed(error) => {
+                tracing::warn!(%error, %file_id, "download failed");
+                self.set_download(file_id.clone(), FileDownload::Failed, cx);
+                let view = cx.entity().downgrade();
+                self.push_error_with(
+                    format!("Couldn't download the file: {error}"),
+                    Some(Box::new(move |_, cx| {
+                        view.update(cx, |this, cx| this.download_file(&file_id, cx))
+                            .ok();
+                    })),
+                    cx,
+                );
+            }
+        }
     }
 
     /// Tells the user a file was saved: the file name as the title, the
@@ -1298,6 +1421,7 @@ impl MainWindow {
             root_id: String::new(),
             message: link,
             file_ids: Vec::new(),
+            local_files: Vec::new(),
             props: crate::embeds::send_props(true),
         });
         let name = self.channel_name(to, cx);
@@ -1681,43 +1805,18 @@ impl MainWindow {
             self.channel
                 .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
-        if let Some(download) = update.download {
-            match download {
-                matty_sync::DownloadState::Done(path) => {
-                    self.downloads.pop_front();
-                    open_download(&path, cx);
-                    self.push_download_toast(&path, cx);
-                }
-                matty_sync::DownloadState::Failed(error) => {
-                    tracing::warn!(%error, "download failed");
-                    // Sync does not say which file failed, so Retry only
-                    // shows when there was one.
-                    let only = (self.downloads.len() == 1)
-                        .then(|| self.downloads.pop_front())
-                        .flatten();
-                    if only.is_none() {
-                        self.downloads.pop_front();
-                    }
-                    let text = format!("Couldn't download the file: {error}");
-                    match only {
-                        Some(file_id) => {
-                            let view = cx.entity().downgrade();
-                            self.push_error_with(
-                                text,
-                                Some(Box::new(move |_, cx| {
-                                    view.update(cx, |this, cx| this.download_file(&file_id, cx))
-                                        .ok();
-                                })),
-                                cx,
-                            );
-                        }
-                        None => self.push_error(text, cx),
-                    }
-                }
-            }
+        if let Some((file_id, state)) = update.download {
+            self.on_download(file_id, state, cx);
         }
         if let Some((id, status)) = update.upload {
             self.set_upload_status(&id, status, window, cx);
+        }
+        for id in update.resume_uploads {
+            if let Some(job) = self.live.as_ref().and_then(|live| live.upload_job(&id)) {
+                let sending = crate::attachments::AttachmentStatus::Uploading(0.);
+                self.set_upload_status(&id, sending, window, cx);
+                self.start_upload(id, job, window, cx);
+            }
         }
         if let Some(bytes) = update.max_file_size {
             self.channel
@@ -1749,13 +1848,12 @@ impl MainWindow {
             self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
-            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
-            self.keywords.update(cx, |input, cx| {
-                if input.value() != text.as_str() {
-                    input.set_value(text, window, cx);
-                }
-            });
             self.notify_props = Some(props);
+            cx.notify();
+        }
+        if let Some(on) = update.highlight_keys {
+            self.highlight_keys = on;
+            cx.notify();
         }
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
@@ -1774,12 +1872,13 @@ impl MainWindow {
             }
         }
         if let Some(model) = update.threads {
-            let unread = model.unread();
+            let (unread, mentions) = (model.unread(), model.mentions());
             self.threads
                 .update(cx, |view, cx| view.set_model(model, cx));
             self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
         }
@@ -2009,10 +2108,8 @@ impl MainWindow {
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
 
-    /// Shows `id` in the channel view and marks it in the sidebar. Until
-    /// sync lands only the preview fixtures have content.
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post.
+    /// its post, or with a thread reply's thread open at the reply.
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -2022,13 +2119,30 @@ impl MainWindow {
         cx.activate(true);
         window.activate_window();
         self.open_channel(clicked.channel_id.into(), window, cx);
-        if !clicked.post_id.is_empty() {
+        if !clicked.root_id.is_empty() {
+            // A thread reply opens its thread at the reply (#141): with
+            // collapsed threads on, the channel does not show it. The
+            // channel goes to the root, which it always shows.
+            let root: gpui_kit::SharedString = clicked.root_id.into();
+            let post: gpui_kit::SharedString = if clicked.post_id.is_empty() {
+                root.clone()
+            } else {
+                clicked.post_id.into()
+            };
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(root.clone(), cx));
+            self.open_thread(root.clone(), cx);
+            self.right_pane
+                .update(cx, |pane, cx| pane.jump_to(root, post, cx));
+        } else if !clicked.post_id.is_empty() {
             let post = clicked.post_id.into();
             self.channel
                 .update(cx, |channel, cx| channel.jump_to(post, cx));
         }
     }
 
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,
@@ -2679,13 +2793,14 @@ impl MainWindow {
                 if let Some(live) = &mut self.live
                     && let Some(channel_id) = live.thread_channel()
                 {
-                    let file_ids = live.take_file_ids(files);
+                    let (file_ids, local_files) = live.take_files(files);
                     live.send(matty_sync::Command::SendPost {
                         pending_post_id: String::new(),
                         channel_id,
                         root_id: root.to_string(),
                         message: text.to_string(),
                         file_ids,
+                        local_files,
                         props: crate::embeds::send_props(*unfurl),
                     });
                 }
@@ -2719,6 +2834,13 @@ impl MainWindow {
                     live.send(matty_sync::Command::EditPost {
                         post_id: post.to_string(),
                         message: text.to_string(),
+                    });
+                }
+            }
+            RightPaneEvent::Delete(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::DeletePost {
+                        post_id: post.to_string(),
                     });
                 }
             }
@@ -3341,42 +3463,21 @@ impl MainWindow {
         } else {
             &self.banner_last
         };
-        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) = match state {
-            ConnectionState::Online => return None,
-            ConnectionState::Reconnecting { attempt } => (
-                crate::ui::spinner::Spinner::new("banner.spinner")
-                    .color(theme.colors.muted_foreground)
-                    .into_any_element(),
-                if *attempt <= 1 {
-                    "Connection lost. Reconnecting…".into()
-                } else {
-                    format!("Connection lost. Reconnecting (attempt {attempt})…").into()
-                },
-                false,
-            ),
-            ConnectionState::Demo => (
-                lucide(LucideIcon::Sparkles)
-                    .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(theme.colors.primary)
-                    .into_any_element(),
-                "This is a demo workspace with sample data. Nothing you do here leaves your browser."
-                    .into(),
-                false,
-            ),
-            ConnectionState::Offline => (
-                lucide(LucideIcon::WifiOff)
-                    .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(theme.colors.destructive)
-                    .into_any_element(),
-                "You're offline. Matty shows what it has and sends when you're back.".into(),
-                true,
-            ),
-        };
-        // What is waiting goes when the connection is back (#195).
-        let text: SharedString = match self.queued {
-            0 => text,
-            1 => format!("{text} 1 message waiting to send.").into(),
-            n => format!("{text} {n} messages waiting to send.").into(),
+        let (text, offline) = banner_text(state, self.queued)?;
+        let icon: gpui_kit::AnyElement = if offline {
+            lucide(LucideIcon::WifiOff)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.destructive)
+                .into_any_element()
+        } else if matches!(state, ConnectionState::Demo) {
+            lucide(LucideIcon::Sparkles)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.primary)
+                .into_any_element()
+        } else {
+            crate::ui::spinner::Spinner::new("banner.spinner")
+                .color(theme.colors.muted_foreground)
+                .into_any_element()
         };
         let foreground = if offline {
             theme.colors.destructive
@@ -3547,7 +3648,11 @@ impl MainWindow {
             })
             .flatten();
         let app = matty_notify::AppState {
-            dnd: self.account.read(cx).account().presence == crate::sidebar::Presence::Dnd,
+            dnd: {
+                let account = self.account.read(cx).account();
+                account.presence == crate::sidebar::Presence::Dnd
+                    && matty_notify::dnd_active(account.dnd_end, jiff::Timestamp::now().as_second())
+            },
             focused: window.is_window_active(),
             visible_channel: (!self.threads_open && !self.drafts_open)
                 .then(|| self.selected_channel.as_ref().map(|id| id.to_string()))
@@ -4120,6 +4225,15 @@ fn sync_drawer(
     false
 }
 
+/// Where downloads go: the chosen folder, else the system's Downloads
+/// folder, else home, else the temporary folder.
+pub(crate) fn download_folder(chosen: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    chosen
+        .or_else(dirs::download_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(fallback_folder)
+}
+
 /// Opens a saved file in its app when it is a kind that only shows
 /// content; anything else, such as a program or a script, is shown in its
 /// folder for the user to decide (PLAN §4.6 Files).
@@ -4157,7 +4271,42 @@ fn fallback_folder() -> std::path::PathBuf {
 mod tests {
     use std::path::Path;
 
-    use super::{Seen, opens_safely};
+    use super::{ConnectionState, Seen, banner_text, opens_safely};
+
+    #[test]
+    fn the_banner_says_what_the_connection_is_doing() {
+        let say = |state, queued| {
+            banner_text(&state, queued).map(|(text, offline)| (text.to_string(), offline))
+        };
+        assert_eq!(say(ConnectionState::Online, 0), None);
+        assert_eq!(
+            say(ConnectionState::Online, 3),
+            None,
+            "nothing shows while online"
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 1 }, 0),
+            Some(("Connection lost. Reconnecting…".into(), false))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 4 }, 0),
+            Some(("Connection lost. Reconnecting (attempt 4)…".into(), false))
+        );
+        let offline = "You're offline. Matty shows what it has and sends when you're back.";
+        assert_eq!(
+            say(ConnectionState::Offline, 0),
+            Some((offline.into(), true)),
+            "only the offline banner offers Retry now"
+        );
+        assert_eq!(
+            say(ConnectionState::Offline, 1),
+            Some((format!("{offline} 1 message waiting to send."), true))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 2 }, 5).map(|(text, _)| text),
+            Some("Connection lost. Reconnecting (attempt 2)… 5 messages waiting to send.".into())
+        );
+    }
 
     #[test]
     fn the_open_channel_counts_as_viewed_only_when_seen() {

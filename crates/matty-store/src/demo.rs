@@ -60,6 +60,10 @@ pub fn open(snapshot: &[u8]) -> Result<Option<(Store, DemoAccount)>> {
     Ok(Some((store, account)))
 }
 
+/// Tables whose times are versions, not part of the story: a custom
+/// emoji's `update_at` names its cached image.
+const UNSHIFTED: &[&str] = &["emoji"];
+
 /// Adds `by` to every wall-clock time: the `*_at` columns that hold one.
 fn shift_times(store: &Store, by: i64) -> Result<()> {
     let conn = store.conn();
@@ -69,7 +73,10 @@ fn shift_times(store: &Store, by: i64) -> Result<()> {
         )?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    for table in tables {
+    for table in tables
+        .iter()
+        .filter(|table| !UNSHIFTED.contains(&table.as_str()))
+    {
         let columns: Vec<String> = conn
             .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
             .query_map([], |row| row.get(0))?

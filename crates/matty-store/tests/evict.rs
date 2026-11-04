@@ -32,7 +32,7 @@ fn media_goes_least_recently_used_first() {
     let cache = MediaCache::new(dir.path());
     let blob = vec![7u8; MB as usize];
     let keys: Vec<String> = (0..20)
-        .map(|i| media::emoji_key(&format!("e{i:02}")))
+        .map(|i| media::emoji_key(&format!("e{i:02}"), 0))
         .collect();
     for key in &keys {
         cache.put(conn, key, &blob, "image/png").unwrap();
@@ -165,4 +165,103 @@ fn channels_viewed_longest_ago_are_trimmed_first() {
         count(conn, "SELECT COUNT(*) FROM posts WHERE channel_id = 'b'"),
         2000
     );
+}
+
+/// Queued sends are what the user wrote and the server does not have yet
+/// (#194): eviction down to nothing keeps every row as it was, in order,
+/// with its optimistic post, uploaded file ids, offline files and failure.
+#[test]
+fn outbox_rows_survive_eviction() {
+    use matty_store::outbox::{self, Outgoing};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let cache = MediaCache::new(dir.path());
+    cache
+        .put(
+            conn,
+            &media::emoji_key("big", 0),
+            &vec![1u8; MB as usize],
+            "image/png",
+        )
+        .unwrap();
+    for channel in ["a", "b"] {
+        let batch: Vec<Post> = (0..300)
+            .map(|i| post(format!("{channel}{i:03}"), channel, i))
+            .collect();
+        posts::insert_posts(conn, &batch).unwrap();
+    }
+    // Sends written long ago, so their optimistic rows are the oldest.
+    let queued: Vec<Outgoing> = [
+        ("me:1", "a", vec!["f1".to_owned()], vec![], None),
+        (
+            "me:2",
+            "a",
+            vec![],
+            vec!["/home/me/plan.pdf".to_owned()],
+            None,
+        ),
+        ("me:3", "b", vec![], vec![], Some("refused".to_owned())),
+        ("me:4", "a", vec![], vec![], None),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(
+        |(at, (id, channel, file_ids, local_files, last_error))| Outgoing {
+            pending_post_id: id.into(),
+            channel_id: channel.into(),
+            message: format!("queued {id}"),
+            file_ids,
+            local_files,
+            created_at: at as i64,
+            attempts: 1,
+            last_error,
+            ..Outgoing::default()
+        },
+    )
+    .collect();
+    for outgoing in &queued {
+        outbox::push(conn, outgoing).unwrap();
+        posts::insert_posts(
+            conn,
+            &[Post {
+                pending_post_id: outgoing.pending_post_id.clone(),
+                message: outgoing.message.clone(),
+                ..post(
+                    outgoing.pending_post_id.clone(),
+                    &outgoing.channel_id,
+                    outgoing.created_at,
+                )
+            }],
+        )
+        .unwrap();
+    }
+
+    let keep = Keep {
+        channels: &[],
+        posts_per_channel: 10,
+    };
+    let evicted = evict::evict_to(conn, &cache, 0, &keep).unwrap();
+    assert_eq!(evicted.media, 1);
+    assert!(evicted.posts > 500, "{evicted:?}");
+
+    let mut after = outbox::for_channel(conn, "a").unwrap();
+    after.extend(outbox::for_channel(conn, "b").unwrap());
+    let expected: Vec<&Outgoing> = ["me:1", "me:2", "me:4", "me:3"]
+        .iter()
+        .map(|id| queued.iter().find(|q| q.pending_post_id == *id).unwrap())
+        .collect();
+    assert_eq!(after.iter().collect::<Vec<_>>(), expected);
+    for outgoing in &queued {
+        let row = posts::post(conn, &outgoing.pending_post_id).unwrap();
+        assert_eq!(
+            row.map(|row| row.message),
+            Some(outgoing.message.clone()),
+            "{} lost its row",
+            outgoing.pending_post_id
+        );
+    }
+    // Sign out still clears them.
+    assert_eq!(outbox::clear(conn).unwrap(), 4);
 }

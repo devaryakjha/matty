@@ -186,6 +186,13 @@ fn fill(conn: &rusqlite::Connection, version: i64) -> Result<(), Box<dyn std::er
     )?;
     posts::set_cursor(conn, &posts::channel_since_key("town"), "50")?;
 
+    if version >= 4 {
+        conn.execute(
+            "UPDATE outbox SET local_files = '[\"/home/me/notes.txt\"]'
+             WHERE pending_post_id = 'pending1'",
+            [],
+        )?;
+    }
     if version >= 2 {
         conn.execute(
             "INSERT INTO media (key, path, size, content_type, accessed_at)

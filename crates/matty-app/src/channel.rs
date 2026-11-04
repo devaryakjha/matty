@@ -45,7 +45,7 @@ use crate::ui::{
         message_action, message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
-    popover::popover,
+    popover::{hover_popover, popover},
     skeleton::Skeleton,
     spinner::Spinner,
     theme::UiTheme,
@@ -283,10 +283,25 @@ pub(crate) fn post_editor(
 /// "Delete this message?", or "Discard this message?" for one the server
 /// never got (#195), naming `place` it is removed from. `prefix` scopes
 /// the ids.
+/// What deleting a sent post does: gone for everyone in `place`, and a
+/// root takes its `replies` with it, as on the server (#118).
+fn delete_description(place: &str, replies: usize) -> String {
+    match replies {
+        0 => format!("It is removed for everyone in {place}. This cannot be undone."),
+        1 => format!(
+            "It is removed for everyone in {place}, along with its reply. This cannot be undone."
+        ),
+        n => format!(
+            "It is removed for everyone in {place}, along with its {n} replies. This cannot be undone."
+        ),
+    }
+}
+
 pub(crate) fn delete_popup(
     prefix: &str,
     unsent: bool,
     place: &str,
+    replies: usize,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx).clone();
@@ -302,7 +317,7 @@ pub(crate) fn delete_popup(
         (
             "Delete message",
             "Delete this message?",
-            format!("It is removed for everyone in {place}. This cannot be undone.").into(),
+            delete_description(place, replies).into(),
             "Delete",
         )
     };
@@ -502,8 +517,10 @@ pub struct ReplySummary {
     /// Their user ids, in the same order, for their pictures.
     pub participant_ids: Vec<SharedString>,
     pub following: bool,
-    /// Replies the user has not read yet.
-    pub unread: bool,
+    /// Replies the user has not read yet (#124).
+    pub unread_replies: usize,
+    /// Mentions of the user among them.
+    pub unread_mentions: usize,
 }
 
 /// A channel with the posts loaded for it.
@@ -654,8 +671,47 @@ pub(crate) fn format_shortcut(
     }
 }
 
+/// When `selection` in `value` is already wrapped in `before` and `after`,
+/// either just outside it or as its own ends: the wrapped range to replace
+/// with its inside, and the selection after, so the shortcut toggles the
+/// format off (#115). A one-character marker next to another of its kind
+/// is part of a longer one, such as `` ` `` in a code fence, and stays.
+fn unwrap_selection(
+    value: &str,
+    selection: std::ops::Range<usize>,
+    before: &str,
+    after: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let lone = |at: usize, marker: &str| {
+        marker.chars().count() > 1
+            || (!value[..at].ends_with(marker) && !value[at + marker.len()..].starts_with(marker))
+    };
+    // Markers just outside the selection: **|bold|**
+    if let (Some(start), Some(end)) = (
+        selection.start.checked_sub(before.len()),
+        selection.end.checked_add(after.len()),
+    ) && value.get(start..selection.start) == Some(before)
+        && value.get(selection.end..end) == Some(after)
+        && lone(start, before)
+        && lone(selection.end, after)
+    {
+        return Some((start..end, start..selection.end - before.len()));
+    }
+    // The selection takes the markers in: |**bold**|
+    let selected = value.get(selection.clone())?;
+    if selected.len() >= before.len() + after.len()
+        && selected.starts_with(before)
+        && selected.ends_with(after)
+    {
+        let inner = selected.len() - before.len() - after.len();
+        return Some((selection.clone(), selection.start..selection.start + inner));
+    }
+    None
+}
+
 /// Applies a formatting shortcut to `composer` and reports whether the key
-/// was one. A link leaves "url" selected so typing replaces it.
+/// was one. A link leaves "url" selected so typing replaces it; a selection
+/// already in that format loses it.
 pub(crate) fn apply_format(
     composer: &Entity<ComposerState>,
     keystroke: &gpui_kit::Keystroke,
@@ -670,6 +726,19 @@ pub(crate) fn apply_format(
     let composer = composer.clone();
     window.defer(cx, move |window, cx| {
         composer.update(cx, |composer, cx| {
+            let value = composer.value(cx);
+            if let Some((wrapped, selection)) =
+                unwrap_selection(&value, composer.selection(cx), before, after)
+            {
+                let inside =
+                    value[wrapped.start + before.len()..wrapped.end - after.len()].to_string();
+                composer.input().update(cx, |input, cx| {
+                    input.set_selected_range(wrapped, cx);
+                    input.replace(inside, window, cx);
+                    input.set_selected_range(selection, cx);
+                });
+                return;
+            }
             composer.wrap_selection(before, after, window, cx);
             if after == "](url)" {
                 let end = composer.selection(cx).end;
@@ -692,6 +761,17 @@ pub fn own_id(posts: &[Post]) -> SharedString {
 }
 
 impl ReplySummary {
+    /// The thread has replies the user has not read.
+    pub fn unread(&self) -> bool {
+        self.unread_replies > 0 || self.unread_mentions > 0
+    }
+
+    /// Opening the thread reads it.
+    pub fn mark_read(&mut self) {
+        self.unread_replies = 0;
+        self.unread_mentions = 0;
+    }
+
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
         if self.last_day.as_ref() == "Today" {
@@ -963,6 +1043,15 @@ pub(crate) const QUICK_REACTIONS: [(&str, &str); 6] = [
     ("🚀", "Rocket"),
 ];
 
+/// What is behind an image in the lightbox, for its actions.
+#[derive(Clone, Debug, PartialEq)]
+enum LightboxItem {
+    /// A file on the post, by id.
+    File(SharedString),
+    /// An image the message links to, by URL.
+    Link(SharedString),
+}
+
 pub struct ChannelView {
     model: Option<ChannelModel>,
     rows: Vec<Row>,
@@ -996,8 +1085,8 @@ pub struct ChannelView {
     /// The image viewer over the clicked post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
-    /// File ids behind the lightbox's images, for its Open button.
-    lightbox_files: Vec<SharedString>,
+    /// What is behind each of the lightbox's images, for its actions.
+    lightbox_items: Vec<LightboxItem>,
     /// The post the lightbox shows, and full-size images by file id as
     /// they come; until then the lightbox shows the thumbnail.
     lightbox_post: Option<SharedString>,
@@ -1045,9 +1134,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
-    /// Posts whose preview images the user collapsed (#187), as the web
-    /// app's per-post toggle; they expand again with the toggle.
-    collapsed_previews: std::collections::HashSet<SharedString>,
+    /// Part of every profile card's id: bumping it after a card's action
+    /// closes the card, since a new id starts closed.
+    profile_cards: usize,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1302,7 +1391,7 @@ impl ChannelView {
             tray: UploadTray::new("upload"),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
-            lightbox_files: Vec::new(),
+            lightbox_items: Vec::new(),
             lightbox_post: None,
             full_images: HashMap::new(),
             editing: None,
@@ -1326,7 +1415,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
-            collapsed_previews: Default::default(),
+            profile_cards: 0,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1962,6 +2051,14 @@ impl ChannelView {
         cx.notify();
     }
 
+    /// Sync is offline: the file waits in the tray, queued (#194).
+    pub fn set_upload_queued(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tray.set_queued(id) {
+            self.send_queued(window, cx);
+        }
+        cx.notify();
+    }
+
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
         self.schedule_draft_save(cx);
@@ -1984,7 +2081,8 @@ impl ChannelView {
         self.send(text, window, cx);
     }
 
-    /// Opens the lightbox over the images of `post`, at image `index`.
+    /// Opens the lightbox over the images of `post`, at image `index`:
+    /// its image files first, then the images its message links to.
     fn open_lightbox(
         &mut self,
         post: SharedString,
@@ -1992,25 +2090,70 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((ids, images)) = self.lightbox_images(&post, cx) else {
+        let Some((items, images)) = self.lightbox_images(&post, cx) else {
             return;
         };
-        self.lightbox_files = ids.clone();
+        let files = items
+            .iter()
+            .filter_map(|item| match item {
+                LightboxItem::File(id) => Some(id.clone()),
+                LightboxItem::Link(_) => None,
+            })
+            .collect::<Vec<_>>();
+        self.lightbox_items = items;
         self.lightbox_post = Some(post);
         self.lightbox
             .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
         self.lightbox_handle.open(window, cx);
-        cx.emit(ChannelEvent::ViewImages(ids));
+        if !files.is_empty() {
+            cx.emit(ChannelEvent::ViewImages(files));
+        }
         cx.notify();
     }
 
-    /// The image files of `post` and their lightbox entries, full size
-    /// where it has come.
+    /// Opens the lightbox at the image `url` that `post` links to, among
+    /// the post's other images. One still loading opens in the browser.
+    fn open_linked_image(
+        &mut self,
+        post: SharedString,
+        url: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self.lightbox_images(&post, cx).and_then(|(items, _)| {
+            items
+                .iter()
+                .position(|item| *item == LightboxItem::Link(url.clone()))
+        });
+        match index {
+            Some(index) => self.open_lightbox(post, index, window, cx),
+            None => cx.open_url(&url),
+        }
+    }
+
+    /// Opens the lightbox on the selected post's first image, from Enter
+    /// (#152). Returns whether the post has one.
+    fn open_selected_images(
+        &mut self,
+        post: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.lightbox_images(&post, cx).is_none() {
+            return false;
+        }
+        self.open_lightbox(post, 0, window, cx);
+        true
+    }
+
+    /// The images of `post` and their lightbox entries: its image files,
+    /// full size where it has come, then the linked images sync has
+    /// fetched.
     fn lightbox_images(
         &self,
         post: &SharedString,
         cx: &App,
-    ) -> Option<(Vec<SharedString>, Vec<LightboxImage>)> {
+    ) -> Option<(Vec<LightboxItem>, Vec<LightboxImage>)> {
         let post = self
             .model
             .as_ref()
@@ -2021,8 +2164,8 @@ impl ChannelView {
             ClockFormat::current(cx).format(post.time)
         )
         .into();
-        let mut ids = Vec::new();
-        let images: Vec<LightboxImage> = post
+        let mut items = Vec::new();
+        let mut images: Vec<LightboxImage> = post
             .files
             .iter()
             .filter_map(|file| {
@@ -2030,11 +2173,25 @@ impl ChannelView {
                     Some(full) => gpui_kit::ImageSource::Image(full.clone()),
                     None => file.image()?,
                 };
-                ids.push(file.id.clone());
+                items.push(LightboxItem::File(file.id.clone()));
                 Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
             })
             .collect();
-        (!images.is_empty()).then_some((ids, images))
+        for embed in &post.embeds {
+            if let crate::embeds::Embed::Image(image) = embed
+                && let Some(loaded) = &image.loaded
+            {
+                items.push(LightboxItem::Link(image.url.clone()));
+                images.push(
+                    LightboxImage::new(
+                        gpui_kit::ImageSource::Image(loaded.clone()),
+                        crate::embeds::image_name(&image.url),
+                    )
+                    .caption(caption.clone()),
+                );
+            }
+        }
+        (!images.is_empty()).then_some((items, images))
     }
 
     /// Sync fetched a file's full-size image; the lightbox swaps it in
@@ -2045,7 +2202,9 @@ impl ChannelView {
         image: Arc<gpui_kit::Image>,
         cx: &mut Context<Self>,
     ) {
-        let showing = self.lightbox_files.contains(&file_id);
+        let showing = self
+            .lightbox_items
+            .contains(&LightboxItem::File(file_id.clone()));
         self.full_images.insert(file_id, image);
         if !showing {
             return;
@@ -2064,30 +2223,69 @@ impl ChannelView {
         cx.notify();
     }
 
-    /// The lightbox with an Open button for the showing file.
+    /// The lightbox, with Download for a file and Copy link and Open in
+    /// browser for an image the message links to.
     fn lightbox(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let open = Button::new("channel.lightbox.open")
-            .size(ButtonSize::Icon)
-            .variant(ButtonVariant::Ghost)
-            .aria_label("Open file")
-            .child(
-                lucide(LucideIcon::Download)
-                    .size(theme.space(4.5))
-                    .text_color(gpui_kit::white()),
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                let index = this.lightbox.read(cx).index();
-                if let Some(id) = this.lightbox_files.get(index) {
-                    cx.emit(ChannelEvent::OpenFile(id.clone()));
-                }
-            }))
-            .into_any_element();
+        let icon = |icon: LucideIcon| {
+            lucide(icon)
+                .size(theme.space(4.5))
+                .text_color(gpui_kit::white())
+        };
+        // Test hooks for the buttons, which carry no selector of their own.
+        let hook = |selector: &'static str, button: Button| {
+            div()
+                .debug_selector(move || selector.into())
+                .child(button)
+                .into_any_element()
+        };
+        let index = self.lightbox.read(cx).index();
+        let actions: Vec<gpui_kit::AnyElement> = match self.lightbox_items.get(index).cloned() {
+            Some(LightboxItem::File(id)) => vec![hook(
+                "lightbox-download",
+                Button::new("channel.lightbox.open")
+                    .size(ButtonSize::Icon)
+                    .variant(ButtonVariant::Ghost)
+                    .aria_label("Download")
+                    .child(icon(LucideIcon::Download))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ChannelEvent::OpenFile(id.clone()));
+                    })),
+            )],
+            Some(LightboxItem::Link(url)) => {
+                let copy = url.clone();
+                vec![
+                    hook(
+                        "lightbox-copy-link",
+                        Button::new("channel.lightbox.copy-link")
+                            .size(ButtonSize::Icon)
+                            .variant(ButtonVariant::Ghost)
+                            .aria_label("Copy link")
+                            .child(icon(LucideIcon::Link))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                    copy.to_string(),
+                                ));
+                            }),
+                    ),
+                    hook(
+                        "lightbox-browser",
+                        Button::new("channel.lightbox.browser")
+                            .size(ButtonSize::Icon)
+                            .variant(ButtonVariant::Ghost)
+                            .aria_label("Open in browser")
+                            .child(icon(LucideIcon::ExternalLink))
+                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                    ),
+                ]
+            }
+            None => Vec::new(),
+        };
         lightbox(
             "channel.lightbox",
             &self.lightbox_handle,
             &self.lightbox,
-            [open],
+            actions,
             window,
             cx,
         )
@@ -2348,7 +2546,13 @@ impl ChannelView {
             .as_ref()
             .and_then(|model| model.posts.iter().find(|post| post.id == id))
             .is_none_or(|post| post.body == body);
-        if body.is_empty() || body.chars().count() > self.max_post_size() || unchanged {
+        if body.is_empty() {
+            // Emptying a message asks to delete it, as the webapp does.
+            self.cancel_edit(window, cx);
+            self.ask_delete(id, window, cx);
+            return;
+        }
+        if body.chars().count() > self.max_post_size() || unchanged {
             self.cancel_edit(window, cx);
             return;
         }
@@ -2535,14 +2739,14 @@ impl ChannelView {
     /// Collapses or expands the images in a post's previews; the row's
     /// height changes, so the list measures it again.
     fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
-        let changed = if collapsed {
-            self.collapsed_previews.insert(id.clone())
-        } else {
-            self.collapsed_previews.remove(&id)
-        };
-        if !changed {
+        // Remembered across restarts, against the account's default (#187).
+        let store = SettingsStore::global(cx);
+        if store.read(cx).get().previews_collapsed(&id) == collapsed {
             return;
         }
+        store.update(cx, |store, cx| {
+            store.update(cx, |settings| settings.choose_previews(&id, collapsed))
+        });
         let posts = self.model.as_ref().map(|model| &model.posts);
         let row = self.rows.iter().position(|row| {
             matches!(row, Row::Post(index)
@@ -2883,7 +3087,21 @@ impl ChannelView {
                     .any(|post| &post.id == id && post.status != PostStatus::Sent)
             })
         });
-        let popup = delete_popup("post.delete", unsent, &channel, cx);
+        let replies = self
+            .deleting
+            .as_ref()
+            .and_then(|id| {
+                self.model
+                    .as_ref()?
+                    .posts
+                    .iter()
+                    .find(|post| &post.id == id)?
+                    .replies
+                    .as_ref()
+                    .map(|summary| summary.count)
+            })
+            .unwrap_or(0);
+        let popup = delete_popup("post.delete", unsent, &channel, replies, cx);
         let view = cx.entity().downgrade();
         alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
             view.update(cx, |this, cx| {
@@ -3350,6 +3568,7 @@ impl ChannelView {
         id: SharedString,
         post: &Post,
         profile: Option<&UserProfile>,
+        card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let initial: String = post.author.chars().take(1).collect();
@@ -3367,55 +3586,55 @@ impl ChannelView {
         };
         // The author's presence on the avatar (#135).
         let theme = UiTheme::read(cx);
-        let avatar = div()
-            .relative()
-            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
-            .child(crate::style::presence_dot(
+        let avatar = avatar
+            .aria_label(post.author.clone())
+            .status(crate::style::avatar_status(
                 profile.presence,
-                scaled(theme, 10.),
-                theme.colors.background,
-                theme,
                 &crate::style::Palette::read(cx),
-            ));
+            ))
+            .ring_color(theme.colors.background);
         let view = cx.entity().downgrade();
         let card_id = id.clone();
-        popover(gpui_kit::ElementId::Name(
-            format!("post.{id}.profile").into(),
-        ))
-        .offset(px(4.))
-        .trigger_with(move |_, _, _| {
-            div()
-                .id(gpui_kit::ElementId::Name(
-                    format!("post.{id}.avatar.trigger").into(),
-                ))
-                .cursor_pointer()
-                .child(avatar)
-                .into_any_element()
-        })
-        .content(move |_, _, cx| {
-            let (message_view, mention_view) = (view.clone(), view.clone());
-            let (message_profile, mention_profile) = (profile.clone(), profile.clone());
-            let (close_message, close_mention, close_view) =
-                (cx.entity(), cx.entity(), cx.entity());
-            let (view_view, view_profile) = (view.clone(), profile.clone());
+        let label = crate::style::presence_name(&post.author, profile.presence);
+        // Resting on the avatar opens the card; a click or Enter pins it
+        // (gpuicn's hover popover, #118).
+        hover_popover(
+            gpui_kit::ElementId::Name(format!("post.{id}.profile.{card}").into()),
+            label,
+        )
+        .trigger(avatar)
+        .content(move |_, cx| {
+            let (message_view, mention_view, view_view) =
+                (view.clone(), view.clone(), view.clone());
+            let (message_profile, mention_profile, view_profile) =
+                (profile.clone(), profile.clone(), profile.clone());
+            // Each action closes the card by giving it a fresh id.
+            let close = |this: &mut Self, cx: &mut Context<Self>| {
+                this.profile_cards += 1;
+                cx.notify();
+            };
             profile_card(
                 &card_id,
                 &profile,
                 ProfileActions {
-                    on_message: Box::new(move |window, cx| {
-                        close_message.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_message: Box::new(move |_, cx| {
                         let event = ChannelEvent::OpenDirect {
                             user_id: message_profile.user_id.clone(),
                             username: message_profile.username.clone(),
                             display_name: message_profile.display_name.clone(),
                         };
-                        message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        message_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     }),
                     on_mention: Box::new(move |window, cx| {
-                        close_mention.update(cx, |state, cx| state.dismiss(window, cx));
                         let text = format!("@{} ", mention_profile.username);
                         mention_view
                             .update(cx, |this, cx| {
+                                close(this, cx);
                                 this.composer.update(cx, |composer, cx| {
                                     composer.insert(text, window, cx);
                                     composer.focus(window, cx);
@@ -3423,10 +3642,14 @@ impl ChannelView {
                             })
                             .ok();
                     }),
-                    on_view: Some(Box::new(move |window, cx| {
-                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_view: Some(Box::new(move |_, cx| {
                         let event = ChannelEvent::ViewProfile(view_profile.clone());
-                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        view_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     })),
                 },
                 cx,
@@ -3440,12 +3663,12 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed): (bool, bool, bool),
+        (menu_open, away, previews_collapsed, profile_card): (bool, bool, bool, usize),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
-        let avatar = Self::avatar(id.clone(), post, profile, cx);
+        let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
@@ -3549,7 +3772,7 @@ impl ChannelView {
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .on_reaction(move |emoji, _, cx| {
@@ -3631,6 +3854,7 @@ impl ChannelView {
                 jump_view.update(cx, |_, cx| cx.emit(event)).ok();
             });
             let (view, post_id) = (cx.entity().downgrade(), id.clone());
+            let (image_view, image_post) = (view.clone(), id.clone());
             row = row.child(crate::embeds::post_embeds(
                 &id,
                 &post.embeds,
@@ -3638,6 +3862,12 @@ impl ChannelView {
                 std::rc::Rc::new(move |collapsed, _, cx| {
                     let post_id = post_id.clone();
                     view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
+                        .ok();
+                }),
+                std::rc::Rc::new(move |url, window, cx| {
+                    let post = image_post.clone();
+                    image_view
+                        .update(cx, |this, cx| this.open_linked_image(post, url, window, cx))
                         .ok();
                 }),
                 on_jump,
@@ -3865,7 +4095,7 @@ impl ChannelView {
                     .text_color(theme.colors.primary)
                     .child(label),
             )
-            .when(summary.unread, |this| {
+            .when(summary.unread(), |this| {
                 this.child(
                     div()
                         .size(theme.space(2.))
@@ -3969,13 +4199,16 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
-                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
+                        let previews_collapsed = SettingsStore::global(cx)
+                            .read(cx)
+                            .get()
+                            .previews_collapsed(&post.id);
                         Self::post_row(
                             &post,
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away, previews_collapsed),
+                            (menu_open, away, previews_collapsed, this.profile_cards),
                             cx,
                         )
                         .into_any_element()
@@ -4044,7 +4277,8 @@ impl ChannelView {
     }
 
     /// Single keys on the selected post, as in Discord: R reply, E edit,
-    /// Delete removes own, + react, P pin, S save, U mark unread. Keys with
+    /// Delete removes own, + react, P pin, S save, U mark unread, Enter
+    /// views its images. Keys with
     /// a modifier are left to the keymap. Returns whether the key was used.
     fn selection_key(
         &mut self,
@@ -4085,6 +4319,7 @@ impl ChannelView {
             "p" => self.toggle_pin(id, cx),
             "s" => self.toggle_save(id, cx),
             "u" => cx.emit(ChannelEvent::MarkUnread(id)),
+            "enter" => return self.open_selected_images(id, window, cx),
             _ => return false,
         }
         cx.notify();
@@ -4788,6 +5023,46 @@ mod tests {
             ]
         );
         assert!(values("ada").is_empty());
+    }
+
+    #[test]
+    fn a_format_shortcut_on_formatted_text_takes_the_format_off() {
+        // Markers just outside the selection.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 4..8, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        // Markers inside it.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 2..10, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        assert_eq!(
+            unwrap_selection("a `x` b", 3..4, "`", "`"),
+            Some((2..5, 2..3))
+        );
+        // Not wrapped, or a lone marker that belongs to a longer one.
+        assert_eq!(unwrap_selection("a bold b", 2..6, "**", "**"), None);
+        assert_eq!(unwrap_selection("``x``", 2..3, "`", "`"), None);
+        // A second Cmd+B on an empty pair takes it back out.
+        assert_eq!(
+            unwrap_selection("****", 2..2, "**", "**"),
+            Some((0..4, 0..0))
+        );
+        assert_eq!(unwrap_selection("**", 0..2, "**", "**"), None);
+    }
+
+    #[test]
+    fn deleting_a_root_names_the_replies_it_takes() {
+        assert_eq!(
+            delete_description("#town", 0),
+            "It is removed for everyone in #town. This cannot be undone."
+        );
+        assert_eq!(
+            delete_description("#town", 1),
+            "It is removed for everyone in #town, along with its reply. This cannot be undone."
+        );
+        assert!(delete_description("#town", 3).contains("along with its 3 replies"));
     }
 
     #[test]
@@ -5559,5 +5834,161 @@ mod tests {
         cx.simulate_input("!");
         cx.run_until_parked();
         assert_eq!(remote("edited again", cx), "from the web app!");
+    }
+
+    /// A channel view on the preview's #general, focus in its transcript.
+    fn lightbox_view(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entity<ChannelView>, &mut gpui_kit::VisualTestContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        cx.add_window_view(|window, cx| ChannelView::new(Some(general), "me", window, cx))
+    }
+
+    /// Selects `post` in the transcript, with focus there, as Up does.
+    fn select_post(view: &Entity<ChannelView>, post: &str, cx: &mut gpui_kit::VisualTestContext) {
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                let posts = &this.model.as_ref().unwrap().posts;
+                let row = this
+                    .rows
+                    .iter()
+                    .position(|row| matches!(row, Row::Post(i) if posts[*i].id == post))
+                    .unwrap();
+                this.selection = Some(row);
+                window.focus(&this.list_focus, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// #152: the keyboard journey. Enter on a post with images opens the
+    /// lightbox on its first, Left and Right move between the post's
+    /// images, and Escape closes it with focus back on the same post.
+    #[gpui_kit::test]
+    fn the_lightbox_opens_moves_and_closes_back_on_the_post(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx) = lightbox_view(cx);
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let state = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let this = view.read(cx);
+                let lightbox = this.lightbox.read(cx);
+                (
+                    this.lightbox_handle.is_open(),
+                    lightbox.index(),
+                    lightbox.current().map(|image| image.name.to_string()),
+                    this.list_focus.is_focused(window),
+                )
+            })
+        };
+        let viewed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let viewed = viewed.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if let ChannelEvent::ViewImages(ids) = event {
+                    viewed.borrow_mut().push(ids.clone());
+                }
+            })
+            .detach();
+        });
+
+        // A post without images leaves Enter alone.
+        select_post(&view, "p8", cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!state(cx).0);
+
+        // Two images and a PDF: the lightbox holds the two images.
+        select_post(&view, "p8b", cx);
+        let selected = cx.update(|_, cx| view.read(cx).selection);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let name = |name: &str| Some(name.to_owned());
+        assert_eq!(state(cx), (true, 0, name("sidebar-mockup.png"), false));
+        assert_eq!(
+            viewed.borrow().as_slice(),
+            [vec![
+                SharedString::from("f-mockup"),
+                SharedString::from("f-mockup-dark")
+            ]],
+            "sync is asked for the full-size images"
+        );
+
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_eq!(state(cx), (true, 1, name("sidebar-mockup-dark.png"), false));
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_eq!(state(cx).1, 0, "Right wraps to the first image");
+        cx.simulate_keystrokes("left");
+        draw(cx);
+        assert_eq!(state(cx).1, 1, "Left wraps to the last image");
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert_eq!(state(cx), (false, 1, name("sidebar-mockup-dark.png"), true));
+        assert_eq!(
+            cx.update(|_, cx| view.read(cx).selection),
+            selected,
+            "the post it opened from is still selected"
+        );
+    }
+
+    /// #152: an image the message links to opens in the lightbox, with
+    /// Copy link and Open in browser in place of Download, and closing it
+    /// returns focus to where it was.
+    #[gpui_kit::test]
+    fn a_linked_image_opens_in_the_lightbox(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx) = lightbox_view(cx);
+        let url = SharedString::from("https://matty.example.com/shots/sidebar-unread.png");
+        select_post(&view, "p4b", cx);
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                this.open_linked_image("p4b".into(), url.clone(), window, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+        let (open, items, name) = cx.update(|_, cx| {
+            let this = view.read(cx);
+            (
+                this.lightbox_handle.is_open(),
+                this.lightbox_items.clone(),
+                this.lightbox
+                    .read(cx)
+                    .current()
+                    .map(|image| image.name.clone()),
+            )
+        });
+        assert!(open);
+        assert_eq!(items, [LightboxItem::Link(url.clone())]);
+        assert_eq!(name.as_deref(), Some("sidebar-unread.png"));
+        assert!(cx.debug_bounds("lightbox-browser").is_some());
+        assert!(cx.debug_bounds("lightbox-download").is_none());
+        let copy = cx.debug_bounds("lightbox-copy-link").unwrap();
+        cx.simulate_click(copy.center(), Default::default());
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some(url.to_string())
+        );
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let (open, focused) = cx.update(|window, cx| {
+            let this = view.read(cx);
+            (
+                this.lightbox_handle.is_open(),
+                this.list_focus.is_focused(window),
+            )
+        });
+        assert!(!open);
+        assert!(focused, "focus is back in the transcript");
     }
 }

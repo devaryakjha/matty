@@ -146,7 +146,7 @@ pub enum ChangeSet {
         /// Where it is.
         state: UploadState,
     },
-    /// A download finished: the answer to
+    /// A download's progress or end: the answer to
     /// [`Command::Download`](crate::Command::Download).
     Download {
         /// The file.
@@ -184,17 +184,23 @@ pub enum ChangeSet {
         /// Its MIME type, such as `image/png`.
         content_type: String,
     },
-    /// A user's profile picture: the answer to
-    /// [`Command::LoadAvatar`](crate::Command::LoadAvatar), with no image
-    /// when it could not be had.
-    Avatar {
-        /// The user.
-        user_id: String,
-        /// The `last_picture_update` the picture is for.
-        last_picture_update: i64,
+    /// A profile picture, custom emoji image or team icon: the answer to
+    /// [`Command::LoadPicture`](crate::Command::LoadPicture), with no
+    /// image when it could not be had.
+    Picture {
+        /// Which kind of picture.
+        picture: Picture,
+        /// The user, emoji or team.
+        id: String,
+        /// The version the picture is for.
+        version: i64,
         /// The encoded image and its MIME type.
         image: Option<(Arc<[u8]>, String)>,
     },
+    /// The server's custom emoji, by name, from the cache and again after
+    /// each load. Their images come through
+    /// [`Command::LoadPicture`](crate::Command::LoadPicture).
+    CustomEmoji(Arc<[matty_api::models::Emoji]>),
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].
@@ -382,6 +388,29 @@ pub enum Connection {
     },
 }
 
+/// A small picture Matty keeps in the media cache under a version (#153).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Picture {
+    /// A user's profile picture, versioned by `last_picture_update`.
+    Avatar,
+    /// A custom emoji's image, versioned by its `update_at`.
+    Emoji,
+    /// A team's icon, versioned by `last_team_icon_update`.
+    TeamIcon,
+}
+
+impl Picture {
+    /// The media cache key for `id`'s picture at `version`.
+    pub(crate) fn key(self, id: &str, version: i64) -> String {
+        use matty_store::media::{avatar_key, emoji_key, team_icon_key};
+        match self {
+            Self::Avatar => avatar_key(id, version),
+            Self::Emoji => emoji_key(id, version),
+            Self::TeamIcon => team_icon_key(id, version),
+        }
+    }
+}
+
 /// Which of a file's images: the server scales each image it is sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageSize {
@@ -391,9 +420,16 @@ pub enum ImageSize {
     Preview,
 }
 
-/// How a download ended.
+/// Where a download is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DownloadState {
+    /// Arriving: bytes so far, and the size when the server gave it.
+    Progress {
+        /// Bytes written so far.
+        received: u64,
+        /// The file's size, when known.
+        total: Option<u64>,
+    },
     /// Saved here.
     Done(std::path::PathBuf),
     /// Not saved, and why.

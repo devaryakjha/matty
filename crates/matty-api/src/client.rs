@@ -367,6 +367,7 @@ impl Client {
         query: &[(&str, String)],
         etag: Option<&str>,
     ) -> Result<Fetched, ApiError> {
+        crate::rt::assert_off_ui_thread("fetching image or file bytes");
         let headers: Vec<(header::HeaderName, String)> = etag
             .map(|etag| (header::IF_NONE_MATCH, etag.to_string()))
             .into_iter()
@@ -521,6 +522,26 @@ impl Client {
             .map(str::to_string);
         let bytes = response.bytes().await.unwrap_or_default();
         Err(ApiError::from_response(status, request_id, &bytes))
+    }
+
+    /// `GET path` once, allowing [`UPLOAD_TIMEOUT`] for the whole body, for
+    /// a file read as it streams in.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) async fn send_long_get(&self, path: &str) -> Result<reqwest::Response, ApiError> {
+        let mut request = self
+            .http
+            .get(self.api_url(path)?)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .timeout(UPLOAD_TIMEOUT);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(&token.0);
+        }
+        let response = request.send().await.map_err(ApiError::from_transport)?;
+        self.note_rate_limit(&response);
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(ApiError::RateLimited);
+        }
+        Self::checked(response).await
     }
 
     /// Sends a multipart form once: a streamed body cannot be replayed, so a

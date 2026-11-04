@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_channel::Receiver;
 use matty_api::{Client, Credentials};
-use matty_sync::{ChangeSet, Command, Connection, ImageSize, SyncHandle};
+use matty_sync::{ChangeSet, Command, Connection, ImageSize, Picture, SyncHandle};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -232,16 +232,27 @@ async fn snapshot(args: Args) -> Result<()> {
         sync.send(Command::CloseThread { root_id });
     }
     eprintln!(
-        "loading {} avatars and {} images",
+        "loading {} avatars, emoji, team icons and {} images",
         seen.users.len(),
         seen.images.len()
     );
-    // The store's picture times, which the app asks with too.
-    for user_id in seen.users.keys().cloned() {
-        sync.send(Command::LoadAvatar {
-            user_id,
-            last_picture_update: None,
-        });
+    // With the store's versions, which the app asks with too.
+    let pictures = [
+        (
+            Picture::Avatar,
+            seen.users.keys().cloned().collect::<Vec<_>>(),
+        ),
+        (Picture::Emoji, ids(&database, "SELECT id FROM emoji")?),
+        (Picture::TeamIcon, seen.teams.iter().cloned().collect()),
+    ];
+    for (picture, ids) in pictures {
+        for id in ids {
+            sync.send(Command::LoadPicture {
+                picture,
+                id,
+                version: None,
+            });
+        }
     }
     for file_id in seen.images.clone() {
         for size in [ImageSize::Thumbnail, ImageSize::Preview] {
@@ -266,6 +277,16 @@ async fn snapshot(args: Args) -> Result<()> {
     );
     std::fs::remove_dir_all(&work)?;
     Ok(())
+}
+
+/// The first column of `query`'s rows, read beside the engine's writes.
+fn ids(database: &Path, query: &str) -> Result<Vec<String>> {
+    let conn = rusqlite::Connection::open(database)?;
+    let ids = conn
+        .prepare(query)?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 /// Opens `channel_id` and loads its history back to the start, or

@@ -8,7 +8,7 @@ pub mod mention;
 pub mod policy;
 
 pub use backend::{Badge, Clicked, Notifier};
-pub use mention::MentionKeys;
+pub use mention::{KeywordList, MentionKeys};
 pub use policy::{
-    AppState, ChannelKind, ChannelPrefs, Event, Level, Notification, UserPrefs, decide,
+    AppState, ChannelKind, ChannelPrefs, Event, Level, Notification, UserPrefs, decide, dnd_active,
 };

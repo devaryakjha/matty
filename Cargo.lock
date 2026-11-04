@@ -3475,9 +3475,9 @@ checksum = "99b18b06f5026b3d312488eacfdddbe78f82b4bf32bb2d2bc3186e31e552b797"
 
 [[package]]
 name = "gpuicn"
-version = "0.9.2"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2d4457d3447ecc71caa6627891c35d478b7a001d6584a71ceb9c0056d0d3452"
+checksum = "b26a2098ce402cf909fb6689d54b449256ce989934b4c52bfd1e539b152f06b7"
 dependencies = [
  "gpui-icons",
  "gpui-kit",
@@ -4819,11 +4819,15 @@ name = "matty-sync"
 version = "0.0.1"
 dependencies = [
  "async-channel",
+ "block2 0.6.2",
  "futures-util",
  "if-watch",
  "js-sys",
  "matty-api",
  "matty-store",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "proptest",
  "rusqlite",
  "serde_json",

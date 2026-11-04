@@ -226,7 +226,8 @@ fn reply_summary(
             .collect(),
         participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
         following: root.is_following.unwrap_or(false),
-        unread: false,
+        unread_replies: 0,
+        unread_mentions: 0,
     }
 }
 
@@ -266,7 +267,7 @@ fn display_post(
         date,
         body,
         reactions: reactions(post, viewer.user_id, users, viewer.names),
-        mentions_me: mention.mentioned(&post.message),
+        mentions_me: mention.mentioned(&post.message) || mention.highlighted(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
@@ -287,23 +288,18 @@ fn display_post(
             .files
             .iter()
             .filter(|file| file.delete_at == 0)
-            .map(|file| PostFile {
-                id: file.id.clone().into(),
-                name: file.name.clone().into(),
-                size: u64::try_from(file.size).unwrap_or(0),
-                preview: None,
-                width: u32::try_from(file.width).unwrap_or(0),
-                height: u32::try_from(file.height).unwrap_or(0),
-            })
+            .map(PostFile::from_info)
             .collect(),
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
             .map(|mut embed| {
-                if let crate::embeds::Embed::Permalink(quoted) = &mut embed
-                    && let Some(user) = users.get(&quoted.author_id)
-                {
-                    quoted.author = display_name(user).into();
+                if let crate::embeds::Embed::Permalink(quoted) = &mut embed {
+                    if let Some(user) = users.get(&quoted.author_id) {
+                        quoted.author = display_name_as(user, viewer.names).into();
+                    }
+                    let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+                    (quoted.time, quoted.day, _) = when(quoted.create_at, viewer.zone, today);
                 }
                 embed
             })
@@ -603,7 +599,8 @@ pub fn thread_row(
             participants,
             participant_ids,
             following: true,
-            unread: thread.unread_replies > 0,
+            unread_replies: usize::try_from(thread.unread_replies).unwrap_or(0),
+            unread_mentions: usize::try_from(thread.unread_mentions).unwrap_or(0),
         },
     }
 }

@@ -333,3 +333,48 @@ async fn an_outside_image_goes_without_the_session_token() {
     let script = client.outside_image("javascript:alert(1)").await;
     assert!(matches!(script, Err(ApiError::InvalidUrl(_))), "{script:?}");
 }
+
+#[tokio::test]
+async fn a_download_streams_the_servers_bytes_with_rising_progress() {
+    let server = MockServer::start().await;
+    let body: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+    Mock::given(method("GET"))
+        .and(path("/api/v4/files/f1"))
+        .and(header("authorization", "Bearer t"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let mut written = Vec::new();
+    let mut reports = Vec::new();
+    let received = client
+        .download_file("f1", |chunk, received, total| {
+            written.extend_from_slice(chunk);
+            reports.push((received, total));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(received, 3_000_000);
+    assert!(written == body, "the bytes arrive whole and in order");
+    assert!(reports.iter().all(|&(_, total)| total == Some(3_000_000)));
+    assert!(reports.windows(2).all(|w| w[0].0 < w[1].0), "monotonic");
+    assert_eq!(reports.last().unwrap().0, 3_000_000);
+}
+
+#[tokio::test]
+async fn a_download_stops_when_the_file_cannot_be_written() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/files/f1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7u8; 1024]))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let error = client
+        .download_file("f1", |_, _, _| Err(std::io::Error::other("disk full")))
+        .await
+        .unwrap_err();
+    assert_eq!(error, ApiError::Io("disk full".into()));
+}

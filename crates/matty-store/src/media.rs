@@ -57,9 +57,15 @@ pub fn remote_key(url: &str) -> String {
     )
 }
 
-/// The key for a custom emoji's image.
-pub fn emoji_key(emoji_id: &str) -> String {
-    format!("emoji/{emoji_id}")
+/// The key for a custom emoji's image. Its `update_at` is part of the key,
+/// so a replaced image is a new entry, like [`avatar_key`].
+pub fn emoji_key(emoji_id: &str, update_at: i64) -> String {
+    format!("emoji/{emoji_id}/{update_at}")
+}
+
+/// The key for a team's icon, versioned by its `last_team_icon_update`.
+pub fn team_icon_key(team_id: &str, last_team_icon_update: i64) -> String {
+    format!("team/{team_id}/{last_team_icon_update}")
 }
 
 /// A cached item.
@@ -169,6 +175,7 @@ impl MediaCache {
         bytes: &[u8],
         content_type: &str,
     ) -> Result<()> {
+        matty_api::rt::assert_off_ui_thread("writing the media cache");
         let relative = relative_path(key);
         self.write(conn, key, &relative, bytes)?;
         let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
@@ -192,6 +199,7 @@ impl MediaCache {
     /// (wrong size) drops the entry and returns `None`, so the caller fetches
     /// it again.
     pub fn get(&self, conn: &Connection, key: &str) -> Result<Option<Media>> {
+        matty_api::rt::assert_off_ui_thread("reading the media cache");
         let Some((relative, size, content_type)) = conn
             .prepare_cached("SELECT path, size, content_type FROM media WHERE key = ?1")?
             .query_row([key], |row| {

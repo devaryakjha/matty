@@ -115,8 +115,13 @@ pub struct Live {
     asked_remote_images: std::collections::HashSet<String>,
     /// Full-size images for the lightbox, by file id, once fetched.
     full_images: HashMap<String, Arc<gpui_kit::Image>>,
-    /// Profile pictures, shared with the views (#153).
+    /// Profile pictures, custom emoji images and team icons, shared with
+    /// the views (#153).
     avatars: crate::avatars::Avatars,
+    emoji_images: crate::avatars::EmojiImages,
+    team_icons: crate::avatars::TeamIcons,
+    /// The server's custom emoji by name, shared with the views.
+    custom_emoji: crate::emoji::CustomEmoji,
 }
 
 /// One tray file on its way to the server.
@@ -126,6 +131,9 @@ pub struct UploadJob {
     pub name: String,
     pub source: crate::attachments::UploadSource,
     file_id: Option<String>,
+    /// Waiting on this computer for the connection (#194): it goes with
+    /// its post through the outbox, or uploads once back online.
+    queued: Option<PathBuf>,
 }
 
 impl UploadJob {
@@ -139,6 +147,7 @@ impl UploadJob {
             name: name.into(),
             source,
             file_id: None,
+            queued: None,
         }
     }
 }
@@ -198,6 +207,9 @@ pub struct Update {
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
+    /// Whether the server takes highlight-only keywords, for Preferences
+    /// (#192).
+    pub highlight_keys: Option<bool>,
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
@@ -223,16 +235,20 @@ pub struct Update {
     pub listing: Option<crate::right_pane::RightPaneContent>,
     /// A file's full-size image, for the lightbox.
     pub full_image: Option<(SharedString, Arc<gpui_kit::Image>)>,
-    /// A file saved to the download folder, or the failure.
-    pub download: Option<matty_sync::DownloadState>,
+    /// A download's progress, where it was saved, or the failure, by file id.
+    pub download: Option<(SharedString, matty_sync::DownloadState)>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// Tray files queued while offline, to upload now that the connection
+    /// is back (#194).
+    pub resume_uploads: Vec<SharedString>,
     /// The server's `MaxFileSize`, for the trays to check files against.
     pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
-    /// A profile picture arrived; the windows redraw to show it.
+    /// A profile picture, custom emoji or team icon arrived, or the custom
+    /// emoji changed; the windows redraw to show it.
     pub avatars: bool,
     /// What a link in a message turned out to name (#85, #103).
     pub link: Option<(matty_sync::LinkQuery, Option<matty_sync::LinkAnswer>)>,
@@ -479,14 +495,19 @@ impl Live {
         account: &SavedAccount,
     ) -> (Self, async_channel::Receiver<ChangeSet>) {
         let changes = sync.subscribe();
-        let asker = sync.clone();
-        let avatars =
-            crate::avatars::Avatars::new(std::rc::Rc::new(move |user_id: &str, version| {
-                asker.send(Command::LoadAvatar {
-                    user_id: user_id.to_owned(),
-                    last_picture_update: version,
+        let ask = |picture: matty_sync::Picture| -> crate::avatars::Ask {
+            let asker = sync.clone();
+            std::rc::Rc::new(move |id: &str, version| {
+                asker.send(Command::LoadPicture {
+                    picture,
+                    id: id.to_owned(),
+                    version,
                 });
-            }));
+            })
+        };
+        let avatars = crate::avatars::Avatars::new(ask(matty_sync::Picture::Avatar));
+        let emoji_images = crate::avatars::EmojiImages::new(ask(matty_sync::Picture::Emoji));
+        let team_icons = crate::avatars::TeamIcons::new(ask(matty_sync::Picture::TeamIcon));
         (
             Self {
                 sync,
@@ -532,6 +553,9 @@ impl Live {
                 asked_remote_images: std::collections::HashSet::new(),
                 full_images: HashMap::new(),
                 avatars,
+                emoji_images,
+                team_icons,
+                custom_emoji: crate::emoji::CustomEmoji::default(),
             },
             changes,
         )
@@ -544,6 +568,20 @@ impl Live {
     /// Remembers a tray file so its progress reaches the tray.
     pub fn track_upload(&mut self, id: &str, job: UploadJob) {
         self.uploads.insert(id.to_owned(), job);
+    }
+
+    /// Whether sync is offline, so a new tray file waits on this computer
+    /// instead of failing to upload (#194).
+    pub fn is_offline(&self) -> bool {
+        self.offline || crate::offline()
+    }
+
+    /// Keeps a tray file on this computer until the post goes or the
+    /// connection is back; `path` is where its bytes are.
+    pub fn queue_upload(&mut self, id: &str, path: PathBuf) {
+        if let Some(job) = self.uploads.get_mut(id) {
+            job.queued = Some(path);
+        }
     }
 
     /// The tray file `id`, to send again after a failure.
@@ -586,6 +624,7 @@ impl Live {
             name: name.clone(),
             source: source.clone(),
             file_id: Some(file_id.to_owned()),
+            queued: None,
         });
         Upload {
             id: file_id.to_owned().into(),
@@ -593,15 +632,24 @@ impl Live {
             size: 0,
             source,
             status: AttachmentStatus::Ready,
+            queued: false,
         }
     }
 
-    /// The server ids for the tray files a post carries; they leave the
-    /// tray with it.
-    pub fn take_file_ids(&mut self, ids: &[SharedString]) -> Vec<String> {
-        ids.iter()
-            .filter_map(|id| self.uploads.remove(id.as_ref())?.file_id)
-            .collect()
+    /// The tray files a post carries, as server ids and, for files queued
+    /// while offline, local paths for the outbox to upload (#194); they
+    /// leave the tray with it.
+    pub fn take_files(&mut self, ids: &[SharedString]) -> (Vec<String>, Vec<PathBuf>) {
+        let mut file_ids = Vec::new();
+        let mut local = Vec::new();
+        for job in ids.iter().filter_map(|id| self.uploads.remove(id.as_ref())) {
+            match (job.file_id, job.queued) {
+                (Some(file_id), _) => file_ids.push(file_id),
+                (None, Some(path)) => local.push(path),
+                (None, None) => {}
+            }
+        }
+        (file_ids, local)
     }
 
     /// Shows `row`'s channel: sync publishes its posts now and as they
@@ -710,7 +758,12 @@ impl Live {
                 post.status = crate::channel::PostStatus::Failed;
             }
         }
-        for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
+        for file in model.posts.iter_mut().flat_map(|post| {
+            let crate::channel::Post { files, embeds, .. } = post;
+            files
+                .iter_mut()
+                .chain(embeds.iter_mut().flat_map(crate::embeds::Embed::files_mut))
+        }) {
             if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
                 file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
             }
@@ -778,7 +831,11 @@ impl Live {
 
     /// Asks sync for the thumbnails of image files not yet asked for.
     fn ask_thumbnails(&mut self, posts: &[Post]) {
-        for file in posts.iter().flat_map(|post| &post.files) {
+        for file in posts.iter().flat_map(|post| {
+            post.files
+                .iter()
+                .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
+        }) {
             if crate::attachments::is_image(&file.name)
                 && self.asked_thumbnails.insert(file.id.to_string())
             {
@@ -1385,6 +1442,15 @@ impl Live {
         self.avatars.clone()
     }
 
+    /// Makes the pictures and the custom emoji list the app's globals, for
+    /// the views to read while rendering.
+    pub fn share_pictures(&self, cx: &mut gpui_kit::App) {
+        cx.set_global(self.avatars.clone());
+        cx.set_global(self.emoji_images.clone());
+        cx.set_global(self.team_icons.clone());
+        cx.set_global(self.custom_emoji.clone());
+    }
+
     pub fn is_typing(&self) -> bool {
         !self.typing.is_empty() || !self.thread_typing.is_empty()
     }
@@ -1493,7 +1559,9 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
-            ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
+            ChangeSet::Download { file_id, state } => {
+                update.download = Some((file_id.as_str().into(), state.clone()));
+            }
             ChangeSet::Image {
                 file_id,
                 size,
@@ -1520,15 +1588,28 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
-            ChangeSet::Avatar {
-                user_id,
-                last_picture_update,
+            ChangeSet::Picture {
+                picture,
+                id,
+                version,
                 image,
             } => {
-                let picture = image
+                let image = image
                     .as_ref()
                     .and_then(|(bytes, content_type)| crate::avatars::picture(bytes, content_type));
-                update.avatars = self.avatars.landed(user_id, *last_picture_update, picture);
+                let store: &crate::avatars::Pictures = match picture {
+                    matty_sync::Picture::Avatar => &self.avatars,
+                    matty_sync::Picture::Emoji => &self.emoji_images,
+                    matty_sync::Picture::TeamIcon => &self.team_icons,
+                };
+                update.avatars = store.landed(id, *version, image);
+            }
+            ChangeSet::CustomEmoji(emoji) => {
+                self.custom_emoji.set(emoji);
+                for one in emoji.iter() {
+                    self.emoji_images.learn(&one.id, one.update_at);
+                }
+                update.avatars = true;
             }
             ChangeSet::RemoteImage {
                 url,
@@ -1879,6 +1960,9 @@ impl Live {
                         | matty_api::capabilities::CollapsedThreads::DefaultOff
                 ));
                 update.collapsed_threads = self.threads();
+                // `highlight_keys` came in 9.3 (below Matty's floor) for
+                // licensed servers; an unlicensed one drops the prop.
+                update.highlight_keys = Some(capabilities.licensed);
             }
             ChangeSet::CollapsedThreads(on) => {
                 let changed = self.threads_on != Some(*on);
@@ -1910,6 +1994,8 @@ impl Live {
                     // another try.
                     if matches!(state, matty_api::ws::ConnectionState::Connected { .. }) {
                         self.avatars.retry_failed();
+                        self.emoji_images.retry_failed();
+                        self.team_icons.retry_failed();
                     }
                     update.connection = Some(connection_state(state));
                 }
@@ -1923,6 +2009,14 @@ impl Live {
             let offline = *state != ConnectionState::Online;
             if offline != self.offline {
                 self.offline = offline;
+                if !offline {
+                    // Back online: files queued in a tray upload now.
+                    update.resume_uploads = self
+                        .uploads
+                        .iter_mut()
+                        .filter_map(|(id, job)| job.queued.take().map(|_| id.as_str().into()))
+                        .collect();
+                }
                 // Only an empty channel reads it, and a patch would not
                 // carry it.
                 if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
@@ -2261,7 +2355,7 @@ fn probe_error(url: &str, error: &ProbeError) -> String {
 }
 
 /// `chat.example.com` from `https://chat.example.com/sub`.
-fn url_host(url: &str) -> &str {
+pub(crate) fn url_host(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }
@@ -2796,6 +2890,33 @@ mod tests {
     }
 
     #[test]
+    fn network_failures_show_the_banner_and_never_a_dialog() {
+        let mut live = live();
+        // The account could not load because the network is down.
+        let update = live.apply(&ChangeSet::Connection(Connection::Failed {
+            error: matty_api::ApiError::Network("dns error".into()).to_string(),
+        }));
+        assert_eq!(update.connection, Some(ConnectionState::Offline));
+        assert!(!update.expired, "a network error is not a sign-in prompt");
+        assert!(!update.signed_out);
+        // Commands that need a connection while there is none, or that the
+        // network dropped, leave the banner to speak.
+        for failure in [
+            matty_sync::CommandError::Offline,
+            matty_sync::CommandError::Server {
+                action: "edit",
+                target: "p1".into(),
+                error: matty_api::ApiError::Network("connection reset".into()).to_string(),
+            },
+        ] {
+            let update = live.apply(&ChangeSet::Failed(failure));
+            assert!(update.join_failed.is_none());
+            assert!(!update.expired);
+            assert!(!update.signed_out);
+        }
+    }
+
+    #[test]
     fn the_connection_and_sign_out_reach_the_window() {
         let mut live = live();
         let update = live.apply(&ChangeSet::Connection(Connection::Socket(
@@ -2825,6 +2946,38 @@ mod tests {
             live.apply(&ChangeSet::Connection(Connection::SignedOut))
                 .signed_out
         );
+    }
+
+    /// #194: a file added offline waits by its path, goes with its post
+    /// as a local file, and uploads once the connection is back.
+    #[test]
+    fn files_added_offline_wait_and_resume_when_back() {
+        let mut live = live();
+        live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Stopped,
+        )));
+        assert!(live.is_offline());
+        for id in ["upload-1", "upload-2"] {
+            let path = PathBuf::from(format!("/home/me/{id}.pdf"));
+            live.track_upload(
+                id,
+                UploadJob::new("c", "x.pdf", UploadSource::Path(path.clone())),
+            );
+            live.queue_upload(id, path);
+        }
+        let (file_ids, local) = live.take_files(&["upload-1".into()]);
+        assert!(file_ids.is_empty());
+        assert_eq!(local, [PathBuf::from("/home/me/upload-1.pdf")]);
+
+        let update = live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Connected {
+                connection_id: "c".into(),
+            },
+        )));
+        assert!(!live.is_offline());
+        assert_eq!(update.resume_uploads, [SharedString::from("upload-2")]);
+        // Resumed, it no longer goes as a local file.
+        assert_eq!(live.take_files(&["upload-2".into()]), (vec![], vec![]));
     }
 
     #[test]
@@ -3034,7 +3187,7 @@ mod tests {
             last_reply_at: 0,
             last_viewed_at: 0,
             unread_replies: unread,
-            unread_mentions: 0,
+            unread_mentions: unread / 2,
             participants: vec!["ada".into()],
         };
         let list = |team: &str| ChangeSet::ThreadList {
@@ -3051,8 +3204,17 @@ mod tests {
         assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
-        assert_eq!((row.summary.count, row.summary.unread), (2, true));
+        // The row carries the server's unread counts (#124).
+        assert_eq!(
+            (
+                row.summary.count,
+                row.summary.unread_replies,
+                row.summary.unread_mentions
+            ),
+            (2, 2, 1)
+        );
         assert_eq!(model.unread(), 1);
+        assert_eq!(model.mentions(), 1);
     }
 
     #[test]
@@ -3499,6 +3661,7 @@ mod tests {
             first_name: Some("Ada".into()),
             channel_wide: true,
             keywords: vec!["deploy".into()],
+            ..Default::default()
         };
         assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }
@@ -3618,7 +3781,7 @@ mod tests {
             update.upload,
             Some(("upload-1".into(), AttachmentStatus::Ready))
         );
-        assert_eq!(live.take_file_ids(&["upload-1".into()]), vec!["f1"]);
+        assert_eq!(live.take_files(&["upload-1".into()]).0, vec!["f1"]);
         // It left with the post; a late report changes nothing.
         let update = live.apply(&ChangeSet::Upload {
             upload_id: "upload-1".into(),
@@ -3649,7 +3812,7 @@ mod tests {
         let upload = live.draft_upload("c1", "f1");
         assert!(upload.is_ready());
         assert_eq!(live.file_ids(std::slice::from_ref(&upload.id)), ["f1"]);
-        assert_eq!(live.take_file_ids(&[upload.id]), ["f1"]);
+        assert_eq!(live.take_files(&[upload.id]).0, ["f1"]);
     }
 
     #[test]
@@ -3660,7 +3823,7 @@ mod tests {
         live.track_upload("upload-1", job);
         live.cancel_upload("upload-1");
         assert!(live.upload_job("upload-1").is_none());
-        assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
+        assert!(live.take_files(&["upload-1".into()]).0.is_empty());
     }
 
     #[test]
@@ -3751,9 +3914,10 @@ mod tests {
             ..User::default()
         }])));
         assert!(avatars.image("ada").is_none(), "initials until it lands");
-        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Avatar {
-            user_id: user_id.into(),
-            last_picture_update: 5,
+        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Picture {
+            picture: matty_sync::Picture::Avatar,
+            id: user_id.into(),
+            version: 5,
             image: image.map(|bytes| (Arc::from(bytes), "image/png".to_owned())),
         };
         let update = live.apply(&answer("ada", Some(b"\x89PNG\r\n\x1a\nface")));
@@ -3761,14 +3925,54 @@ mod tests {
         assert!(avatars.image("ada").is_some());
         // No picture, or bytes that are not an image: the initials stay.
         assert!(!live.apply(&answer("bob", None)).avatars);
-        let page = ChangeSet::Avatar {
-            user_id: "eve".into(),
-            last_picture_update: 5,
+        let page = ChangeSet::Picture {
+            picture: matty_sync::Picture::Avatar,
+            id: "eve".into(),
+            version: 5,
             image: Some((Arc::from(&b"<html>"[..]), "text/html".to_owned())),
         };
         assert!(!live.apply(&page).avatars);
         assert!(avatars.image("bob").is_none());
         assert!(avatars.image("eve").is_none());
+    }
+
+    #[test]
+    fn custom_emoji_and_team_icons_land_in_their_own_stores() {
+        let mut live = live();
+        let update = live.apply(&ChangeSet::CustomEmoji(Arc::from(vec![
+            matty_api::models::Emoji {
+                id: "e1".into(),
+                name: "shipit".into(),
+                update_at: 3,
+                ..Default::default()
+            },
+        ])));
+        assert!(update.avatars, "views redraw with the new names");
+        assert_eq!(live.custom_emoji.id("shipit").as_deref(), Some("e1"));
+        assert!(!live.custom_emoji.contains("tada"));
+        let png = Some((
+            Arc::from(&b"\x89PNG\r\n\x1a\nimg"[..]),
+            "image/png".to_owned(),
+        ));
+        let landed = |picture, id: &str| ChangeSet::Picture {
+            picture,
+            id: id.into(),
+            version: 3,
+            image: png.clone(),
+        };
+        assert!(
+            live.apply(&landed(matty_sync::Picture::Emoji, "e1"))
+                .avatars
+        );
+        assert!(live.emoji_images.image("e1").is_some());
+        assert!(
+            live.apply(&landed(matty_sync::Picture::TeamIcon, "t1"))
+                .avatars
+        );
+        assert!(live.team_icons.image("t1").is_some());
+        // Each kind keeps to its own store.
+        assert!(live.avatars.image("e1").is_none());
+        assert!(live.emoji_images.image("t1").is_none());
     }
 
     #[test]

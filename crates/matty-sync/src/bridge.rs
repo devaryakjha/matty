@@ -116,6 +116,8 @@ fn start(
         .spawn({
             let messages = messages.downgrade();
             move || {
+                // Lives as long as the engine; dropped on this thread.
+                let _wake = crate::wake::WakeWatch::start(messages.clone());
                 runtime.spawn(crate::netwatch::watch(messages));
                 runtime.block_on(Engine::new(open()).with_media(media).run(inbox));
                 runtime.shutdown_timeout(SHUTDOWN_GRACE);

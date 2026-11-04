@@ -16,9 +16,10 @@ use gpui_kit::{
 use matty_api::models::{EmbedKind, MessageAttachment, Post, PostImage};
 use serde_json::Value;
 
+use crate::attachments::PostFile;
 use crate::ui::attachment::Attachment;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
-use crate::ui::embed::{LinkPreview, MessageEmbed};
+use crate::ui::embed::{LinkPreview, MessageEmbed, QuotedMessage};
 use crate::ui::markdown::markdown;
 use crate::ui::theme::{UiTheme, primitives::text};
 
@@ -48,6 +49,14 @@ pub struct QuotedPost {
     /// knows.
     pub author: SharedString,
     pub message: SharedString,
+    /// When it was posted, in milliseconds.
+    pub create_at: i64,
+    /// Its local time and day label, which the transcript fills in; the
+    /// day is empty until then.
+    pub time: u16,
+    pub day: SharedString,
+    /// The files posted with it.
+    pub files: Vec<PostFile>,
 }
 
 /// The quoted post of a `permalink` embed, if the server sent it.
@@ -56,26 +65,35 @@ fn quoted_post(embed: &matty_api::models::PostEmbed) -> Option<QuotedPost> {
         return None;
     }
     let data = embed.data.as_ref()?;
-    let text = |value: &Value, key: &str| {
-        value
-            .get(key)
+    let text = |key: &str| {
+        data.get(key)
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned()
     };
-    let post = data.get("post")?;
-    let channel = text(data, "channel_display_name");
+    let post: Post = serde_json::from_value(data.get("post")?.clone()).ok()?;
+    let channel = text("channel_display_name");
     Some(QuotedPost {
-        post_id: text(data, "post_id").into(),
-        channel_id: text(data, "channel_id").into(),
-        channel_name: match text(data, "channel_type").as_str() {
+        post_id: text("post_id").into(),
+        channel_id: text("channel_id").into(),
+        channel_name: match text("channel_type").as_str() {
             "D" | "G" => SharedString::default(),
             _ if channel.is_empty() => SharedString::default(),
             _ => format!("~{channel}").into(),
         },
-        author_id: text(post, "user_id"),
+        author_id: post.user_id,
         author: "Someone".into(),
-        message: text(post, "message").into(),
+        message: post.message.into(),
+        create_at: post.create_at,
+        time: 0,
+        day: SharedString::default(),
+        files: post
+            .metadata
+            .files
+            .iter()
+            .filter(|file| file.delete_at == 0)
+            .map(PostFile::from_info)
+            .collect(),
     })
 }
 
@@ -259,6 +277,23 @@ impl Embed {
             Self::Image(image) => Some(image),
         }
     }
+
+    /// The files of a quoted post, whose thumbnails sync fetches as it
+    /// does a post's own.
+    pub fn files_mut(&mut self) -> &mut [PostFile] {
+        match self {
+            Self::Permalink(quoted) => &mut quoted.files,
+            _ => &mut [],
+        }
+    }
+
+    /// The files of a quoted post.
+    pub fn files(&self) -> &[PostFile] {
+        match self {
+            Self::Permalink(quoted) => &quoted.files,
+            _ => &[],
+        }
+    }
 }
 
 /// A field's value: the server allows a string or a number.
@@ -292,7 +327,7 @@ fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
 }
 
 /// The name an image link shows: the last part of its path.
-fn image_name(url: &str) -> SharedString {
+pub(crate) fn image_name(url: &str) -> SharedString {
     let url = url.split(['?', '#']).next().unwrap_or_default();
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let path = after_scheme.split_once('/').map_or("", |(_, path)| path);
@@ -310,6 +345,9 @@ fn image_name(url: &str) -> SharedString {
 
 /// Collapses or expands a post's previews; gets the new collapsed state.
 pub type ToggleHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+
+/// Opens a linked image in the lightbox; gets the image's URL.
+pub type ImageHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
 /// The card for what the server read from a link.
 pub fn link_card(url: &str, graph: &matty_api::models::OpenGraph) -> LinkCard {
@@ -366,11 +404,13 @@ pub type OnJump =
 
 /// The cards under the post `id`. `collapsed` hides their images, as the
 /// web app's per-post preview toggle does; `on_toggle` flips it.
+/// `on_image` opens a linked image in the lightbox (#152).
 pub fn post_embeds(
     id: &str,
     embeds: &[Embed],
     collapsed: bool,
     on_toggle: ToggleHandler,
+    on_image: ImageHandler,
     on_jump: OnJump,
     cx: &App,
 ) -> impl IntoElement + use<> {
@@ -407,46 +447,93 @@ pub fn post_embeds(
                     attachment_element(element_id, id, index, attachment, density, cx)
                 }
                 Embed::Permalink(quoted) => {
-                    let mut card = MessageEmbed::new(element_id)
-                        .density(density)
-                        .author(quoted.author.clone())
-                        .title(if quoted.channel_name.is_empty() {
-                            SharedString::from("Jump to message")
-                        } else {
-                            format!("Originally posted in {}", quoted.channel_name).into()
-                        })
-                        .body(markdown(
-                            gpui_kit::ElementId::Name(
-                                format!("post.{id}.embed.{index}.quote").into(),
-                            ),
-                            quoted.message.clone(),
-                            cx,
-                        ));
-                    if !quoted.channel_id.is_empty() {
-                        let (channel, post, jump) = (
-                            quoted.channel_id.clone(),
-                            quoted.post_id.clone(),
-                            on_jump.clone(),
-                        );
-                        card = card
-                            .on_title_click(move |_, window, cx| jump(&channel, &post, window, cx));
-                    }
-                    card.into_any_element()
+                    quoted_element(element_id, id, index, quoted, on_jump.clone(), cx)
                 }
-                Embed::Image(image) => {
-                    image_element(element_id, image, collapsed, on_toggle.clone(), &theme)
-                }
+                Embed::Image(image) => image_element(
+                    element_id,
+                    image,
+                    collapsed,
+                    (on_toggle.clone(), on_image.clone()),
+                    &theme,
+                ),
             }
         }))
 }
 
+/// Opens one quoted post.
+type Jump = dyn Fn(&mut Window, &mut App);
+
+/// A quoted post as gpuicn's quoted message card: the author's avatar,
+/// name and time, where it was posted, the text clamped to a few lines,
+/// and its files. Jump, and a click on one of its files, open the
+/// original post.
+fn quoted_element(
+    element_id: gpui_kit::ElementId,
+    id: &str,
+    index: usize,
+    quoted: &QuotedPost,
+    on_jump: OnJump,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let density = crate::channel::message_density(cx);
+    let mut card = QuotedMessage::new(element_id, quoted.author.clone())
+        .density(density)
+        .body(markdown(
+            gpui_kit::ElementId::Name(format!("post.{id}.embed.{index}.quote").into()),
+            quoted.message.clone(),
+            cx,
+        ));
+    if let Some(picture) = crate::avatars::image(&quoted.author_id, cx) {
+        card = card.avatar(picture);
+    }
+    if !quoted.day.is_empty() {
+        let time = crate::settings::ClockFormat::current(cx).format(quoted.time);
+        card = card.timestamp(if quoted.day == "Today" {
+            time.into()
+        } else {
+            SharedString::from(format!("{} at {time}", quoted.day))
+        });
+    }
+    if !quoted.channel_name.is_empty() {
+        card = card.channel(quoted.channel_name.clone());
+    }
+    let jump: Option<Rc<Jump>> = (!quoted.channel_id.is_empty()).then(|| {
+        let (channel, post) = (quoted.channel_id.clone(), quoted.post_id.clone());
+        Rc::new(move |window: &mut Window, cx: &mut App| on_jump(&channel, &post, window, cx))
+            as Rc<Jump>
+    });
+    if let Some(jump) = jump.clone() {
+        card = card.on_jump(move |_, window, cx| jump(window, cx));
+    }
+    if !quoted.files.is_empty() {
+        let (on_image, on_file) = (jump.clone(), jump);
+        card = card.attachments(crate::attachments::post_files(
+            &format!("post.{id}.embed.{index}"),
+            &quoted.files,
+            move |_, window, cx| {
+                if let Some(jump) = &on_image {
+                    jump(window, cx);
+                }
+            },
+            move |_, window, cx| {
+                if let Some(jump) = &on_file {
+                    jump(window, cx);
+                }
+            },
+            cx,
+        ));
+    }
+    card.into_any_element()
+}
+
 /// An image the message links to: its name and a collapse toggle above
-/// it, as in the web app, and the image in a box its size reserves.
+/// it, as in the web app, and the image in a box its size reserves;
+/// clicking the image opens the lightbox.
 fn image_element(
     element_id: gpui_kit::ElementId,
     image: &EmbedImage,
     collapsed: bool,
-    on_toggle: ToggleHandler,
+    (on_toggle, on_image): (ToggleHandler, ImageHandler),
     theme: &UiTheme,
 ) -> gpui_kit::AnyElement {
     let name = image_name(&image.url);
@@ -494,7 +581,7 @@ fn image_element(
                 .max_size(theme.space(120.), theme.space(87.5));
             if opens(&image.url) {
                 let url = image.url.clone();
-                picture = picture.on_click(move |_, _, cx| cx.open_url(&url));
+                picture = picture.on_click(move |_, window, cx| on_image(url.clone(), window, cx));
             }
             div().debug_selector(|| "post-image".into()).child(picture)
         });
@@ -583,7 +670,14 @@ mod tests {
                     "channel_display_name": "Town Square",
                     "channel_type": "O",
                     "team_name": "dev",
-                    "post": {"id": "orig", "user_id": "ada", "message": "Ship it"}
+                    "post": {
+                        "id": "orig", "user_id": "ada", "message": "Ship it",
+                        "create_at": 1_700_000_000_000_i64,
+                        "metadata": {"files": [
+                            {"id": "f1", "name": "plan.pdf", "size": 2048},
+                            {"id": "f2", "name": "gone.png", "delete_at": 5}
+                        ]}
+                    }
                 }
             }]}
         }))
@@ -597,6 +691,11 @@ mod tests {
         assert_eq!(quoted.channel_name.as_ref(), "~Town Square");
         assert_eq!(quoted.author_id, "ada");
         assert_eq!(quoted.message.as_ref(), "Ship it");
+        assert_eq!(quoted.create_at, 1_700_000_000_000);
+        // Its files come along, but not deleted ones.
+        let names: Vec<_> = quoted.files.iter().map(|file| file.name.as_ref()).collect();
+        assert_eq!(names, ["plan.pdf"]);
+        assert_eq!(embeds[0].files().len(), 1);
     }
 
     fn post(props: Value, embeds: Vec<PostEmbed>) -> Post {
@@ -786,6 +885,7 @@ mod tests {
         embeds: Vec<Embed>,
         collapsed: bool,
         toggled: Rc<std::cell::Cell<Option<bool>>>,
+        opened: Rc<std::cell::RefCell<Vec<SharedString>>>,
     }
 
     impl gpui_kit::Render for Probe {
@@ -795,11 +895,13 @@ mod tests {
             cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             let toggled = self.toggled.clone();
+            let opened = self.opened.clone();
             div().w(gpui_kit::px(800.)).child(post_embeds(
                 "p1",
                 &self.embeds,
                 self.collapsed,
                 Rc::new(move |collapsed, _, _| toggled.set(Some(collapsed))),
+                Rc::new(move |url, _, _| opened.borrow_mut().push(url)),
                 Rc::new(|_, _, _, _| {}),
                 cx,
             ))
@@ -826,6 +928,7 @@ mod tests {
                 embeds,
                 collapsed,
                 toggled,
+                opened: Rc::default(),
             }
         });
         let entity = window.root(cx).unwrap();
@@ -881,6 +984,27 @@ mod tests {
             toggled.get(),
             Some(false),
             "expanding reports collapsed = false"
+        );
+    }
+
+    /// #152: clicking a linked image hands its URL to the lightbox instead
+    /// of leaving for the browser.
+    #[gpui_kit::test]
+    fn clicking_an_image_opens_it_in_the_lightbox(cx: &mut gpui_kit::TestAppContext) {
+        let image = Embed::Image(EmbedImage {
+            url: "https://example.com/shots/a.png".into(),
+            width: 640,
+            height: 400,
+            loaded: Some(crate::attachments::png(&PENDING_PNG)),
+        });
+        let (probe, _, mut cx) = probe(cx, vec![image], false);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let picture = cx.debug_bounds("post-image").unwrap();
+        cx.simulate_click(picture.center(), Default::default());
+        let opened = cx.update(|_, cx| probe.read(cx).opened.borrow().clone());
+        assert_eq!(
+            opened,
+            [SharedString::from("https://example.com/shots/a.png")]
         );
     }
 
