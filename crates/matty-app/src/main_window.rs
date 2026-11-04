@@ -2574,6 +2574,164 @@ impl MainWindow {
         }
     }
 
+    /// Writes one of the user's `notify_props` to the server (#158). The
+    /// server sends the user back, which updates the policy's preferences.
+    fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
+        let Some(props) = &self.notify_props else {
+            return;
+        };
+        if props.get(key).map(String::as_str) == Some(value) {
+            return;
+        }
+        let mut next = props.clone();
+        next.insert(key.to_owned(), value.to_owned());
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::SetNotifyProps {
+                notify_props: next.clone(),
+            });
+        }
+        self.notify_props = Some(next);
+        cx.notify();
+    }
+
+    /// Preferences' Notifications section, from the user's `notify_props`
+    /// with Mattermost's defaults (#158).
+    fn notification_prefs(
+        &self,
+        props: &std::collections::HashMap<String, String>,
+        labelled_row: &dyn Fn(SharedString, SharedString, gpui_kit::AnyElement) -> gpui_kit::Div,
+        section: &dyn Fn(&'static str, gpui_kit::AnyElement) -> gpui_kit::Div,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        let theme = UiTheme::read(cx).clone();
+        let user = matty_notify::UserPrefs::from_props(&self.username(cx), "", props);
+        let level: SharedString = match user.desktop {
+            matty_notify::Level::All => "all",
+            matty_notify::Level::Mention => "mention",
+            matty_notify::Level::None => "none",
+        }
+        .into();
+        let view = cx.entity().downgrade();
+        let item = |id: &'static str, value: &'static str, text: &'static str| {
+            ToggleGroupItem::new(id, value)
+                .aria_label(text)
+                .flex_1()
+                .child(text)
+        };
+        let desktop = ToggleGroup::new("preferences.desktop")
+            .aria_label("Notify me about")
+            .joined(true)
+            .w_full()
+            .value([level])
+            .item(item("preferences.desktop.all", "all", "All messages"))
+            .item(item("preferences.desktop.mention", "mention", "Mentions"))
+            .item(item("preferences.desktop.none", "none", "Nothing"))
+            .on_change({
+                let view = view.clone();
+                move |next, _, cx| {
+                    let value = next.first().map(|v| v.to_string());
+                    view.update(cx, |this, cx| {
+                        this.set_notify_prop("desktop", value.as_deref().unwrap_or("mention"), cx)
+                    })
+                    .ok();
+                }
+            });
+        let on = |key: &str, default: bool| props.get(key).map_or(default, |v| v == "true");
+        let switch = |id: &'static str,
+                      title: &'static str,
+                      detail: SharedString,
+                      checked: bool,
+                      key: &'static str,
+                      values: (&'static str, &'static str)| {
+            let view = view.clone();
+            labelled_row(
+                title.into(),
+                detail,
+                Switch::new(id)
+                    .checked(checked)
+                    .aria_label(title)
+                    .on_change(move |next, _, _, cx| {
+                        let value = if next { values.0 } else { values.1 };
+                        view.update(cx, |this, cx| this.set_notify_prop(key, value, cx))
+                            .ok();
+                    })
+                    .into_any_element(),
+            )
+        };
+        let first_name = self.account.read(cx).account().display_name.clone();
+        let first_name = first_name
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let first_name_detail: SharedString = if first_name.is_empty() {
+            "Your first name counts as a mention.".into()
+        } else {
+            format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(5.))
+            .child(section(
+                "Notifications",
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(3.))
+                    .child(desktop)
+                    .child(switch(
+                        "preferences.desktop-threads",
+                        "Replies in threads I follow",
+                        "Notify for every reply, not only mentions.".into(),
+                        user.desktop_threads == matty_notify::Level::All,
+                        "desktop_threads",
+                        ("all", "mention"),
+                    ))
+                    .child(switch(
+                        "preferences.desktop-sound",
+                        "Sound",
+                        "Play a sound with each notification.".into(),
+                        user.desktop_sound,
+                        "desktop_sound",
+                        ("true", "false"),
+                    ))
+                    .into_any_element(),
+            ))
+            .child(section(
+                "Mentions",
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(3.))
+                    .child(switch(
+                        "preferences.first-name",
+                        "First name",
+                        first_name_detail,
+                        on("first_name", false),
+                        "first_name",
+                        ("true", "false"),
+                    ))
+                    .child(switch(
+                        "preferences.channel-wide",
+                        "@channel, @all and @here",
+                        "Messages to the whole channel count as mentions.".into(),
+                        on("channel", true),
+                        "channel",
+                        ("true", "false"),
+                    ))
+                    .child(
+                        Field::new("preferences.keywords", &self.keywords)
+                            .label("Keywords")
+                            .description(
+                                "Words that count as mentioning you, separated by commas. \
+                                 @username always does.",
+                            ),
+                    )
+                    .into_any_element(),
+            ))
+    }
+
     fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let settings = self.settings.read(cx).get().clone();
@@ -2791,13 +2949,8 @@ impl MainWindow {
                     .text_color(theme.colors.muted_foreground)
                     .child(send_hint),
             );
-        let switch_row =
-            |id: &'static str,
-             title: &'static str,
-             detail: &'static str,
-             checked: bool,
-             write: fn(&mut crate::settings::Settings, bool)| {
-                let store = store.clone();
+        let labelled_row =
+            |title: SharedString, detail: SharedString, control: gpui_kit::AnyElement| {
                 div()
                     .flex()
                     .items_center()
@@ -2821,15 +2974,31 @@ impl MainWindow {
                                     .child(detail),
                             ),
                     )
-                    .child(
-                        Switch::new(id)
-                            .checked(checked)
-                            .aria_label(title)
-                            .on_change(move |next, _, _, cx| {
-                                store.update(cx, |store, cx| store.update(cx, |s| write(s, next)))
-                            }),
-                    )
+                    .child(control)
             };
+        let switch_row =
+            |id: &'static str,
+             title: &'static str,
+             detail: &'static str,
+             checked: bool,
+             write: fn(&mut crate::settings::Settings, bool)| {
+                let store = store.clone();
+                labelled_row(
+                    title.into(),
+                    detail.into(),
+                    Switch::new(id)
+                        .checked(checked)
+                        .aria_label(title)
+                        .on_change(move |next, _, _, cx| {
+                            store.update(cx, |store, cx| store.update(cx, |s| write(s, next)))
+                        })
+                        .into_any_element(),
+                )
+            };
+        let notifications = self
+            .notify_props
+            .as_ref()
+            .map(|props| self.notification_prefs(props, &labelled_row, &section, cx));
         // The sections scroll inside the popup, which stays within the
         // window: the title and Done above them take about space(24.).
         let body_height = theme
@@ -2851,6 +3020,8 @@ impl MainWindow {
                             .flex_col()
                             .gap(theme.space(5.))
                             .pt(theme.space(1.))
+                            // Room for the scrollbar beside the switches.
+                            .pr(theme.space(3.))
                             .child(section("Theme", theme_group.into_any_element()))
                             .child(section("Text size", size_group.into_any_element()))
                             .child(section("Clock", clock_group.into_any_element()))
@@ -2862,18 +3033,7 @@ impl MainWindow {
                                 "Message display",
                                 display_section.into_any_element(),
                             ))
-                            .when(self.notify_props.is_some(), |list| {
-                                list.child(section(
-                            "Notifications",
-                            Field::new("preferences.keywords", &self.keywords)
-                                .label("Mention keywords")
-                                .description(
-                                    "Words that count as mentioning you, separated by commas. \
-                                     @username always does.",
-                                )
-                                .into_any_element(),
-                        ))
-                            })
+                            .children(notifications)
                             .child(section(
                                 "Window",
                                 div()
