@@ -275,6 +275,24 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             )
         },
         Post {
+            embeds: vec![crate::embeds::Embed::Image(crate::embeds::EmbedImage {
+                url: "https://matty.example.com/shots/sidebar-unread.png".into(),
+                width: 640,
+                height: 400,
+                loaded: Some(attachments::png(include_bytes!(
+                    "../assets/preview/mockup.png"
+                ))),
+            })],
+            continues: true,
+            ..post(
+                "p4b",
+                "Lena Fischer",
+                "16:41",
+                "Yesterday",
+                "For reference, how it looks here: https://matty.example.com/shots/sidebar-unread.png",
+            )
+        },
+        Post {
             replies: Some(ReplySummary {
                 count: 3,
                 last_time: hm("08:13"),
@@ -403,7 +421,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         "town-square" => (activity(&row), false, None),
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
-        _ => (posts, false, Some(6)),
+        _ => (posts, false, Some(7)),
     };
     Some(ChannelModel {
         // `MATTY_PREVIEW=offline` shows the empty channel as not saved here.
