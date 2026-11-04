@@ -32,12 +32,27 @@ pub enum ChangeSet {
         /// The newest posts, oldest first, at most [`POSTS_WINDOW`].
         posts: Arc<[Post]>,
     },
+    /// The roots of the replies in an open channel's posts that the posts
+    /// leave out, for the "Commented on" line above a reply while collapsed
+    /// reply threads are off (#123). Sent ahead of [`ChangeSet::Posts`].
+    ReplyRoots {
+        /// The channel.
+        channel_id: String,
+        /// The roots that are cached.
+        roots: Arc<[Post]>,
+    },
     /// An open thread changed.
     Thread {
         /// The root post's id.
         root_id: String,
         /// The root, then its replies.
         posts: Arc<[Post]>,
+        /// Older replies are on the server and not in `posts` yet;
+        /// [`Command::LoadOlderReplies`](crate::Command::LoadOlderReplies)
+        /// pages them in (#122).
+        older: bool,
+        /// The last older page failed.
+        failed: bool,
     },
     /// A team's followed threads changed: the Threads view's list.
     ThreadList {
@@ -47,6 +62,12 @@ pub enum ChangeSet {
         threads: Arc<[ThreadSummary]>,
         /// The threads' root posts, where cached, for their excerpts.
         roots: Arc<[Post]>,
+        /// The server follows more threads than `threads` lists;
+        /// [`Command::LoadMoreThreads`](crate::Command::LoadMoreThreads)
+        /// pages them in (#122).
+        more: bool,
+        /// The last page failed.
+        failed: bool,
     },
     /// A draft changed on this or another device; `None` when deleted.
     Draft {

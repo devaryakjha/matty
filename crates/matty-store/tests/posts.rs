@@ -352,6 +352,67 @@ fn cursors_are_kept_and_since_only_moves_forward() {
     assert_eq!(posts::advance_since(conn, &key, 150).unwrap(), 150);
 }
 
+/// A root's reply footer (#123): what a collapsed-threads fetch says about
+/// its replies is kept, a fetch without it keeps what was known, a live
+/// reply moves it, and a followed thread's record wins.
+#[test]
+fn reply_footers_are_kept_and_follow_live_replies() {
+    let mut store = Store::open_in_memory().unwrap();
+    let conn = store.conn_mut();
+    let user = |id: &str| User {
+        id: id.into(),
+        ..User::default()
+    };
+    let root = Post {
+        reply_count: 2,
+        last_reply_at: 300,
+        participants: vec![user("ada"), user("sam")],
+        is_following: Some(false),
+        ..post("root", "c", 100)
+    };
+    posts::insert_posts(conn, std::slice::from_ref(&root)).unwrap();
+    // The same root from a fetch that leaves the thread fields out.
+    posts::insert_posts(
+        conn,
+        &[Post {
+            last_reply_at: 0,
+            participants: Vec::new(),
+            is_following: None,
+            ..root.clone()
+        }],
+    )
+    .unwrap();
+    let footer = |conn: &rusqlite::Connection| {
+        let posts = posts::posts_window(conn, "c", Window::Latest, 10, true).unwrap();
+        let root = posts.into_iter().find(|p| p.id == "root").unwrap();
+        let ids: Vec<String> = root.participants.into_iter().map(|u| u.id).collect();
+        (root.last_reply_at, ids, root.is_following)
+    };
+    assert_eq!(
+        footer(conn),
+        (300, vec!["ada".into(), "sam".into()], Some(false))
+    );
+
+    posts::note_reply(conn, "root", "ada", 400).unwrap();
+    assert_eq!(
+        footer(conn),
+        (400, vec!["sam".into(), "ada".into()], Some(false))
+    );
+    // Not cached: nothing to move.
+    posts::note_reply(conn, "gone", "ada", 400).unwrap();
+
+    let thread = UserThread {
+        id: "root".into(),
+        reply_count: 3,
+        last_reply_at: 500,
+        participants: vec![user("lena")],
+        post: root,
+        ..UserThread::default()
+    };
+    posts::upsert_threads(conn, "t", &[thread]).unwrap();
+    assert_eq!(footer(conn), (500, vec!["lena".into()], Some(true)));
+}
+
 #[test]
 fn clearing_the_outbox_drops_queued_sends_and_their_rows_only() {
     use matty_store::outbox::{self, Outgoing};
