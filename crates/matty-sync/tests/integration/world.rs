@@ -144,9 +144,52 @@ impl World {
                 .unwrap();
         }
         // Both start with the channel read: the join messages count as
-        // unread, and as a mention of whoever was added.
+        // unread, and as a mention of whoever was added. The server posts
+        // them in the background, so wait for them before viewing, and view
+        // again until the server agrees the channel is read.
+        let joined = |posts: &Value| {
+            posts["posts"]
+                .as_object()
+                .map(|posts| {
+                    posts
+                        .values()
+                        .filter(|p| p["type"] == "system_add_to_channel")
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            let posts: Value = admin
+                .get(&format!("channels/{}/posts", channel.id))
+                .await
+                .unwrap();
+            if joined(&posts) >= users.len() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the join messages"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         for user in &users {
-            user.client.view_channel(&channel.id, "").await.unwrap();
+            loop {
+                user.client.view_channel(&channel.id, "").await.unwrap();
+                let member: Value = user
+                    .client
+                    .get(&format!("channels/{}/members/{}", channel.id, user.id))
+                    .await
+                    .unwrap();
+                if member["mention_count"] == 0 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for the channel to be read"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         }
         let other = users.pop().unwrap();
         let me = users.pop().unwrap();
