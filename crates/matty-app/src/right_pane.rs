@@ -83,6 +83,10 @@ pub enum RightPaneContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// "Remove from channel" on a member in the channel info (#208).
+    RemoveMember {
+        user_id: SharedString,
+    },
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
@@ -1444,17 +1448,17 @@ impl RightPaneView {
                 )
             });
         let view = cx.entity().downgrade();
+        let me = self.me.clone();
+        let can_manage = channel.can_manage;
         let members = div()
             .flex()
             .flex_col()
             .gap(theme.space(1.))
             .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
-            .children(
-                channel
-                    .profiles
-                    .iter()
-                    .map(|profile| Self::member_row(profile, &view, cx)),
-            )
+            .children(channel.profiles.iter().map(|profile| {
+                let removable = can_manage && profile.display_name != me;
+                Self::member_row(profile, removable, &view, cx)
+            }))
             .when(channel.profiles.len() < channel.members, |members| {
                 members.child(
                     Button::new("info.members.all")
@@ -1482,11 +1486,28 @@ impl RightPaneView {
 
     /// One member: avatar with presence, name and handle, opening the
     /// profile card.
+    /// The right-click menu of a member the user may remove.
+    fn member_items(view: &gpui_kit::WeakEntity<Self>, profile: &UserProfile) -> Vec<MenuItem> {
+        let (view, user_id) = (view.clone(), profile.user_id.clone());
+        vec![
+            MenuItem::new("info.member.remove", "Remove from channel").on_click(move |_, _, cx| {
+                let event = RightPaneEvent::RemoveMember {
+                    user_id: user_id.clone(),
+                };
+                view.update(cx, |_, cx| cx.emit(event)).ok();
+            }),
+        ]
+    }
+
+    /// One member; `removable` adds a right-click "Remove from channel".
     fn member_row(
         profile: &UserProfile,
+        removable: bool,
         view: &gpui_kit::WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
+        let menu_view = view.clone();
+        let menu_profile = profile.clone();
         let theme = UiTheme::read(cx).clone();
         let palette = Palette::read(cx);
         let initial: String = profile.display_name.chars().take(1).collect();
@@ -1498,10 +1519,23 @@ impl RightPaneView {
         ))
         .offset(px(4.))
         .trigger_with(move |_, _, _| {
+            let (menu_view, menu_profile) = (menu_view.clone(), menu_profile.clone());
             div()
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
                 ))
+                .when(removable, |row| {
+                    row.on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        move |event: &gpui_kit::MouseDownEvent, window, cx| {
+                            let items = Self::member_items(&menu_view, &menu_profile);
+                            let at = event.position;
+                            menu_view
+                                .update(cx, |this, cx| this.open_menu(items, at, window, cx))
+                                .ok();
+                        },
+                    )
+                })
                 .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
                 .px(theme.space(2.))
                 .mx(theme.space(-2.))

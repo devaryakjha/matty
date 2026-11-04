@@ -425,6 +425,14 @@ pub enum Command {
         /// The people.
         user_ids: Vec<String>,
     },
+    /// Removes someone from a channel (#208); the new counts come back in
+    /// [`ChangeSet::Stats`](crate::ChangeSet::Stats).
+    RemoveMember {
+        /// The channel.
+        channel_id: String,
+        /// The person.
+        user_id: String,
+    },
     /// Searches the team's messages;
     /// [`ChangeSet::Search`](crate::ChangeSet::Search) answers.
     Search {
@@ -702,6 +710,14 @@ impl std::fmt::Debug for Command {
                 .debug_struct("AddMembers")
                 .field("channel_id", channel_id)
                 .field("user_ids", user_ids)
+                .finish(),
+            Self::RemoveMember {
+                channel_id,
+                user_id,
+            } => f
+                .debug_struct("RemoveMember")
+                .field("channel_id", channel_id)
+                .field("user_id", user_id)
                 .finish(),
             Self::Search { team_id, .. } => f
                 .debug_struct("Search")
@@ -1396,6 +1412,13 @@ impl Engine {
                 }) => writes.push(Write::AddMembers {
                     channel_id,
                     user_ids,
+                }),
+                Message::Command(Command::RemoveMember {
+                    channel_id,
+                    user_id,
+                }) => writes.push(Write::RemoveMember {
+                    channel_id,
+                    user_id,
                 }),
                 Message::Command(Command::Search {
                     team_id,

@@ -2161,12 +2161,18 @@ mod tests {
             })),
         };
         let manage = |update: Update| update.details.map(|d| d.can_manage);
-        assert_eq!(manage(live.apply(&member("channel_user", false))), Some(false));
+        assert_eq!(
+            manage(live.apply(&member("channel_user", false))),
+            Some(false)
+        );
         assert_eq!(
             manage(live.apply(&member("channel_user channel_admin", false))),
             Some(true)
         );
-        assert_eq!(manage(live.apply(&member("channel_user", true))), Some(true));
+        assert_eq!(
+            manage(live.apply(&member("channel_user", true))),
+            Some(true)
+        );
         live.apply(&member("channel_user", false));
         live.apply(&ChangeSet::Users(Arc::from(vec![User {
             id: "me".into(),

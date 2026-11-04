@@ -2094,6 +2094,14 @@ impl MainWindow {
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
+            RightPaneEvent::RemoveMember { user_id } => {
+                if let (Some(live), Some(channel_id)) = (&self.live, &self.selected_channel) {
+                    live.send(matty_sync::Command::RemoveMember {
+                        channel_id: channel_id.to_string(),
+                        user_id: user_id.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
             }

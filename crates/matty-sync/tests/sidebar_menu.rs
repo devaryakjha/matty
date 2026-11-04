@@ -283,3 +283,37 @@ async fn archiving_and_making_private_reach_the_server() {
     let body: Value = serde_json::from_slice(&privacy.body).unwrap();
     assert_eq!(body, json!({"privacy": "P"}));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_member_reaches_the_server_and_recounts() {
+    let server = server().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/channels/c1/members/ada"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/stats"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"channel_id": "c1", "member_count": 4})),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+
+    sync.send(Command::RemoveMember {
+        channel_id: "c1".into(),
+        user_id: "ada".into(),
+    });
+    next(
+        &changes,
+        |c| matches!(c, ChangeSet::Stats(stats) if stats.member_count == 4),
+    )
+    .await;
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert!(requests.iter().any(
+        |r| r.method.as_str() == "DELETE" && r.url.path() == "/api/v4/channels/c1/members/ada"
+    ));
+}

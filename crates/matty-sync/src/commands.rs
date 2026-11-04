@@ -63,6 +63,10 @@ pub(crate) enum Write {
     Archive {
         channel_id: String,
     },
+    RemoveMember {
+        channel_id: String,
+        user_id: String,
+    },
     Privacy {
         channel_id: String,
         private: bool,
@@ -144,6 +148,7 @@ impl Write {
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
             Self::Archive { .. } => "archive channel",
+            Self::RemoveMember { .. } => "remove member",
             Self::Privacy { .. } => "change channel privacy",
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
@@ -179,6 +184,7 @@ impl Write {
             Self::Join { channel_id }
             | Self::Leave { channel_id }
             | Self::Archive { channel_id }
+            | Self::RemoveMember { channel_id, .. }
             | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
@@ -379,6 +385,13 @@ pub(crate) async fn run(
             Write::Leave { channel_id } => {
                 client.remove_channel_member(&channel_id, &user_id).await?;
                 Some(Loaded::Left { channel_id })
+            }
+            Write::RemoveMember {
+                channel_id,
+                user_id,
+            } => {
+                client.remove_channel_member(&channel_id, &user_id).await?;
+                Some(Loaded::Stats(client.channel_stats(&channel_id).await?))
             }
             Write::Archive { channel_id } => {
                 client.archive_channel(&channel_id).await?;
