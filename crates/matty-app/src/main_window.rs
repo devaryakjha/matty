@@ -469,6 +469,9 @@ impl MainWindow {
                 }
                 ChannelEvent::PreviewLink(url) => {
                     if let Some(live) = &this.live {
+                        if !live.link_previews() {
+                            return;
+                        }
                         live.send(matty_sync::Command::LoadLinkPreview {
                             url: url.to_string(),
                         });
@@ -2033,6 +2036,9 @@ impl MainWindow {
             }
             RightPaneEvent::PreviewLink(url) => {
                 if let Some(live) = &self.live {
+                    if !live.link_previews() {
+                        return;
+                    }
                     live.send(matty_sync::Command::LoadLinkPreview {
                         url: url.to_string(),
                     });

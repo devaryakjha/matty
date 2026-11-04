@@ -2074,6 +2074,10 @@ impl Engine {
                     session.collapsed_threads = crt;
                 }
                 dirty.direct.push(ChangeSet::CollapsedThreads(crt));
+                dirty.direct.push(ChangeSet::LinkPreviews(link_previews(
+                    capabilities.link_previews,
+                    &preferences,
+                )));
                 self.me = Some(me.id.clone());
                 self.capabilities = Some((*capabilities).clone());
                 // The window reads the user's own notification preferences
@@ -2359,6 +2363,10 @@ impl Engine {
                     session.collapsed_threads = crt;
                 }
                 dirty.direct.push(ChangeSet::CollapsedThreads(crt));
+                dirty.direct.push(ChangeSet::LinkPreviews(link_previews(
+                    capabilities.link_previews,
+                    &preferences,
+                )));
                 self.capabilities = Some((*capabilities).clone());
                 dirty
                     .direct
@@ -2776,6 +2784,10 @@ impl Engine {
         };
         let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
         dirty.direct.push(ChangeSet::CollapsedThreads(crt));
+        dirty.direct.push(ChangeSet::LinkPreviews(link_previews(
+            capabilities.link_previews,
+            &preferences,
+        )));
         if cached_crt(conn).ok() == Some(crt) {
             return;
         }
@@ -2863,6 +2875,15 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
         CollapsedThreads::DefaultOn => chosen.unwrap_or(true),
         CollapsedThreads::DefaultOff => chosen.unwrap_or(false),
     }
+}
+
+/// Whether link previews show: the server's `EnableLinkPreviews`, then the
+/// user's `display_settings/link_previews`, on unless set to "false".
+pub(crate) fn link_previews(enabled: bool, preferences: &[Preference]) -> bool {
+    enabled
+        && !preferences.iter().any(|p| {
+            p.category == "display_settings" && p.name == "link_previews" && p.value == "false"
+        })
 }
 
 /// The media cache key for one of a file's images.
