@@ -119,6 +119,11 @@ pub(crate) enum Write {
         team_id: String,
         category: Box<matty_api::models::SidebarCategory>,
     },
+    /// A team's categories in a new order.
+    CategoryOrder {
+        team_id: String,
+        order: Vec<String>,
+    },
     DeleteCategory {
         team_id: String,
         category_id: String,
@@ -166,6 +171,7 @@ impl Write {
             Self::ReadAllThreads { .. } => "mark threads read",
             Self::CreateCategory { .. } => "create category",
             Self::UpdateCategory { .. } => "change category",
+            Self::CategoryOrder { .. } => "reorder categories",
             Self::DeleteCategory { .. } => "delete category",
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
@@ -202,6 +208,7 @@ impl Write {
                 category.display_name.clone()
             }
             Self::DeleteCategory { category_id, .. } => category_id.clone(),
+            Self::CategoryOrder { team_id, .. } => team_id.clone(),
             Self::ReadThread { thread_id, .. } | Self::Follow { thread_id, .. } => {
                 thread_id.clone()
             }
@@ -482,6 +489,10 @@ pub(crate) async fn run(
                 client
                     .update_categories(&team_id, std::slice::from_ref(&*category))
                     .await?;
+                categories(&client, team_id).await?
+            }
+            Write::CategoryOrder { team_id, order } => {
+                client.set_category_order(&team_id, &order).await?;
                 categories(&client, team_id).await?
             }
             Write::DeleteCategory {

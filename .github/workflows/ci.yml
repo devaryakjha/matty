@@ -10,11 +10,12 @@ on:
   push:
     branches: [master]
 
-# A new push to a pull request cancels its older run, and a new merge to
-# master cancels the older master run: the newest master run covers it.
+# A new push to a pull request cancels its older run. Every master run
+# goes ahead, except that the macOS jobs on master queue one at a time (see
+# their concurrency below).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -155,6 +156,11 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'macos') ||
       needs.changes.outputs.macos == 'true'
     runs-on: macos-14
+    # On master a running macOS job finishes, and only the newest waiting
+    # one is kept, so merges in quick succession do not cancel it forever.
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
     timeout-minutes: 40
     permissions:
       contents: read
@@ -212,6 +218,11 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'macos') ||
       needs.changes.outputs.bundle == 'true'
     runs-on: macos-14
+    # On master a running macOS job finishes, and only the newest waiting
+    # one is kept, so merges in quick succession do not cancel it forever.
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -302,7 +313,7 @@ jobs:
   # One check to wait on: green when every job that ran passed and the rest
   # were skipped on purpose.
   ci:
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [changes, linux, web, deny, macos, macos-universal, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -310,8 +321,16 @@ jobs:
       - name: Every job passed or was skipped
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          # A master macOS job dropped from the queue for a newer merge is
+          # cancelled, and the newer run checks it instead.
+          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }}
+          PUSH: ${{ github.event_name == 'push' }}
         run: |
           echo "$RESULTS"
           for r in $RESULTS; do
-            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+            case "$r" in
+              success|skipped) ;;
+              cancelled) [ "$PUSH" = true ] && [[ " $MACOS " == *" cancelled "* ]] || exit 1 ;;
+              *) exit 1 ;;
+            esac
           done

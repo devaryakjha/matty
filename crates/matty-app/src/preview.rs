@@ -141,6 +141,7 @@ pub fn sidebar() -> SidebarModel {
         selected: Some("general".into()),
         unread_threads: 2,
         drafts: 2,
+        drafted: ["design".into()].into_iter().collect(),
         categories: preview_kinds(vec![
             Category::new(
                 "favorites",
@@ -1180,6 +1181,23 @@ pub fn drafts() -> DraftsModel {
     }
 }
 
+/// Puts the fixture drafts in the composers' book, so their channels show
+/// the sidebar's pencil and their composers open with the text.
+pub fn seed_drafts(cx: &mut gpui_kit::App) {
+    use crate::composer_draft::{DraftBook, DraftKey, Kept};
+    for draft in drafts().drafts {
+        let key = match draft.thread_root {
+            Some(root) => DraftKey::thread(draft.channel_id, root),
+            None => DraftKey::channel(draft.channel_id),
+        };
+        let kept = Kept {
+            text: draft.body,
+            ..Kept::default()
+        };
+        DraftBook::put(key, kept, cx);
+    }
+}
+
 /// The threads the user follows, for the Threads view.
 pub fn threads() -> ThreadsModel {
     let row = |channel_id: &str, post_id: &str, summary: ReplySummary| {
@@ -1268,6 +1286,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         embeds: vec![],
     };
     Some(ThreadModel {
+        channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         replies: vec![
             reply(
