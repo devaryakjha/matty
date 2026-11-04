@@ -1,9 +1,13 @@
 //! A user's profile card (PLAN G9, M2 in §3), opened from an avatar in the
 //! transcript: who they are, whether they are around, and the two things
-//! people do from there: message them or mention them.
+//! people do from there: message them or mention them. "View profile"
+//! opens the same in the right pane.
 
 use gpui_icons::{LucideIcon, lucide};
-use gpui_kit::{App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px};
+use gpui_kit::{
+    App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+};
 
 use crate::sidebar::Presence;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -70,34 +74,105 @@ impl UserProfile {
 /// A card action: the view that opens the card decides what it does.
 pub type ProfileAction = Box<dyn Fn(&mut Window, &mut App)>;
 
-/// The card's two actions, wired by the view that opens it.
+/// The card's actions, wired by the view that opens it.
 pub struct ProfileActions {
     pub on_message: ProfileAction,
     pub on_mention: ProfileAction,
+    /// "View profile", which opens the profile in the right pane; `None`
+    /// where the profile is already the pane.
+    pub on_view: Option<ProfileAction>,
 }
 
-/// The popover body for `profile`.
-pub fn profile_card(
-    id: &SharedString,
-    profile: &UserProfile,
-    actions: ProfileActions,
-    cx: &App,
-) -> impl IntoElement + use<> {
-    let theme = UiTheme::read(cx).clone();
-    let palette = Palette::read(cx);
-    let dot = match profile.presence {
+fn presence_color(profile: &UserProfile, theme: &UiTheme, palette: &Palette) -> gpui_kit::Rgba {
+    match profile.presence {
         Presence::Online => palette.online,
         Presence::Away => palette.away,
         Presence::Dnd => palette.dnd,
         Presence::Offline => theme.colors.muted_foreground,
-    };
+    }
+}
+
+/// The avatar with its presence dot, the name, the username and, when
+/// `position` is set, the position. `surface` is what the dot's ring cuts
+/// out of.
+fn identity(
+    id: &SharedString,
+    profile: &UserProfile,
+    (surface, foreground): (gpui_kit::Rgba, gpui_kit::Rgba),
+    position: bool,
+    cx: &App,
+) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx).clone();
+    let dot = presence_color(profile, &theme, &Palette::read(cx));
     let initial: String = profile.display_name.chars().take(1).collect();
-    let meta = |text: String| {
-        div()
-            .type_style(style::META, &theme)
-            .text_color(theme.colors.muted_foreground)
-            .child(text)
-    };
+    div()
+        .flex()
+        .items_center()
+        .gap(theme.space(3.))
+        .child(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .child(crate::avatars::with_picture(
+                    Avatar::new(gpui_kit::ElementId::Name(
+                        format!("profile.{id}.avatar").into(),
+                    ))
+                    .size(AvatarSize::Lg)
+                    .fallback(initial)
+                    .aria_label(profile.display_name.clone()),
+                    &profile.user_id,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(-1.))
+                        .right(px(-1.))
+                        .size(scaled(&theme, 12.))
+                        .rounded_full()
+                        .bg(dot)
+                        .border_2()
+                        .border_color(surface),
+                ),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(theme.space(0.5))
+                .child(
+                    div()
+                        .type_style(style::TITLE, &theme)
+                        .text_color(foreground)
+                        .truncate()
+                        .child(profile.display_name.clone()),
+                )
+                .child(
+                    div()
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child(format!("@{}", profile.username)),
+                )
+                .children(
+                    profile
+                        .position
+                        .clone()
+                        .filter(|_| position)
+                        .map(|position| {
+                            div()
+                                .type_style(style::UI, &theme)
+                                .text_color(foreground)
+                                .child(position)
+                        }),
+                ),
+        )
+}
+
+/// Presence (with the custom status) and local time, one per line.
+fn details(profile: &UserProfile, cx: &App) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx).clone();
+    let dot = presence_color(profile, &theme, &Palette::read(cx));
     let detail = |glyph: gpui_kit::AnyElement, text: String| {
         div()
             .flex()
@@ -117,9 +192,96 @@ pub fn profile_card(
                     .child(text),
             )
     };
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme.space(1.5))
+        .child(detail(
+            div()
+                .size(scaled(&theme, 8.))
+                .rounded_full()
+                .bg(dot)
+                .into_any_element(),
+            match &profile.status_text {
+                Some(text) => format!("{} · {text}", profile.presence_label()),
+                None => profile.presence_label().to_string(),
+            },
+        ))
+        .children(
+            profile
+                .time_zone
+                .as_ref()
+                .and_then(|zone| local_time(zone, crate::settings::ClockFormat::current(cx)))
+                .map(|time| {
+                    detail(
+                        lucide(LucideIcon::Clock)
+                            .size(scaled(&theme, metrics::ICON_SMALL))
+                            .text_color(theme.colors.muted_foreground)
+                            .into_any_element(),
+                        format!("{time} local time"),
+                    )
+                }),
+        )
+}
+
+/// Message and Mention, side by side.
+fn buttons(
+    id: &SharedString,
+    on_message: ProfileAction,
+    on_mention: ProfileAction,
+    cx: &App,
+) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx).clone();
+    div()
+        .flex()
+        .gap(theme.space(2.))
+        .pt(theme.space(1.))
+        .child(
+            Button::new(gpui_kit::ElementId::Name(
+                format!("profile.{id}.message").into(),
+            ))
+            .variant(ButtonVariant::Default)
+            .size(ButtonSize::Sm)
+            .aria_label("Message")
+            .flex_1()
+            .child(
+                lucide(LucideIcon::MessageSquare)
+                    .size(scaled(&theme, metrics::ICON))
+                    .text_color(theme.colors.primary_foreground),
+            )
+            .child("Message")
+            .on_click(move |_, window, cx| on_message(window, cx)),
+        )
+        .child(
+            Button::new(gpui_kit::ElementId::Name(
+                format!("profile.{id}.mention").into(),
+            ))
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Sm)
+            .aria_label("Mention")
+            .flex_1()
+            .child(
+                lucide(LucideIcon::AtSign)
+                    .size(scaled(&theme, metrics::ICON))
+                    .text_color(theme.colors.foreground),
+            )
+            .child("Mention")
+            .on_click(move |_, window, cx| on_mention(window, cx)),
+        )
+}
+
+/// The popover body for `profile`.
+pub fn profile_card(
+    id: &SharedString,
+    profile: &UserProfile,
+    actions: ProfileActions,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let theme = UiTheme::read(cx).clone();
     let ProfileActions {
         on_message,
         on_mention,
+        on_view,
     } = actions;
     popover_popup(
         gpui_kit::ElementId::Name(format!("profile.{id}").into()),
@@ -128,129 +290,93 @@ pub fn profile_card(
     )
     .p(theme.space(4.))
     .gap(theme.space(3.))
-    .child(
-        div()
-            .flex()
-            .items_center()
-            .gap(theme.space(3.))
-            .child(
-                div()
-                    .relative()
-                    .flex_shrink_0()
-                    .child(crate::avatars::with_picture(
-                        Avatar::new(gpui_kit::ElementId::Name(
-                            format!("profile.{id}.avatar").into(),
-                        ))
-                        .size(AvatarSize::Lg)
-                        .fallback(initial)
-                        .aria_label(profile.display_name.clone()),
-                        &profile.user_id,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom(px(-1.))
-                            .right(px(-1.))
-                            .size(scaled(&theme, 12.))
-                            .rounded_full()
-                            .bg(dot)
-                            .border_2()
-                            .border_color(theme.colors.popover),
-                    ),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(0.5))
-                    .child(
-                        div()
-                            .type_style(style::TITLE, &theme)
-                            .text_color(theme.colors.popover_foreground)
-                            .truncate()
-                            .child(profile.display_name.clone()),
-                    )
-                    .child(meta(format!("@{}", profile.username)))
-                    .children(profile.position.clone().map(|position| {
-                        div()
-                            .type_style(style::UI, &theme)
-                            .text_color(theme.colors.popover_foreground)
-                            .child(position)
-                    })),
-            ),
-    )
-    .child(
+    .child(identity(
+        id,
+        profile,
+        (theme.colors.popover, theme.colors.popover_foreground),
+        true,
+        cx,
+    ))
+    .child(details(profile, cx))
+    .child(buttons(id, on_message, on_mention, cx))
+    .children(on_view.map(|on_view| {
+        Button::new(gpui_kit::ElementId::Name(
+            format!("profile.{id}.view").into(),
+        ))
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::Sm)
+        .aria_label("View profile")
+        .child("View profile")
+        .on_click(move |_, window, cx| on_view(window, cx))
+    }))
+}
+
+/// The profile as the right pane shows it (#212): the card's contents with
+/// room to breathe, and the position and time zone as labelled fields.
+pub fn profile_pane(
+    profile: &UserProfile,
+    on_message: ProfileAction,
+    on_mention: ProfileAction,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let theme = UiTheme::read(cx).clone();
+    let id: SharedString = format!("pane.{}", profile.user_id).into();
+    let field = |label: &'static str, value: SharedString| {
         div()
             .flex()
             .flex_col()
-            .gap(theme.space(1.5))
-            .child(detail(
-                div()
-                    .size(scaled(&theme, 8.))
-                    .rounded_full()
-                    .bg(dot)
-                    .into_any_element(),
-                match &profile.status_text {
-                    Some(text) => format!("{} · {text}", profile.presence_label()),
-                    None => profile.presence_label().to_string(),
-                },
-            ))
-            .children(
-                profile
-                    .time_zone
-                    .as_ref()
-                    .and_then(|zone| local_time(zone, crate::settings::ClockFormat::current(cx)))
-                    .map(|time| {
-                        detail(
-                            lucide(LucideIcon::Clock)
-                                .size(scaled(&theme, metrics::ICON_SMALL))
-                                .text_color(theme.colors.muted_foreground)
-                                .into_any_element(),
-                            format!("{time} local time"),
-                        )
-                    }),
-            ),
-    )
-    .child(
-        div()
-            .flex()
-            .gap(theme.space(2.))
-            .pt(theme.space(1.))
+            .gap(theme.space(0.5))
             .child(
-                Button::new(gpui_kit::ElementId::Name(
-                    format!("profile.{id}.message").into(),
-                ))
-                .variant(ButtonVariant::Default)
-                .size(ButtonSize::Sm)
-                .aria_label("Message")
-                .flex_1()
-                .child(
-                    lucide(LucideIcon::MessageSquare)
-                        .size(scaled(&theme, metrics::ICON))
-                        .text_color(theme.colors.primary_foreground),
-                )
-                .child("Message")
-                .on_click(move |_, window, cx| on_message(window, cx)),
+                div()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(label),
             )
             .child(
-                Button::new(gpui_kit::ElementId::Name(
-                    format!("profile.{id}.mention").into(),
-                ))
-                .variant(ButtonVariant::Outline)
-                .size(ButtonSize::Sm)
-                .aria_label("Mention")
-                .flex_1()
-                .child(
-                    lucide(LucideIcon::AtSign)
-                        .size(scaled(&theme, metrics::ICON))
-                        .text_color(theme.colors.foreground),
+                div()
+                    .type_style(style::UI, &theme)
+                    .text_color(theme.colors.foreground)
+                    .child(value),
+            )
+    };
+    div()
+        .id(gpui_kit::ElementId::Name(id.clone()))
+        .size_full()
+        .overflow_y_scroll()
+        .p(theme.space(4.))
+        .flex()
+        .flex_col()
+        .gap(theme.space(4.))
+        .child(identity(
+            &id,
+            profile,
+            (theme.colors.background, theme.colors.foreground),
+            false,
+            cx,
+        ))
+        .child(buttons(&id, on_message, on_mention, cx))
+        .child(details(profile, cx))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme.space(3.))
+                .pt(theme.space(3.))
+                .border_t(style::hairline())
+                .border_color(theme.colors.border)
+                .children(
+                    profile
+                        .position
+                        .clone()
+                        .map(|position| field("Position", position)),
                 )
-                .child("Mention")
-                .on_click(move |_, window, cx| on_mention(window, cx)),
-            ),
-    )
+                .children(
+                    profile
+                        .time_zone
+                        .clone()
+                        .map(|zone| field("Time zone", zone.replace('_', " ").into())),
+                ),
+        )
 }
 
 #[cfg(test)]

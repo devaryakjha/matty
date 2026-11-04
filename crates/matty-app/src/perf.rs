@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{LineWriter, Write};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::{
     AnyView, App, Context, DispatchPhase, IntoElement, MouseDownEvent, MouseMoveEvent,

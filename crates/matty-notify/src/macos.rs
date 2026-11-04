@@ -143,7 +143,7 @@ impl Notifier for Center {
         if let Some(sound) = notification.sound {
             play(sound);
         }
-        let id = Clicked::identifier(&notification.channel_id, &notification.post_id);
+        let id = Clicked::identifier_of(notification);
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(&id),
             &content,

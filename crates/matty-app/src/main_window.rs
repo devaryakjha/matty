@@ -70,6 +70,33 @@ pub enum ConnectionState {
     Offline,
 }
 
+/// What the connection banner says for `state` with `queued` messages
+/// waiting, and whether it is the offline one (with Retry now); `None`
+/// when online (#162).
+fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, bool)> {
+    let (text, offline): (SharedString, bool) = match state {
+        ConnectionState::Online => return None,
+        ConnectionState::Reconnecting { attempt } if *attempt <= 1 => {
+            ("Connection lost. Reconnecting…".into(), false)
+        }
+        ConnectionState::Reconnecting { attempt } => (
+            format!("Connection lost. Reconnecting (attempt {attempt})…").into(),
+            false,
+        ),
+        ConnectionState::Offline => (
+            "You're offline. Matty shows what it has and sends when you're back.".into(),
+            true,
+        ),
+    };
+    // What is waiting goes when the connection is back (#195).
+    let text = match queued {
+        0 => text,
+        1 => format!("{text} 1 message waiting to send.").into(),
+        n => format!("{text} {n} messages waiting to send.").into(),
+    };
+    Some((text, offline))
+}
+
 /// `chat.example.com` from `https://chat.example.com`.
 fn host(url: &str) -> String {
     url.split_once("://")
@@ -166,9 +193,13 @@ pub struct MainWindow {
     preferences: DialogHandle,
     /// The section Preferences shows (#155).
     preferences_section: preferences::Section,
-    /// Preferences' mention keywords, saved to the server on Enter or when
-    /// the field loses focus (#192).
+    /// Preferences' field for a new mention keyword, added on Enter or
+    /// when the field loses focus (#192).
     keywords: Entity<InputState>,
+    /// Preferences' field for a new highlight-only keyword (#192).
+    highlight_keywords: Entity<InputState>,
+    /// The server takes `highlight_keys`: it is licensed (#192).
+    highlight_keys: bool,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
     /// Preferences' notification sound picker (#142).
@@ -215,9 +246,8 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
-    /// Files asked for and not yet saved, oldest first, so a failed
-    /// download can offer Retry when only one was in flight.
-    downloads: std::collections::VecDeque<SharedString>,
+    /// Update checks and the "Restart to update" toast (#180).
+    _updater: Entity<crate::updater::UpdatePrompt>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
@@ -252,6 +282,9 @@ pub struct MainWindow {
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
+    /// "Forward to …" with an optional comment, once the switcher picked
+    /// where (#213).
+    forward: Entity<crate::forward::ForwardView>,
     link_join_offer: Option<crate::links::JoinOffer>,
     /// A permalink's post to show once its channel, just joined, opens.
     link_jump: Option<(SharedString, SharedString)>,
@@ -302,6 +335,9 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
+                SwitcherEvent::Forward { post, channel } => {
+                    this.ask_forward(post.clone(), channel.clone(), window, cx)
+                }
                 SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
             },
         )
@@ -326,10 +362,17 @@ impl MainWindow {
             crate::preview::seed_drafts(cx);
         }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
-        channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
-        let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        channel.update(cx, |channel, cx| {
+            channel.set_directory(directory.clone(), cx)
+        });
+        let right_pane = cx.new(|cx| {
+            let mut pane = RightPaneView::new(me, window, cx);
+            pane.set_directory(directory.clone());
+            pane
+        });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
+            cx.set_global(crate::preview::downloads());
         }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
@@ -354,6 +397,17 @@ impl MainWindow {
         )
         .detach();
         let profile_editor = cx.new(|cx| crate::profile_editor::ProfileEditor::new(window, cx));
+        cx.subscribe(
+            &profile_editor,
+            |this, _, chosen: &crate::profile_editor::PictureChosen, _| {
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::SetPicture {
+                        picture: chosen.0.clone(),
+                    });
+                }
+            },
+        )
+        .detach();
         cx.subscribe(
             &profile_editor,
             |this, _, saved: &crate::profile_editor::ProfileSaved, _| {
@@ -413,6 +467,7 @@ impl MainWindow {
         };
         let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
         let toasts = cx.new(ToastState::new);
+        let _updater = crate::updater::UpdatePrompt::start(toasts.clone(), window, cx);
         let drafts_model = if crate::preview::enabled() {
             crate::preview::drafts()
         } else {
@@ -446,9 +501,11 @@ impl MainWindow {
         cx.subscribe(&threads, |this, threads, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
             let unread = threads.read(cx).model().unread();
+            let mentions = threads.read(cx).model().mentions();
             this.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
             let Some(live) = &mut this.live else {
@@ -495,6 +552,9 @@ impl MainWindow {
                 ChannelEvent::OpenInfo => this.show_channel_info(cx),
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
+                }
+                ChannelEvent::ViewProfile(profile) => {
+                    this.show_listing(RightPaneContent::Profile(profile.clone()), cx)
                 }
                 ChannelEvent::Send {
                     text,
@@ -548,6 +608,15 @@ impl MainWindow {
                         live.send(matty_sync::Command::Typing {
                             channel_id: channel.to_string(),
                             parent_id: root.as_ref().map(ToString::to_string).unwrap_or_default(),
+                        });
+                    }
+                }
+                ChannelEvent::SuggestPeople(term) => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SuggestPeople {
+                            term: term.to_string(),
+                            team_id: live.team().map(str::to_string),
+                            channel_id: Some(channel.to_string()),
                         });
                     }
                 }
@@ -640,19 +709,7 @@ impl MainWindow {
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
                 ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
-                ChannelEvent::MarkUnread(post) => {
-                    if let Some(live) = &this.live {
-                        live.send(matty_sync::Command::MarkUnread {
-                            post_id: post.to_string(),
-                        });
-                    }
-                    if let Some(id) = this.selected_channel.clone() {
-                        this.sidebar
-                            .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
-                        // Stays unread until the user leaves and comes back.
-                        this.kept_unread = Some(id);
-                    }
-                }
+                ChannelEvent::MarkUnread(post) => this.mark_unread(post, cx),
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
@@ -718,9 +775,47 @@ impl MainWindow {
                         });
                     }
                 }
-                ChannelEvent::ToggleSave(_)
-                | ChannelEvent::TogglePin(_)
-                | ChannelEvent::ToggleFollow { .. } => {}
+                ChannelEvent::ToggleSave(post) => {
+                    if let Some(live) = this.live.as_mut() {
+                        let saved = !live.is_saved(post);
+                        live.set_saved(post, saved);
+                    }
+                }
+                ChannelEvent::TogglePin(post) => {
+                    // The view has already flipped the post.
+                    let pinned = this
+                        .channel
+                        .read(cx)
+                        .model()
+                        .and_then(|model| model.posts.iter().find(|shown| shown.id == *post))
+                        .map(|shown| shown.pinned);
+                    if let Some(live) = &mut this.live
+                        && let Some(pinned) = pinned
+                    {
+                        live.set_pinned(post, pinned);
+                    }
+                }
+                ChannelEvent::ToggleFollow { post, following } => {
+                    if let Some(live) = &this.live {
+                        live.follow_thread(post, *following);
+                    }
+                }
+                ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
+                ChannelEvent::OpenPermalink { channel, post } => {
+                    this.open_channel(channel.clone(), window, cx);
+                    let post = post.clone();
+                    this.channel
+                        .update(cx, |channel, cx| channel.jump_to(post, cx));
+                }
+                ChannelEvent::Forward(post) => {
+                    // After the menu has closed and handed focus back, so
+                    // the switcher's field keeps it.
+                    let post = post.clone();
+                    let switcher = this.switcher.clone();
+                    window.on_next_frame(move |window, cx| {
+                        switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                    });
+                }
             },
         )
         .detach();
@@ -782,6 +877,29 @@ impl MainWindow {
                             .categories
                             .update(cx, |dialogs, cx| dialogs.delete(id, name, window, cx));
                     }
+                    SidebarEvent::MoveCategory { id, up } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveCategory {
+                                category_id: id.to_string(),
+                                up: *up,
+                            });
+                        }
+                        return;
+                    }
+                    SidebarEvent::MoveChannel {
+                        category_id,
+                        channel_id,
+                        up,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveChannel {
+                                category_id: category_id.to_string(),
+                                channel_id: channel_id.to_string(),
+                                up: *up,
+                            });
+                        }
+                        return;
+                    }
                     SidebarEvent::MoveToCategory {
                         channel_id,
                         category_id,
@@ -799,21 +917,32 @@ impl MainWindow {
             },
         )
         .detach();
-        let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
-        let keywords = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
-            if let Some(props) = &preview_props {
-                let text = matty_notify::mention::keywords_text("arya", props);
-                input.set_value(text, window, cx);
-            }
-            input
-        });
-        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                this.save_keywords(cx);
-            }
-        })
+        let forward = cx.new(|cx| crate::forward::ForwardView::new(window, cx));
+        cx.subscribe(
+            &forward,
+            |this, _, event: &crate::forward::ForwardEvent, cx| {
+                this.forward(&event.post, &event.to, &event.comment, cx)
+            },
+        )
         .detach();
+        let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
+        let keyword_input =
+            |list: matty_notify::KeywordList, window: &mut Window, cx: &mut Context<Self>| {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a keyword"));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                            this.add_keywords(list, window, cx);
+                        }
+                    },
+                )
+                .detach();
+                input
+            };
+        let keywords = keyword_input(matty_notify::KeywordList::Mention, window, cx);
+        let highlight_keywords = keyword_input(matty_notify::KeywordList::Highlight, window, cx);
         let level = settings.read(cx).get().log_level;
         let log_level = cx.new(|cx| {
             let mut state = SelectState::new(
@@ -871,6 +1000,8 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             preferences_section: preferences::Section::default(),
             keywords,
+            highlight_keywords,
+            highlight_keys: crate::preview::enabled(),
             log_level,
             sound,
             notifier: matty_notify::backend::platform(clicked_tx),
@@ -892,7 +1023,7 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
-            downloads: Default::default(),
+            _updater,
             threads_open: false,
             drafts,
             drafts_open: false,
@@ -909,6 +1040,7 @@ impl MainWindow {
             kept_unread: None,
             link_asked: None,
             link_join: DialogHandle::new(false),
+            forward,
             link_join_offer: None,
             link_jump: None,
             login_server: None,
@@ -1075,14 +1207,26 @@ impl MainWindow {
     }
 
     /// Saves a post's file to the download folder; it opens once saved
-    /// (see [`open_download`]).
+    /// (see [`open_download`]). A file already saved this run opens again
+    /// from where it went, and one on its way is left to arrive (#151).
     fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
+        use crate::attachments::{Downloads, FileDownload};
+        match Downloads::get(cx, file_id) {
+            Some(FileDownload::Downloading { .. }) => return,
+            Some(FileDownload::Saved(path)) if path.exists() => {
+                let path = path.clone();
+                open_download(&path, cx);
+                return;
+            }
+            _ => {}
+        }
         let Some(live) = &self.live else {
             if let Some(name) = crate::preview::file_name(file_id) {
-                // Preview has no server: show the toast a finished download
-                // would.
-                let folder = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-                self.push_download_toast(&folder.join(name), cx);
+                // Preview has no server: show the card and toast a finished
+                // download would.
+                let path = download_folder(None).join(name);
+                self.set_download(file_id.clone(), FileDownload::Saved(path.clone()), cx);
+                self.push_download_toast(&path, cx);
             }
             return;
         };
@@ -1090,21 +1234,63 @@ impl MainWindow {
             tracing::warn!(%file_id, "no such file on screen");
             return;
         };
-        let folder = self
-            .settings
-            .read(cx)
-            .get()
-            .download_folder
-            .clone()
-            .or_else(dirs::download_dir)
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(std::env::temp_dir);
-        self.downloads.push_back(file_id.clone());
+        let folder = download_folder(self.settings.read(cx).get().download_folder.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
             folder,
             name,
         });
+        let starting = FileDownload::Downloading {
+            received: 0,
+            total: None,
+        };
+        self.set_download(file_id.clone(), starting, cx);
+    }
+
+    /// Records where a download is and redraws the cards that show it.
+    fn set_download(
+        &mut self,
+        file_id: SharedString,
+        state: crate::attachments::FileDownload,
+        cx: &mut Context<Self>,
+    ) {
+        crate::attachments::Downloads::set(cx, file_id, state);
+        self.channel.update(cx, |_, cx| cx.notify());
+        self.right_pane.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Takes sync's report on a download: progress on the card, then the
+    /// saved file opened with a toast, or a failure with Retry.
+    fn on_download(
+        &mut self,
+        file_id: SharedString,
+        state: matty_sync::DownloadState,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attachments::FileDownload;
+        match state {
+            matty_sync::DownloadState::Progress { received, total } => {
+                self.set_download(file_id, FileDownload::Downloading { received, total }, cx);
+            }
+            matty_sync::DownloadState::Done(path) => {
+                self.set_download(file_id, FileDownload::Saved(path.clone()), cx);
+                open_download(&path, cx);
+                self.push_download_toast(&path, cx);
+            }
+            matty_sync::DownloadState::Failed(error) => {
+                tracing::warn!(%error, %file_id, "download failed");
+                self.set_download(file_id.clone(), FileDownload::Failed, cx);
+                let view = cx.entity().downgrade();
+                self.push_error_with(
+                    format!("Couldn't download the file: {error}"),
+                    Some(Box::new(move |_, cx| {
+                        view.update(cx, |this, cx| this.download_file(&file_id, cx))
+                            .ok();
+                    })),
+                    cx,
+                );
+            }
+        }
     }
 
     /// Tells the user a file was saved: the file name as the title, the
@@ -1139,11 +1325,143 @@ impl MainWindow {
         });
     }
 
+    /// Forwards a post from the open channel as a new post holding its
+    /// permalink, which the server and the webapp show as the quoted post.
+    fn forward(&mut self, post_id: &str, to: &SharedString, comment: &str, cx: &mut Context<Self>) {
+        let link = self
+            .permalink(post_id)
+            .map(|link| crate::forward::message(comment, &link));
+        let (Some(live), Some(link)) = (&self.live, link) else {
+            self.push_error(
+                "Couldn't forward the message. Try again once you're connected.",
+                cx,
+            );
+            return;
+        };
+        live.send(matty_sync::Command::SendPost {
+            pending_post_id: String::new(),
+            channel_id: to.to_string(),
+            root_id: String::new(),
+            message: link,
+            file_ids: Vec::new(),
+            props: crate::embeds::send_props(true),
+        });
+        let name = self.channel_name(to, cx);
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "forward",
+                Notice::new(format!("Forwarded to {name}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
+    /// The sidebar's name for `channel`, or "the channel".
+    fn channel_name(&self, channel: &SharedString, cx: &gpui_kit::App) -> SharedString {
+        self.sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| row.id == *channel)
+            .map_or_else(|| "the channel".into(), |row| row.name.clone())
+    }
+
+    /// Asks for an optional comment before forwarding `post` to `to`.
+    fn ask_forward(
+        &mut self,
+        post: SharedString,
+        to: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.channel_name(&to, cx);
+        let forward = self.forward.clone();
+        // After the switcher has closed and handed focus back.
+        cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(200))
+                .await;
+            forward
+                .update_in(cx, |view, window, cx| view.open(post, to, name, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn forward_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.forward.read(cx).handle().clone();
+        let popup =
+            dialog_popup("forward.popup", "Forward message", cx).child(self.forward.clone());
+        dialog("forward", &handle, popup, window, cx)
+    }
+
+    /// Marks the channel unread from `post` on, here and on the server.
+    fn mark_unread(&mut self, post: &str, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::MarkUnread {
+                post_id: post.to_string(),
+            });
+        }
+        // A reply in the thread pane may be from another channel than the
+        // open one.
+        let channel = self
+            .live
+            .as_ref()
+            .and_then(|live| live.post_channel(post))
+            .map(SharedString::from)
+            .or_else(|| self.selected_channel.clone());
+        if let Some(id) = channel {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+            // The open channel stays unread until the user leaves and comes
+            // back.
+            if self.selected_channel.as_ref() == Some(&id) {
+                self.kept_unread = Some(id);
+            }
+        }
+    }
+
+    /// Asks the server to remind the user of a post, and says when.
+    fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            if !crate::preview::enabled() {
+                self.push_error(
+                    "Couldn't set the reminder. Try again once you're connected.",
+                    cx,
+                );
+                return;
+            }
+            return self.reminder_set(at, cx);
+        };
+        live.remind(post_id, at);
+        self.reminder_set(at, cx);
+    }
+
+    fn reminder_set(&mut self, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let when = match at {
+            crate::channel::RemindAt::Tomorrow => "tomorrow at 9:00".to_string(),
+            other => other.label().to_lowercase(),
+        };
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "reminder",
+                Notice::new(format!("Reminder set for {when}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
     /// A post's permalink in the open channel, or the preview's stand-in.
     fn permalink(&self, post_id: &str) -> Option<String> {
         let link = self.live.as_ref().and_then(|live| {
-            let channel = self.selected_channel.as_ref()?;
-            live.permalink(channel, post_id)
+            let channel = live
+                .post_channel(post_id)
+                .or_else(|| self.selected_channel.as_ref().map(|id| id.to_string()))?;
+            live.permalink(&channel, post_id)
         });
         link.or_else(|| {
             crate::preview::enabled().then(|| format!("{PREVIEW_SERVER}/matty/pl/{post_id}"))
@@ -1214,7 +1532,7 @@ impl MainWindow {
                     .await;
                 let left = this.update(cx, |this, cx| {
                     let live = this.live.as_mut()?;
-                    let (names, thread) = live.expire_typing(std::time::Instant::now());
+                    let (names, thread) = live.expire_typing(web_time::Instant::now());
                     let left = live.is_typing();
                     if let Some(names) = names {
                         this.channel
@@ -1263,9 +1581,31 @@ impl MainWindow {
             self.browse
                 .update(cx, |browse, cx| browse.set_channels(channels, cx));
         }
+        if let Some((term, people)) = update.suggested {
+            self.channel.update(cx, |channel, cx| {
+                channel.set_suggested(term.clone(), people.clone(), cx)
+            });
+            // The Threads view's thread has a reply composer of its own.
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, cx| {
+                pane.set_suggested(term.clone(), people.clone(), cx)
+            });
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_suggested(term, people, cx));
+        }
         if let Some(people) = update.people {
             self.new_message
                 .update(cx, |view, cx| view.set_profiles(people, cx));
+        }
+        // Only while the pane still shows that kind of listing.
+        if let Some(listing) = update.listing
+            && self.right_pane_open
+            && self.right_pane.read(cx).content().is_some_and(|shown| {
+                std::mem::discriminant(shown) == std::mem::discriminant(&listing)
+            })
+        {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_content(Some(listing), cx));
         }
         // Only while the pane still shows that search.
         if let Some(model) = update.search
@@ -1296,6 +1636,18 @@ impl MainWindow {
             });
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
+            // `~` completes from the sidebar's channels in both composers.
+            let directory: Vec<_> = model
+                .categories
+                .iter()
+                .flat_map(|category| category.rows.iter().cloned())
+                .collect();
+            self.right_pane
+                .update(cx, |pane, _| pane.set_directory(directory.clone()));
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, _| pane.set_directory(directory.clone()));
+            self.channel
+                .update(cx, |channel, cx| channel.set_directory(directory, cx));
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -1368,40 +1720,8 @@ impl MainWindow {
             self.channel
                 .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
-        if let Some(download) = update.download {
-            match download {
-                matty_sync::DownloadState::Done(path) => {
-                    self.downloads.pop_front();
-                    open_download(&path, cx);
-                    self.push_download_toast(&path, cx);
-                }
-                matty_sync::DownloadState::Failed(error) => {
-                    tracing::warn!(%error, "download failed");
-                    // Sync does not say which file failed, so Retry only
-                    // shows when there was one.
-                    let only = (self.downloads.len() == 1)
-                        .then(|| self.downloads.pop_front())
-                        .flatten();
-                    if only.is_none() {
-                        self.downloads.pop_front();
-                    }
-                    let text = format!("Couldn't download the file: {error}");
-                    match only {
-                        Some(file_id) => {
-                            let view = cx.entity().downgrade();
-                            self.push_error_with(
-                                text,
-                                Some(Box::new(move |_, cx| {
-                                    view.update(cx, |this, cx| this.download_file(&file_id, cx))
-                                        .ok();
-                                })),
-                                cx,
-                            );
-                        }
-                        None => self.push_error(text, cx),
-                    }
-                }
-            }
+        if let Some((file_id, state)) = update.download {
+            self.on_download(file_id, state, cx);
         }
         if let Some((id, status)) = update.upload {
             self.set_upload_status(&id, status, window, cx);
@@ -1436,14 +1756,13 @@ impl MainWindow {
             self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
-            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
-            self.keywords.update(cx, |input, cx| {
-                if input.value() != text.as_str() {
-                    input.set_value(text, window, cx);
-                }
-            });
             self.notify_props = Some(props);
             self.show_sound(window, cx);
+            cx.notify();
+        }
+        if let Some(on) = update.highlight_keys {
+            self.highlight_keys = on;
+            cx.notify();
         }
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
@@ -1462,12 +1781,13 @@ impl MainWindow {
             }
         }
         if let Some(model) = update.threads {
-            let unread = model.unread();
+            let (unread, mentions) = (model.unread(), model.mentions());
             self.threads
                 .update(cx, |view, cx| view.set_model(model, cx));
             self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
         }
@@ -1697,10 +2017,8 @@ impl MainWindow {
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
 
-    /// Shows `id` in the channel view and marks it in the sidebar. Until
-    /// sync lands only the preview fixtures have content.
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post.
+    /// its post, or with a thread reply's thread open at the reply.
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -1710,13 +2028,30 @@ impl MainWindow {
         cx.activate(true);
         window.activate_window();
         self.open_channel(clicked.channel_id.into(), window, cx);
-        if !clicked.post_id.is_empty() {
+        if !clicked.root_id.is_empty() {
+            // A thread reply opens its thread at the reply (#141): with
+            // collapsed threads on, the channel does not show it. The
+            // channel goes to the root, which it always shows.
+            let root: gpui_kit::SharedString = clicked.root_id.into();
+            let post: gpui_kit::SharedString = if clicked.post_id.is_empty() {
+                root.clone()
+            } else {
+                clicked.post_id.into()
+            };
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(root.clone(), cx));
+            self.open_thread(root.clone(), cx);
+            self.right_pane
+                .update(cx, |pane, cx| pane.jump_to(root, post, cx));
+        } else if !clicked.post_id.is_empty() {
             let post = clicked.post_id.into();
             self.channel
                 .update(cx, |channel, cx| channel.jump_to(post, cx));
         }
     }
 
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,
@@ -2253,6 +2588,41 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::CopyLink(post) => self.copy_link(post, cx),
+            RightPaneEvent::SetSaved { post, saved } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_saved(post, *saved);
+                }
+            }
+            RightPaneEvent::SetPinned { post, pinned } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_pinned(post, *pinned);
+                }
+            }
+            RightPaneEvent::MarkUnread(post) => self.mark_unread(post, cx),
+            RightPaneEvent::SuggestPeople(term) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::SuggestPeople {
+                        term: term.to_string(),
+                        team_id: live.team().map(str::to_string),
+                        channel_id: live.thread_channel(),
+                    });
+                }
+            }
+            RightPaneEvent::Forward(post) => {
+                let post = post.clone();
+                let switcher = self.switcher.clone();
+                window.on_next_frame(move |window, cx| {
+                    switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                });
+            }
+            RightPaneEvent::Remind { post, at } => self.remind(post, *at, cx),
+            RightPaneEvent::SearchMore => {
+                if let Some(model) = self.live.as_mut().and_then(|live| live.search_more()) {
+                    self.right_pane
+                        .update(cx, |pane, cx| pane.set_search(model, window, cx));
+                }
+            }
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::RemoveMember { user_id } => {
@@ -2265,6 +2635,9 @@ impl MainWindow {
             }
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
+            }
+            RightPaneEvent::ViewProfile(profile) => {
+                self.show_listing(RightPaneContent::Profile(profile.clone()), cx)
             }
             RightPaneEvent::Mention(username) => {
                 let text = format!("@{username} ");
@@ -2372,6 +2745,13 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::Delete(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::DeletePost {
+                        post_id: post.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::Discard(post) => {
                 if let Some(live) = &self.live {
                     live.send(matty_sync::Command::Discard {
@@ -2394,9 +2774,11 @@ impl MainWindow {
         }
     }
 
+    /// The right pane moves on: sync stops keeping its thread or listing.
     fn leave_thread(&mut self) {
         if let Some(live) = &mut self.live {
             live.close_thread();
+            live.close_listing();
         }
     }
 
@@ -2415,6 +2797,11 @@ impl MainWindow {
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_thread();
+        if !query.trim().is_empty() {
+            SettingsStore::global(cx).update(cx, |store, cx| {
+                store.update(cx, |settings| settings.remember_search(&query))
+            });
+        }
         if let Some(live) = self.live.as_mut()
             && !query.is_empty()
         {
@@ -2422,6 +2809,8 @@ impl MainWindow {
         }
         let preview = crate::preview::enabled();
         let model = SearchModel {
+            more: false,
+            loading_more: false,
             results: if preview {
                 crate::preview::search(&query)
             } else {
@@ -2432,8 +2821,15 @@ impl MainWindow {
         };
         self.threads_open = false;
         self.drafts_open = false;
-        self.right_pane
-            .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        let hints = self
+            .live
+            .as_ref()
+            .map(|live| live.search_hints())
+            .unwrap_or_default();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_search_hints(hints);
+            pane.set_search(model, window, cx)
+        });
         self.right_pane_open = true;
         cx.notify();
     }
@@ -2468,6 +2864,11 @@ impl MainWindow {
             },
             cx,
         );
+        if let Some(live) = self.live.as_mut() {
+            live.show_pinned(&channel.id);
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_saved(&mut self, cx: &mut Context<Self>) {
@@ -2477,6 +2878,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Saved(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_saved();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     fn show_mentions(&mut self, cx: &mut Context<Self>) {
@@ -2486,6 +2892,11 @@ impl MainWindow {
             vec![]
         };
         self.show_listing(RightPaneContent::Mentions(posts), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_mentions();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
     }
 
     /// Keeps an open info pane in step with the channel header's star.
@@ -2956,33 +3367,16 @@ impl MainWindow {
         } else {
             &self.banner_last
         };
-        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) = match state {
-            ConnectionState::Online => return None,
-            ConnectionState::Reconnecting { attempt } => (
-                crate::ui::spinner::Spinner::new("banner.spinner")
-                    .color(theme.colors.muted_foreground)
-                    .into_any_element(),
-                if *attempt <= 1 {
-                    "Connection lost. Reconnecting…".into()
-                } else {
-                    format!("Connection lost. Reconnecting (attempt {attempt})…").into()
-                },
-                false,
-            ),
-            ConnectionState::Offline => (
-                lucide(LucideIcon::WifiOff)
-                    .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(theme.colors.destructive)
-                    .into_any_element(),
-                "You're offline. Matty shows what it has and sends when you're back.".into(),
-                true,
-            ),
-        };
-        // What is waiting goes when the connection is back (#195).
-        let text: SharedString = match self.queued {
-            0 => text,
-            1 => format!("{text} 1 message waiting to send.").into(),
-            n => format!("{text} {n} messages waiting to send.").into(),
+        let (text, offline) = banner_text(state, self.queued)?;
+        let icon: gpui_kit::AnyElement = if offline {
+            lucide(LucideIcon::WifiOff)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.destructive)
+                .into_any_element()
+        } else {
+            crate::ui::spinner::Spinner::new("banner.spinner")
+                .color(theme.colors.muted_foreground)
+                .into_any_element()
         };
         let foreground = if offline {
             theme.colors.destructive
@@ -3143,7 +3537,11 @@ impl MainWindow {
             })
             .flatten();
         let app = matty_notify::AppState {
-            dnd: self.account.read(cx).account().presence == crate::sidebar::Presence::Dnd,
+            dnd: {
+                let account = self.account.read(cx).account();
+                account.presence == crate::sidebar::Presence::Dnd
+                    && matty_notify::dnd_active(account.dnd_end, jiff::Timestamp::now().as_second())
+            },
             focused: window.is_window_active(),
             visible_channel: (!self.threads_open && !self.drafts_open)
                 .then(|| self.selected_channel.as_ref().map(|id| id.to_string()))
@@ -3202,6 +3600,7 @@ impl MainWindow {
                     first_name: names.next().unwrap_or_default().to_string(),
                     last_name: names.next().unwrap_or_default().to_string(),
                     username: account.username.to_string(),
+                    user_id: account.user_id.to_string(),
                     ..Default::default()
                 }
             }
@@ -3701,6 +4100,7 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(self.link_join_dialog(window, cx))
+            .child(self.forward_dialog(window, cx))
             .child(switcher_element)
             .child(self.toasts.clone())
     }
@@ -3730,6 +4130,15 @@ fn sync_drawer(
     false
 }
 
+/// Where downloads go: the chosen folder, else the system's Downloads
+/// folder, else home, else the temporary folder.
+pub(crate) fn download_folder(chosen: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    chosen
+        .or_else(dirs::download_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(fallback_folder)
+}
+
 /// Opens a saved file in its app when it is a kind that only shows
 /// content; anything else, such as a program or a script, is shown in its
 /// folder for the user to decide (PLAN §4.6 Files).
@@ -3753,11 +4162,56 @@ fn opens_safely(path: &std::path::Path) -> bool {
         .is_some_and(|extension| SAFE.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
+/// Where a download goes when the OS names no folder: the temporary folder
+/// on the desktop. In the browser, which picks the folder itself, only the
+/// file name is used.
+fn fallback_folder() -> std::path::PathBuf {
+    #[cfg(target_family = "wasm")]
+    return std::path::PathBuf::new();
+    #[cfg(not(target_family = "wasm"))]
+    std::env::temp_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{Seen, opens_safely};
+    use super::{ConnectionState, Seen, banner_text, opens_safely};
+
+    #[test]
+    fn the_banner_says_what_the_connection_is_doing() {
+        let say = |state, queued| {
+            banner_text(&state, queued).map(|(text, offline)| (text.to_string(), offline))
+        };
+        assert_eq!(say(ConnectionState::Online, 0), None);
+        assert_eq!(
+            say(ConnectionState::Online, 3),
+            None,
+            "nothing shows while online"
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 1 }, 0),
+            Some(("Connection lost. Reconnecting…".into(), false))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 4 }, 0),
+            Some(("Connection lost. Reconnecting (attempt 4)…".into(), false))
+        );
+        let offline = "You're offline. Matty shows what it has and sends when you're back.";
+        assert_eq!(
+            say(ConnectionState::Offline, 0),
+            Some((offline.into(), true)),
+            "only the offline banner offers Retry now"
+        );
+        assert_eq!(
+            say(ConnectionState::Offline, 1),
+            Some((format!("{offline} 1 message waiting to send."), true))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 2 }, 5).map(|(text, _)| text),
+            Some("Connection lost. Reconnecting (attempt 2)… 5 messages waiting to send.".into())
+        );
+    }
 
     #[test]
     fn the_open_channel_counts_as_viewed_only_when_seen() {

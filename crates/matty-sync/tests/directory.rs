@@ -136,8 +136,9 @@ async fn a_search_answers_with_its_posts_and_their_authors_first() {
         team_id: "t1".into(),
         terms: "lunch from:ada".into(),
         time_zone_offset: 3600,
+        page: 0,
     });
-    let ChangeSet::Search { terms, posts } =
+    let ChangeSet::Search { terms, posts, .. } =
         next(&changes, |c| matches!(c, ChangeSet::Search { .. })).await
     else {
         unreachable!()

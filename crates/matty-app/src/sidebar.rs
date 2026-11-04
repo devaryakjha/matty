@@ -51,7 +51,8 @@ pub struct ChannelRow {
     /// A direct message's other person, whose picture the row shows.
     pub person: Option<SharedString>,
     /// A direct message's other person's username, so the quick switcher
-    /// finds the row by it whatever the name format shows (#156).
+    /// finds the row by it whatever the name format shows (#156); for a
+    /// channel, its URL name, which `~` mentions use.
     pub handle: Option<SharedString>,
 }
 
@@ -174,6 +175,8 @@ pub struct SidebarModel {
     pub selected: Option<SharedString>,
     /// Followed threads with replies the user has not read.
     pub unread_threads: usize,
+    /// Mentions of the user in those threads' unread replies (#124).
+    pub thread_mentions: usize,
     /// Unsent drafts, channels' and threads', for the Drafts row's count.
     pub drafts: usize,
     /// Channels whose composer holds a draft; their rows show a pencil.
@@ -341,7 +344,31 @@ impl SidebarModel {
             row.mentions = 0;
         }
         self.unread_threads = 0;
+        self.thread_mentions = 0;
     }
+
+    /// The Threads entry's count: its mentions as a channel row shows
+    /// them, otherwise how many threads are unread (#124).
+    pub fn threads_count(&self) -> EntryCount {
+        if self.thread_mentions > 0 {
+            EntryCount::Mentions(self.thread_mentions)
+        } else if self.unread_threads > 0 {
+            EntryCount::Count(self.unread_threads)
+        } else {
+            EntryCount::None
+        }
+    }
+}
+
+/// The badge on a fixed sidebar entry (DESIGN.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryCount {
+    /// Nothing to read or finish.
+    None,
+    /// Things to read or finish, as a `secondary` badge.
+    Count(usize),
+    /// Mentions, as the `primary` pill a channel row's mentions use.
+    Mentions(usize),
 }
 
 /// A stable element id from a prefix and a server id.
@@ -406,6 +433,15 @@ pub enum SidebarEvent {
     DeleteCategory {
         id: SharedString,
         name: SharedString,
+    },
+    /// "Move category up" or "down" from a category's menu.
+    MoveCategory { id: SharedString, up: bool },
+    /// "Move up" or "Move down" in a row's Move to menu: within its
+    /// category, which then sorts by hand.
+    MoveChannel {
+        category_id: SharedString,
+        channel_id: SharedString,
+        up: bool,
     },
 }
 
@@ -591,26 +627,58 @@ impl SidebarView {
                 view.update(cx, |_, cx| cx.emit(event.clone())).ok();
             })
         };
-        let mut items: Vec<MenuItem> = self
+        let mut items: Vec<MenuItem> = Vec::new();
+        if let Some(category) = self
             .model
             .categories
             .iter()
-            .filter(|category| {
-                category.kind.takes(&row.kind)
-                    && !category.rows.iter().any(|other| other.id == row.id)
-            })
-            .map(|category| {
-                emit(
-                    format!("sidebar.row.move.{}", category.id),
-                    category.name.clone(),
-                    SidebarEvent::MoveToCategory {
-                        channel_id: row.id.clone(),
-                        category_id: category.id.clone(),
-                    },
-                )
-            })
-            .collect();
-        if !items.is_empty() {
+            .find(|category| category.rows.iter().any(|other| other.id == row.id))
+        {
+            let at = category
+                .rows
+                .iter()
+                .position(|other| other.id == row.id)
+                .unwrap_or_default();
+            for (up, label, end) in [
+                (true, "Move up", at == 0),
+                (false, "Move down", at + 1 >= category.rows.len()),
+            ] {
+                items.push(
+                    emit(
+                        format!("sidebar.row.move.{}", if up { "up" } else { "down" }),
+                        label.into(),
+                        SidebarEvent::MoveChannel {
+                            category_id: category.id.clone(),
+                            channel_id: row.id.clone(),
+                            up,
+                        },
+                    )
+                    .disabled(end),
+                );
+            }
+            items.push(MenuItem::separator());
+        }
+        let before = items.len();
+        items.extend(
+            self.model
+                .categories
+                .iter()
+                .filter(|category| {
+                    category.kind.takes(&row.kind)
+                        && !category.rows.iter().any(|other| other.id == row.id)
+                })
+                .map(|category| {
+                    emit(
+                        format!("sidebar.row.move.{}", category.id),
+                        category.name.clone(),
+                        SidebarEvent::MoveToCategory {
+                            channel_id: row.id.clone(),
+                            category_id: category.id.clone(),
+                        },
+                    )
+                }),
+        );
+        if items.len() > before {
             items.push(MenuItem::separator());
         }
         items.push(emit(
@@ -623,7 +691,7 @@ impl SidebarView {
         MenuItem::submenu("sidebar.row.move", "Move to", items)
     }
 
-    /// A custom category's menu: rename or delete it.
+    /// A category's menu: move it, and for a custom one rename or delete it.
     fn open_category_menu(
         &mut self,
         id: &SharedString,
@@ -631,14 +699,12 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(category) = self
-            .model
-            .categories
-            .iter()
-            .find(|category| &category.id == id && category.kind == CategoryKind::Custom)
-        else {
+        let categories = &self.model.categories;
+        let Some(index) = categories.iter().position(|category| &category.id == id) else {
             return;
         };
+        let category = &categories[index];
+        let custom = category.kind == CategoryKind::Custom;
         let view = cx.weak_entity();
         let emit = |id: &'static str, label: &'static str, event: SidebarEvent| {
             let view = view.clone();
@@ -647,27 +713,53 @@ impl SidebarView {
             })
         };
         let (id, name) = (category.id.clone(), category.name.clone());
-        let items = vec![
-            emit(
+        let mut items = Vec::new();
+        if custom {
+            items.push(emit(
                 "sidebar.category.rename",
                 "Rename category",
                 SidebarEvent::RenameCategory {
                     id: id.clone(),
                     name: name.clone(),
                 },
-            ),
+            ));
+        }
+        items.push(emit(
+            "sidebar.category.new",
+            "Create new category",
+            SidebarEvent::NewCategory { channel_id: None },
+        ));
+        items.push(MenuItem::separator());
+        items.push(
             emit(
-                "sidebar.category.new",
-                "Create new category",
-                SidebarEvent::NewCategory { channel_id: None },
-            ),
-            MenuItem::separator(),
+                "sidebar.category.up",
+                "Move category up",
+                SidebarEvent::MoveCategory {
+                    id: id.clone(),
+                    up: true,
+                },
+            )
+            .disabled(index == 0),
+        );
+        items.push(
             emit(
+                "sidebar.category.down",
+                "Move category down",
+                SidebarEvent::MoveCategory {
+                    id: id.clone(),
+                    up: false,
+                },
+            )
+            .disabled(index + 1 >= categories.len()),
+        );
+        if custom {
+            items.push(MenuItem::separator());
+            items.push(emit(
                 "sidebar.category.delete",
                 "Delete category",
                 SidebarEvent::DeleteCategory { id, name },
-            ),
-        ];
+            ));
+        }
         self.row_menu.update(cx, |menu, cx| {
             menu.set_items(items, cx);
             menu.open_at(Some(at), window, cx);
@@ -1042,10 +1134,10 @@ impl SidebarView {
         let entry = |id: &'static str,
                      label: &'static str,
                      glyph: LucideIcon,
-                     count: usize,
+                     count: EntryCount,
                      event: SidebarEvent,
                      cx: &mut Context<Self>| {
-            let strong = count > 0;
+            let strong = count != EntryCount::None;
             let selected = self.model.selected.as_deref() == Some(id);
             let mut item = SidebarItem::new(id, label)
                 .size(SidebarItemSize::Small)
@@ -1064,15 +1156,23 @@ impl SidebarView {
                 )
                 .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
                 .on_activate(cx.listener(move |_, _, _, cx| cx.emit(event.clone())));
-            if strong {
+            let badge = match count {
+                EntryCount::None => None,
+                EntryCount::Count(count) => {
+                    Some(Badge::new(count.to_string()).variant(BadgeVariant::Secondary))
+                }
+                EntryCount::Mentions(count) => Some(Badge::count(count, 99)),
+            };
+            if let Some(badge) = badge {
                 item = item.trailing(
-                    Badge::new(count.to_string())
-                        .variant(BadgeVariant::Secondary)
-                        .h(theme.space(4.5))
-                        .min_w(theme.space(4.5))
-                        .px(theme.space(1.5))
-                        .text_size(theme.text(11.))
-                        .line_height(theme.text(11.)),
+                    div().debug_selector(move || format!("{id}.count")).child(
+                        badge
+                            .h(theme.space(4.5))
+                            .min_w(theme.space(4.5))
+                            .px(theme.space(1.5))
+                            .text_size(theme.text(11.))
+                            .line_height(theme.text(11.)),
+                    ),
                 );
             } else {
                 item = item.text_color(theme.colors.muted_foreground);
@@ -1088,7 +1188,7 @@ impl SidebarView {
                 THREADS_ID,
                 "Threads",
                 LucideIcon::MessageSquareText,
-                self.model.unread_threads,
+                self.model.threads_count(),
                 SidebarEvent::OpenThreads,
                 cx,
             ))
@@ -1096,7 +1196,10 @@ impl SidebarView {
                 DRAFTS_ID,
                 "Drafts",
                 LucideIcon::FilePenLine,
-                self.model.drafts,
+                match self.model.drafts {
+                    0 => EntryCount::None,
+                    count => EntryCount::Count(count),
+                },
                 SidebarEvent::OpenDrafts,
                 cx,
             ))
@@ -1237,6 +1340,7 @@ mod tests {
             loading: false,
             selected: None,
             unread_threads: 0,
+            thread_mentions: 0,
             drafts: 0,
             drafted: Default::default(),
             categories: vec![
@@ -1318,6 +1422,7 @@ mod tests {
             loading: false,
             selected: Some(selected.into()),
             unread_threads: 0,
+            thread_mentions: 0,
             drafts: 0,
             drafted: Default::default(),
             categories: vec![
@@ -1369,6 +1474,20 @@ mod tests {
         read.mark_all_read();
         assert_eq!(read.neighbor(Step::Next, true), None);
         assert_eq!(read.neighbor(Step::Next, false).as_deref(), Some("b"));
+    }
+
+    /// #124: the Threads entry shows its mentions as channel rows do,
+    /// otherwise how many threads are unread.
+    #[test]
+    fn the_threads_entry_counts_mentions_first() {
+        let mut model = model("a");
+        assert_eq!(model.threads_count(), EntryCount::None);
+        model.unread_threads = 2;
+        assert_eq!(model.threads_count(), EntryCount::Count(2));
+        model.thread_mentions = 3;
+        assert_eq!(model.threads_count(), EntryCount::Mentions(3));
+        model.mark_all_read();
+        assert_eq!(model.threads_count(), EntryCount::None);
     }
 
     #[test]

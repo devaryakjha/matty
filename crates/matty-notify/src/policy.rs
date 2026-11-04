@@ -169,6 +169,15 @@ pub struct Notification {
     pub sound: Option<Sound>,
 }
 
+/// Whether Do not disturb still holds at `now` (seconds since the epoch)
+/// for a user whose status is Do not disturb, ending at `end` when it has
+/// an end. The server restores the earlier status at the end and says so
+/// with `status_change`, but its job runs once a minute and the event can
+/// be late, so notifications come back on time without waiting for it.
+pub fn dnd_active(end: Option<i64>, now: i64) -> bool {
+    end.is_none_or(|end| now < end)
+}
+
 /// Whether `event` notifies, and how.
 pub fn decide(
     event: &Event,
@@ -232,6 +241,15 @@ pub fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dnd_holds_until_its_end() {
+        assert!(dnd_active(None, 1_700_000_000));
+        assert!(dnd_active(Some(1_700_000_060), 1_700_000_000));
+        assert!(dnd_active(Some(1_700_000_060), 1_700_000_059));
+        assert!(!dnd_active(Some(1_700_000_060), 1_700_000_060));
+        assert!(!dnd_active(Some(1_700_000_060), 1_700_003_600));
+    }
 
     fn event(message: &str) -> Event {
         Event {
@@ -338,6 +356,18 @@ mod tests {
             Case {
                 event: event("redeploy"),
                 ..case("keyword inside a word", false)
+            },
+            Case {
+                event: event("see https://ci.example.com/deploy/42"),
+                ..case("keyword inside a URL", true)
+            },
+            Case {
+                event: event("run `make deploy` first"),
+                ..case("keyword in code", false)
+            },
+            Case {
+                event: event("`@arya` is the handle"),
+                ..case("username in code", false)
             },
             Case {
                 event: Event {

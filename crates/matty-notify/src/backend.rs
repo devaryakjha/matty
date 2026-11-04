@@ -73,29 +73,53 @@ impl Notifier for Logged {
     }
 }
 
-/// The user clicked a notification: the channel and post it was about.
+/// The user clicked a notification: the channel and post it was about,
+/// and the thread the post replies in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clicked {
     /// The channel the notification was about.
     pub channel_id: String,
     /// The post it showed.
     pub post_id: String,
+    /// The root of the thread the post replies in; empty for a post that
+    /// is not a reply. With collapsed threads on, a reply is only in its
+    /// thread, so the click opens it there (#141).
+    pub root_id: String,
 }
 
 impl Clicked {
-    /// Reads a notification's identifier, `channel:post` as the backends
-    /// set it.
+    /// Reads a notification's identifier, `channel:post` or
+    /// `channel:post:root` as [`Clicked::identifier`] makes it.
     pub fn from_identifier(id: &str) -> Option<Self> {
-        let (channel_id, post_id) = id.split_once(':')?;
-        (!channel_id.is_empty()).then(|| Self {
+        let mut parts = id.splitn(3, ':');
+        let channel_id = parts.next().filter(|channel| !channel.is_empty())?;
+        let post_id = parts.next()?;
+        let root_id = parts.next().unwrap_or_default();
+        Some(Self {
             channel_id: channel_id.to_owned(),
             post_id: post_id.to_owned(),
+            root_id: root_id.to_owned(),
         })
     }
 
-    /// The identifier a backend gives a notification about `post_id`.
-    pub fn identifier(channel_id: &str, post_id: &str) -> String {
-        format!("{channel_id}:{post_id}")
+    /// The identifier a backend gives a notification about `post_id`,
+    /// replying under `root_id` when that is not empty. Server ids never
+    /// hold a colon.
+    pub fn identifier(channel_id: &str, post_id: &str, root_id: &str) -> String {
+        if root_id.is_empty() {
+            format!("{channel_id}:{post_id}")
+        } else {
+            format!("{channel_id}:{post_id}:{root_id}")
+        }
+    }
+
+    /// The identifier for `notification`.
+    pub fn identifier_of(notification: &Notification) -> String {
+        Self::identifier(
+            &notification.channel_id,
+            &notification.post_id,
+            &notification.root_id,
+        )
     }
 }
 
@@ -131,15 +155,41 @@ mod tests {
 
     #[test]
     fn a_notification_identifier_names_its_channel_and_post() {
-        let id = Clicked::identifier("c1", "p1");
+        let id = Clicked::identifier("c1", "p1", "");
+        assert_eq!(id, "c1:p1");
         assert_eq!(
             Clicked::from_identifier(&id),
             Some(Clicked {
                 channel_id: "c1".into(),
                 post_id: "p1".into(),
+                root_id: String::new(),
             })
         );
         assert_eq!(Clicked::from_identifier("no-colon"), None);
         assert_eq!(Clicked::from_identifier(":p1"), None);
+    }
+
+    /// #141: a thread reply's notification carries its root, so the click
+    /// can open the thread.
+    #[test]
+    fn a_reply_identifier_round_trips_its_thread() {
+        let clicked = Clicked {
+            channel_id: "c1".into(),
+            post_id: "reply".into(),
+            root_id: "root".into(),
+        };
+        let id = Clicked::identifier(&clicked.channel_id, &clicked.post_id, &clicked.root_id);
+        assert_eq!(id, "c1:reply:root");
+        assert_eq!(Clicked::from_identifier(&id), Some(clicked));
+        let notification = Notification {
+            channel_id: "c1".into(),
+            post_id: "reply".into(),
+            root_id: "root".into(),
+            title: "town".into(),
+            body: "Ada: on it".into(),
+            mention: false,
+            sound: None,
+        };
+        assert_eq!(Clicked::identifier_of(&notification), id);
     }
 }

@@ -13,9 +13,7 @@ workspace = true
 
 [dependencies]
 reqwest.workspace = true
-rustls.workspace = true
-rustls-platform-verifier.workspace = true
-tokio-tungstenite.workspace = true
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 bytes.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -23,6 +21,21 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
+web-time.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls", "http2", "stream"] }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+tokio-tungstenite.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+gloo-net = { version = "0.6", default-features = false, features = ["websocket"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "test-util"] }

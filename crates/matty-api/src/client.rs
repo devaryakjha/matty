@@ -20,11 +20,13 @@ pub const MAX_TRIES: u32 = 3;
 /// The longest Matty waits before retrying a rate-limited request.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(target_family = "wasm"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an upload may take in all; the usual timeout is for requests
 /// that send little.
 pub(crate) const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// Redirects followed within the server's own host, at most.
+#[cfg(not(target_family = "wasm"))]
 const MAX_REDIRECTS: usize = 5;
 
 /// Waits between retries. Swapped for a fake in tests.
@@ -39,7 +41,7 @@ pub struct TokioSleeper;
 
 impl Sleeper for TokioSleeper {
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(tokio::time::sleep(duration))
+        Box::pin(crate::rt::sleep(duration))
     }
 }
 
@@ -114,6 +116,7 @@ impl ClientBuilder {
     /// `https://` is assumed (PLAN §4.5).
     pub fn build(self) -> Result<Client, ApiError> {
         let base = normalize_base(&self.base)?;
+        #[cfg(not(target_family = "wasm"))]
         let http = reqwest::Client::builder()
             .user_agent(concat!("Matty/", env!("CARGO_PKG_VERSION")))
             .timeout(self.timeout)
@@ -122,12 +125,21 @@ impl ClientBuilder {
             .tls_backend_preconfigured(crate::tls::client_config(crate::tls::HTTP_ALPN)?)
             .build()
             .map_err(ApiError::from_transport)?;
+        // The browser owns TLS and redirects on the web (a fetch drops the
+        // `Authorization` header on a redirect to another origin), and the
+        // timeout goes on each request.
+        #[cfg(target_family = "wasm")]
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(ApiError::from_transport)?;
         Ok(Client {
             http,
             base,
             token: self.token.map(Token),
             sleeper: self.sleeper,
             rate_limit: Arc::new(Mutex::new(RateLimit::default())),
+            #[cfg(target_family = "wasm")]
+            timeout: self.timeout,
         })
     }
 }
@@ -136,6 +148,7 @@ impl ClientBuilder {
 /// token and requests stay on the server. Another host's redirect comes back
 /// as the 3xx response, which [`Client::send`] turns into
 /// [`ApiError::Redirected`].
+#[cfg(not(target_family = "wasm"))]
 fn same_host_redirects() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let same = attempt.previous().first().is_some_and(|first| {
@@ -205,6 +218,8 @@ pub struct Client {
     token: Option<Token>,
     sleeper: Arc<dyn Sleeper>,
     rate_limit: Arc<Mutex<RateLimit>>,
+    #[cfg(target_family = "wasm")]
+    timeout: Duration,
 }
 
 impl fmt::Debug for Client {
@@ -445,6 +460,10 @@ impl Client {
             if !query.is_empty() {
                 request = request.query(query);
             }
+            #[cfg(target_family = "wasm")]
+            {
+                request = request.timeout(self.timeout);
+            }
             if let Some(token) = &self.token {
                 request = request.bearer_auth(&token.0);
             }
@@ -502,6 +521,26 @@ impl Client {
             .map(str::to_string);
         let bytes = response.bytes().await.unwrap_or_default();
         Err(ApiError::from_response(status, request_id, &bytes))
+    }
+
+    /// `GET path` once, allowing [`UPLOAD_TIMEOUT`] for the whole body, for
+    /// a file read as it streams in.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) async fn send_long_get(&self, path: &str) -> Result<reqwest::Response, ApiError> {
+        let mut request = self
+            .http
+            .get(self.api_url(path)?)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .timeout(UPLOAD_TIMEOUT);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(&token.0);
+        }
+        let response = request.send().await.map_err(ApiError::from_transport)?;
+        self.note_rate_limit(&response);
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(ApiError::RateLimited);
+        }
+        Self::checked(response).await
     }
 
     /// Sends a multipart form once: a streamed body cannot be replayed, so a

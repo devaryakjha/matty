@@ -146,7 +146,7 @@ pub enum ChangeSet {
         /// Where it is.
         state: UploadState,
     },
-    /// A download finished: the answer to
+    /// A download's progress or end: the answer to
     /// [`Command::Download`](crate::Command::Download).
     Download {
         /// The file.
@@ -201,9 +201,24 @@ pub enum ChangeSet {
     Search {
         /// What was searched for.
         terms: String,
-        /// The posts that matched.
+        /// Which page of results, from 0.
+        page: u32,
+        /// The posts that matched on this page.
+        posts: Arc<[Post]>,
+        /// A full page came back, so another may follow.
+        more: bool,
+    },
+    /// A listing of posts outside their channel: the answer to
+    /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors
+    /// come ahead in [`ChangeSet::Users`].
+    Listing {
+        /// Which listing.
+        listing: Listing,
+        /// Its posts, newest first.
         posts: Arc<[Post]>,
     },
+    /// The ids of the posts the user saved, whenever they may have changed.
+    Saved(Arc<[String]>),
     /// A team's active people: the answer to
     /// [`Command::FindPeople`](crate::Command::FindPeople).
     People {
@@ -256,6 +271,15 @@ pub enum ChangeSet {
     LinkPreviews(bool),
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
+    /// Who matches a typed `@name`: the answer to
+    /// [`Command::SuggestPeople`](crate::Command::SuggestPeople), channel
+    /// members first. Empty when no one does or the server could not say.
+    Suggested {
+        /// What was asked.
+        term: String,
+        /// The matches.
+        users: Arc<[User]>,
+    },
     /// What a link in a message points at: the answer to
     /// [`Command::ResolveLink`](crate::Command::ResolveLink). `None` when
     /// it is gone or the user may not see it.
@@ -367,9 +391,16 @@ pub enum ImageSize {
     Preview,
 }
 
-/// How a download ended.
+/// Where a download is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DownloadState {
+    /// Arriving: bytes so far, and the size when the server gave it.
+    Progress {
+        /// Bytes written so far.
+        received: u64,
+        /// The file's size, when known.
+        total: Option<u64>,
+    },
     /// Saved here.
     Done(std::path::PathBuf),
     /// Not saved, and why.
@@ -410,5 +441,25 @@ pub enum CommandError {
         target: String,
         /// What the server said.
         error: String,
+    },
+}
+
+/// A list of posts the right pane shows outside their channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    /// The user's saved posts across teams.
+    Saved,
+    /// A channel's pinned posts.
+    Pinned {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Recent posts mentioning the user in a team: an "or" search for the
+    /// user's mention keys.
+    Mentions {
+        /// The team.
+        team_id: String,
+        /// The mention keys, space separated, such as `@ada ada deploy`.
+        terms: String,
     },
 }

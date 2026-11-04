@@ -47,6 +47,10 @@ pub enum ApiError {
     /// The URL Matty was given is not usable.
     #[error("invalid server URL: {0}")]
     InvalidUrl(String),
+    /// Writing what the server sent failed on this computer, such as a
+    /// download whose folder is full or read-only.
+    #[error("{0}")]
+    Io(String),
 }
 
 #[derive(Deserialize)]
@@ -122,6 +126,12 @@ fn chain(error: &(dyn std::error::Error + 'static)) -> String {
 ///
 /// `std::io::Error::source` skips the error it wraps, and hyper nests one
 /// `io::Error` inside another, so wrapped errors are followed with `get_ref`.
+#[cfg(target_family = "wasm")]
+pub(crate) fn tls_cause(_: &(dyn std::error::Error + 'static)) -> Option<String> {
+    None
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn tls_cause(error: &(dyn std::error::Error + 'static)) -> Option<String> {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(cause) = source {
@@ -139,6 +149,7 @@ pub(crate) fn tls_cause(error: &(dyn std::error::Error + 'static)) -> Option<Str
     None
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn describe_tls(error: &rustls::Error) -> String {
     use rustls::{CertificateError, Error};
     match error {

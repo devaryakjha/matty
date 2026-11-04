@@ -25,6 +25,8 @@ pub struct Viewer<'a> {
     pub user_id: &'a str,
     /// What counts as mentioning the viewer, for the mention highlight.
     pub keys: &'a MentionKeys,
+    /// The ids of the posts the viewer saved.
+    pub saved: &'a std::collections::HashSet<String>,
     pub zone: &'a TimeZone,
     pub now: Timestamp,
     /// Whether link previews show: the server allows them and the user
@@ -224,7 +226,8 @@ fn reply_summary(
             .collect(),
         participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
         following: root.is_following.unwrap_or(false),
-        unread: false,
+        unread_replies: 0,
+        unread_mentions: 0,
     }
 }
 
@@ -264,11 +267,11 @@ fn display_post(
         date,
         body,
         reactions: reactions(post, viewer.user_id, users, viewer.names),
-        mentions_me: mention.mentioned(&post.message),
+        mentions_me: mention.mentioned(&post.message) || mention.highlighted(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
-        saved: false,
+        saved: viewer.saved.contains(&post.id),
         pinned: post.is_pinned,
         // Sync's optimistic copy of a send keeps the client's id until
         // the server's post replaces it.
@@ -297,6 +300,14 @@ fn display_post(
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
+            .map(|mut embed| {
+                if let crate::embeds::Embed::Permalink(quoted) = &mut embed
+                    && let Some(user) = users.get(&quoted.author_id)
+                {
+                    quoted.author = display_name(user).into();
+                }
+                embed
+            })
             .collect(),
     }
 }
@@ -593,7 +604,8 @@ pub fn thread_row(
             participants,
             participant_ids,
             following: true,
-            unread: thread.unread_replies > 0,
+            unread_replies: usize::try_from(thread.unread_replies).unwrap_or(0),
+            unread_mentions: usize::try_from(thread.unread_mentions).unwrap_or(0),
         },
     }
 }
@@ -698,10 +710,14 @@ mod tests {
     static KEYS: std::sync::LazyLock<MentionKeys> =
         std::sync::LazyLock::new(|| MentionKeys::username("arya"));
 
+    static SAVED: std::sync::LazyLock<std::collections::HashSet<String>> =
+        std::sync::LazyLock::new(Default::default);
+
     fn viewer(zone: &TimeZone) -> Viewer<'_> {
         Viewer {
             user_id: "me",
             keys: &KEYS,
+            saved: &SAVED,
             zone,
             // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),

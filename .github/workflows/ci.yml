@@ -10,11 +10,12 @@ on:
   push:
     branches: [master]
 
-# A new push to a pull request cancels its older run, and a new merge to
-# master cancels the older master run: the newest master run covers it.
+# A new push to a pull request cancels its older run. Every master run
+# goes ahead, except that the macOS jobs on master queue one at a time (see
+# their concurrency below).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -104,6 +105,39 @@ jobs:
       - name: The app never opens the database itself
         run: scripts/check-app-no-db.sh
 
+  # The browser build (docs/web.md): it compiles, links, fits Cloudflare's
+  # 25 MiB file limit, and the result is kept for a manual deploy.
+  web:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-17
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+          cache-directories: target/web
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          curl -sSfL "https://github.com/rustwasm/wasm-bindgen/releases/download/$version/wasm-bindgen-$version-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local/bin "wasm-bindgen-$version-x86_64-unknown-linux-musl/wasm-bindgen"
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+            | tar xz --strip-components=2 -C /usr/local/bin binaryen-version_132/bin/wasm-opt
+      - run: scripts/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-web
+          path: crates/matty-web/dist
+          if-no-files-found: error
+
   deny:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -122,6 +156,11 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'macos') ||
       needs.changes.outputs.macos == 'true'
     runs-on: macos-14
+    # On master a running macOS job finishes, and only the newest waiting
+    # one is kept, so merges in quick succession do not cancel it forever.
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
     timeout-minutes: 40
     permissions:
       contents: read
@@ -179,6 +218,11 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'macos') ||
       needs.changes.outputs.bundle == 'true'
     runs-on: macos-14
+    # On master a running macOS job finishes, and only the newest waiting
+    # one is kept, so merges in quick succession do not cancel it forever.
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -245,7 +289,16 @@ jobs:
           shared-key: integration
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.server == '12.0' }}
       - name: Start the server in the background
-        run: docker compose -f docker/compose.yml up -d
+        # Docker Hub now and then refuses an anonymous pull ("unauthorized:
+        # authentication required"), so the pull is retried.
+        run: |
+          for attempt in 1 2 3 4; do
+            docker compose -f docker/compose.yml pull --quiet && break
+            [ "$attempt" = 4 ] && exit 1
+            echo "Pull failed, retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          docker compose -f docker/compose.yml up -d
       - name: Build the tests while it starts
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync --no-run
       - name: Wait for the server
@@ -269,16 +322,24 @@ jobs:
   # One check to wait on: green when every job that ran passed and the rest
   # were skipped on purpose.
   ci:
-    if: always()
-    needs: [changes, linux, deny, macos, macos-universal, integration]
+    if: ${{ !cancelled() }}
+    needs: [changes, linux, web, deny, macos, macos-universal, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Every job passed or was skipped
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          # A master macOS job dropped from the queue for a newer merge is
+          # cancelled, and the newer run checks it instead.
+          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }}
+          PUSH: ${{ github.event_name == 'push' }}
         run: |
           echo "$RESULTS"
           for r in $RESULTS; do
-            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+            case "$r" in
+              success|skipped) ;;
+              cancelled) [ "$PUSH" = true ] && [[ " $MACOS " == *" cancelled "* ]] || exit 1 ;;
+              *) exit 1 ;;
+            esac
           done

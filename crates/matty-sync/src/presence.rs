@@ -7,7 +7,9 @@
 //! them current.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 /// How long new ids wait for others before their statuses are asked for.
 pub(crate) const STATUS_WINDOW: Duration = Duration::from_millis(300);

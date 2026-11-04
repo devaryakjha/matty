@@ -13,6 +13,12 @@ name: Release
 #   APPLE_NOTARY_KEY_ID         that key's id
 #   APPLE_NOTARY_ISSUER         its issuer id
 #   HOMEBREW_TAP_TOKEN          lets the homebrew job open the cask bump PR
+#   MATTY_UPDATE_SIGNING_KEY    ed25519 private key (PEM) that signs the in-app
+#                               updater's manifest (#180); see scripts/update-manifest
+# and one repository variable, the public half the app checks against:
+#   MATTY_UPDATE_PUBLIC_KEY     base64 of the 32-byte ed25519 public key
+# Without the key the release carries no update manifest, and without the
+# variable the build does not check for updates.
 on:
   push:
     tags: ["v*"]
@@ -101,7 +107,16 @@ jobs:
         env:
           MATTY_VERSION: ${{ steps.version.outputs.version }}
           MATTY_BUILD_NUMBER: ${{ github.run_number }}
-        run: scripts/release-bundle
+          UPDATE_PUBLIC_KEY: ${{ vars.MATTY_UPDATE_PUBLIC_KEY }}
+        run: |
+          # The updater (#180) is compiled in only with a public key to
+          # check manifests against; MATTY_VERSION gives it the full version.
+          if [[ -n "$UPDATE_PUBLIC_KEY" ]]; then
+            export MATTY_UPDATE_PUBLIC_KEY="$UPDATE_PUBLIC_KEY"
+          else
+            echo "::warning::MATTY_UPDATE_PUBLIC_KEY is not set; this build will not update itself"
+          fi
+          scripts/release-bundle
 
       - name: The bundle is universal and signed
         run: |
@@ -153,7 +168,12 @@ jobs:
     environment: release
     permissions:
       contents: write
+    env:
+      HAS_UPDATE_KEY: ${{ secrets.MATTY_UPDATE_SIGNING_KEY != '' }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
       - uses: actions/download-artifact@v4
         with:
           name: matty-release
@@ -161,6 +181,25 @@ jobs:
       - name: The checksums match
         working-directory: release
         run: sha256sum --check SHA256SUMS
+      - name: Sign the update manifest
+        env:
+          MATTY_UPDATE_SIGNING_KEY: ${{ secrets.MATTY_UPDATE_SIGNING_KEY }}
+          MATTY_UPDATE_PUBLIC_KEY: ${{ vars.MATTY_UPDATE_PUBLIC_KEY }}
+          MATTY_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$HAS_UPDATE_KEY" != true ]]; then
+            echo "MATTY_UPDATE_SIGNING_KEY is not set; the release carries no update manifest"
+            exit 0
+          fi
+          export MATTY_UPDATE_SIGNING_KEY_FILE="$RUNNER_TEMP/update-key.pem"
+          (umask 077 && printf '%s\n' "$MATTY_UPDATE_SIGNING_KEY" >"$MATTY_UPDATE_SIGNING_KEY_FILE")
+          status=0
+          scripts/update-manifest "$VERSION" release \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG" || status=$?
+          rm -f "$MATTY_UPDATE_SIGNING_KEY_FILE"
+          exit "$status"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

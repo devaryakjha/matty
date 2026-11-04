@@ -16,6 +16,7 @@ use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
+    badge::Badge,
     button::{Button, ButtonSize, ButtonVariant},
     spinner::Spinner,
     theme::UiTheme,
@@ -49,8 +50,20 @@ pub struct ThreadsModel {
 }
 
 impl ThreadsModel {
+    /// Threads with replies the user has not read.
     pub fn unread(&self) -> usize {
-        self.threads.iter().filter(|row| row.summary.unread).count()
+        self.threads
+            .iter()
+            .filter(|row| row.summary.unread())
+            .count()
+    }
+
+    /// Mentions of the user in unread replies, across the threads (#124).
+    pub fn mentions(&self) -> usize {
+        self.threads
+            .iter()
+            .map(|row| row.summary.unread_mentions)
+            .sum()
     }
 }
 
@@ -140,7 +153,8 @@ impl ThreadsView {
             return;
         };
         // Opening a thread reads its replies.
-        let unread = std::mem::take(&mut row.summary.unread);
+        let unread = row.summary.unread();
+        row.summary.mark_read();
         let root = row.id().clone();
         if changed {
             let content = Some(RightPaneContent::Thread(Box::new(row.thread.clone())));
@@ -239,7 +253,7 @@ impl ThreadsView {
 
     fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         for row in &mut self.model.threads {
-            row.summary.unread = false;
+            row.summary.mark_read();
         }
         cx.emit(ThreadsEvent::MarkAllRead);
         cx.notify();
@@ -322,21 +336,23 @@ impl ThreadsView {
         let root = &row.thread.root;
         let selected = self.selected.as_ref() == Some(row.id());
         let id = row.id().clone();
+        let id_for_badge = id.clone();
         let initial: String = root.author.chars().take(1).collect();
         let channel = match row.thread.channel_name.as_ref() {
             name if name.contains(' ') => name.to_string(),
             name => format!("#{name}"),
         };
-        let replies = match (row.summary.count, row.summary.unread) {
-            (1, true) => "1 new reply".to_string(),
-            (n, true) => format!("{n} new replies"),
-            (1, false) => "1 reply".to_string(),
-            (n, false) => format!("{n} replies"),
-        };
+        let replies = replies_label(&row.summary);
+        let unread = row.summary.unread();
+        let mentions = row.summary.unread_mentions;
         div()
             .id(gpui_kit::ElementId::Name(format!("threads.{id}").into()))
             .role(gpui_kit::Role::Button)
-            .aria_label(format!("{}, {replies}, in {channel}", root.author))
+            .aria_label(match mentions {
+                0 => format!("{}, {replies}, in {channel}", root.author),
+                1 => format!("{}, {replies}, 1 mention, in {channel}", root.author),
+                n => format!("{}, {replies}, {n} mentions, in {channel}", root.author),
+            })
             .mx(theme.space(2.))
             .px(theme.space(3.))
             .py(theme.space(2.5))
@@ -435,14 +451,14 @@ impl ThreadsView {
                             .child(
                                 div()
                                     .type_style(
-                                        if row.summary.unread {
+                                        if unread {
                                             style::UI_STRONG
                                         } else {
                                             style::META
                                         },
                                         &theme,
                                     )
-                                    .text_color(if row.summary.unread {
+                                    .text_color(if unread {
                                         theme.colors.primary
                                     } else {
                                         theme.colors.muted_foreground
@@ -451,7 +467,24 @@ impl ThreadsView {
                             ),
                     ),
             )
-            .when(row.summary.unread, |this| {
+            .when(mentions > 0, |this| {
+                // Mentions show as a channel row shows them: a count pill
+                // in place of the unread dot.
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("threads.{}.mentions", id_for_badge))
+                        .child(
+                            Badge::count(mentions, 99)
+                                .h(theme.space(4.5))
+                                .min_w(theme.space(4.5))
+                                .px(theme.space(1.5))
+                                .text_size(theme.text(11.))
+                                .line_height(theme.text(11.)),
+                        ),
+                )
+            })
+            .when(unread && mentions == 0, |this| {
                 this.child(
                     div()
                         .flex_shrink_0()
@@ -479,6 +512,17 @@ impl ThreadsView {
     }
 }
 
+/// What a row says of its replies: how many are unread, or how many
+/// there are once all are read (#124).
+fn replies_label(summary: &ReplySummary) -> String {
+    match (summary.unread_replies, summary.count) {
+        (1, _) => "1 new reply".to_string(),
+        (0, 1) => "1 reply".to_string(),
+        (0, n) => format!("{n} replies"),
+        (n, _) => format!("{n} new replies"),
+    }
+}
+
 /// The first line of a Markdown body as plain text, for a list row.
 fn snippet(body: &str) -> String {
     let line = body
@@ -497,7 +541,7 @@ impl Render for ThreadsView {
             .model
             .threads
             .iter()
-            .filter(|row| !self.unread_only || row.summary.unread)
+            .filter(|row| !self.unread_only || row.summary.unread())
             .cloned()
             .collect();
         let list = div()
@@ -592,6 +636,52 @@ mod tests {
         draw(&mut cx);
         assert_eq!(*events.borrow(), 2, "every thread is listed");
         assert!(cx.debug_bounds("threads.more").is_none());
+    }
+
+    /// #124: a row counts its unread replies, not all of them, and shows
+    /// its mentions as a badge.
+    #[gpui_kit::test]
+    fn rows_count_unread_replies_and_badge_mentions(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let model = crate::preview::threads();
+        let summary = |root: &str| {
+            model
+                .threads
+                .iter()
+                .find(|row| row.id().as_ref() == root)
+                .map(|row| row.summary.clone())
+                .unwrap()
+        };
+        // 12 replies, 3 of them unread.
+        assert_eq!(replies_label(&summary("p5")), "3 new replies");
+        assert_eq!(replies_label(&summary("p2")), "1 new reply");
+        assert_eq!(replies_label(&summary("p8")), "3 replies");
+        assert_eq!((model.unread(), model.mentions()), (3, 1));
+
+        let window = cx.add_window(|window, cx| ThreadsView::new(model, "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        draw(&mut cx);
+        // The first thread opens beside the list, which reads it.
+        assert_eq!(
+            view.read_with(&cx, |view, _| view.selected().cloned()),
+            Some("p2".into())
+        );
+        assert!(cx.debug_bounds("threads.p6.mentions").is_some());
+        assert!(cx.debug_bounds("threads.p5.mentions").is_none());
+
+        // Opening the mentioned thread reads its mentions too.
+        cx.update(|_, cx| view.update(cx, |view, cx| view.select(Some("p6".into()), cx)));
+        draw(&mut cx);
+        assert!(cx.debug_bounds("threads.p6.mentions").is_none());
+        assert_eq!(view.read_with(&cx, |view, _| view.model().mentions()), 0);
     }
 
     #[test]

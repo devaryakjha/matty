@@ -4,6 +4,7 @@
 //! Escape.
 
 use gpui_icons::{LucideIcon, lucide};
+use gpui_kit::base::input::{MoveDown, MoveUp};
 use gpui_kit::{
     App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -20,7 +21,7 @@ use crate::channel::{
     message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
     reaction_tooltip, waiting_items, waiting_to_send,
 };
-use crate::profile::{ProfileActions, UserProfile, profile_card};
+use crate::profile::{ProfileActions, UserProfile, profile_card, profile_pane};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -29,7 +30,7 @@ use crate::ui::{
     attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerEvent, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
@@ -78,6 +79,82 @@ pub struct SearchModel {
     pub results: Vec<ListedPost>,
     /// True while sync runs the query.
     pub searching: bool,
+    /// Another page of results may follow.
+    pub more: bool,
+    /// The next page is on its way.
+    pub loading_more: bool,
+}
+
+/// What search's `in:` and `from:` suggest: (handle, shown name) pairs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchHints {
+    pub channels: Vec<(SharedString, SharedString)>,
+    pub people: Vec<(SharedString, SharedString)>,
+}
+
+/// One suggestion under the search field: what replaces the word being
+/// typed, and how it reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Suggestion {
+    insert: SharedString,
+    label: SharedString,
+    detail: SharedString,
+}
+
+/// Where the highlight lands after one arrow press among `count` rows:
+/// down from nothing starts at the top, up from nothing at the bottom, and
+/// both wrap around.
+fn step(at: Option<usize>, count: usize, down: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (at, down) {
+        (None, true) => 0,
+        (None, false) => count - 1,
+        (Some(at), true) => (at + 1) % count,
+        (Some(at), false) => (at + count - 1) % count,
+    })
+}
+
+/// At most this many suggestions show at once.
+const SUGGESTIONS: usize = 6;
+
+/// The suggestions for `query`'s last word when it starts with `from:` or
+/// `in:` (#129).
+fn suggestions(query: &str, hints: &SearchHints) -> Vec<Suggestion> {
+    if query.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let word = query.rsplit(char::is_whitespace).next().unwrap_or("");
+    let (prefix, typed, options) = if let Some(typed) = word.strip_prefix("from:") {
+        ("from:", typed.trim_start_matches('@'), &hints.people)
+    } else if let Some(typed) = word.strip_prefix("in:") {
+        ("in:", typed.trim_start_matches('~'), &hints.channels)
+    } else {
+        return Vec::new();
+    };
+    let typed = typed.to_lowercase();
+    options
+        .iter()
+        .filter(|(handle, shown)| {
+            handle.to_lowercase().starts_with(&typed)
+                || shown
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|part| part.starts_with(&typed))
+        })
+        .filter(|(handle, _)| handle.as_ref() != typed)
+        .take(SUGGESTIONS)
+        .map(|(handle, shown)| Suggestion {
+            insert: format!("{prefix}{handle}").into(),
+            label: shown.clone(),
+            detail: if prefix == "from:" {
+                format!("@{handle}").into()
+            } else {
+                format!("~{handle}").into()
+            },
+        })
+        .collect()
 }
 
 /// What the pane shows.
@@ -95,12 +172,17 @@ pub enum RightPaneContent {
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
     Search(SearchModel),
+    /// Someone's profile (#212).
+    Profile(UserProfile),
 }
 
 /// What the pane asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// The user confirmed deleting their sent reply; the pane already
+    /// dropped it.
+    Delete(SharedString),
     /// "Remove from channel" on a member in the channel info (#208).
     RemoveMember {
         user_id: SharedString,
@@ -108,6 +190,28 @@ pub enum RightPaneEvent {
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
+    /// The user asked for the search's next page.
+    SearchMore,
+    /// The reply composer typed `@` and this much of a name; sync asks
+    /// the server and [`RightPaneView::set_suggested`] takes the answer.
+    SuggestPeople(SharedString),
+    /// Message menu actions on a thread post, as in the channel (#213).
+    CopyLink(SharedString),
+    SetSaved {
+        post: SharedString,
+        saved: bool,
+    },
+    SetPinned {
+        post: SharedString,
+        pinned: bool,
+    },
+    Forward(SharedString),
+    /// Mark the channel unread from this reply on.
+    MarkUnread(SharedString),
+    Remind {
+        post: SharedString,
+        at: crate::channel::RemindAt,
+    },
     /// The user replied under `root`; the pane already shows the reply
     /// pending (PLAN §4.3).
     Reply {
@@ -169,6 +273,8 @@ pub enum RightPaneEvent {
     OpenPinned,
     /// The user clicked a link or an entity chip in a message (#103).
     OpenLink(SharedString),
+    /// View profile on a member's profile card; the window shows it here.
+    ViewProfile(UserProfile),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -221,6 +327,10 @@ pub struct RightPaneView {
     /// People the thread's authors are looked up in for their presence
     /// dots (#135); the window keeps it in step with the channel's.
     profiles: Vec<UserProfile>,
+    /// What the server said about names typed after `@` in a reply.
+    people: crate::channel::PeopleAsk,
+    /// The channels `~` can complete in a reply.
+    directory: Vec<crate::sidebar::ChannelRow>,
     /// Who is typing a reply in the thread (#137).
     typing: Vec<SharedString>,
     draft_len: usize,
@@ -238,6 +348,13 @@ pub struct RightPaneView {
     pending_seq: usize,
     /// The search field at the top of the Search listing.
     search: Entity<InputState>,
+    /// The saved, pinned or mentions listing has yet to come from sync.
+    loading: bool,
+    /// What `from:` and `in:` can suggest, and what they suggest now.
+    hints: SearchHints,
+    suggestions: Vec<Suggestion>,
+    /// The suggestion the arrow keys point at, which Enter picks.
+    suggestion_at: Option<usize>,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -251,6 +368,12 @@ pub struct RightPaneView {
     /// "Discard this message?" and the reply it is about.
     discard: DialogHandle,
     discarding: Option<SharedString>,
+    /// The reply a notification opened the thread at, tinted for a few
+    /// seconds as the channel tints a permalink's post (#141).
+    permalink: Option<SharedString>,
+    _permalink_task: Option<gpui_kit::Task<()>>,
+    /// A jump waiting for its thread to arrive: the root and the post.
+    pending_jump: Option<(SharedString, SharedString)>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -291,6 +414,7 @@ impl RightPaneView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
+            state.set_triggers(['@', '~', ':'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
@@ -349,6 +473,7 @@ impl RightPaneView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let subscriptions = vec![
             cx.subscribe_in(
@@ -368,14 +493,41 @@ impl RightPaneView {
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete { trigger, query } => {
+                        if let Some(term) = this.people.ask(*trigger, query) {
+                            cx.emit(RightPaneEvent::SuggestPeople(term.into()));
+                        }
+                        let suggestions = this.reply_suggestions(*trigger, query);
+                        composer
+                            .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+                    }
                     _ => {}
                 },
             ),
-            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_search(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => {
+                        if let Some(pick) =
+                            this.suggestion_at.and_then(|at| this.suggestions.get(at))
+                        {
+                            let insert = pick.insert.clone();
+                            this.accept_suggestion(insert, window, cx);
+                            return;
+                        }
+                        this.suggestions.clear();
+                        this.submit_search(cx);
+                    }
+                    InputEvent::Change => {
+                        let query = input.read(cx).value().to_string();
+                        this.suggestions = suggestions(&query, &this.hints);
+                        this.suggestion_at = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
         ];
         Self {
             composer_cap: px(320.),
@@ -389,6 +541,8 @@ impl RightPaneView {
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             profiles: Vec::new(),
+            people: crate::channel::PeopleAsk::default(),
+            directory: Vec::new(),
             typing: Vec::new(),
             draft_len: 0,
             draft: Default::default(),
@@ -399,6 +553,10 @@ impl RightPaneView {
             _link_task: None,
             pending_seq: 0,
             search,
+            loading: false,
+            hints: SearchHints::default(),
+            suggestions: Vec::new(),
+            suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -407,6 +565,9 @@ impl RightPaneView {
             editing: None,
             discard: DialogHandle::new(false),
             discarding: None,
+            permalink: None,
+            _permalink_task: None,
+            pending_jump: None,
             _subscriptions: subscriptions,
         }
     }
@@ -479,7 +640,7 @@ impl RightPaneView {
         let open = Button::new("right-pane.lightbox.open")
             .size(ButtonSize::Icon)
             .variant(ButtonVariant::Ghost)
-            .aria_label("Open file")
+            .aria_label("Download")
             .child(
                 lucide(LucideIcon::Download)
                     .size(theme.space(4.5))
@@ -764,6 +925,10 @@ impl RightPaneView {
         let Some(thread) = self.thread_mut() else {
             return;
         };
+        let sent = thread
+            .replies
+            .iter()
+            .any(|post| post.id == id && post.status == PostStatus::Sent);
         thread.replies.retain(|post| post.id != id);
         if self
             .editing
@@ -774,7 +939,11 @@ impl RightPaneView {
         }
         let content = self.content.clone();
         self.set_content(content, cx);
-        cx.emit(RightPaneEvent::Discard(id));
+        cx.emit(if sent {
+            RightPaneEvent::Delete(id)
+        } else {
+            RightPaneEvent::Discard(id)
+        });
     }
 
     /// The connection went down or came back: waiting replies read "Will
@@ -787,7 +956,8 @@ impl RightPaneView {
         }
     }
 
-    /// Opens "Discard this message?" for a reply waiting to send.
+    /// Opens "Discard this message?" for a reply waiting to send, or
+    /// "Delete this message?" for one sent.
     fn ask_discard(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.discarding = Some(id);
         self.discard.open(window, cx);
@@ -801,11 +971,14 @@ impl RightPaneView {
         }
     }
 
-    /// Turns a reply waiting to send into a composer holding its text, as
-    /// in the channel (#195). Enter saves, Escape cancels.
+    /// Turns the user's reply, sent or waiting to send, into a composer
+    /// holding its text, as in the channel (#117, #195). Enter saves,
+    /// Escape cancels.
     fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(post) = self.reply_post(&id).filter(|post| {
-            post.mine && post.kind == PostKind::Regular && waiting_to_send(post, self.away)
+            post.mine
+                && post.kind == PostKind::Regular
+                && (post.status == PostStatus::Sent || waiting_to_send(post, self.away))
         }) else {
             return;
         };
@@ -846,8 +1019,8 @@ impl RightPaneView {
         }
     }
 
-    /// Keeps the new text and tells sync; an unchanged or emptied body just
-    /// closes the editor, since discarding has its own confirmation.
+    /// Keeps the new text and tells sync; an unchanged body just closes the
+    /// editor and an emptied one asks to delete.
     fn save_edit(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.as_ref() else {
             return;
@@ -855,12 +1028,25 @@ impl RightPaneView {
         let id = editing.post.clone();
         let body: SharedString = text.trim().to_string().into();
         let unchanged = self.reply_post(&id).is_none_or(|post| post.body == body);
-        if body.is_empty() || unchanged {
+        if body.is_empty() {
+            // Emptying a message asks to delete it, as the webapp does.
+            self.cancel_edit(window, cx);
+            self.ask_discard(id, window, cx);
+            return;
+        }
+        if unchanged {
             self.cancel_edit(window, cx);
             return;
         }
         // A waiting send just goes with the new text, without "(edited)".
-        self.mutate_reply(&id, |post| post.body = body.clone(), cx);
+        self.mutate_reply(
+            &id,
+            |post| {
+                post.body = body.clone();
+                post.edited = post.status == PostStatus::Sent;
+            },
+            cx,
+        );
         cx.emit(RightPaneEvent::SaveEdit {
             post: id,
             text: body,
@@ -869,7 +1055,18 @@ impl RightPaneView {
     }
 
     fn discard_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popup = delete_popup("thread.discard", true, "the thread", cx);
+        let thread = match self.content.as_ref() {
+            Some(RightPaneContent::Thread(thread)) => Some(thread),
+            _ => None,
+        };
+        let unsent = self.discarding.as_ref().is_none_or(|id| {
+            self.reply_post(id)
+                .is_none_or(|post| post.status != PostStatus::Sent)
+        });
+        let place: SharedString = thread
+            .map(|thread| format!("#{}", thread.channel_name).into())
+            .unwrap_or_else(|| "the channel".into());
+        let popup = delete_popup("thread.discard", unsent, &place, 0, cx);
         let view = cx.entity().downgrade();
         alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
             view.update(cx, |this, cx| {
@@ -925,6 +1122,51 @@ impl RightPaneView {
     }
 
     /// Replaces what the pane shows and resets the transcript to its end.
+    /// Sets what search's `from:` and `in:` suggest.
+    pub fn set_search_hints(&mut self, hints: SearchHints) {
+        self.hints = hints;
+    }
+
+    /// Puts a suggestion in place of the word being typed.
+    fn accept_suggestion(
+        &mut self,
+        insert: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search.update(cx, |input, cx| {
+            let value = input.value().to_string();
+            let keep = value
+                .rfind(char::is_whitespace)
+                .map_or("", |at| &value[..=at]);
+            input.set_value(format!("{keep}{insert} "), window, cx);
+            input.focus(window, cx);
+        });
+        self.suggestions.clear();
+        self.suggestion_at = None;
+        cx.notify();
+    }
+
+    /// Moves the highlight through the suggestions with the arrow keys,
+    /// leaving the keys to the field when nothing is suggested.
+    fn step_suggestion(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = self.suggestions.len();
+        if count == 0 {
+            cx.propagate();
+            return;
+        }
+        self.suggestion_at = step(self.suggestion_at, count, down);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Marks the listing on screen as still loading, so an empty one reads
+    /// "Loading…" rather than its empty state.
+    pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        self.loading = loading;
+        cx.notify();
+    }
+
     /// Shows a search: the field takes the query and focus, the listing the
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
@@ -955,6 +1197,7 @@ impl RightPaneView {
     }
 
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
+        self.loading = false;
         let rows = match &content {
             Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
@@ -970,10 +1213,20 @@ impl RightPaneView {
             self.link = Default::default();
             self._link_task = None;
             self.editing = None;
+            self.permalink = None;
+            self._permalink_task = None;
+        }
+        // A jump waits through an empty pane, not past another thread.
+        if let (Some(RightPaneContent::Thread(thread)), Some((root, _))) =
+            (&content, &self.pending_jump)
+            && thread.root.id != *root
+        {
+            self.pending_jump = None;
         }
         self.content = content;
         self.selection = None;
         self.loading_older = false;
+        self.apply_pending_jump(cx);
         let key = self.draft_key();
         let moved = self.draft.key() != key.as_ref();
         if moved
@@ -1115,7 +1368,60 @@ impl RightPaneView {
                 list.append(newer, cx);
             }
         });
+        self.apply_pending_jump(cx);
         cx.notify();
+    }
+
+    /// Scrolls the thread under `root` to `post` and tints it for a few
+    /// seconds, as a notification's click asks (#141). Until that thread
+    /// is shown with the post in it, the jump waits for sync to bring it.
+    pub fn jump_to(&mut self, root: SharedString, post: SharedString, cx: &mut Context<Self>) {
+        self.pending_jump = Some((root, post));
+        self.apply_pending_jump(cx);
+    }
+
+    fn apply_pending_jump(&mut self, cx: &mut Context<Self>) {
+        let Some((root, post)) = self.pending_jump.clone() else {
+            return;
+        };
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return;
+        };
+        if thread.root.id != root {
+            return;
+        }
+        let row = if thread.root.id == post {
+            Some(0)
+        } else {
+            thread
+                .replies
+                .iter()
+                .position(|reply| reply.id == post)
+                .map(|index| index + THREAD_HEAD)
+        };
+        let Some(row) = row else {
+            return;
+        };
+        self.pending_jump = None;
+        self.list
+            .update(cx, |list, cx| list.scroll_to_item(row, cx));
+        self.permalink = Some(post);
+        self._permalink_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.permalink = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The post a notification opened the thread at, while it is tinted.
+    pub fn permalink(&self) -> Option<&SharedString> {
+        self.permalink.as_ref()
     }
 
     /// Asks for the replies before the oldest loaded one when the row
@@ -1212,6 +1518,66 @@ impl RightPaneView {
         cx.notify();
     }
 
+    /// The post on thread row `row`: the root, or a reply after the
+    /// divider.
+    fn row_post(&self, row: usize) -> Option<&Post> {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return None;
+        };
+        match row {
+            0 => Some(&thread.root),
+            row => thread.replies.get(row.checked_sub(THREAD_HEAD)?),
+        }
+    }
+
+    /// Single keys on the selected row, as in the channel (#107): R
+    /// replies, E edits and Delete removes the user's own reply, P pins, S
+    /// saves and U marks unread.
+    fn selection_key(
+        &mut self,
+        keystroke: &gpui_kit::Keystroke,
+        selected: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.platform || modifiers.alt {
+            return false;
+        }
+        let Some(row) = selected else {
+            return false;
+        };
+        let Some(post) = self.row_post(row).cloned() else {
+            return false;
+        };
+        let reply = row >= THREAD_HEAD;
+        let own = reply && post.mine && post.kind == PostKind::Regular;
+        let sent = post.status == PostStatus::Sent;
+        let id = post.id.clone();
+        match keystroke.key.as_str() {
+            "r" => self.select_row(None, window, cx),
+            "e" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.selection = None;
+                self.start_edit(id, window, cx);
+            }
+            "delete" | "backspace" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.ask_discard(id, window, cx)
+            }
+            "p" if sent => cx.emit(RightPaneEvent::SetPinned {
+                post: id,
+                pinned: !post.pinned,
+            }),
+            "s" if sent => cx.emit(RightPaneEvent::SetSaved {
+                post: id,
+                saved: !post.saved,
+            }),
+            "u" if sent => cx.emit(RightPaneEvent::MarkUnread(id)),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Selects the newest reply, or the root when there is none.
     fn select_newest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.thread_rows();
@@ -1265,6 +1631,7 @@ impl RightPaneView {
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
         away: bool,
+        reply: bool,
     ) -> Vec<MenuItem> {
         let body = post.body.clone();
         let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
@@ -1303,6 +1670,75 @@ impl RightPaneView {
                 },
             ),
         ]);
+        if post.status == PostStatus::Sent {
+            let emit = |name: &str, label: SharedString, event: RightPaneEvent| {
+                let view = view.clone();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("thread.context.{name}").into()),
+                    label,
+                )
+                .on_click(move |_, _, cx| {
+                    let event = event.clone();
+                    view.update(cx, |_, cx| cx.emit(event)).ok();
+                })
+            };
+            let id = post.id.clone();
+            items.extend([
+                emit(
+                    "copy-link",
+                    "Copy link".into(),
+                    RightPaneEvent::CopyLink(id.clone()),
+                ),
+                emit(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    RightPaneEvent::SetPinned {
+                        post: id.clone(),
+                        pinned: !post.pinned,
+                    },
+                ),
+                emit(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    RightPaneEvent::SetSaved {
+                        post: id.clone(),
+                        saved: !post.saved,
+                    },
+                ),
+                emit(
+                    "forward",
+                    "Forward\u{2026}".into(),
+                    RightPaneEvent::Forward(id.clone()),
+                ),
+                emit(
+                    "unread",
+                    "Mark as unread".into(),
+                    RightPaneEvent::MarkUnread(id.clone()),
+                ),
+                MenuItem::submenu(
+                    "thread.context.remind",
+                    "Remind me",
+                    crate::channel::RemindAt::ALL.map(|at| {
+                        emit(
+                            &format!("remind.{at:?}"),
+                            at.label().into(),
+                            RightPaneEvent::Remind {
+                                post: id.clone(),
+                                at,
+                            },
+                        )
+                    }),
+                ),
+            ]);
+        }
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
@@ -1311,6 +1747,31 @@ impl RightPaneView {
                     let id = retry_id.clone();
                     retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
                 }),
+            );
+        }
+        // The user's own sent replies are edited and deleted here, as in
+        // the channel (#117, #118); the root is the channel's to change.
+        if reply && post.mine && post.kind == PostKind::Regular && post.status == PostStatus::Sent {
+            let (edit_view, edit_id) = (view.clone(), post.id.clone());
+            let (delete_view, delete_id) = (view.clone(), post.id.clone());
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("thread.context.edit", "Edit").on_click(
+                move |_, window, cx| {
+                    edit_view
+                        .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                        .ok();
+                },
+            ));
+            items.push(
+                MenuItem::new("thread.context.delete", "Delete\u{2026}").on_click(
+                    move |_, window, cx| {
+                        delete_view
+                            .update(cx, |this, cx| {
+                                this.ask_discard(delete_id.clone(), window, cx)
+                            })
+                            .ok();
+                    },
+                ),
             );
         }
         let (edit_view, edit_id) = (view.clone(), post.id.clone());
@@ -1415,6 +1876,39 @@ impl RightPaneView {
     }
 
     /// Keeps the people whose presence the thread's avatars show.
+    /// Suggestions for the reply composer's triggers, as in the channel's;
+    /// the server's matches stand in for the thread's people.
+    fn reply_suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+        crate::channel::composer_suggestions(
+            trigger,
+            query,
+            std::iter::empty(),
+            &self.people,
+            &self.directory,
+            true,
+        )
+    }
+
+    /// Takes the server's matches for `term` and, while the reply composer
+    /// still asks for it, shows them.
+    pub fn set_suggested(
+        &mut self,
+        term: String,
+        people: Vec<UserProfile>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.people.answer(&term, people) {
+            let suggestions = self.reply_suggestions('@', &term);
+            self.composer
+                .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+        }
+    }
+
+    /// The channels `~` can complete in a reply.
+    pub fn set_directory(&mut self, rows: Vec<crate::sidebar::ChannelRow>) {
+        self.directory = rows;
+    }
+
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
         if self.profiles != profiles {
             self.profiles = profiles;
@@ -1578,7 +2072,7 @@ impl RightPaneView {
             row = row.header_child(marker);
         }
         // Right-click selects the row and opens its menu (design-42).
-        let items = Self::thread_items_for(view, post, away);
+        let items = Self::thread_items_for(view, post, away, !root);
         let menu_view = view.clone();
         div()
             .on_mouse_down(
@@ -1646,9 +2140,12 @@ impl RightPaneView {
         let model = thread.clone();
         let view = cx.entity().downgrade();
         let selection = self.selection;
-        let highlight = move |index| {
+        let permalink = self.permalink.clone();
+        let highlight = move |index: usize, post: &Post| {
             if selection == Some(index) {
                 MessageHighlight::Selected
+            } else if permalink.as_ref() == Some(&post.id) {
+                MessageHighlight::Permalink
             } else {
                 MessageHighlight::None
             }
@@ -1665,8 +2162,15 @@ impl RightPaneView {
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&view, &model.root, true, highlight(0), (away, None), cx)
-                        .into_any_element(),
+                    0 => Self::post_row(
+                        &view,
+                        &model.root,
+                        true,
+                        highlight(0, &model.root),
+                        (away, None),
+                        cx,
+                    )
+                    .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
                     2 => view
                         .update(cx, |this, cx| {
@@ -1684,7 +2188,7 @@ impl RightPaneView {
                                 &view,
                                 reply,
                                 false,
-                                highlight(index),
+                                highlight(index, reply),
                                 (away, editor),
                                 cx,
                             )
@@ -1704,6 +2208,15 @@ impl RightPaneView {
                 move |index, window, cx| {
                     view.update(cx, |this, cx| this.select_row(index, window, cx))
                         .ok();
+                }
+            })
+            .on_key({
+                let view = cx.entity().downgrade();
+                move |event, selected, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.selection_key(&event.keystroke, selected, window, cx)
+                    })
+                    .unwrap_or(false)
                 }
             });
         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
@@ -1831,12 +2344,23 @@ impl RightPaneView {
         id: &'static str,
         items: &[ListedPost],
         empty: (LucideIcon, &'static str, &'static str),
+        more: Option<bool>,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let theme = UiTheme::read(cx).clone();
+        if items.is_empty() && self.loading {
+            return div()
+                .flex_1()
+                .px(theme.space(4.))
+                .py(theme.space(3.))
+                .type_style(style::META, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child("Loading\u{2026}")
+                .into_any_element();
+        }
         if items.is_empty() {
             return style::centered_empty(empty.0, empty.1, empty.2, cx).into_any_element();
         }
-        let theme = UiTheme::read(cx).clone();
         let view = cx.entity().downgrade();
         div()
             .id(id)
@@ -1897,6 +2421,26 @@ impl RightPaneView {
                         cx,
                     ))
             }))
+            // `Some(loading)` when another page may follow.
+            .when_some(more, |list, loading| {
+                list.child(
+                    div().px(theme.space(4.)).pb(theme.space(2.)).child(
+                        Button::new(gpui_kit::ElementId::Name(format!("{id}.more").into()))
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .w_full()
+                            .disabled(loading)
+                            .label(if loading {
+                                "Loading more\u{2026}"
+                            } else {
+                                "Show more results"
+                            })
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::SearchMore)),
+                            ),
+                    ),
+                )
+            })
             .into_any_element()
     }
 
@@ -1905,7 +2449,14 @@ impl RightPaneView {
     fn search(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
-        let body = if model.query.is_empty() {
+        let recent = SettingsStore::global(cx)
+            .read(cx)
+            .get()
+            .recent_searches
+            .clone();
+        let body = if model.query.is_empty() && !recent.is_empty() {
+            self.recent_searches(&recent, cx).into_any_element()
+        } else if model.query.is_empty() {
             style::centered_empty(
                 LucideIcon::Search,
                 "Search messages",
@@ -1952,6 +2503,7 @@ impl RightPaneView {
                         "Nothing matched",
                         "Try fewer words, or narrow with from: and in:.",
                     ),
+                    model.more.then_some(model.loading_more),
                     cx,
                 ))
                 .into_any_element()
@@ -1972,7 +2524,17 @@ impl RightPaneView {
                     .gap(theme.space(1.5))
                     .border_b(style::hairline())
                     .border_color(theme.colors.border)
+                    // Caught on the way down, before the field moves its cursor.
+                    .capture_action(
+                        cx.listener(|this, _: &MoveDown, _, cx| this.step_suggestion(true, cx)),
+                    )
+                    .capture_action(
+                        cx.listener(|this, _: &MoveUp, _, cx| this.step_suggestion(false, cx)),
+                    )
                     .child(Input::new(&self.search).aria_label("Search messages"))
+                    .when(!self.suggestions.is_empty(), |field| {
+                        field.child(self.suggestion_list(cx))
+                    })
                     .child(
                         div()
                             .type_style(style::META, &theme)
@@ -1981,6 +2543,124 @@ impl RightPaneView {
                     ),
             )
             .child(body)
+    }
+
+    /// The people or channels the word being typed could name.
+    fn suggestion_list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                self.suggestions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, suggestion)| {
+                        let insert = suggestion.insert.clone();
+                        Button::new(gpui_kit::ElementId::Name(
+                            format!("right-pane.search.suggestion.{index}").into(),
+                        ))
+                        .variant(if self.suggestion_at == Some(index) {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .w_full()
+                        .justify_start()
+                        .aria_label(format!("Search {}", suggestion.insert))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme.space(2.))
+                                .min_w_0()
+                                .child(div().truncate().child(suggestion.label.clone()))
+                                .child(
+                                    div()
+                                        .type_style(style::META, &theme)
+                                        .text_color(muted)
+                                        .child(suggestion.detail.clone()),
+                                ),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.accept_suggestion(insert.clone(), window, cx)
+                            },
+                        ))
+                    }),
+            )
+    }
+
+    /// The last searches, newest first, each one click from running again.
+    fn recent_searches(
+        &self,
+        recent: &[String],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .id("right-pane.recent-searches")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(theme.space(2.))
+            .py(theme.space(2.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(theme.space(2.))
+                    .pb(theme.space(1.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .type_style(style::LABEL, &theme)
+                            .text_color(muted)
+                            .child("Recent searches"),
+                    )
+                    .child(
+                        Button::new("right-pane.recent-searches.clear")
+                            .variant(ButtonVariant::Link)
+                            .size(ButtonSize::Xs)
+                            .label("Clear")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                SettingsStore::global(cx).update(cx, |store, cx| {
+                                    store.update(cx, |settings| settings.recent_searches.clear())
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children(recent.iter().enumerate().map(|(index, query)| {
+                let run: SharedString = query.clone().into();
+                Button::new(gpui_kit::ElementId::Name(
+                    format!("right-pane.recent-searches.{index}").into(),
+                ))
+                .variant(ButtonVariant::Ghost)
+                .w_full()
+                .justify_start()
+                .aria_label(format!("Search again for {query}"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.space(2.))
+                        .min_w_0()
+                        .child(
+                            lucide(LucideIcon::Clock)
+                                .size(theme.space(4.))
+                                .text_color(muted),
+                        )
+                        .child(div().truncate().child(query.clone())),
+                )
+                .on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(RightPaneEvent::Search(run.clone()))),
+                )
+            }))
     }
 
     /// Channel info (PLAN §3 M1 navigation): what the channel is for, the
@@ -2281,7 +2961,9 @@ impl RightPaneView {
         .content(move |_, _, cx| {
             let (message_profile, mention_profile) = (card_profile.clone(), card_profile.clone());
             let (message_view, mention_view) = (message_view.clone(), mention_view.clone());
-            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            let (close_message, close_mention, close_view) =
+                (cx.entity(), cx.entity(), cx.entity());
+            let (view_view, view_profile) = (mention_view.clone(), card_profile.clone());
             profile_card(
                 &username,
                 &card_profile,
@@ -2300,6 +2982,11 @@ impl RightPaneView {
                         let event = RightPaneEvent::Mention(mention_profile.username.clone());
                         mention_view.update(cx, |_, cx| cx.emit(event)).ok();
                     }),
+                    on_view: Some(Box::new(move |window, cx| {
+                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = RightPaneEvent::ViewProfile(view_profile.clone());
+                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })),
                 },
                 cx,
             )
@@ -2412,6 +3099,7 @@ impl Render for RightPaneView {
                         "Nothing pinned yet",
                         "Pin a message from its More menu to keep it here for everyone.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Saved(posts)) => root
@@ -2424,6 +3112,7 @@ impl Render for RightPaneView {
                         "Nothing saved yet",
                         "Save a message from its hover toolbar to find it here later.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Mentions(posts)) => root
@@ -2436,11 +3125,35 @@ impl Render for RightPaneView {
                         "No mentions yet",
                         "Messages that mention you or your keywords show up here.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Search(model)) => root
                 .child(self.header("Search".into(), None, cx))
                 .child(self.search(&model, cx)),
+            Some(RightPaneContent::Profile(profile)) => {
+                let (message_view, mention_view) =
+                    (cx.entity().downgrade(), cx.entity().downgrade());
+                let (message_profile, username) = (profile.clone(), profile.username.clone());
+                root.child(self.header("Profile".into(), None, cx)).child(
+                    div().flex_1().min_h_0().child(profile_pane(
+                        &profile,
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::OpenDirect {
+                                user_id: message_profile.user_id.clone(),
+                                username: message_profile.username.clone(),
+                                display_name: message_profile.display_name.clone(),
+                            };
+                            message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::Mention(username.clone());
+                            mention_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        cx,
+                    )),
+                )
+            }
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
@@ -2451,6 +3164,45 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_walk_the_suggestions_and_wrap() {
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(2));
+        assert_eq!(step(Some(2), 3, true), Some(0));
+        assert_eq!(step(Some(0), 3, false), Some(2));
+        assert_eq!(step(Some(1), 3, true), Some(2));
+        assert_eq!(step(None, 0, true), None);
+    }
+
+    #[test]
+    fn from_and_in_suggest_people_and_channels_for_the_last_word() {
+        let hints = SearchHints {
+            channels: vec![
+                ("town-square".into(), "Town Square".into()),
+                ("random".into(), "Random".into()),
+            ],
+            people: vec![
+                ("ada".into(), "Ada Lovelace".into()),
+                ("alan".into(), "Alan Turing".into()),
+            ],
+        };
+        let inserts = |query: &str| {
+            suggestions(query, &hints)
+                .into_iter()
+                .map(|s| s.insert.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inserts("deploy from:a"), ["from:ada", "from:alan"]);
+        assert_eq!(inserts("from:@tur"), ["from:alan"]);
+        assert_eq!(inserts("in:squ"), ["in:town-square"]);
+        assert_eq!(inserts("in:"), ["in:town-square", "in:random"]);
+        // A finished word, a plain word and an exact match suggest nothing.
+        assert!(inserts("from:ada ").is_empty());
+        assert!(inserts("lunch").is_empty());
+        assert!(inserts("in:random").is_empty());
+    }
+
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2568,6 +3320,60 @@ mod tests {
 
     /// Reaching the oldest loaded reply asks once for the page before it;
     /// a failed page offers Retry instead of asking again.
+    /// #141: a notification's click opens the thread before sync has
+    /// sent it; once it arrives the pane scrolls to the reply and tints it.
+    #[gpui_kit::test]
+    fn a_jump_waits_for_its_thread_and_tints_the_reply(cx: &mut gpui_kit::TestAppContext) {
+        let (view, _, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_content(None, cx);
+                pane.jump_to("root".into(), "r10".into(), cx);
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            None
+        );
+
+        // Another thread does not take the jump.
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(
+                    ThreadModel {
+                        root: Post {
+                            root_id: SharedString::default(),
+                            ..post("other")
+                        },
+                        ..thread(0..50, false, false)
+                    },
+                    cx,
+                )
+            })
+        });
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            None
+        );
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_content(None, cx);
+                pane.jump_to("root".into(), "r10".into(), cx);
+                pane.set_thread(thread(0..200, false, false), cx);
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            Some("r10".into())
+        );
+        let list = view.read_with(&cx, |pane, _| pane.list.clone());
+        let top = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(top.item_ix, THREAD_HEAD + 10);
+    }
+
     #[gpui_kit::test]
     fn the_oldest_reply_asks_for_the_page_before_it(cx: &mut gpui_kit::TestAppContext) {
         let (view, events, mut cx) = pane(cx);
@@ -2614,6 +3420,146 @@ mod tests {
             "at the root: nothing more to ask"
         );
         assert!(cx.debug_bounds("right-pane.older").is_none());
+    }
+
+    /// #107: single keys act on the selected thread row as in the channel.
+    #[gpui_kit::test]
+    fn single_keys_act_on_the_selected_reply(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: post("root"),
+            replies: vec![Post {
+                mine: true,
+                status: PostStatus::Sent,
+                ..post("r1")
+            }],
+            following: true,
+            reply_count: 1,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SetPinned { .. }
+                        | RightPaneEvent::SetSaved { .. }
+                        | RightPaneEvent::MarkUnread(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let key = |k: &'static str| gpui_kit::Keystroke::parse(k).unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                let reply = Some(THREAD_HEAD);
+                assert!(view.selection_key(&key("p"), reply, window, cx));
+                assert!(view.selection_key(&key("s"), reply, window, cx));
+                assert!(view.selection_key(&key("u"), Some(0), window, cx));
+                // Someone else's root is not the user's to edit; a modifier
+                // leaves the key to the app.
+                assert!(!view.selection_key(&key("e"), Some(0), window, cx));
+                assert!(!view.selection_key(&key("ctrl-p"), reply, window, cx));
+                assert!(view.selection_key(&key("e"), reply, window, cx));
+                assert!(view.editing.is_some());
+                assert_eq!(view.selection, None);
+            })
+        });
+        let events = events.borrow();
+        assert!(
+            matches!(&events[0], RightPaneEvent::SetPinned { post, pinned: true } if post == "r1")
+        );
+        assert!(
+            matches!(&events[1], RightPaneEvent::SetSaved { post, saved: true } if post == "r1")
+        );
+        assert!(matches!(&events[2], RightPaneEvent::MarkUnread(post) if post == "root"));
+        assert_eq!(events.len(), 3);
+    }
+
+    /// #117, #118: the user's sent reply is edited in place, marked
+    /// edited, and emptying it asks to delete it for everyone.
+    #[gpui_kit::test]
+    fn a_sent_reply_is_edited_or_deleted(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let mine = Post {
+            mine: true,
+            status: PostStatus::Sent,
+            body: "Shipping today.".into(),
+            ..post("r1")
+        };
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: Post {
+                mine: true,
+                ..post("root")
+            },
+            replies: vec![mine],
+            following: true,
+            reply_count: 1,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SaveEdit { .. }
+                        | RightPaneEvent::Delete(_)
+                        | RightPaneEvent::Discard(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                // The root is the channel's to edit; the reply is the pane's.
+                view.start_edit("root".into(), window, cx);
+                assert!(view.editing.is_none());
+                view.start_edit("r1".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Shipping tomorrow.".into(), window, cx);
+                let reply = view.reply_post(&"r1".into()).unwrap();
+                assert_eq!(reply.body.as_ref(), "Shipping tomorrow.");
+                assert!(reply.edited);
+
+                view.start_edit("r1".into(), window, cx);
+                view.save_edit("  ".into(), window, cx);
+                assert!(view.editing.is_none());
+                assert_eq!(view.discarding.as_deref(), Some("r1"));
+                let id = view.discarding.take().unwrap();
+                view.discard(id, cx);
+                assert!(view.reply_post(&"r1".into()).is_none());
+            })
+        });
+        let events = events.borrow();
+        assert!(matches!(&events[0], RightPaneEvent::SaveEdit { post, .. } if post == "r1"));
+        assert!(matches!(&events[1], RightPaneEvent::Delete(post) if post == "r1"));
+        assert_eq!(events.len(), 2);
     }
 
     /// #195: a reply queued while offline is edited in place or discarded
@@ -2791,5 +3737,82 @@ mod tests {
             saves.borrow_mut().drain(..).collect::<Vec<_>>(),
             [(root(&first), String::new())]
         );
+    }
+
+    /// #188: the reply composer asks about its link once typing pauses,
+    /// and a reply whose preview was removed goes without one.
+    #[gpui_kit::test]
+    fn a_reply_drafts_link_is_previewed_once_and_can_be_removed(cx: &mut gpui_kit::TestAppContext) {
+        use crate::draft_link::PAUSE;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let posts = crate::preview::channel("general").unwrap().posts;
+        let thread = RightPaneContent::Thread(Box::new(
+            crate::preview::thread("general", &posts[0].id).unwrap(),
+        ));
+        let (pane, cx) = cx.add_window_view(|window, cx| RightPaneView::new("me", window, cx));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let events = events.clone();
+            cx.subscribe(&pane, move |_, event: &RightPaneEvent, _| match event {
+                RightPaneEvent::PreviewLink(_) | RightPaneEvent::Reply { .. } => {
+                    events.borrow_mut().push(event.clone());
+                }
+                _ => {}
+            })
+            .detach();
+            pane.update(cx, |pane, cx| pane.set_content(Some(thread), cx));
+            let composer = pane.read(cx).composer.clone();
+            composer.update(cx, |composer, cx| composer.focus(window, cx));
+        });
+        cx.run_until_parked();
+        let url = "https://github.com/devaryakjha/matty";
+
+        cx.simulate_input("see https://github.com/devaryakjha/matty");
+        cx.executor().advance_clock(PAUSE / 2);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "nothing before the pause");
+        cx.executor().advance_clock(PAUSE);
+        cx.run_until_parked();
+        cx.simulate_input(" too");
+        cx.executor().advance_clock(PAUSE * 2);
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [RightPaneEvent::PreviewLink(url.into())],
+            "one ask for the link"
+        );
+
+        let card = crate::embeds::LinkCard {
+            url: url.into(),
+            site_name: "GitHub".into(),
+            title: "devaryakjha/matty".into(),
+            description: SharedString::default(),
+            image: None,
+        };
+        let shown = cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_link_preview(url, Some(card), cx);
+                pane.link
+                    .preview("thread.link-preview", cx, |_, _, _| {})
+                    .is_some()
+            })
+        });
+        assert!(shown, "the card shows above the reply composer");
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.link.remove();
+                let text = pane.composer.read(cx).value(cx);
+                pane.reply(text, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [RightPaneEvent::Reply { unfurl: false, .. }]
+        ));
     }
 }

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use matty_api::capabilities::CollapsedThreads;
 use matty_api::models::{Draft, PostChange, Preference, Reaction};
@@ -263,11 +263,36 @@ pub enum Command {
         /// Every key, changed or not: the server replaces the map.
         notify_props: std::collections::HashMap<String, String>,
     },
+    /// Moves a category one place up or down in its team's sidebar;
+    /// [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar) follows.
+    MoveCategory {
+        /// The category to move.
+        category_id: String,
+        /// Up (towards the top) or down.
+        up: bool,
+    },
+    /// Moves a channel one place up or down within its category, which then
+    /// sorts by hand; [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar)
+    /// follows.
+    MoveChannel {
+        /// The category the channel is in.
+        category_id: String,
+        /// The channel to move.
+        channel_id: String,
+        /// Up (towards the top) or down.
+        up: bool,
+    },
     /// Changes the user's own names, nickname, position or username;
     /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
     UpdateProfile {
         /// The fields to change.
         patch: matty_api::ProfilePatch,
+    },
+    /// Sets the user's profile picture from an image file's bytes and
+    /// name, or with `None` goes back to the generated one.
+    SetPicture {
+        /// The image's bytes and file name, or `None` to remove it.
+        picture: Option<(Vec<u8>, String)>,
     },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
@@ -287,6 +312,16 @@ pub enum Command {
     ResolveLink {
         /// What the link names.
         query: crate::LinkQuery,
+    },
+    /// Asks the server who matches a typed `@name`, channel members first;
+    /// [`ChangeSet::Suggested`](crate::ChangeSet::Suggested) answers.
+    SuggestPeople {
+        /// What follows the `@`.
+        term: String,
+        /// The team to look in.
+        team_id: Option<String>,
+        /// The channel whose members come first.
+        channel_id: Option<String>,
     },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
@@ -494,6 +529,35 @@ pub enum Command {
         terms: String,
         /// The user's offset from UTC in seconds, for `on:` and the like.
         time_zone_offset: i32,
+        /// Which page of results, from 0.
+        page: u32,
+    },
+    /// Asks the server to remind the user of a post at `target_time`
+    /// (Unix seconds); only a failure answers.
+    SetReminder {
+        /// The post.
+        post_id: String,
+        /// When, in Unix seconds.
+        target_time: i64,
+    },
+    /// Loads a listing; [`ChangeSet::Listing`](crate::ChangeSet::Listing)
+    /// answers.
+    LoadListing(crate::Listing),
+    /// Saves or unsaves a post for the user (a `flagged_post` preference);
+    /// [`ChangeSet::Saved`](crate::ChangeSet::Saved) follows at once.
+    SetSaved {
+        /// The post.
+        post_id: String,
+        /// Save it, or unsave it.
+        saved: bool,
+    },
+    /// Pins or unpins a post in its channel; the post comes back edited
+    /// over the WebSocket.
+    SetPinned {
+        /// The post.
+        post_id: String,
+        /// Pin it, or unpin it.
+        pinned: bool,
     },
     /// Creates a channel the user is then in;
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -682,6 +746,12 @@ impl std::fmt::Debug for Command {
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
             Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
+            Self::SetPicture { picture } => f
+                .debug_struct("SetPicture")
+                .field("bytes", &picture.as_ref().map(|(bytes, _)| bytes.len()))
+                .finish(),
+            Self::MoveCategory { .. } => f.write_str("MoveCategory"),
+            Self::MoveChannel { .. } => f.write_str("MoveChannel"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -693,6 +763,8 @@ impl std::fmt::Debug for Command {
             Self::ResolveLink { query } => {
                 f.debug_struct("ResolveLink").field("query", query).finish()
             }
+            // A half-typed name is the user's own words: keep it out of logs.
+            Self::SuggestPeople { .. } => f.write_str("SuggestPeople"),
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -799,6 +871,25 @@ impl std::fmt::Debug for Command {
                 .debug_struct("Search")
                 .field("team_id", team_id)
                 .finish_non_exhaustive(),
+            Self::SetReminder {
+                post_id,
+                target_time,
+            } => f
+                .debug_struct("SetReminder")
+                .field("post_id", post_id)
+                .field("target_time", target_time)
+                .finish(),
+            Self::LoadListing(listing) => f.debug_tuple("LoadListing").field(listing).finish(),
+            Self::SetSaved { post_id, saved } => f
+                .debug_struct("SetSaved")
+                .field("post_id", post_id)
+                .field("saved", saved)
+                .finish(),
+            Self::SetPinned { post_id, pinned } => f
+                .debug_struct("SetPinned")
+                .field("post_id", post_id)
+                .field("pinned", pinned)
+                .finish(),
             Self::FindPeople { team_id } => f
                 .debug_struct("FindPeople")
                 .field("team_id", team_id)
@@ -843,6 +934,8 @@ pub(crate) struct Dirty {
     pub(crate) unreads: bool,
     /// Preferences changed.
     pub(crate) preferences: bool,
+    /// The saved posts may have changed.
+    pub(crate) saved: bool,
     /// The cache lost track of the server and must catch up (#37).
     pub(crate) resync: bool,
     /// Change sets that carry their own data.
@@ -1030,11 +1123,11 @@ impl Engine {
                     dirty
                         .direct
                         .push(ChangeSet::Connection(Connection::Loading));
-                    let load = tokio::spawn(load::run(client.clone(), self.loaded.clone()));
+                    let load = matty_api::rt::spawn(load::run(client.clone(), self.loaded.clone()));
                     // Events from now on queue behind the load's results.
                     let (socket, mut signals) = WsClient::connect(client.clone());
                     let forward = self.loaded.clone();
-                    tokio::spawn(async move {
+                    matty_api::rt::spawn(async move {
                         while let Some(signal) = signals.recv().await {
                             if forward.send(Loaded::Ws(signal)).is_err() {
                                 break;
@@ -1059,6 +1152,7 @@ impl Engine {
                 }
                 Message::Command(Command::ShowCache) => {
                     dirty.all_teams = true;
+                    dirty.saved = true;
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                     publish_drafts(&tx, dirty)?;
@@ -1077,7 +1171,7 @@ impl Engine {
                             let client = old.client.clone();
                             drop(old);
                             let loaded = self.loaded.clone();
-                            tokio::spawn(async move {
+                            matty_api::rt::spawn(async move {
                                 if let Err(error) = client.logout().await {
                                     tracing::warn!(%error, "the server did not end the session");
                                 }
@@ -1376,7 +1470,7 @@ impl Engine {
                     if let Some(connection) = connection
                         && self.typing.allow(&channel_id, &parent_id, Instant::now())
                     {
-                        tokio::spawn(async move {
+                        matty_api::rt::spawn(async move {
                             if let Err(error) =
                                 connection.user_typing(&channel_id, &parent_id).await
                             {
@@ -1397,6 +1491,9 @@ impl Engine {
                 }
                 Message::Command(Command::UpdateProfile { patch }) => {
                     writes.push(Write::Profile(patch))
+                }
+                Message::Command(Command::SetPicture { picture }) => {
+                    writes.push(Write::Picture(picture))
                 }
                 Message::Command(Command::SetCollapsedThreads { on }) => {
                     if let Some(me) = &self.me {
@@ -1484,6 +1581,17 @@ impl Engine {
                         None => writes.push(Write::Resolve(query)),
                     }
                 }
+                Message::Command(Command::SuggestPeople {
+                    term,
+                    team_id,
+                    channel_id,
+                }) => {
+                    writes.push(Write::Suggest {
+                        term,
+                        team_id,
+                        channel_id,
+                    });
+                }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
@@ -1555,6 +1663,29 @@ impl Engine {
                         writes.push(category_write(self.me.as_deref(), category));
                     }
                 }
+                Message::Command(Command::MoveCategory { category_id, up }) => {
+                    if let Some(category) = sidebar::category(&tx, &category_id)? {
+                        let mut order = sidebar::category_order(&tx, &category.team_id)?;
+                        if step(&mut order, &category_id, up) {
+                            writes.push(Write::CategoryOrder {
+                                team_id: category.team_id,
+                                order,
+                            });
+                        }
+                    }
+                }
+                Message::Command(Command::MoveChannel {
+                    category_id,
+                    channel_id,
+                    up,
+                }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)?
+                        && step(&mut category.channel_ids, &channel_id, up)
+                    {
+                        category.sorting = "manual".into();
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
                 Message::Command(Command::DeleteCategory { category_id }) => {
                     if let Some(category) = sidebar::category(&tx, &category_id)? {
                         writes.push(Write::DeleteCategory {
@@ -1597,9 +1728,11 @@ impl Engine {
                     team_id,
                     terms,
                     time_zone_offset,
+                    page,
                 }) => {
                     let mut query = matty_api::SearchQuery::new(terms);
                     query.time_zone_offset = time_zone_offset;
+                    query.page = page;
                     query.per_page = SEARCH_PAGE;
                     writes.push(Write::Search {
                         team_id,
@@ -1608,6 +1741,38 @@ impl Engine {
                 }
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
+                }
+                Message::Command(Command::SetReminder {
+                    post_id,
+                    target_time,
+                }) => writes.push(Write::Reminder {
+                    post_id,
+                    target_time,
+                }),
+                Message::Command(Command::LoadListing(listing)) => {
+                    writes.push(Write::Listing(listing));
+                }
+                Message::Command(Command::SetSaved { post_id, saved }) => {
+                    if let Some(me) = &self.me {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: SAVED_CATEGORY.into(),
+                            name: post_id,
+                            value: "true".into(),
+                        };
+                        let preferences = vec![preference];
+                        if saved {
+                            sidebar::upsert_preferences(&tx, &preferences)?;
+                            writes.push(Write::Preferences(preferences));
+                        } else {
+                            sidebar::delete_preferences(&tx, &preferences)?;
+                            writes.push(Write::DeletePreferences(preferences));
+                        }
+                        dirty.saved = true;
+                    }
+                }
+                Message::Command(Command::SetPinned { post_id, pinned }) => {
+                    writes.push(Write::Pin { post_id, pinned });
                 }
                 Message::Command(Command::CreateChannel {
                     team_id,
@@ -1692,7 +1857,7 @@ impl Engine {
         dirty.outbox.insert(outgoing.channel_id.clone());
         self.sending
             .insert(channel_id.to_owned(), outgoing.pending_post_id.clone());
-        tokio::spawn(outbox::send(
+        matty_api::rt::spawn(outbox::send(
             session.client.clone(),
             outgoing,
             self.loaded.clone(),
@@ -1726,7 +1891,7 @@ impl Engine {
             });
             return;
         };
-        tokio::spawn(crate::download::download(
+        matty_api::rt::spawn(crate::download::download(
             session.client.clone(),
             file_id,
             folder,
@@ -1789,7 +1954,7 @@ impl Engine {
         history.loading = true;
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let page_of = |query: matty_api::PostsQuery| matty_api::PostsQuery {
                 collapsed_threads: roots_only,
                 ..query
@@ -1882,7 +2047,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let fetched = match size {
                 ImageSize::Thumbnail => client.file_thumbnail(&file_id, None).await,
                 ImageSize::Preview => client.file_preview(&file_id, None).await,
@@ -1926,7 +2091,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let graph = match client.opengraph(&url).await {
                 Ok(graph) if !graph.title.is_empty() || !graph.description.is_empty() => {
                     Some(graph)
@@ -1967,7 +2132,7 @@ impl Engine {
         };
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let posts = client
                 .post_thread(&root_id, &query)
                 .await
@@ -1994,7 +2159,7 @@ impl Engine {
         let client = session.client.clone();
         let user_id = session.user_id.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let query = matty_api::ThreadsQuery {
                 before: last,
                 per_page: THREADS_PAGE,
@@ -2022,7 +2187,7 @@ impl Engine {
         let client = session.client.clone();
         let user_id = session.user_id.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let query = matty_api::ThreadsQuery {
                 since,
                 deleted: since.is_some(),
@@ -2073,7 +2238,7 @@ impl Engine {
             .is_some_and(|capabilities| capabilities.image_proxy);
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let fetched = if proxy {
                 client.proxied_image(&url).await
             } else {
@@ -2133,7 +2298,7 @@ impl Engine {
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let image = match client.avatar(&user_id, None).await {
                 Ok(matty_api::Fetched::Fresh {
                     bytes,
@@ -2167,7 +2332,7 @@ impl Engine {
         if let Some(old) = self.uploads.remove(&upload_id) {
             old.abort();
         }
-        let task = tokio::spawn(outbox::upload(
+        let task = matty_api::rt::spawn(outbox::upload(
             session.client.clone(),
             upload,
             self.loaded.clone(),
@@ -2182,7 +2347,7 @@ impl Engine {
             dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
             return;
         };
-        tokio::spawn(commands::run(
+        matty_api::rt::spawn(commands::run(
             session.client.clone(),
             session.user_id.clone(),
             write,
@@ -2199,14 +2364,14 @@ impl Engine {
         if session.user_id.is_empty() || !session.fetched.insert(channel_id.to_owned()) {
             return;
         }
-        tokio::spawn(load::open_channel(
+        matty_api::rt::spawn(load::open_channel(
             session.client.clone(),
             session.user_id.clone(),
             channel_id.to_owned(),
             session.collapsed_threads,
             self.loaded.clone(),
         ));
-        tokio::spawn(load::channel_stats(
+        matty_api::rt::spawn(load::channel_stats(
             session.client.clone(),
             channel_id.to_owned(),
             self.loaded.clone(),
@@ -2302,7 +2467,7 @@ impl Engine {
         match plan {
             Ok(plan) => {
                 session.resyncing = true;
-                tokio::spawn(load::resync(
+                matty_api::rt::spawn(load::resync(
                     session.client.clone(),
                     plan,
                     self.loaded.clone(),
@@ -2316,7 +2481,7 @@ impl Engine {
     /// the next initial load covers it.
     fn fetch(&self, what: Fetch) {
         if let Some(session) = &self.session {
-            tokio::spawn(load::fetch(
+            matty_api::rt::spawn(load::fetch(
                 session.client.clone(),
                 session.user_id.clone(),
                 what,
@@ -2464,6 +2629,7 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
                 dirty.direct.push(ChangeSet::Preferences);
+                dirty.saved = true;
                 dirty
                     .direct
                     .push(ChangeSet::AccountPreferences(account_preferences(
@@ -2725,11 +2891,31 @@ impl Engine {
                     image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
                 });
             }
+            Loaded::Suggested { term, users } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                self.sent_users.extend(users.iter().map(|u| u.id.clone()));
+                let users: Arc<[matty_api::models::User]> = Arc::from(users);
+                if !users.is_empty() {
+                    dirty.direct.push(ChangeSet::Users(users.clone()));
+                }
+                dirty.direct.push(ChangeSet::Suggested { term, users });
+            }
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
-            Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
+            Loaded::Search {
                 terms,
+                page,
+                posts,
+                more,
+            } => dirty.direct.push(ChangeSet::Search {
+                terms,
+                page,
+                posts: Arc::from(posts),
+                more,
+            }),
+            Loaded::Listing { listing, posts } => dirty.direct.push(ChangeSet::Listing {
+                listing,
                 posts: Arc::from(posts),
             }),
             Loaded::People { team_id, users } => {
@@ -2953,8 +3139,8 @@ impl Engine {
                     (Some(outgoing), Some(channel_id)) if transient => {
                         let loaded = self.loaded.clone();
                         let wait = outbox::backoff(outgoing.attempts);
-                        tokio::spawn(async move {
-                            tokio::time::sleep(wait).await;
+                        matty_api::rt::spawn(async move {
+                            matty_api::rt::sleep(wait).await;
                             let _ = loaded.send(Loaded::Drain { channel_id });
                         });
                     }
@@ -3059,6 +3245,11 @@ impl Engine {
     }
 
     fn publish(&mut self, mut dirty: Dirty) {
+        if (dirty.saved || dirty.preferences)
+            && let Ok(saved) = saved_post_ids(self.store.conn())
+        {
+            dirty.direct.push(ChangeSet::Saved(Arc::from(saved)));
+        }
         if dirty.preferences {
             self.preferences_changed(&mut dirty);
         }
@@ -3239,8 +3430,11 @@ impl Engine {
                 ChangeSet::Posts { posts, .. }
                 | ChangeSet::ReplyRoots { roots: posts, .. }
                 | ChangeSet::Thread { posts, .. }
-                | ChangeSet::Search { posts, .. } => {
+                | ChangeSet::Search { posts, .. }
+                | ChangeSet::Listing { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
+                    // Forwards quote another post, named by its author.
+                    ids.extend(posts.iter().flat_map(quoted_authors));
                 }
                 // The Threads view names each root's author and who replied.
                 ChangeSet::ThreadList { threads, roots, .. } => {
@@ -3271,7 +3465,7 @@ impl Engine {
             self.asked_users.extend(missing.iter().cloned());
             let client = session.client.clone();
             let loaded = self.loaded.clone();
-            tokio::spawn(async move {
+            matty_api::rt::spawn(async move {
                 match client.users_by_ids(&missing).await {
                     Ok(users) => {
                         let _ = loaded.send(Loaded::Users(users));
@@ -3298,8 +3492,8 @@ impl Engine {
             return;
         };
         let loaded = self.loaded.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep_until(due.into()).await;
+        matty_api::rt::spawn(async move {
+            matty_api::rt::sleep(due.saturating_duration_since(Instant::now())).await;
             let _ = loaded.send(Loaded::StatusesDue);
         });
     }
@@ -3314,7 +3508,7 @@ impl Engine {
         };
         let client = session.client.clone();
         let loaded = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             match client.statuses(&ids).await {
                 Ok(statuses) => {
                     let _ = loaded.send(Loaded::Statuses(statuses));
@@ -3335,7 +3529,7 @@ impl Engine {
             return;
         }
         let loaded = self.loaded.clone();
-        tokio::spawn(async move {
+        matty_api::rt::spawn(async move {
             let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
             match connection.get_statuses_by_ids(&ids).await {
                 Ok(reply) if reply.is_ok() => {
@@ -3399,7 +3593,7 @@ impl Engine {
         for channel_id in self.open_channels.iter().cloned() {
             let client = session.client.clone();
             let results = self.loaded.clone();
-            tokio::spawn(async move {
+            matty_api::rt::spawn(async move {
                 match client
                     .channel_posts(&channel_id, &matty_api::PostsQuery::latest(HISTORY_PAGE))
                     .await
@@ -3412,6 +3606,30 @@ impl Engine {
             });
         }
     }
+}
+
+/// The authors of the posts a post quotes through permalinks.
+fn quoted_authors(post: &matty_api::models::Post) -> impl Iterator<Item = String> + '_ {
+    post.metadata
+        .embeds
+        .iter()
+        .filter(|embed| embed.kind == matty_api::models::EmbedKind::Permalink)
+        .filter_map(|embed| {
+            let id = embed.data.as_ref()?.get("post")?.get("user_id")?.as_str()?;
+            (!id.is_empty()).then(|| id.to_owned())
+        })
+}
+
+/// The preference category Mattermost keeps saved ("flagged") posts in.
+const SAVED_CATEGORY: &str = "flagged_post";
+
+/// The posts the user saved, as the cache knows them.
+fn saved_post_ids(conn: &Db) -> Result<Vec<String>, StoreError> {
+    Ok(all_preferences(conn)?
+        .into_iter()
+        .filter(|preference| preference.category == SAVED_CATEGORY && preference.value == "true")
+        .map(|preference| preference.name)
+        .collect())
 }
 
 fn all_preferences(conn: &Db) -> Result<Vec<Preference>, StoreError> {
@@ -3648,6 +3866,22 @@ fn snapshot(
 }
 
 /// Saves `category` back to the server as the user's (`me`).
+/// Swaps `id` with its neighbor above (`up`) or below; false when it is
+/// missing or already at that end.
+fn step(ids: &mut [String], id: &str, up: bool) -> bool {
+    let Some(at) = ids.iter().position(|other| other == id) else {
+        return false;
+    };
+    let to = if up { at.checked_sub(1) } else { Some(at + 1) };
+    match to {
+        Some(to) if to < ids.len() => {
+            ids.swap(at, to);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCategory) -> Write {
     category.user_id = me.unwrap_or_default().to_owned();
     Write::UpdateCategory {
