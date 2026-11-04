@@ -1,23 +1,131 @@
 name: CI
 
+# Pull requests run fast Linux checks only. macOS runners are scarce (a few
+# at a time per account), so the full macOS job runs on master, on pull
+# requests that touch macOS code, and on pull requests labelled `macos`.
+# See docs/CI.md.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   push:
     branches: [master]
 
-# A new push to a pull request cancels its older run.
+# A new push to a pull request cancels its older run, and a new merge to
+# master cancels the older master run: the newest master run covers it.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.code.outputs.code }}
+      live: ${{ steps.filter.outputs.live }}
+      macos: ${{ steps.filter.outputs.macos }}
+      bundle: ${{ steps.filter.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: code
+        with:
+          filters: |
+            code:
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!NOTICE'
+          predicate-quantifier: every
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            live:
+              - 'crates/matty-api/**'
+              - 'crates/matty-store/**'
+              - 'crates/matty-sync/**'
+              - 'docker/**'
+              - 'scripts/seed.py'
+              - 'scripts/dev-server'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            macos:
+              - 'crates/matty-notify/**'
+              - 'crates/matty-app/src/logging.rs'
+              - 'crates/matty-app/src/actions.rs'
+              - 'crates/matty-app/src/menu.rs'
+              - 'crates/matty-app/Cargo.toml'
+              - 'crates/matty/**'
+              - 'packaging/**'
+              - 'scripts/dev-bundle'
+              - 'scripts/macos-bundle'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+            bundle:
+              - 'packaging/macos/**'
+              - 'scripts/macos-bundle'
+              - 'scripts/release-bundle'
+
+  # fmt, clippy and the unit tests of the whole workspace on Linux. This is
+  # the check every pull request waits for.
+  linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GPUI's Linux libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: Plain-Rust crates do not depend on GPUI
+        run: scripts/check-no-gpui.sh
+      - name: The app never opens the database itself
+        run: scripts/check-app-no-db.sh
+
+  deny:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
   macos:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'macos') ||
+      needs.changes.outputs.macos == 'true'
     runs-on: macos-14
     timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -26,29 +134,50 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked --features matty/runtime_shaders -- -D warnings
       - run: cargo test --workspace --locked --features matty/runtime_shaders
-      - name: Plain-Rust crates do not depend on GPUI
-        run: scripts/check-no-gpui.sh
-      - name: The app never opens the database itself
-        run: scripts/check-app-no-db.sh
-      - run: cargo build --release --locked -p matty --features runtime_shaders
-      - run: target/release/matty --version
+      - if: github.event_name == 'push'
+        run: cargo build --release --locked -p matty --features runtime_shaders
+      - if: github.event_name == 'push'
+        run: target/release/matty --version
       - name: The development app bundle builds and verifies
+        if: github.event_name == 'push'
         run: MATTY_BIN=target/release/matty scripts/dev-bundle
-      - uses: actions/upload-artifact@v4
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
         with:
           name: matty-macos-arm64
           path: target/release/matty
           if-no-files-found: error
+      - name: Report a macOS break on master
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="macOS CI is failing on master"
+          body="The macOS job failed on ${GITHUB_SHA::7}: $RUN_URL"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
 
   macos-universal:
     # The release bundle (#177): both slices, lipo, Info.plist, ad hoc
     # signature. The release workflow builds the same thing from a tag and
-    # signs it for real when the secrets are there.
+    # signs it for real when the secrets are there. It is slow and macOS
+    # runners are scarce, so pull requests run it only when the bundle
+    # scripts change or with the `macos` label.
     name: macos universal bundle
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'macos') ||
+      needs.changes.outputs.bundle == 'true'
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -86,19 +215,14 @@ jobs:
           path: target/dist/Matty-macos-universal.zip
           if-no-files-found: error
 
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
-
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
-    # Mattermost server (docs/dev-server.md). Docs-only changes skip the
-    # steps but still report, so the job can be required.
+    # Mattermost server (docs/dev-server.md). Pull requests run them only
+    # when those crates change, against the newest and the dev server's
+    # versions; master runs every supported version.
     name: integration (Mattermost ${{ matrix.server }})
+    needs: changes
+    if: needs.changes.outputs.live == 'true' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
@@ -106,53 +230,55 @@ jobs:
       matrix:
         # The current release and the extended support releases still
         # getting patches (PLAN §6.3), plus 10.5, the dev server's default.
-        server: ["12.0", "11.7", "10.11", "10.5"]
+        server: ${{ fromJSON(github.event_name == 'push' && '["12.0","11.7","10.11","10.5"]' || '["12.0","10.5"]') }}
     env:
       MATTY_MM_VERSION: ${{ matrix.server }}
       MATTY_TEST_SERVER: http://localhost:8065
       MATTY_TEST_PASSWORD: Password1!
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            code:
-              - '!**/*.md'
-              - '!docs/**'
-              - '!LICENSE'
-          predicate-quantifier: every
-      - if: steps.changes.outputs.code == 'true'
-        uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
-      - if: steps.changes.outputs.code == 'true'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: integration
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.server == '12.0' }}
       - name: Start the server in the background
-        if: steps.changes.outputs.code == 'true'
         run: docker compose -f docker/compose.yml up -d
       - name: Build the tests while it starts
-        if: steps.changes.outputs.code == 'true'
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync --no-run
       - name: Wait for the server
-        if: steps.changes.outputs.code == 'true'
         run: scripts/dev-server up
       - name: Seed
-        if: steps.changes.outputs.code == 'true'
         run: python3 scripts/seed.py
       - name: Test against the server
-        if: steps.changes.outputs.code == 'true'
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync
       - name: Collect the server logs
-        if: failure() && steps.changes.outputs.code == 'true'
+        if: failure()
         # Also in the job log: artifacts need a browser session to download.
         run: |
           docker compose -f docker/compose.yml logs --no-color > mattermost.log
           tail -n 200 mattermost.log
-      - if: failure() && steps.changes.outputs.code == 'true'
+      - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: mattermost-${{ matrix.server }}-logs
           path: mattermost.log
+
+  # One check to wait on: green when every job that ran passed and the rest
+  # were skipped on purpose.
+  ci:
+    if: always()
+    needs: [changes, linux, deny, macos, macos-universal, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+          done
