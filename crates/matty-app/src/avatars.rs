@@ -1,4 +1,5 @@
-//! Profile pictures for every avatar Matty draws (#153).
+//! Profile pictures for every avatar Matty draws, and the same machinery
+//! for custom emoji images and team icons (#153).
 //!
 //! Views ask [`image`] for a user's picture while they render. The first ask
 //! for a user sends sync one `LoadAvatar`; sync answers from the media cache
@@ -23,18 +24,55 @@ use gpui_kit::{App, Global, Image};
 
 use crate::ui::avatar::Avatar;
 
-/// Sends sync the request for one user's picture: the version the app
-/// knows of, or `None` to let sync use the one it has stored.
+/// Sends sync the request for one picture: the version the app knows of,
+/// or `None` to let sync use the one it has stored.
 pub type Ask = Rc<dyn Fn(&str, Option<i64>)>;
 
-/// The pictures known so far, shared between [`crate::live::Live`], which
-/// learns versions and receives answers, and the views, which read it
-/// through the app global while rendering. Everything runs on the main
-/// thread.
+/// The pictures of one kind known so far, by id and version, shared
+/// between [`crate::live::Live`], which learns versions and receives
+/// answers, and the views, which read it through an app global while
+/// rendering. Everything runs on the main thread.
 #[derive(Clone, Default)]
-pub struct Avatars(Rc<RefCell<Store>>);
+pub struct Pictures(Rc<RefCell<Store>>);
 
-impl Global for Avatars {}
+/// Declares an app global holding one kind of [`Pictures`].
+macro_rules! pictures_global {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Default)]
+        pub struct $name(Pictures);
+
+        impl Global for $name {}
+
+        impl std::ops::Deref for $name {
+            type Target = Pictures;
+
+            fn deref(&self) -> &Pictures {
+                &self.0
+            }
+        }
+
+        impl $name {
+            /// A store that asks sync through `ask`.
+            pub fn new(ask: Ask) -> Self {
+                Self(Pictures::new(ask))
+            }
+        }
+    };
+}
+
+pictures_global!(
+    /// Users' profile pictures, by user id and `last_picture_update`.
+    Avatars
+);
+pictures_global!(
+    /// Custom emoji images, by emoji id and `update_at`.
+    EmojiImages
+);
+pictures_global!(
+    /// Team icons, by team id and `last_team_icon_update`.
+    TeamIcons
+);
 
 #[derive(Default)]
 struct Store {
@@ -69,7 +107,7 @@ impl Entry {
     }
 }
 
-impl Avatars {
+impl Pictures {
     /// A store that asks sync through `ask`.
     pub fn new(ask: Ask) -> Self {
         Self(Rc::new(RefCell::new(Store {
@@ -78,57 +116,58 @@ impl Avatars {
         })))
     }
 
-    /// The user's picture, asking sync for it the first time and again
-    /// when their picture changed. `None` means initials for now.
-    pub fn image(&self, user_id: &str) -> Option<Arc<Image>> {
-        if user_id.is_empty() {
+    /// The picture for `id`, asking sync for it the first time and again
+    /// when its version changed. `None` means the view's stand-in for now
+    /// (initials, the emoji's name).
+    pub fn image(&self, id: &str) -> Option<Arc<Image>> {
+        if id.is_empty() {
             return None;
         }
         let mut store = self.0.borrow_mut();
         let ask = store.ask.clone();
-        let entry = store.entries.entry(user_id.to_owned()).or_default();
+        let entry = store.entries.entry(id.to_owned()).or_default();
         if entry.wants()
             && let Some(ask) = ask
         {
             entry.asked = Some(entry.known);
             entry.failed = false;
-            ask(user_id, entry.known);
+            ask(id, entry.known);
         }
         entry.image.as_ref().map(|(_, image)| image.clone())
     }
 
-    /// Notes a user's `last_picture_update`, from any user record sync
-    /// sends. A change for someone already on screen asks for the new
-    /// picture at once.
-    pub fn learn(&self, user_id: &str, last_picture_update: i64) {
+    /// Notes the version of `id`'s picture, from any record sync sends. A
+    /// change for a picture already on screen asks for the new one at
+    /// once.
+    pub fn learn(&self, id: &str, version: i64) {
         let mut store = self.0.borrow_mut();
         let ask = store.ask.clone();
-        let Some(entry) = store.entries.get_mut(user_id) else {
+        let Some(entry) = store.entries.get_mut(id) else {
             store.entries.insert(
-                user_id.to_owned(),
+                id.to_owned(),
                 Entry {
-                    known: Some(last_picture_update),
+                    known: Some(version),
                     ..Entry::default()
                 },
             );
             return;
         };
-        entry.known = Some(last_picture_update);
+        entry.known = Some(version);
         if entry.asked.is_some()
             && entry.wants()
             && let Some(ask) = ask
         {
             entry.asked = Some(entry.known);
             entry.failed = false;
-            ask(user_id, entry.known);
+            ask(id, entry.known);
         }
     }
 
-    /// Sync's answer for `user_id` at `version`: the picture, or `None`
+    /// Sync's answer for `id` at `version`: the picture, or `None`
     /// when there is none to show. Returns whether what views draw changed.
-    pub fn landed(&self, user_id: &str, version: i64, image: Option<Arc<Image>>) -> bool {
+    pub fn landed(&self, id: &str, version: i64, image: Option<Arc<Image>>) -> bool {
         let mut store = self.0.borrow_mut();
-        let entry = store.entries.entry(user_id.to_owned()).or_default();
+        let entry = store.entries.entry(id.to_owned()).or_default();
         match image {
             // An answer older than the picture up already is stale.
             Some(image)
@@ -160,19 +199,25 @@ impl Avatars {
         let Some(ask) = ask else {
             return;
         };
-        for (user_id, entry) in &mut store.entries {
+        for (id, entry) in &mut store.entries {
             if entry.failed {
                 entry.failed = false;
                 entry.asked = Some(entry.known);
-                ask(user_id, entry.known);
+                ask(id, entry.known);
             }
         }
     }
 
     /// Puts a picture up directly, for the preview fixtures.
-    pub fn insert(&self, user_id: &str, image: Arc<Image>) {
-        self.landed(user_id, 0, Some(image));
+    pub fn insert(&self, id: &str, image: Arc<Image>) {
+        self.landed(id, 0, Some(image));
     }
+}
+
+/// A team's icon from the app's [`TeamIcons`], if it has one up. The rail
+/// tells the store the icon's version first.
+pub fn team_icon(team_id: &str, cx: &App) -> Option<Arc<Image>> {
+    cx.try_global::<TeamIcons>()?.image(team_id)
 }
 
 /// The user's picture from the app's [`Avatars`], if one is up.

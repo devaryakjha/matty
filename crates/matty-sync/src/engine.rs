@@ -17,7 +17,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::change::{
-    ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW, UploadState,
+    ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW, Picture,
+    UploadState,
 };
 use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
@@ -448,17 +449,21 @@ pub enum Command {
         /// The image's URL.
         url: String,
     },
-    /// Loads a user's profile picture (#153): from the media cache, else
-    /// from the server, keeping it for next time. [`ChangeSet::Avatar`]
-    /// always answers, with no image when there is none to show.
+    /// Loads a profile picture, a custom emoji's image or a team's icon
+    /// (#153): from the media cache, else from the server, keeping it for
+    /// next time under its version. [`ChangeSet::Picture`] always answers,
+    /// with no image when there is none to show.
     ///
-    /// [`ChangeSet::Avatar`]: crate::ChangeSet::Avatar
-    LoadAvatar {
-        /// The user.
-        user_id: String,
-        /// Their `last_picture_update` as the app knows it; `None` uses
-        /// the stored user's.
-        last_picture_update: Option<i64>,
+    /// [`ChangeSet::Picture`]: crate::ChangeSet::Picture
+    LoadPicture {
+        /// Which kind of picture.
+        picture: Picture,
+        /// The user, emoji or team.
+        id: String,
+        /// Its version as the app knows it (`last_picture_update`, the
+        /// emoji's `update_at` or `last_team_icon_update`); `None` uses the
+        /// stored one.
+        version: Option<i64>,
     },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
@@ -826,13 +831,15 @@ impl std::fmt::Debug for Command {
             Self::LoadRemoteImage { .. } => {
                 f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
             }
-            Self::LoadAvatar {
-                user_id,
-                last_picture_update,
+            Self::LoadPicture {
+                picture,
+                id,
+                version,
             } => f
-                .debug_struct("LoadAvatar")
-                .field("user_id", user_id)
-                .field("last_picture_update", last_picture_update)
+                .debug_struct("LoadPicture")
+                .field("picture", picture)
+                .field("id", id)
+                .field("version", version)
                 .finish(),
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
@@ -957,6 +964,8 @@ pub(crate) struct Dirty {
     pub(crate) all_teams: bool,
     /// The team rail's badges changed.
     pub(crate) unreads: bool,
+    /// The custom emoji list changed, or a new subscriber needs it.
+    pub(crate) emoji: bool,
     /// Preferences changed.
     pub(crate) preferences: bool,
     /// The saved posts may have changed.
@@ -1117,7 +1126,7 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
-        let mut avatars = Vec::new();
+        let mut pictures = Vec::new();
         let mut threads_to_fetch = Vec::new();
         let mut thread_lists_to_fetch = Vec::new();
         let mut thread_pages_to_fetch = Vec::new();
@@ -1143,6 +1152,7 @@ impl Engine {
                     self.statuses.clear();
                     // Publish the cache before the first round trip ends.
                     dirty.all_teams = true;
+                    dirty.emoji = true;
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                     dirty
@@ -1642,10 +1652,11 @@ impl Engine {
                 Message::Command(Command::LoadRemoteImage { url }) => {
                     remote_images.push(url);
                 }
-                Message::Command(Command::LoadAvatar {
-                    user_id,
-                    last_picture_update,
-                }) => avatars.push((user_id, last_picture_update)),
+                Message::Command(Command::LoadPicture {
+                    picture,
+                    id,
+                    version,
+                }) => pictures.push((picture, id, version)),
                 Message::Command(Command::LoadLinkPreview { url }) => {
                     link_previews.push(url);
                 }
@@ -1864,8 +1875,8 @@ impl Engine {
         for url in remote_images {
             self.remote_image(url, dirty);
         }
-        for (user_id, version) in avatars {
-            self.avatar(user_id, version, dirty);
+        for (picture, id, version) in pictures {
+            self.picture(picture, id, version, dirty);
         }
         for (team_id, since) in thread_lists_to_fetch {
             self.fetch_thread_list(team_id, since);
@@ -2313,23 +2324,30 @@ impl Engine {
         });
     }
 
-    /// Answers a profile picture from the media cache, or fetches it; it
-    /// comes back as [`Loaded::Avatar`]. Without a session there is no
-    /// picture to fetch, which the app hears as an empty answer.
-    fn avatar(&mut self, user_id: String, version: Option<i64>, dirty: &mut Dirty) {
-        let version = version.unwrap_or_else(|| {
-            sidebar::users(self.store.conn(), std::slice::from_ref(&user_id))
-                .ok()
-                .and_then(|users| users.first().map(|user| user.last_picture_update))
-                .unwrap_or(0)
-        });
-        let key = matty_store::media::avatar_key(&user_id, version);
+    /// Answers a picture from the media cache, or fetches it; it comes
+    /// back as [`Loaded::Picture`]. Without a session, or for a version that
+    /// says there is no picture, the app hears an empty answer.
+    fn picture(&mut self, picture: Picture, id: String, version: Option<i64>, dirty: &mut Dirty) {
+        let version = version.unwrap_or_else(|| self.stored_version(picture, &id));
+        let empty = |id: String| ChangeSet::Picture {
+            picture,
+            id,
+            version,
+            image: None,
+        };
+        // A team that never set an icon has none to fetch.
+        if picture == Picture::TeamIcon && version <= 0 {
+            dirty.direct.push(empty(id));
+            return;
+        }
+        let key = picture.key(&id, version);
         if let Some(media) = &self.media {
             match media.get(self.store.conn(), &key) {
                 Ok(Some(cached)) => {
-                    dirty.direct.push(ChangeSet::Avatar {
-                        user_id,
-                        last_picture_update: version,
+                    dirty.direct.push(ChangeSet::Picture {
+                        picture,
+                        id,
+                        version,
                         image: Some((Arc::from(cached.bytes), cached.content_type)),
                     });
                     return;
@@ -2339,11 +2357,7 @@ impl Engine {
             }
         }
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
-            dirty.direct.push(ChangeSet::Avatar {
-                user_id,
-                last_picture_update: version,
-                image: None,
-            });
+            dirty.direct.push(empty(id));
             return;
         };
         if !self.fetching.insert(key) {
@@ -2352,7 +2366,12 @@ impl Engine {
         let client = session.client.clone();
         let results = self.loaded.clone();
         matty_api::rt::spawn(async move {
-            let image = match client.avatar(&user_id, None).await {
+            let fetched = match picture {
+                Picture::Avatar => client.avatar(&id, None).await,
+                Picture::Emoji => client.emoji_image(&id, None).await,
+                Picture::TeamIcon => client.team_icon(&id, None).await,
+            };
+            let image = match fetched {
                 Ok(matty_api::Fetched::Fresh {
                     bytes,
                     content_type,
@@ -2360,16 +2379,35 @@ impl Engine {
                 }) => Some((bytes, content_type.unwrap_or_else(|| "image/png".into()))),
                 Ok(matty_api::Fetched::NotModified) => None,
                 Err(error) => {
-                    tracing::debug!(%error, user_id, "no profile picture");
+                    tracing::debug!(%error, ?picture, id, "no picture");
                     None
                 }
             };
-            let _ = results.send(Loaded::Avatar {
-                user_id,
+            let _ = results.send(Loaded::Picture {
+                picture,
+                id,
                 version,
                 image,
             });
         });
+    }
+
+    /// The version of `id`'s picture the store knows, or 0.
+    fn stored_version(&self, picture: Picture, id: &str) -> i64 {
+        let conn = self.store.conn();
+        match picture {
+            Picture::Avatar => sidebar::users(conn, &[id.to_owned()])
+                .ok()
+                .and_then(|users| users.first().map(|user| user.last_picture_update)),
+            Picture::Emoji => sidebar::custom_emoji(conn).ok().and_then(|emoji| {
+                emoji
+                    .into_iter()
+                    .find(|one| one.id == id)
+                    .map(|one| one.update_at)
+            }),
+            Picture::TeamIcon => None,
+        }
+        .unwrap_or(0)
     }
 
     /// Starts sending a file; it reports back as [`Loaded::Upload`].
@@ -2734,7 +2772,10 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Connection(Connection::Failed { error }));
             }
-            Loaded::Emoji(emoji) => sidebar::upsert_emoji(self.store.conn(), &emoji)?,
+            Loaded::Emoji(emoji) => {
+                sidebar::upsert_emoji(self.store.conn(), &emoji)?;
+                dirty.emoji = true;
+            }
             Loaded::Users(users) => {
                 sidebar::upsert_users(self.store.conn(), &users)?;
                 self.sent_users.extend(users.iter().map(|u| u.id.clone()));
@@ -2925,22 +2966,24 @@ impl Engine {
                     });
                 }
             }
-            Loaded::Avatar {
-                user_id,
+            Loaded::Picture {
+                picture,
+                id,
                 version,
                 image,
             } => {
-                let key = matty_store::media::avatar_key(&user_id, version);
+                let key = picture.key(&id, version);
                 self.fetching.remove(&key);
                 if let Some((bytes, content_type)) = &image
                     && let Some(media) = &self.media
                     && let Err(error) = media.put(self.store.conn(), &key, bytes, content_type)
                 {
-                    tracing::warn!(%error, "could not keep a profile picture");
+                    tracing::warn!(%error, ?picture, "could not keep a picture");
                 }
-                dirty.direct.push(ChangeSet::Avatar {
-                    user_id,
-                    last_picture_update: version,
+                dirty.direct.push(ChangeSet::Picture {
+                    picture,
+                    id,
+                    version,
                     image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
                 });
             }
@@ -3336,6 +3379,12 @@ impl Engine {
                         sections: Arc::from(sections),
                     }),
                     Err(error) => tracing::error!(%error, "could not read a sidebar snapshot"),
+                }
+            }
+            if dirty.emoji {
+                match sidebar::custom_emoji(conn) {
+                    Ok(emoji) => changes.push(ChangeSet::CustomEmoji(Arc::from(emoji))),
+                    Err(error) => tracing::error!(%error, "could not read custom emoji"),
                 }
             }
             if dirty.unreads {
