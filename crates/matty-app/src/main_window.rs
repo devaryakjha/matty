@@ -123,6 +123,8 @@ pub struct MainWindow {
     keywords: Entity<InputState>,
     /// The user's `notify_props` as the server last sent them.
     notify_props: Option<std::collections::HashMap<String, String>>,
+    /// Where notifications go on this platform (#141).
+    notifier: Box<dyn matty_notify::Notifier>,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -682,6 +684,7 @@ impl MainWindow {
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
             keywords,
+            notifier: matty_notify::backend::platform(),
             notify_props: preview_props,
             browse,
             new_message,
@@ -1155,6 +1158,9 @@ impl MainWindow {
             });
             self.notify_props = Some(props);
         }
+        if let Some(arrival) = update.arrived {
+            self.notify(&arrival, window, cx);
+        }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {
                 view.set_server_presence(presence, dnd_end, cx)
@@ -1382,6 +1388,7 @@ impl MainWindow {
         self.threads_open = false;
         self.drafts_open = false;
         let previous = self.selected_channel.replace(id.clone());
+        self.notifier.withdraw(&id);
         if let Some(live) = &self.live
             && previous.as_ref() != Some(&id)
         {
@@ -2431,6 +2438,31 @@ impl MainWindow {
                 channel_id: id.to_string(),
                 prev_channel_id: String::new(),
             });
+        }
+    }
+
+    /// Shows a notification for a post that just arrived, unless the
+    /// policy says the user already sees it or does not want it.
+    fn notify(&self, arrival: &crate::live::Arrival, window: &Window, cx: &Context<Self>) {
+        let visible_thread = self
+            .right_pane_open
+            .then(|| match self.right_pane.read(cx).content() {
+                Some(RightPaneContent::Thread(thread)) => Some(thread.root.id.to_string()),
+                _ => None,
+            })
+            .flatten();
+        let app = matty_notify::AppState {
+            dnd: self.account.read(cx).account().presence == crate::sidebar::Presence::Dnd,
+            focused: window.is_window_active(),
+            visible_channel: (!self.threads_open && !self.drafts_open)
+                .then(|| self.selected_channel.as_ref().map(|id| id.to_string()))
+                .flatten(),
+            visible_thread,
+            show_preview: true,
+            ..matty_notify::AppState::default()
+        };
+        if let Some(notification) = arrival.decide(app) {
+            self.notifier.show(&notification);
         }
     }
 
