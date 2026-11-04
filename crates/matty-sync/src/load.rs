@@ -57,6 +57,8 @@ pub(crate) enum Loaded {
     Emoji(Vec<Emoji>),
     /// Statuses for the people in direct messages.
     Statuses(Vec<Status>),
+    /// The status batch window closed (#135).
+    StatusesDue,
     /// Every team has been tried.
     Done,
     /// An opened channel's posts around the first unread.

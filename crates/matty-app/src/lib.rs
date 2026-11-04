@@ -11,8 +11,10 @@ pub mod actions;
 pub mod attachments;
 pub mod avatars;
 pub mod badge;
+pub mod categories;
 pub mod channel;
 pub mod channel_settings;
+pub mod contrast;
 pub mod deeplink;
 pub mod directory;
 pub mod dnd;
@@ -27,8 +29,10 @@ pub mod logging;
 pub mod login;
 mod main_window;
 pub mod menu;
+pub mod perf;
 pub mod preview;
 pub mod profile;
+pub mod profile_editor;
 pub mod rail;
 pub mod right_pane;
 pub mod secrets;
@@ -162,11 +166,22 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 fn open_main_window(cx: &mut App) {
-    cx.open_window(window_options(cx), |window, cx| {
-        apply_theme(window, cx);
-        cx.new(|cx| main_window::MainWindow::new(window, cx))
-    })
-    .expect("open the main window");
+    let options = window_options(cx);
+    let opened = if perf::enabled() {
+        cx.open_window(options, |window, cx| {
+            apply_theme(window, cx);
+            let main = cx.new(|cx| main_window::MainWindow::new(window, cx));
+            cx.new(|cx| perf::PerfRoot::new(main, cx))
+        })
+        .map(|_| ())
+    } else {
+        cx.open_window(options, |window, cx| {
+            apply_theme(window, cx);
+            cx.new(|cx| main_window::MainWindow::new(window, cx))
+        })
+        .map(|_| ())
+    };
+    opened.expect("open the main window");
 }
 
 /// Applies the theme choice from settings, following the OS when it is

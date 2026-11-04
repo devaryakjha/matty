@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Builds "target/dist/Matty.app": a universal (Apple silicon and Intel)
+# release bundle with the release id and URL schemes (PLAN §10, #177).
+#
+#   scripts/release-bundle                    build both slices, lipo, bundle
+#   MATTY_VERSION=0.1.0-beta.1 scripts/release-bundle
+#                                             stamp a version (default: Cargo.toml)
+#   MATTY_BUILD_NUMBER=42 ...                 CFBundleVersion (default: the version)
+#   MATTY_FEATURES="" ...                     cargo features (default: runtime_shaders)
+#   MATTY_BIN_AARCH64=a MATTY_BIN_X86_64=b ...  lipo binaries built elsewhere
+#
+# Needs macOS with both Rust targets installed:
+#   rustup target add aarch64-apple-darwin x86_64-apple-darwin
+# Signs ad hoc unless MATTY_SIGN_IDENTITY is set (see scripts/macos-bundle).
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+# Matches LSMinimumSystemVersion in packaging/macos/Info.plist.in.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+features="${MATTY_FEATURES-runtime_shaders}"
+
+# Prints the binary for one target, building it unless one was passed in.
+slice() {
+	local target="$1" prebuilt="$2"
+	if [[ -z "$prebuilt" ]]; then
+		local args=(build --release --locked -p matty --target "$target")
+		[[ -z "$features" ]] || args+=(--features "$features")
+		cargo "${args[@]}" >&2
+		prebuilt="target/$target/release/matty"
+	fi
+	[[ -x "$prebuilt" ]] || { echo "no binary at $prebuilt" >&2; exit 1; }
+	echo "$prebuilt"
+}
+arm64="$(slice aarch64-apple-darwin "${MATTY_BIN_AARCH64:-}")"
+x86_64="$(slice x86_64-apple-darwin "${MATTY_BIN_X86_64:-}")"
+
+dist="target/dist"
+mkdir -p "$dist"
+universal="$dist/matty"
+lipo -create -output "$universal" \
+	"$arm64" "$x86_64"
+lipo "$universal" -verify_arch arm64 x86_64
+lipo -info "$universal" >&2
+
+args=(--name Matty --id dev.arya.matty
+	--scheme mattermost --scheme matty
+	--bin "$universal" --out "$dist")
+[[ -z "${MATTY_VERSION:-}" ]] || args+=(--version "$MATTY_VERSION")
+[[ -z "${MATTY_BUILD_NUMBER:-}" ]] || args+=(--build "$MATTY_BUILD_NUMBER")
+exec scripts/macos-bundle "${args[@]}"
