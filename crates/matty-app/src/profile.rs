@@ -79,7 +79,7 @@ pub fn profile_card(
             .gap(theme.space(2.))
             .child(
                 div()
-                    .w(scaled(&theme, 14.))
+                    .w(scaled(&theme, metrics::ICON_SMALL))
                     .flex()
                     .justify_center()
                     .child(glyph),
@@ -172,7 +172,7 @@ pub fn profile_card(
             .children(profile.local_time.clone().map(|time| {
                 detail(
                     lucide(LucideIcon::Clock)
-                        .size(scaled(&theme, 14.))
+                        .size(scaled(&theme, metrics::ICON_SMALL))
                         .text_color(theme.colors.muted_foreground)
                         .into_any_element(),
                     format!("{time} local time"),

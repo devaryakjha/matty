@@ -194,6 +194,21 @@ pub mod metrics {
     pub const ICON: f32 = 16.;
     /// Icons in empty states.
     pub const ICON_LARGE: f32 = 20.;
+    /// Icons inside chips, badges, menu rows and the channel header's
+    /// secondary controls (DESIGN.md §5).
+    pub const ICON_SMALL: f32 = 14.;
+    /// Chevrons and kind glyphs beside text.
+    pub const ICON_TINY: f32 = 12.;
+    /// The square an icon or initial sits in on a sidebar row.
+    pub const ROW_SLOT: f32 = 20.;
+    /// The "… is typing" line under the transcript.
+    pub const TYPING_LINE: f32 = 20.;
+    /// The widest an empty state's text runs.
+    pub const EMPTY_MAX_WIDTH: f32 = 420.;
+    /// The Threads view's list column.
+    pub const THREADS_LIST_WIDTH: f32 = 360.;
+    /// The widest a Drafts card runs.
+    pub const DRAFTS_MAX_WIDTH: f32 = 760.;
     /// Post avatars in the channel view and threads.
     pub const AVATAR: f32 = 32.;
 }

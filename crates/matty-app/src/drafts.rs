@@ -5,7 +5,7 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -153,7 +153,7 @@ impl DraftsView {
                                 } else {
                                     LucideIcon::Hash
                                 })
-                                .size(scaled(&theme, 14.))
+                                .size(scaled(&theme, metrics::ICON_SMALL))
                                 .text_color(theme.colors.muted_foreground),
                             )
                             .child(
@@ -264,7 +264,7 @@ impl Render for DraftsView {
                 .flex()
                 .flex_col()
                 .gap(theme.space(3.))
-                .max_w(px(760.))
+                .max_w(scaled(&theme, metrics::DRAFTS_MAX_WIDTH))
                 .children(
                     drafts
                         .iter()

@@ -180,7 +180,7 @@ impl Switcher {
     pub fn element(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let popup = command_dialog_popup("switcher.popup", &self.command, cx)
-            .max_w(style::scaled(&theme, 560.))
+            .max_w(style::scaled(&theme, style::metrics::SWITCHER_MAX_WIDTH))
             .type_style(style::UI, &theme);
         dialog("switcher", &self.handle, popup, window, cx)
     }
