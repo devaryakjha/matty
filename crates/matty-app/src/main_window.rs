@@ -403,6 +403,17 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
+                ChannelEvent::MarkUnread(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::MarkUnread {
+                            post_id: post.to_string(),
+                        });
+                    }
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+                    }
+                }
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
@@ -484,9 +495,11 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.set_muted(muted, cx));
                 }
-                // The post itself scrolls into view once sync can page to it.
-                RightPaneEvent::Jump { channel, .. } => {
-                    this.open_channel(channel.clone(), window, cx)
+                RightPaneEvent::Jump { channel, post } => {
+                    this.open_channel(channel.clone(), window, cx);
+                    let post = post.clone();
+                    this.channel
+                        .update(cx, |channel, cx| channel.jump_to(post, cx));
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
                 RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
