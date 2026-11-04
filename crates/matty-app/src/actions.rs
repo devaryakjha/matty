@@ -395,6 +395,24 @@ pub fn bind(cx: &mut App) {
             .into_iter()
             .map(|row| (row.bind)(row.keys(platform), row.context)),
     );
+    // On Linux and Windows a text field takes Alt+Shift+Up/Down to add a
+    // cursor, which would swallow the unread jump from the composer. The
+    // jump wins there, as in Mattermost; bound after the field's own keys,
+    // these take precedence at the same depth.
+    if platform != Platform::MacOs {
+        cx.bind_keys([
+            KeyBinding::new(
+                "alt-shift-up",
+                PreviousUnreadChannel,
+                Some("Composer > Input"),
+            ),
+            KeyBinding::new(
+                "alt-shift-down",
+                NextUnreadChannel,
+                Some("Composer > Input"),
+            ),
+        ]);
+    }
 }
 
 #[cfg(test)]

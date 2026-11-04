@@ -1214,7 +1214,9 @@ impl ChannelView {
                         })
                         .unwrap_or(false);
                 }
-                if keystroke.key != "up" {
+                // Up and Shift+Up only: Alt+Shift+Up is the unread jump.
+                let mods = &keystroke.modifiers;
+                if keystroke.key != "up" || mods.alt || mods.control || mods.platform {
                     return false;
                 }
                 keys.update(cx, |this, cx| {

@@ -1055,11 +1055,19 @@ impl SidebarView {
                 Self::row_icon(row, &theme, &palette, cx).into_any_element()
             })
             .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
-            .on_activate(cx.listener(move |this, _, _, cx| {
-                this.model.selected = Some(id.clone());
-                cx.emit(SidebarEvent::Select(id.clone()));
-                cx.notify();
-            }));
+            .on_activate(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.model.selected = Some(id.clone());
+                    cx.emit(SidebarEvent::Select(id.clone()));
+                    // A click lands in the composer, as in Mattermost, so the
+                    // row keeps focus (and Alt+Shift+Up/Down moves it) only
+                    // when the list was reached from the keyboard.
+                    if !event.is_keyboard() {
+                        window.dispatch_action(Box::new(crate::actions::FocusComposer), cx);
+                    }
+                    cx.notify();
+                }),
+            );
         if !strong && !selected {
             item = item.text_color(theme.colors.muted_foreground);
         }
