@@ -35,7 +35,7 @@ use crate::ui::{
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     menu::{Menu, MenuItem, MenuState},
-    message::{Message, MessageHighlight, MessageStatus},
+    message::{Message, MessageHighlight, MessageStatus, message_action, message_actions},
     message_list::{MessageList, MessageListState},
     popover::popover,
     spinner::Spinner,
@@ -306,6 +306,11 @@ pub enum RightPaneEvent {
     LoadOlderReplies(SharedString),
     /// "Open in new window" on the thread under `root` (#222).
     PopOut(SharedString),
+    /// A button pressed or a menu option picked on an attachment in the
+    /// thread (#211); sync runs it as it does from the channel.
+    PostAction(crate::interactive::ActionChoice),
+    /// The user dismissed an ephemeral reply; the pane already dropped it.
+    DismissEphemeral(SharedString),
 }
 
 /// Rows of the thread transcript before the replies: the root, the
@@ -386,6 +391,8 @@ pub struct RightPaneView {
     /// The pane is a pop-out window's whole content (#222): its header
     /// offers neither Expand nor another window.
     popped_out: bool,
+    /// The menus on the thread's attachments (#211).
+    action_menus: std::rc::Rc<std::cell::RefCell<crate::interactive::Menus>>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -580,6 +587,7 @@ impl RightPaneView {
             discarding: None,
             permalink: None,
             popped_out: false,
+            action_menus: Default::default(),
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -966,6 +974,26 @@ impl RightPaneView {
         } else {
             RightPaneEvent::Discard(id)
         });
+    }
+
+    /// Runs a button or menu choice on an attachment (#211), unless
+    /// offline.
+    fn run_action(&mut self, choice: crate::interactive::ActionChoice, cx: &mut Context<Self>) {
+        if !self.refused_offline("run action", cx) {
+            cx.emit(RightPaneEvent::PostAction(choice));
+        }
+    }
+
+    /// Drops an ephemeral reply the user dismissed and tells the window,
+    /// which forgets it.
+    fn dismiss(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let Some(thread) = self.thread_mut() else {
+            return;
+        };
+        thread.replies.retain(|post| post.id != id);
+        let content = self.content.clone();
+        self.set_content(content, cx);
+        cx.emit(RightPaneEvent::DismissEphemeral(id));
     }
 
     /// The banner went to or from "You're offline" (#163).
@@ -1796,6 +1824,17 @@ impl RightPaneView {
                 },
             ),
         ]);
+        if post.status == PostStatus::Ephemeral {
+            let (view, id) = (view.clone(), post.id.clone());
+            items.push(
+                MenuItem::new("thread.context.dismiss", "Dismiss message").on_click(
+                    move |_, _, cx| {
+                        let id = id.clone();
+                        view.update(cx, |this, cx| this.dismiss(id, cx)).ok();
+                    },
+                ),
+            );
+        }
         if post.status == PostStatus::Sent {
             let emit = |name: &str, label: SharedString, event: RightPaneEvent| {
                 let view = view.clone();
@@ -2099,7 +2138,11 @@ impl RightPaneView {
         post: &Post,
         root: bool,
         highlight: MessageHighlight,
-        (away, editor): (bool, Option<&ReplyEditor>),
+        (away, editor, menus): (
+            bool,
+            Option<&ReplyEditor>,
+            Option<&crate::interactive::Menus>,
+        ),
         presence: Option<Presence>,
         cx: &mut App,
     ) -> impl IntoElement + use<> {
@@ -2146,6 +2189,23 @@ impl RightPaneView {
                 crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
+            .when(post.status == PostStatus::Ephemeral, |row| {
+                let (view, id) = (view.clone(), id.clone());
+                row.actions(
+                    message_actions(cx).child(
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("thread.{id}.dismiss").into()),
+                            LucideIcon::X,
+                            "Dismiss message",
+                            cx,
+                        )
+                        .on_click(move |_, _, cx| {
+                            let id = id.clone();
+                            view.update(cx, |this, cx| this.dismiss(id, cx)).ok();
+                        }),
+                    ),
+                )
+            })
             .px(theme.space(4.))
             .child(match editor {
                 Some((composer, cap)) => {
@@ -2181,6 +2241,11 @@ impl RightPaneView {
                     .into_any_element()
                 }
             })
+            .children(
+                menus
+                    .filter(|_| !post.embeds.is_empty())
+                    .map(|menus| Self::embeds(view, post, menus, cx).into_any_element()),
+            )
             .children((!post.files.is_empty()).then(|| {
                 let (image_view, image_post) = (view.clone(), post.clone());
                 let file_view = view.clone();
@@ -2225,6 +2290,66 @@ impl RightPaneView {
                 },
             )
             .child(row)
+    }
+
+    /// The cards under a thread post (#187), with an attachment's buttons
+    /// and menus (#211), as the channel draws them.
+    fn embeds(
+        view: &gpui_kit::WeakEntity<Self>,
+        post: &Post,
+        menus: &crate::interactive::Menus,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        // The real id: a choice names its post by it.
+        let id = post.id.clone();
+        let collapsed = SettingsStore::global(cx)
+            .read(cx)
+            .get()
+            .previews_collapsed(&id);
+        let toggle_id = id.clone();
+        let on_toggle: crate::embeds::ToggleHandler = std::rc::Rc::new(move |collapsed, _, cx| {
+            // Remembered with the channel's choice for the same post; the
+            // pane remeasures on the settings change.
+            let store = SettingsStore::global(cx);
+            if store.read(cx).get().previews_collapsed(&toggle_id) != collapsed {
+                store.update(cx, |store, cx| {
+                    store.update(cx, |settings| {
+                        settings.choose_previews(&toggle_id, collapsed)
+                    })
+                });
+            }
+        });
+        let link_view = view.clone();
+        let on_image: crate::embeds::ImageHandler = std::rc::Rc::new(move |url, _, cx| {
+            let event = RightPaneEvent::OpenLink(url);
+            link_view.update(cx, |_, cx| cx.emit(event)).ok();
+        });
+        let jump_view = view.clone();
+        let on_jump: crate::embeds::OnJump = std::rc::Rc::new(move |channel, post, _, cx| {
+            let event = RightPaneEvent::Jump {
+                channel: channel.clone(),
+                post: post.clone(),
+            };
+            jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+        });
+        let action_view = view.clone();
+        let on_action: crate::interactive::ActionHandler =
+            std::rc::Rc::new(move |choice, _, cx| {
+                action_view
+                    .update(cx, |this, cx| this.run_action(choice, cx))
+                    .ok();
+            });
+        crate::embeds::post_embeds(
+            &id,
+            &post.embeds,
+            collapsed,
+            on_toggle,
+            on_image,
+            on_jump,
+            (menus, on_action),
+            cx,
+        )
+        .into_any_element()
     }
 
     fn replies_divider(
@@ -2294,6 +2419,7 @@ impl RightPaneView {
                 (editing.composer.clone(), self.composer_cap),
             )
         });
+        let menus = self.action_menus.clone();
         let transcript =
             MessageList::new(
                 "right-pane.thread",
@@ -2304,7 +2430,7 @@ impl RightPaneView {
                         &model.root,
                         true,
                         highlight(0, &model.root),
-                        (away, None),
+                        (away, None, Some(&menus.borrow())),
                         Self::presence_in(&view, &model.root.author, cx),
                         cx,
                     )
@@ -2327,7 +2453,7 @@ impl RightPaneView {
                                 reply,
                                 false,
                                 highlight(index, reply),
-                                (away, editor),
+                                (away, editor, Some(&menus.borrow())),
                                 Self::presence_in(&view, &reply.author, cx),
                                 cx,
                             )
@@ -2560,7 +2686,8 @@ impl RightPaneView {
                         },
                         true,
                         MessageHighlight::None,
-                        (false, None),
+                        // Listings show no cards, as before.
+                        (false, None, None),
                         self.presence_of(&item.post.author),
                         cx,
                     ))
@@ -3196,6 +3323,18 @@ impl Render for RightPaneView {
             .bg(theme.colors.background)
             .border_l(style::hairline())
             .border_color(theme.colors.border);
+        if let Some(RightPaneContent::Thread(thread)) = &self.content {
+            let posts: Vec<Post> = std::iter::once(&thread.root)
+                .chain(&thread.replies)
+                .filter(|post| !post.embeds.is_empty())
+                .cloned()
+                .collect();
+            self.action_menus
+                .borrow_mut()
+                .sync(&posts, window, cx, |this, choice, cx| {
+                    this.run_action(choice, cx)
+                });
+        }
         match self.content.clone() {
             Some(RightPaneContent::Thread(thread)) => root
                 .child(self.header(
@@ -4036,5 +4175,93 @@ mod tests {
             events.borrow().as_slice(),
             [RightPaneEvent::Reply { unfurl: false, .. }]
         ));
+    }
+
+    /// A reply whose attachment has an Approve button and a region menu.
+    fn interactive_reply() -> Post {
+        let api: matty_api::models::Post = serde_json::from_value(serde_json::json!({
+            "id": "r1",
+            "props": {"attachments": [{
+                "text": "Deploy?",
+                "actions": [
+                    {"id": "go", "type": "button", "name": "Approve", "cookie": "k1"},
+                    {"id": "where", "type": "select", "name": "Region",
+                     "options": [{"text": "EU", "value": "eu"}]}
+                ]
+            }]}
+        }))
+        .unwrap();
+        Post {
+            embeds: crate::embeds::from_post(&api),
+            ..post("r1")
+        }
+    }
+
+    /// #211: a thread reply draws its attachment's buttons, and a press
+    /// asks the window to run the action, as in the channel; offline it is
+    /// refused first.
+    #[gpui_kit::test]
+    fn a_button_in_the_thread_runs_its_action(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                let mut thread = thread(0..0, false, false);
+                thread.replies = vec![interactive_reply()];
+                pane.set_thread(thread, cx);
+            })
+        });
+        draw(&mut cx);
+        draw(&mut cx);
+        let press = |cx: &mut gpui_kit::VisualTestContext| {
+            let bounds = cx
+                .debug_bounds("post-action-go")
+                .expect("the thread draws the button");
+            cx.simulate_click(bounds.center(), Default::default());
+        };
+        press(&mut cx);
+        assert_eq!(
+            *events.borrow(),
+            [RightPaneEvent::PostAction(
+                crate::interactive::ActionChoice {
+                    post_id: "r1".into(),
+                    action_id: "go".into(),
+                    selected: None,
+                    cookie: "k1".into(),
+                }
+            )]
+        );
+        events.borrow_mut().clear();
+        cx.update(|_, cx| view.update(cx, |pane, cx| pane.set_offline(true, cx)));
+        draw(&mut cx);
+        press(&mut cx);
+        assert_eq!(*events.borrow(), [RightPaneEvent::Offline("run action")]);
+    }
+
+    /// #211: dismissing an ephemeral reply drops it here and tells the
+    /// window.
+    #[gpui_kit::test]
+    fn an_ephemeral_reply_can_be_dismissed(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                let mut thread = thread(0..1, false, false);
+                thread.replies.push(Post {
+                    status: PostStatus::Ephemeral,
+                    ..post("e1")
+                });
+                pane.set_thread(thread, cx);
+                pane.dismiss("e1".into(), cx);
+            })
+        });
+        draw(&mut cx);
+        let replies = view.read_with(&cx, |pane, _| match pane.content() {
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len(),
+            _ => 0,
+        });
+        assert_eq!(replies, 1);
+        assert_eq!(
+            *events.borrow(),
+            [RightPaneEvent::DismissEphemeral("e1".into())]
+        );
     }
 }

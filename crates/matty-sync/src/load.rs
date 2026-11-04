@@ -123,6 +123,12 @@ pub(crate) enum Loaded {
     Suggested { term: String, users: Vec<User> },
     /// The server took an interactive message's button press or choice.
     PostActionDone { post_id: String, action_id: String },
+    /// The server passed on a dialog's submission or cancellation.
+    DialogSubmitted {
+        callback_id: String,
+        cancelled: bool,
+        answer: matty_api::models::SubmitDialogResponse,
+    },
     /// What a link names, or `None` when it is gone or hidden.
     Resolved {
         query: crate::LinkQuery,

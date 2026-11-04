@@ -295,7 +295,9 @@ pub struct UserAutocomplete {
     pub out_of_channel: Vec<User>,
 }
 
+mod dialogs;
 mod posts;
+pub use dialogs::*;
 pub use posts::*;
 
 /// Decodes `null` as the type's default, for lists and maps the server sends

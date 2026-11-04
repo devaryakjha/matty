@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use reqwest::Method;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -9,7 +10,7 @@ use crate::{
     ApiError, Client,
     models::{
         ChannelUnreadAt, ChannelViewed, Draft, Post, PostActionResponse, PostList, Reaction,
-        UserThread, UserThreads,
+        SubmitDialogRequest, SubmitDialogResponse, UserThread, UserThreads,
     },
 };
 
@@ -425,6 +426,27 @@ impl Client {
             &Value::Object(body),
         )
         .await
+    }
+
+    /// `POST actions/dialogs/submit`: sends an interactive dialog's values,
+    /// or with `cancelled` set, that the user closed it. The integration's
+    /// complaints come back in the answer; a server that answers with no
+    /// body took it.
+    pub async fn submit_dialog(
+        &self,
+        submission: &SubmitDialogRequest,
+    ) -> Result<SubmitDialogResponse, ApiError> {
+        let body = serde_json::to_vec(submission).map_err(|e| ApiError::Decode(e.to_string()))?;
+        let response = self
+            .send(Method::POST, "actions/dialogs/submit", &[], Some(body))
+            .await?;
+        let bytes = response.bytes().await.map_err(ApiError::from_transport)?;
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(SubmitDialogResponse::default());
+        }
+        serde_json::from_slice::<Option<SubmitDialogResponse>>(&bytes)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| ApiError::Decode(e.to_string()))
     }
 
     /// `PUT users/{user_id}/teams/{team_id}/threads/{thread_id}/following`.
