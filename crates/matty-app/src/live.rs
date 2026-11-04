@@ -73,6 +73,10 @@ pub struct Live {
     /// Image files' thumbnails by file id, and those asked for.
     thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
     asked_thumbnails: std::collections::HashSet<String>,
+    /// Images from outside the server in link previews and attachments, by
+    /// URL, and those asked for (#159).
+    remote_images: HashMap<String, Arc<gpui_kit::Image>>,
+    asked_remote_images: std::collections::HashSet<String>,
     /// Full-size images for the lightbox, by file id, once fetched.
     full_images: HashMap<String, Arc<gpui_kit::Image>>,
 }
@@ -409,6 +413,8 @@ impl Live {
                 uploads: HashMap::new(),
                 thumbnails: HashMap::new(),
                 asked_thumbnails: std::collections::HashSet::new(),
+                remote_images: HashMap::new(),
+                asked_remote_images: std::collections::HashSet::new(),
                 full_images: HashMap::new(),
             },
             changes,
@@ -478,6 +484,7 @@ impl Live {
             return None;
         }
         self.ask_thumbnails(&model.posts);
+        self.ask_remote_images(&model.posts);
         let update = self
             .shown
             .as_deref()
@@ -535,6 +542,14 @@ impl Live {
                 file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
             }
         }
+        for image in model
+            .posts
+            .iter_mut()
+            .flat_map(|post| &mut post.embeds)
+            .filter_map(crate::embeds::Embed::image_mut)
+        {
+            image.loaded = self.remote_images.get(image.url.as_ref()).cloned();
+        }
         Some(model)
     }
 
@@ -571,6 +586,21 @@ impl Live {
             }
         }
         here
+    }
+
+    /// Asks sync for the cards' outside images not yet asked for.
+    fn ask_remote_images(&mut self, posts: &[Post]) {
+        for image in posts
+            .iter()
+            .flat_map(|post| &post.embeds)
+            .filter_map(crate::embeds::Embed::image)
+        {
+            if self.asked_remote_images.insert(image.url.to_string()) {
+                self.sync.send(Command::LoadRemoteImage {
+                    url: image.url.to_string(),
+                });
+            }
+        }
     }
 
     /// Asks sync for the thumbnails of image files not yet asked for.
@@ -838,6 +868,27 @@ impl Live {
                         .iter()
                         .flat_map(|post| &post.files)
                         .any(|file| file.id.as_ref() == file_id)
+                });
+                if shown {
+                    update.channel = self.channel_update();
+                }
+            }
+            ChangeSet::RemoteImage {
+                url,
+                bytes,
+                content_type,
+            } => {
+                let Some(format) = image_format(bytes, content_type) else {
+                    return update;
+                };
+                let image = Arc::new(gpui_kit::Image::from_bytes(format, bytes.to_vec()));
+                self.remote_images.insert(url.clone(), image);
+                let shown = self.shown.as_ref().is_some_and(|posts| {
+                    posts
+                        .iter()
+                        .flat_map(|post| &post.embeds)
+                        .filter_map(crate::embeds::Embed::image)
+                        .any(|image| image.url.as_ref() == url)
                 });
                 if shown {
                     update.channel = self.channel_update();
@@ -2000,6 +2051,53 @@ mod tests {
             panic!("expected a patch, got {:?}", update.channel);
         };
         assert!(updated[0].files[0].preview.is_some());
+    }
+
+    #[test]
+    fn a_link_previews_image_is_fetched_and_shown() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let mut post = matty_api::models::Post {
+            id: "p1".into(),
+            user_id: "ada".into(),
+            message: "https://example.com/post".into(),
+            ..Default::default()
+        };
+        post.metadata.embeds.push(matty_api::models::PostEmbed {
+            kind: matty_api::models::EmbedKind::OpenGraph,
+            url: "https://example.com/post".into(),
+            data: Some(serde_json::json!({
+                "title": "A post",
+                "images": [{ "secure_url": "https://example.com/og.png" }],
+            })),
+        });
+        post.metadata.images.insert(
+            "https://example.com/og.png".into(),
+            matty_api::models::PostImage {
+                width: 1200,
+                height: 630,
+                ..Default::default()
+            },
+        );
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        assert!(
+            live.asked_remote_images
+                .contains("https://example.com/og.png")
+        );
+        let update = live.apply(&ChangeSet::RemoteImage {
+            url: "https://example.com/og.png".into(),
+            bytes: Arc::from(&b"\x89PNG\r\n\x1a\n"[..]),
+            content_type: "image/png".into(),
+        });
+        let Some(ChannelUpdate::Patch { updated, .. }) = update.channel else {
+            panic!("expected a patch, got {:?}", update.channel);
+        };
+        let image = updated[0].embeds[0].image().unwrap();
+        assert_eq!((image.width, image.height), (1200, 630));
+        assert!(image.loaded.is_some());
     }
 
     #[test]
