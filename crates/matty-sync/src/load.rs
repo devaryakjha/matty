@@ -67,6 +67,11 @@ pub(crate) enum Loaded {
         channels: Vec<Channel>,
         members: std::collections::HashMap<String, i64>,
     },
+    /// A page of older posts for a channel, or `None` when it failed.
+    Older {
+        channel_id: String,
+        posts: Option<matty_api::models::PostList>,
+    },
     /// An upload's progress, file id or failure.
     Upload {
         upload_id: String,
