@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    ClockFormat, MessageDisplay, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SendKey,
-    SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
+    ClockFormat, LogLevel, MessageDisplay, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX,
+    SIDEBAR_MIN, SendKey, SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -45,12 +45,22 @@ use crate::ui::{
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
     scroll_area::ScrollArea,
+    select::{Select, SelectEvent, SelectItem, SelectState},
     switch::Switch,
     theme::{UiTheme, transition_value},
     title_bar::TitleBar,
     toast::{Notice, ToastState},
     toggle_group::{ToggleGroup, ToggleGroupItem},
 };
+
+/// The log detail choices: the setting, the picker's value and its label.
+const LOG_LEVELS: [(LogLevel, &str, &str); 5] = [
+    (LogLevel::Error, "error", "Errors only"),
+    (LogLevel::Warn, "warn", "Warnings"),
+    (LogLevel::Info, "info", "Normal"),
+    (LogLevel::Debug, "debug", "Detailed"),
+    (LogLevel::Trace, "trace", "Everything"),
+];
 
 /// Whether Matty can reach the server (PLAN §4.5: network errors become a
 /// banner, never a dialog). Sync sets it; the window only draws it.
@@ -153,6 +163,8 @@ pub struct MainWindow {
     /// Preferences' mention keywords, saved to the server on Enter or when
     /// the field loses focus (#192).
     keywords: Entity<InputState>,
+    /// Preferences' log detail picker (#160).
+    log_level: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
     notify_props: Option<std::collections::HashMap<String, String>>,
     /// Whether the user may choose collapsed reply threads, and whether
@@ -720,6 +732,33 @@ impl MainWindow {
             }
         })
         .detach();
+        let level = settings.read(cx).get().log_level;
+        let log_level = cx.new(|cx| {
+            let mut state = SelectState::new(
+                LOG_LEVELS
+                    .iter()
+                    .map(|(_, value, label)| SelectItem::new(*value, *label)),
+                window,
+                cx,
+            );
+            let value = LOG_LEVELS
+                .iter()
+                .find(|(l, _, _)| *l == level)
+                .map(|(_, value, _)| SharedString::from(*value));
+            state.set_value(value, window, cx);
+            state
+        });
+        cx.subscribe(&log_level, |this, _, event: &SelectEvent, cx| {
+            let SelectEvent::Change(Some(value)) = event else {
+                return;
+            };
+            if let Some((level, _, _)) = LOG_LEVELS.iter().find(|(_, v, _)| *v == value.as_ref()) {
+                let level = *level;
+                this.settings
+                    .update(cx, |store, cx| store.update(cx, |s| s.log_level = level));
+            }
+        })
+        .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         let mut this = Self {
             settings,
@@ -735,6 +774,7 @@ impl MainWindow {
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
             keywords,
+            log_level,
             notifier: matty_notify::backend::platform(),
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
@@ -2618,6 +2658,29 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Asks for a folder and saves downloads there from now on (#160).
+    fn choose_download_folder(&mut self, cx: &mut Context<Self>) {
+        let answer = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose".into()),
+        });
+        let settings = self.settings.clone();
+        cx.spawn(async move |_, cx| {
+            let Ok(Ok(Some(paths))) = answer.await else {
+                return;
+            };
+            let Some(folder) = paths.into_iter().next() else {
+                return;
+            };
+            settings.update(cx, |store, cx| {
+                store.update(cx, |s| s.download_folder = Some(folder))
+            });
+        })
+        .detach();
+    }
+
     /// Preferences' Notifications section, from the user's `notify_props`
     /// with Mattermost's defaults (#158).
     fn notification_prefs(
@@ -2982,6 +3045,8 @@ impl MainWindow {
                     .gap(theme.space(4.))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(theme.space(0.5))
@@ -3041,6 +3106,52 @@ impl MainWindow {
                     .into_any_element(),
                 )
             });
+        let download_folder = settings
+            .download_folder
+            .clone()
+            .or_else(dirs::download_dir)
+            .map(|path| SharedString::from(path.display().to_string()))
+            .unwrap_or_else(|| "Your Downloads folder".into());
+        let files = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(3.))
+            .child(labelled_row(
+                "Download folder".into(),
+                download_folder,
+                Button::new("preferences.download-folder")
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .aria_label("Change download folder")
+                    .label("Change…")
+                    .on_click(cx.listener(|this, _, _, cx| this.choose_download_folder(cx)))
+                    .into_any_element(),
+            ))
+            .child(labelled_row(
+                "Log detail".into(),
+                "How much goes into the logs.".into(),
+                div()
+                    .flex_shrink_0()
+                    .w(theme.space(36.))
+                    .child(Select::new(&self.log_level).aria_label("Log detail"))
+                    .into_any_element(),
+            ))
+            .child(labelled_row(
+                "Logs".into(),
+                "Attach them when you report a problem.".into(),
+                Button::new("preferences.open-logs")
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .aria_label("Open logs folder")
+                    .label("Open folder")
+                    .on_click(|_, _, cx| {
+                        if let Some(dir) = crate::logging::default_dir() {
+                            let _ = std::fs::create_dir_all(&dir);
+                            cx.open_with_system(&dir);
+                        }
+                    })
+                    .into_any_element(),
+            ));
         let notifications = self
             .notify_props
             .as_ref()
@@ -3109,7 +3220,8 @@ impl MainWindow {
                                         |s, v| s.reduce_motion = v,
                                     ))
                                     .into_any_element(),
-                            )),
+                            ))
+                            .child(section("Files and logs", files.into_any_element())),
                     ),
             )
             .child(dialog_close("preferences.close", cx).label("Done"));
