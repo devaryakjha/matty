@@ -11,7 +11,8 @@ use crate::sidebar::SidebarModel;
 /// other teams on the rail (the current one is in the sidebar already).
 ///
 /// Mentions in muted channels count, as the sidebar shows them; a muted
-/// channel's other unread posts do not. Followed threads with unread
+/// channel's other unread posts do not. Mentions in followed threads'
+/// unread replies count, as the webapp's badge counts them; other unread
 /// replies count as unread.
 pub fn dock_badge(sidebar: &SidebarModel, teams: &[Team], current: Option<&SharedString>) -> Badge {
     if sidebar.loading {
@@ -21,7 +22,7 @@ pub fn dock_badge(sidebar: &SidebarModel, teams: &[Team], current: Option<&Share
         .categories
         .iter()
         .flat_map(|category| category.rows.iter());
-    let mut mentions = 0;
+    let mut mentions = sidebar.thread_mentions;
     let mut unread = sidebar.unread_threads > 0;
     for row in rows {
         mentions += row.mentions;
@@ -85,6 +86,23 @@ mod tests {
         assert_eq!(dock_badge(&threads, &[], None), Badge::Unread);
         let other = [Team::new("t2", "Two").unread()];
         assert_eq!(dock_badge(&sidebar(vec![]), &other, None), Badge::Unread);
+    }
+
+    /// #141: mentions in followed threads' unread replies count, as the
+    /// webapp's badge counts them.
+    #[test]
+    fn thread_mentions_count_toward_the_badge() {
+        let model = SidebarModel {
+            unread_threads: 2,
+            thread_mentions: 3,
+            ..sidebar(vec![row("a").mentions(1)])
+        };
+        assert_eq!(dock_badge(&model, &[], None), Badge::Mentions(4));
+        let quiet = SidebarModel {
+            thread_mentions: 0,
+            ..model
+        };
+        assert_eq!(dock_badge(&quiet, &[], None), Badge::Mentions(1));
     }
 
     #[test]

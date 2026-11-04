@@ -446,9 +446,11 @@ impl MainWindow {
         cx.subscribe(&threads, |this, threads, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
             let unread = threads.read(cx).model().unread();
+            let mentions = threads.read(cx).model().mentions();
             this.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
             let Some(live) = &mut this.live else {
@@ -1486,12 +1488,13 @@ impl MainWindow {
             }
         }
         if let Some(model) = update.threads {
-            let unread = model.unread();
+            let (unread, mentions) = (model.unread(), model.mentions());
             self.threads
                 .update(cx, |view, cx| view.set_model(model, cx));
             self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
         }
@@ -1721,10 +1724,8 @@ impl MainWindow {
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
 
-    /// Shows `id` in the channel view and marks it in the sidebar. Until
-    /// sync lands only the preview fixtures have content.
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post.
+    /// its post, or with a thread reply's thread open at the reply.
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -1734,13 +1735,30 @@ impl MainWindow {
         cx.activate(true);
         window.activate_window();
         self.open_channel(clicked.channel_id.into(), window, cx);
-        if !clicked.post_id.is_empty() {
+        if !clicked.root_id.is_empty() {
+            // A thread reply opens its thread at the reply (#141): with
+            // collapsed threads on, the channel does not show it. The
+            // channel goes to the root, which it always shows.
+            let root: gpui_kit::SharedString = clicked.root_id.into();
+            let post: gpui_kit::SharedString = if clicked.post_id.is_empty() {
+                root.clone()
+            } else {
+                clicked.post_id.into()
+            };
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(root.clone(), cx));
+            self.open_thread(root.clone(), cx);
+            self.right_pane
+                .update(cx, |pane, cx| pane.jump_to(root, post, cx));
+        } else if !clicked.post_id.is_empty() {
             let post = clicked.post_id.into();
             self.channel
                 .update(cx, |channel, cx| channel.jump_to(post, cx));
         }
     }
 
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,

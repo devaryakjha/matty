@@ -255,6 +255,12 @@ pub struct RightPaneView {
     /// "Discard this message?" and the reply it is about.
     discard: DialogHandle,
     discarding: Option<SharedString>,
+    /// The reply a notification opened the thread at, tinted for a few
+    /// seconds as the channel tints a permalink's post (#141).
+    permalink: Option<SharedString>,
+    _permalink_task: Option<gpui_kit::Task<()>>,
+    /// A jump waiting for its thread to arrive: the root and the post.
+    pending_jump: Option<(SharedString, SharedString)>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -412,6 +418,9 @@ impl RightPaneView {
             editing: None,
             discard: DialogHandle::new(false),
             discarding: None,
+            permalink: None,
+            _permalink_task: None,
+            pending_jump: None,
             _subscriptions: subscriptions,
         }
     }
@@ -975,10 +984,20 @@ impl RightPaneView {
             self.link = Default::default();
             self._link_task = None;
             self.editing = None;
+            self.permalink = None;
+            self._permalink_task = None;
+        }
+        // A jump waits through an empty pane, not past another thread.
+        if let (Some(RightPaneContent::Thread(thread)), Some((root, _))) =
+            (&content, &self.pending_jump)
+            && thread.root.id != *root
+        {
+            self.pending_jump = None;
         }
         self.content = content;
         self.selection = None;
         self.loading_older = false;
+        self.apply_pending_jump(cx);
         let key = self.draft_key();
         let moved = self.draft.key() != key.as_ref();
         if moved
@@ -1120,7 +1139,60 @@ impl RightPaneView {
                 list.append(newer, cx);
             }
         });
+        self.apply_pending_jump(cx);
         cx.notify();
+    }
+
+    /// Scrolls the thread under `root` to `post` and tints it for a few
+    /// seconds, as a notification's click asks (#141). Until that thread
+    /// is shown with the post in it, the jump waits for sync to bring it.
+    pub fn jump_to(&mut self, root: SharedString, post: SharedString, cx: &mut Context<Self>) {
+        self.pending_jump = Some((root, post));
+        self.apply_pending_jump(cx);
+    }
+
+    fn apply_pending_jump(&mut self, cx: &mut Context<Self>) {
+        let Some((root, post)) = self.pending_jump.clone() else {
+            return;
+        };
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return;
+        };
+        if thread.root.id != root {
+            return;
+        }
+        let row = if thread.root.id == post {
+            Some(0)
+        } else {
+            thread
+                .replies
+                .iter()
+                .position(|reply| reply.id == post)
+                .map(|index| index + THREAD_HEAD)
+        };
+        let Some(row) = row else {
+            return;
+        };
+        self.pending_jump = None;
+        self.list
+            .update(cx, |list, cx| list.scroll_to_item(row, cx));
+        self.permalink = Some(post);
+        self._permalink_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.permalink = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The post a notification opened the thread at, while it is tinted.
+    pub fn permalink(&self) -> Option<&SharedString> {
+        self.permalink.as_ref()
     }
 
     /// Asks for the replies before the oldest loaded one when the row
@@ -1651,9 +1723,12 @@ impl RightPaneView {
         let model = thread.clone();
         let view = cx.entity().downgrade();
         let selection = self.selection;
-        let highlight = move |index| {
+        let permalink = self.permalink.clone();
+        let highlight = move |index: usize, post: &Post| {
             if selection == Some(index) {
                 MessageHighlight::Selected
+            } else if permalink.as_ref() == Some(&post.id) {
+                MessageHighlight::Permalink
             } else {
                 MessageHighlight::None
             }
@@ -1670,8 +1745,15 @@ impl RightPaneView {
                 "right-pane.thread",
                 &self.list,
                 move |index, _, cx| match index {
-                    0 => Self::post_row(&view, &model.root, true, highlight(0), (away, None), cx)
-                        .into_any_element(),
+                    0 => Self::post_row(
+                        &view,
+                        &model.root,
+                        true,
+                        highlight(0, &model.root),
+                        (away, None),
+                        cx,
+                    )
+                    .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
                     2 => view
                         .update(cx, |this, cx| {
@@ -1689,7 +1771,7 @@ impl RightPaneView {
                                 &view,
                                 reply,
                                 false,
-                                highlight(index),
+                                highlight(index, reply),
                                 (away, editor),
                                 cx,
                             )
@@ -2603,6 +2685,60 @@ mod tests {
 
     /// Reaching the oldest loaded reply asks once for the page before it;
     /// a failed page offers Retry instead of asking again.
+    /// #141: a notification's click opens the thread before sync has
+    /// sent it; once it arrives the pane scrolls to the reply and tints it.
+    #[gpui_kit::test]
+    fn a_jump_waits_for_its_thread_and_tints_the_reply(cx: &mut gpui_kit::TestAppContext) {
+        let (view, _, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_content(None, cx);
+                pane.jump_to("root".into(), "r10".into(), cx);
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            None
+        );
+
+        // Another thread does not take the jump.
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(
+                    ThreadModel {
+                        root: Post {
+                            root_id: SharedString::default(),
+                            ..post("other")
+                        },
+                        ..thread(0..50, false, false)
+                    },
+                    cx,
+                )
+            })
+        });
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            None
+        );
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_content(None, cx);
+                pane.jump_to("root".into(), "r10".into(), cx);
+                pane.set_thread(thread(0..200, false, false), cx);
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.permalink().cloned()),
+            Some("r10".into())
+        );
+        let list = view.read_with(&cx, |pane, _| pane.list.clone());
+        let top = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(top.item_ix, THREAD_HEAD + 10);
+    }
+
     #[gpui_kit::test]
     fn the_oldest_reply_asks_for_the_page_before_it(cx: &mut gpui_kit::TestAppContext) {
         let (view, events, mut cx) = pane(cx);

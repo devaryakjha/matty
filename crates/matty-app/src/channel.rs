@@ -454,8 +454,10 @@ pub struct ReplySummary {
     /// Their user ids, in the same order, for their pictures.
     pub participant_ids: Vec<SharedString>,
     pub following: bool,
-    /// Replies the user has not read yet.
-    pub unread: bool,
+    /// Replies the user has not read yet (#124).
+    pub unread_replies: usize,
+    /// Mentions of the user among them.
+    pub unread_mentions: usize,
 }
 
 /// A channel with the posts loaded for it.
@@ -644,6 +646,17 @@ pub fn own_id(posts: &[Post]) -> SharedString {
 }
 
 impl ReplySummary {
+    /// The thread has replies the user has not read.
+    pub fn unread(&self) -> bool {
+        self.unread_replies > 0 || self.unread_mentions > 0
+    }
+
+    /// Opening the thread reads it.
+    pub fn mark_read(&mut self) {
+        self.unread_replies = 0;
+        self.unread_mentions = 0;
+    }
+
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
         if self.last_day.as_ref() == "Today" {
@@ -3747,7 +3760,7 @@ impl ChannelView {
                     .text_color(theme.colors.primary)
                     .child(label),
             )
-            .when(summary.unread, |this| {
+            .when(summary.unread(), |this| {
                 this.child(
                     div()
                         .size(theme.space(2.))

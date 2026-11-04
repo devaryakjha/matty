@@ -224,7 +224,8 @@ fn reply_summary(
             .collect(),
         participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
         following: root.is_following.unwrap_or(false),
-        unread: false,
+        unread_replies: 0,
+        unread_mentions: 0,
     }
 }
 
@@ -593,7 +594,8 @@ pub fn thread_row(
             participants,
             participant_ids,
             following: true,
-            unread: thread.unread_replies > 0,
+            unread_replies: usize::try_from(thread.unread_replies).unwrap_or(0),
+            unread_mentions: usize::try_from(thread.unread_mentions).unwrap_or(0),
         },
     }
 }

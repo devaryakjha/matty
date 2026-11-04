@@ -2666,7 +2666,7 @@ mod tests {
             last_reply_at: 0,
             last_viewed_at: 0,
             unread_replies: unread,
-            unread_mentions: 0,
+            unread_mentions: unread / 2,
             participants: vec!["ada".into()],
         };
         let list = |team: &str| ChangeSet::ThreadList {
@@ -2683,8 +2683,17 @@ mod tests {
         assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
-        assert_eq!((row.summary.count, row.summary.unread), (2, true));
+        // The row carries the server's unread counts (#124).
+        assert_eq!(
+            (
+                row.summary.count,
+                row.summary.unread_replies,
+                row.summary.unread_mentions
+            ),
+            (2, 2, 1)
+        );
         assert_eq!(model.unread(), 1);
+        assert_eq!(model.mentions(), 1);
     }
 
     #[test]
