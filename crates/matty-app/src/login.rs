@@ -490,6 +490,16 @@ impl LoginView {
         }
     }
 
+    /// Fills the address field with `address`, from a link to a server not
+    /// saved yet (#206), for the person to check and continue.
+    pub fn prefill_server(&mut self, address: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.step == LoginStep::Server {
+            self.server.update(cx, |field, cx| {
+                field.set_value(address.to_owned(), window, cx)
+            });
+        }
+    }
+
     /// The URL as typed, for the window to keep across steps.
     pub fn server_url(&self, cx: &App) -> String {
         self.server.read(cx).value().to_string()

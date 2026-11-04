@@ -178,6 +178,7 @@ type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
 mod background;
 mod drafts;
+mod other_servers;
 mod preferences;
 mod quick_switch;
 mod servers;
@@ -3913,7 +3914,11 @@ impl MainWindow {
         };
         let names: Vec<&str> = teams.iter().map(|(_, name)| name.as_str()).collect();
         match crate::links::route(url, server.as_deref(), &names) {
-            LinkTarget::External(url) if external => cx.open_url(&url),
+            LinkTarget::External(url) if external => {
+                if !self.open_on_other_server(&url, window, cx) {
+                    cx.open_url(&url)
+                }
+            }
             LinkTarget::External(url) => {
                 tracing::info!(link = %crate::deeplink::redacted(&url), "ignored a link Matty cannot show");
             }

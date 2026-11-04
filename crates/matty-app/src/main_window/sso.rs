@@ -53,20 +53,8 @@ impl MainWindow {
             return;
         };
         match parsed {
-            DeepLink::Page { host, path } => {
-                let server = match &self.live {
-                    Some(live) => Some(live.server().to_owned()),
-                    None => crate::preview::enabled().then(|| super::PREVIEW_SERVER.to_owned()),
-                };
-                match server.and_then(|server| deeplink::page_url(&host, &path, &server)) {
-                    Some(url) => self.go_to_link(&url, false, window, cx),
-                    None => tracing::info!(
-                        %host,
-                        signed_in = self.live.is_some(),
-                        "ignored a link to a server Matty is not signed in to"
-                    ),
-                }
-            }
+            // On the server shown, another saved one, or one to add (#206).
+            DeepLink::Page { host, path } => self.open_page(&host, &path, window, cx),
             DeepLink::Entity(url) => self.go_to_link(&url, false, window, cx),
             DeepLink::SsoCallback {
                 client_token,
