@@ -349,6 +349,7 @@ impl RightPaneView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let subscriptions = vec![
             cx.subscribe_in(
