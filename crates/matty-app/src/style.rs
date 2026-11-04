@@ -59,8 +59,8 @@ impl Palette {
         match mode {
             ThemeMode::Light => Self {
                 online: rgb(0x16a34a),
-                away: rgb(0xf59e0b),
-                dnd: rgb(0xdc2626),
+                away: rgb(0xcc7a00),
+                dnd: rgb(0xd42020),
             },
             ThemeMode::Dark => Self {
                 online: rgb(0x3fb950),
