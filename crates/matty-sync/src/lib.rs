@@ -25,8 +25,8 @@ mod typing;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{
-    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW,
-    UploadState,
+    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, LinkAnswer, LinkQuery,
+    POSTS_WINDOW, UploadState,
 };
 pub use engine::Command;
 /// Where an account's database lives.

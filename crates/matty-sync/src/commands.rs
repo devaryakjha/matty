@@ -128,6 +128,8 @@ pub(crate) enum Write {
         thread_id: String,
         follow: bool,
     },
+    /// Finds what a link names, which the cache did not know.
+    Resolve(crate::LinkQuery),
 }
 
 impl Write {
@@ -165,6 +167,7 @@ impl Write {
             Self::DeleteCategory { .. } => "delete category",
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
+            Self::Resolve(_) => "open link",
         }
     }
 
@@ -201,6 +204,11 @@ impl Write {
                 thread_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
+            Self::Resolve(query) => match query {
+                crate::LinkQuery::Post { post_id } => post_id.clone(),
+                crate::LinkQuery::Channel { name, .. } => name.clone(),
+                crate::LinkQuery::User { username } => username.clone(),
+            },
             Self::Preferences(preferences) => preferences
                 .iter()
                 .map(|preference| preference.name.as_str())
@@ -257,11 +265,23 @@ pub(crate) async fn run(
                 Some(Loaded::Threads {
                     team_id,
                     threads: vec![thread],
+                    total: None,
                 })
             }
             Write::ReadAllThreads { team_id } => {
                 client.mark_all_threads_read(&user_id, &team_id).await?;
                 None
+            }
+            Write::Resolve(query) => {
+                let answer = match resolve(&client, &query).await {
+                    Ok(answer) => Some(answer),
+                    // Gone, or not the user's to see: the app says so.
+                    Err(ApiError::Server {
+                        status: 403 | 404, ..
+                    }) => None,
+                    Err(error) => return Err(error),
+                };
+                Some(Loaded::Resolved { query, answer })
             }
             Write::Follow {
                 team_id,
@@ -527,6 +547,33 @@ async fn categories(client: &Client, team_id: String) -> Result<Option<Loaded>, 
         team_id,
         categories,
     }))
+}
+
+/// Asks the server what a link names.
+async fn resolve(client: &Client, query: &crate::LinkQuery) -> Result<crate::LinkAnswer, ApiError> {
+    use crate::{LinkAnswer, LinkQuery};
+    use std::sync::Arc;
+    Ok(match query {
+        LinkQuery::Post { post_id } => {
+            let post = client.get_post(post_id).await?;
+            LinkAnswer::Channel(Arc::new(client.channel(&post.channel_id).await?))
+        }
+        LinkQuery::Channel { team_id, name } => {
+            LinkAnswer::Channel(Arc::new(client.channel_by_name(team_id, name).await?))
+        }
+        LinkQuery::User { username } => {
+            let users = client
+                .users_by_usernames(std::slice::from_ref(username))
+                .await?;
+            let user = users.into_iter().next().ok_or(ApiError::Server {
+                status: 404,
+                id: "store.sql_user.missing".into(),
+                message: "no such user".into(),
+                request_id: None,
+            })?;
+            LinkAnswer::User(Arc::new(user))
+        }
+    })
 }
 
 #[cfg(test)]
