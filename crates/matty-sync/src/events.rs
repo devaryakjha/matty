@@ -176,8 +176,10 @@ pub(crate) fn apply(
         }
         WsEvent::UserUpdated(user) => {
             sidebar::upsert_users(conn, std::slice::from_ref(&*user))?;
-            // Display names in the sidebar and in posts may change.
+            // Display names in the sidebar and in posts may change, and a
+            // new `last_picture_update` means a new profile picture (#153).
             dirty.all_teams = true;
+            dirty.direct.push(ChangeSet::Users(Arc::from(vec![*user])));
         }
         WsEvent::StatusChange { user_id, status } => {
             dirty
@@ -346,6 +348,7 @@ fn new_post(
     let is_root = post.root_id.is_empty();
     if !is_root {
         posts::add_replies(conn, &post.root_id, 1)?;
+        posts::note_reply(conn, &post.root_id, &post.user_id, post.create_at)?;
     }
     if let Some(me) = me {
         let counted = sidebar::count_post(

@@ -52,8 +52,9 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
     let mut upsert = conn.prepare_cached(
         "INSERT INTO posts (id, channel_id, user_id, root_id, create_at, update_at, edit_at,
              delete_at, kind, message, reply_count, is_pinned, pending_post_id, props, metadata,
-             touched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             touched_at, last_reply_at, participants, is_following)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+             ?18, ?19)
          ON CONFLICT (id) DO UPDATE SET
              channel_id = excluded.channel_id, user_id = excluded.user_id,
              root_id = excluded.root_id, create_at = excluded.create_at,
@@ -62,7 +63,12 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
              message = excluded.message, reply_count = excluded.reply_count,
              is_pinned = excluded.is_pinned, pending_post_id = excluded.pending_post_id,
              props = excluded.props, metadata = excluded.metadata,
-             touched_at = excluded.touched_at",
+             touched_at = excluded.touched_at,
+             -- Only collapsed-threads fetches carry these; others keep them.
+             last_reply_at = MAX(last_reply_at, excluded.last_reply_at),
+             participants = CASE WHEN excluded.participants = '[]' THEN participants
+                 ELSE excluded.participants END,
+             is_following = COALESCE(excluded.is_following, is_following)",
     )?;
     let now = now_ms();
     let mut clear_reactions = conn.prepare_cached("DELETE FROM reactions WHERE post_id = ?1")?;
@@ -118,7 +124,10 @@ pub fn insert_posts(conn: &Connection, posts: &[Post]) -> Result<()> {
             post.pending_post_id,
             json(&post.props),
             json(&rest),
-            now
+            now,
+            post.last_reply_at,
+            json(&participant_ids(post)),
+            post.is_following
         ])?;
         clear_reactions.execute([&post.id])?;
         clear_files.execute([&post.id])?;
@@ -211,7 +220,27 @@ pub enum Window {
 }
 
 const POST_COLUMNS: &str = "id, channel_id, user_id, root_id, create_at, update_at, edit_at,
-    delete_at, kind, message, reply_count, is_pinned, pending_post_id, props, metadata";
+    delete_at, kind, message, reply_count, is_pinned, pending_post_id, props, metadata,
+    last_reply_at, participants, is_following";
+
+/// A root's repliers as stored: their ids, in the server's order.
+fn participant_ids(post: &Post) -> Vec<&str> {
+    post.participants
+        .iter()
+        .map(|user| user.id.as_str())
+        .collect()
+}
+
+/// Users that carry only an id, as a post's `participants` do when the
+/// server is not asked for the extended form.
+fn id_users(ids: Vec<String>) -> Vec<matty_api::models::User> {
+    ids.into_iter()
+        .map(|id| matty_api::models::User {
+            id,
+            ..Default::default()
+        })
+        .collect()
+}
 
 fn post_from_row(row: &Row<'_>) -> rusqlite::Result<Post> {
     let props: String = row.get(13)?;
@@ -232,6 +261,9 @@ fn post_from_row(row: &Row<'_>) -> rusqlite::Result<Post> {
         pending_post_id: row.get(12)?,
         props: from_json(&props),
         metadata: from_json(&metadata),
+        last_reply_at: row.get(15)?,
+        participants: id_users(from_json(&row.get::<_, String>(16)?)),
+        is_following: row.get(17)?,
         ..Post::default()
     })
 }
@@ -316,7 +348,40 @@ pub fn posts_window(
         posts.reverse();
     }
     attach(conn, &mut posts)?;
+    followed_threads(conn, &mut posts)?;
     Ok(posts)
+}
+
+/// Roots the user follows take their reply footer from the thread record,
+/// which `thread_*` events keep current: following, who replied and when.
+fn followed_threads(conn: &Connection, posts: &mut [Post]) -> Result<()> {
+    let mut statement = conn.prepare_cached(
+        "SELECT is_following, participants, last_reply_at FROM threads WHERE id = ?1",
+    )?;
+    for post in posts
+        .iter_mut()
+        .filter(|post| post.root_id.is_empty() && post.reply_count > 0)
+    {
+        let Some((following, participants, last_reply_at)) = statement
+            .query_row([&post.id], |row| {
+                Ok((
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        post.is_following = Some(following);
+        let participants: Vec<String> = from_json(&participants);
+        if !participants.is_empty() {
+            post.participants = id_users(participants);
+        }
+        post.last_reply_at = post.last_reply_at.max(last_reply_at);
+    }
+    Ok(())
 }
 
 /// One post with its reactions and files, deleted or not.
@@ -694,6 +759,28 @@ pub fn add_replies(conn: &Connection, root_id: &str, delta: i64) -> Result<bool>
         .prepare_cached("UPDATE posts SET reply_count = MAX(reply_count + ?2, 0) WHERE id = ?1")?
         .execute(params![root_id, delta])?;
     Ok(changed > 0)
+}
+
+/// A reply by `user_id` at `at` arrived under `root_id`: the root's reply
+/// footer moves its last reply time and puts the author last among who
+/// replied, as the server orders them. Ignored when the root is not cached.
+pub fn note_reply(conn: &Connection, root_id: &str, user_id: &str, at: i64) -> Result<()> {
+    let Some(stored) = conn
+        .prepare_cached("SELECT participants FROM posts WHERE id = ?1")?
+        .query_row([root_id], |row| row.get::<_, String>(0))
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let mut participants: Vec<String> = from_json(&stored);
+    participants.retain(|id| id != user_id);
+    participants.push(user_id.to_owned());
+    conn.prepare_cached(
+        "UPDATE posts SET last_reply_at = MAX(last_reply_at, ?2), participants = ?3
+         WHERE id = ?1",
+    )?
+    .execute(params![root_id, at, json(&participants)])?;
+    Ok(())
 }
 
 /// The team a followed thread is listed under, if cached.

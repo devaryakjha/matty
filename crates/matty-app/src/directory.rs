@@ -372,14 +372,16 @@ impl NewMessageView {
                 div()
                     .relative()
                     .flex_shrink_0()
-                    .child(
+                    .child(crate::avatars::with_picture(
                         Avatar::new(gpui_kit::ElementId::Name(
                             format!("new-message.{username}.avatar").into(),
                         ))
                         .size(AvatarSize::Sm)
                         .fallback(initial)
                         .aria_label(profile.display_name.clone()),
-                    )
+                        &profile.user_id,
+                        cx,
+                    ))
                     .child(
                         div()
                             .absolute()
@@ -792,14 +794,16 @@ impl AddMembersView {
                         .ok();
                 }),
             )
-            .child(
+            .child(crate::avatars::with_picture(
                 Avatar::new(gpui_kit::ElementId::Name(
                     format!("add-members.{username}.avatar").into(),
                 ))
                 .size(AvatarSize::Sm)
                 .fallback(initial)
                 .aria_label(profile.display_name.clone()),
-            )
+                &profile.user_id,
+                cx,
+            ))
             .child(
                 div()
                     .min_w_0()
