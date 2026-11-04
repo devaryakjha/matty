@@ -191,6 +191,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         .flat_map(|category| category.rows)
         .find(|row| row.id.as_ref() == id)?;
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
+        kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
         time: hm(time),
@@ -462,7 +463,10 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
     });
     // Two channels show the states PLAN §4.5 asks for: one still loading,
     // one with nothing posted yet.
+    // #town-square runs sync's own transcript over server posts, so it
+    // shows what system and plugin posts become (#104).
     let (posts, loading, first_unread) = match id {
+        "town-square" => (activity(&row), false, None),
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
         _ => (posts, false, Some(7)),
@@ -473,8 +477,11 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         id: row.id.clone(),
         name: row.name.clone(),
         kind: row.kind.clone(),
-        header: (id == "general")
-            .then(|| "Announcements and anything that does not fit elsewhere".into()),
+        header: match id {
+            "general" => Some("Announcements and anything that does not fit elsewhere".into()),
+            "town-square" => Some("Company-wide chat. Be kind, stay on topic.".into()),
+            _ => None,
+        },
         members: 42,
         pinned: 3,
         favorite: id == "design",
@@ -499,6 +506,91 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             _ => vec![],
         },
     })
+}
+
+/// #town-square's posts as the server sends them, through
+/// `transcript::channel_model`: people joining around a few messages, a
+/// header change, and a poll from a plugin Matty does not draw (#104).
+fn activity(row: &ChannelRow) -> Vec<Post> {
+    use matty_api::models::{Post as ApiPost, User};
+    use std::collections::HashMap;
+    let people = [
+        ("priya", "Priya", "Nair"),
+        ("sam", "Sam", "Okafor"),
+        ("lena", "Lena", "Fischer"),
+        ("jonas", "Jonas", "Weber"),
+        ("mei", "Mei", "Tanaka"),
+        ("tomas", "Tomás", "Silva"),
+        ("ola", "Ola", "Berg"),
+    ];
+    let users: HashMap<String, User> = people
+        .iter()
+        .map(|(id, first, last)| {
+            let user = User {
+                id: (*id).into(),
+                username: (*id).into(),
+                first_name: (*first).into(),
+                last_name: (*last).into(),
+                ..User::default()
+            };
+            ((*id).to_string(), user)
+        })
+        .collect();
+    // 2026-11-04, minutes after 08:00 UTC; "now" is noon that day.
+    let at = |minute: i64| 1_793_779_200_000 + minute * 60_000;
+    let post = |id: &str, user: &str, minute: i64, kind: &str, message: &str| ApiPost {
+        id: id.into(),
+        user_id: user.into(),
+        create_at: at(minute),
+        kind: kind.into(),
+        message: message.into(),
+        ..ApiPost::default()
+    };
+    let mut header = post("t6", "priya", 12, "system_header_change", "");
+    header.props = [
+        ("old_header", "Company-wide chat"),
+        ("new_header", "Company-wide chat. Be kind, stay on topic."),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), serde_json::Value::from(value)))
+    .collect();
+    let posts = [
+        post(
+            "t1",
+            "priya",
+            0,
+            "",
+            "Welcome to town-square! Say hi when you get a minute.",
+        ),
+        post("t2", "sam", 1, "system_join_channel", ""),
+        post("t2b", "lena", 2, "system_join_channel", ""),
+        post("t2c", "jonas", 3, "system_join_channel", ""),
+        post("t2d", "mei", 4, "system_join_channel", ""),
+        post("t2e", "tomas", 5, "system_join_channel", ""),
+        post("t2f", "ola", 6, "system_leave_channel", ""),
+        post("t3", "sam", 10, "", "Hi all, Sam from the desktop team."),
+        post("t4", "sam", 11, "", "Glad to be here."),
+        header,
+        post("t7", "sam", 13, "", "Is lunch at 12 today?"),
+        post(
+            "t8",
+            "lena",
+            15,
+            "custom_matterpoll",
+            "Lunch: pizza or ramen?",
+        ),
+        post("t9", "jonas", 20, "", "Ramen, obviously."),
+    ];
+    let keys = matty_notify::MentionKeys::username("arya");
+    let zone = jiff::tz::TimeZone::UTC;
+    let viewer = crate::transcript::Viewer {
+        user_id: "arya",
+        keys: &keys,
+        zone: &zone,
+        now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
+        link_previews: true,
+    };
+    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None).posts
 }
 
 fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
@@ -639,6 +731,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         return vec![];
     }
     let post = |id: &str, author: &str, time: &str, body: &str| Post {
+        kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
         time: hm(time),
@@ -988,6 +1081,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         .find(|post| post.id.as_ref() == post_id)?
         .clone();
     let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
+        kind: crate::channel::PostKind::Regular,
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
         time: hm(time),
