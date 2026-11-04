@@ -781,6 +781,7 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
+        let mut threads_to_fetch = Vec::new();
         let mut link_previews = Vec::new();
         let mut pages = Vec::new();
         let mut downloads = Vec::new();
@@ -899,7 +900,8 @@ impl Engine {
                 }
                 Message::Command(Command::OpenThread { root_id }) => {
                     self.open_threads.insert(root_id.clone());
-                    dirty.threads.insert(root_id);
+                    dirty.threads.insert(root_id.clone());
+                    threads_to_fetch.push(root_id);
                 }
                 Message::Command(Command::CloseThread { root_id }) => {
                     self.open_threads.remove(&root_id);
@@ -1244,6 +1246,9 @@ impl Engine {
         for url in remote_images {
             self.remote_image(url, dirty);
         }
+        for root_id in threads_to_fetch {
+            self.fetch_thread(root_id);
+        }
         for url in link_previews {
             self.link_preview(url, dirty);
         }
@@ -1527,6 +1532,33 @@ impl Engine {
                 }
             };
             let _ = results.send(Loaded::LinkPreview { url, graph });
+        });
+    }
+
+    /// Reads a thread from the server, as the cache may hold only its root
+    /// (collapsed threads) or nothing (a thread opened from a search); it
+    /// comes back as [`Loaded::Thread`].
+    fn fetch_thread(&mut self, root_id: String) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(format!("thread/{root_id}")) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let posts = match client
+                .post_thread(&root_id, &matty_api::ThreadQuery::all())
+                .await
+            {
+                Ok(posts) => posts,
+                Err(error) => {
+                    tracing::debug!(%error, "could not read a thread");
+                    Default::default()
+                }
+            };
+            let _ = results.send(Loaded::Thread { root_id, posts });
         });
     }
 
@@ -1985,6 +2017,19 @@ impl Engine {
                 let history = &self.history[&channel_id];
                 dirty.direct.push(history.change(&channel_id, false));
                 dirty.channels.insert(channel_id);
+            }
+            Loaded::Thread {
+                root_id,
+                posts: list,
+            } => {
+                self.fetching.remove(&format!("thread/{root_id}"));
+                if !list.posts.is_empty() {
+                    let tx = self.store.conn_mut().transaction()?;
+                    let fetched: Vec<_> = list.posts.into_values().collect();
+                    posts::insert_posts(&tx, &fetched)?;
+                    tx.commit()?;
+                    dirty.threads.insert(root_id);
+                }
             }
             Loaded::Posts {
                 channel_id,

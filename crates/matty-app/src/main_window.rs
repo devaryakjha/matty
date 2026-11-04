@@ -632,6 +632,7 @@ impl MainWindow {
             window,
             |this, _, event: &RightPaneEvent, window, cx| match event {
                 RightPaneEvent::Close => {
+                    this.leave_thread();
                     this.right_pane_open = false;
                     cx.notify();
                 }
@@ -679,6 +680,31 @@ impl MainWindow {
                     for (id, image) in here {
                         this.right_pane
                             .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
+                    }
+                }
+                RightPaneEvent::PreviewLink(url) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::LoadLinkPreview {
+                            url: url.to_string(),
+                        });
+                    } else if crate::preview::enabled() {
+                        let card = crate::preview::link_card(url);
+                        this.right_pane
+                            .update(cx, |view, cx| view.set_link_preview(url, card, cx));
+                    }
+                }
+                RightPaneEvent::Reply { root, text, unfurl } => {
+                    if let Some(live) = &this.live
+                        && let Some(channel_id) = live.thread_channel()
+                    {
+                        live.send(matty_sync::Command::SendPost {
+                            pending_post_id: String::new(),
+                            channel_id,
+                            root_id: root.to_string(),
+                            message: text.to_string(),
+                            file_ids: Vec::new(),
+                            props: crate::embeds::send_props(*unfurl),
+                        });
                     }
                 }
                 RightPaneEvent::Retry(post) => {
@@ -1282,7 +1308,13 @@ impl MainWindow {
             self.collapsed_threads = Some(threads);
             cx.notify();
         }
+        if let Some(thread) = update.thread {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_thread(thread, cx));
+        }
         if let Some((url, card)) = update.link_preview {
+            self.right_pane
+                .update(cx, |view, cx| view.set_link_preview(&url, card.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_link_preview(&url, card, cx));
         }
@@ -1900,6 +1932,16 @@ impl MainWindow {
         let Some(channel_id) = self.selected_channel.clone() else {
             return;
         };
+        if let Some(live) = &mut self.live {
+            // Sync publishes the thread from the cache at once and again as
+            // replies arrive; until then the pane is empty.
+            live.open_thread(&post_id);
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_content(None, cx));
+            self.right_pane_open = true;
+            cx.notify();
+            return;
+        }
         let thread = crate::preview::enabled()
             .then(|| crate::preview::thread(&channel_id, &post_id))
             .flatten();
@@ -1935,7 +1977,15 @@ impl MainWindow {
         }
     }
 
+    /// The right pane moves on from a thread: sync stops publishing it.
+    fn leave_thread(&mut self) {
+        if let Some(live) = &mut self.live {
+            live.close_thread();
+        }
+    }
+
     fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
+        self.leave_thread();
         self.threads_open = false;
         self.drafts_open = false;
         self.right_pane
@@ -1948,6 +1998,7 @@ impl MainWindow {
     /// preview answers from its fixtures and a live session shows the
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_thread();
         if let Some(live) = self.live.as_mut()
             && !query.is_empty()
         {
@@ -2034,6 +2085,7 @@ impl MainWindow {
 
     /// Shows the current channel's info in the right pane.
     fn show_channel_info(&mut self, cx: &mut Context<Self>) {
+        self.leave_thread();
         let info = self.channel.read(cx).model().cloned();
         self.right_pane.update(cx, |pane, cx| {
             pane.set_content(info.map(RightPaneContent::ChannelInfo), cx)

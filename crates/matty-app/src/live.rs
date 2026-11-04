@@ -47,6 +47,9 @@ pub struct Live {
     open: Option<ChannelRow>,
     posts: Option<Arc<[matty_api::models::Post]>>,
     max_post_size: Option<usize>,
+    /// The thread in the right pane: its root, and its posts once sync
+    /// has published them (root first).
+    thread: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
     /// Whether the server lets users choose collapsed reply threads, and
     /// whether they are on for the user, once each is known (#157).
     threads_choice: Option<bool>,
@@ -142,6 +145,8 @@ pub struct Update {
     /// The user's own presence from the server, with when Do not disturb
     /// ends if the server said (#190).
     pub own_presence: Option<(Presence, Option<i64>)>,
+    /// The open thread, for the right pane.
+    pub thread: Option<crate::right_pane::ThreadModel>,
     /// A link's preview for the composer, or `None` when it has none
     /// (#188).
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
@@ -408,6 +413,7 @@ impl Live {
                 open: None,
                 posts: None,
                 max_post_size: None,
+                thread: None,
                 threads_choice: None,
                 threads_on: None,
                 zone: jiff::tz::TimeZone::system(),
@@ -697,6 +703,72 @@ impl Live {
             terms: terms.to_owned(),
             time_zone_offset: offset,
         });
+    }
+
+    /// Shows the thread under `root_id` in the right pane; its posts come
+    /// as [`Update::thread`] now and whenever they change.
+    pub fn open_thread(&mut self, root_id: &str) {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|(open, _)| open == root_id)
+        {
+            return;
+        }
+        self.close_thread();
+        self.thread = Some((root_id.to_owned(), None));
+        self.send(Command::OpenThread {
+            root_id: root_id.to_owned(),
+        });
+    }
+
+    /// The right pane moved on from the thread.
+    pub fn close_thread(&mut self) {
+        if let Some((root_id, _)) = self.thread.take() {
+            self.send(Command::CloseThread { root_id });
+        }
+    }
+
+    /// The open thread's channel, for a reply: the root's own.
+    pub fn thread_channel(&self) -> Option<String> {
+        let (_, posts) = self.thread.as_ref()?;
+        Some(posts.as_ref()?.first()?.channel_id.clone())
+    }
+
+    /// The open thread as the pane shows it.
+    fn thread_model(&mut self) -> Option<crate::right_pane::ThreadModel> {
+        let (_, Some(posts)) = self.thread.as_ref()? else {
+            return None;
+        };
+        let posts = posts.clone();
+        let (root, replies) = posts.split_first()?;
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            keys: &self.prefs.keys,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+        };
+        let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
+        let mut model = crate::right_pane::ThreadModel {
+            channel_name: self.channel_name(&root.channel_id).unwrap_or_default(),
+            root: shown(root),
+            replies: replies
+                .iter()
+                .filter(|post| post.delete_at == 0)
+                .map(shown)
+                .collect(),
+            following: false,
+        };
+        for post in std::iter::once(&mut model.root).chain(model.replies.iter_mut()) {
+            if self.failed.contains(post.id.as_ref()) {
+                post.status = crate::channel::PostStatus::Failed;
+            }
+        }
+        let all: Vec<_> = std::iter::once(model.root.clone())
+            .chain(model.replies.iter().cloned())
+            .collect();
+        self.ask_thumbnails(&all);
+        Some(model)
     }
 
     /// The search model for what has come back so far.
@@ -1030,10 +1102,25 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
+            ChangeSet::Thread { root_id, posts } => {
+                if let Some((open, shown)) = &mut self.thread
+                    && open == root_id
+                {
+                    *shown = Some(posts.clone());
+                    update.thread = self.thread_model();
+                }
+            }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
                     self.take_notify_props(user, &mut update);
+                }
+                if self
+                    .thread
+                    .as_ref()
+                    .is_some_and(|(_, posts)| posts.is_some())
+                {
+                    update.thread = self.thread_model();
                 }
                 if self
                     .search
@@ -1730,6 +1817,38 @@ mod tests {
         let old = [shown("a", "one"), shown("c", "three")];
         let new = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
         assert_eq!(patch(&old, &new), None);
+    }
+
+    #[test]
+    fn the_open_thread_reaches_the_pane_and_others_do_not() {
+        let mut live = live();
+        let post = |id: &str, message: &str| matty_api::models::Post {
+            id: id.into(),
+            channel_id: "c1".into(),
+            user_id: "ada".into(),
+            message: message.into(),
+            root_id: if id == "root" {
+                String::new()
+            } else {
+                "root".into()
+            },
+            ..Default::default()
+        };
+        let thread = |root: &str| ChangeSet::Thread {
+            root_id: root.into(),
+            posts: Arc::from(vec![post("root", "Plan?"), post("r1", "Yes")]),
+        };
+        assert_eq!(live.apply(&thread("root")).thread, None, "not open");
+        live.open_thread("root");
+        assert_eq!(live.thread_channel(), None, "no posts yet");
+        let model = live.apply(&thread("root")).thread.unwrap();
+        assert_eq!(model.root.body.as_ref(), "Plan?");
+        let replies: Vec<_> = model.replies.iter().map(|r| r.body.as_ref()).collect();
+        assert_eq!(replies, ["Yes"]);
+        assert_eq!(live.thread_channel().as_deref(), Some("c1"));
+        assert_eq!(live.apply(&thread("other")).thread, None);
+        live.close_thread();
+        assert_eq!(live.apply(&thread("root")).thread, None, "closed");
     }
 
     fn opened(live: &mut Live) {
