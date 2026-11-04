@@ -312,7 +312,7 @@ impl MainWindow {
 
     /// Writes one of the user's `notify_props` to the server (#158). The
     /// server sends the user back, which updates the policy's preferences.
-    fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
+    pub(super) fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
         let Some(props) = &self.notify_props else {
             return;
         };
@@ -1014,6 +1014,20 @@ impl MainWindow {
                         user.desktop_sound,
                         "desktop_sound",
                         ("true", "false"),
+                    ))
+                    .child(labelled_row(
+                        "Notification sound".into(),
+                        "Choosing one plays it.".into(),
+                        div()
+                            .flex_shrink_0()
+                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
+                            .child(
+                                Select::new(&self.sound)
+                                    .aria_label("Notification sound")
+                                    .disabled(!user.desktop_sound),
+                            )
+                            .into_any_element(),
+                        &theme,
                     )),
                 true,
                 &theme,
