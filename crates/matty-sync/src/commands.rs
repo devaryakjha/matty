@@ -50,6 +50,7 @@ pub(crate) enum Write {
         dnd_end_time: Option<i64>,
     },
     NotifyProps(std::collections::HashMap<String, String>),
+    Profile(matty_api::ProfilePatch),
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -59,6 +60,17 @@ pub(crate) enum Write {
     },
     Leave {
         channel_id: String,
+    },
+    Archive {
+        channel_id: String,
+    },
+    RemoveMember {
+        channel_id: String,
+        user_id: String,
+    },
+    Privacy {
+        channel_id: String,
+        private: bool,
     },
     /// Reads, not writes, but likewise asked for by a view and answered
     /// once.
@@ -97,6 +109,20 @@ pub(crate) enum Write {
     ReadAllThreads {
         team_id: String,
     },
+    /// A new custom sidebar category (#208).
+    CreateCategory {
+        team_id: String,
+        category: Box<matty_api::models::SidebarCategory>,
+    },
+    /// Saves a renamed category, or one a channel moved into.
+    UpdateCategory {
+        team_id: String,
+        category: Box<matty_api::models::SidebarCategory>,
+    },
+    DeleteCategory {
+        team_id: String,
+        category_id: String,
+    },
     /// Follows or unfollows a thread; the store already shows it.
     Follow {
         team_id: String,
@@ -121,9 +147,13 @@ impl Write {
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
+            Self::Profile(_) => "save your profile",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
+            Self::Archive { .. } => "archive channel",
+            Self::RemoveMember { .. } => "remove member",
+            Self::Privacy { .. } => "change channel privacy",
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
             Self::Search { .. } => "search",
@@ -134,6 +164,9 @@ impl Write {
             Self::Preferences(_) => "save preferences",
             Self::ReadThread { .. } => "mark thread read",
             Self::ReadAllThreads { .. } => "mark threads read",
+            Self::CreateCategory { .. } => "create category",
+            Self::UpdateCategory { .. } => "change category",
+            Self::DeleteCategory { .. } => "delete category",
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
             Self::Resolve(_) => "open link",
@@ -151,10 +184,13 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) => user_id.to_owned(),
+            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
+            | Self::Archive { channel_id }
+            | Self::RemoveMember { channel_id, .. }
+            | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
@@ -162,6 +198,10 @@ impl Write {
             | Self::People { team_id }
             | Self::Search { team_id, .. }
             | Self::ReadAllThreads { team_id } => team_id.clone(),
+            Self::CreateCategory { category, .. } | Self::UpdateCategory { category, .. } => {
+                category.display_name.clone()
+            }
+            Self::DeleteCategory { category_id, .. } => category_id.clone(),
             Self::ReadThread { thread_id, .. } | Self::Follow { thread_id, .. } => {
                 thread_id.clone()
             }
@@ -322,6 +362,10 @@ pub(crate) async fn run(
                 let user = client.patch_notify_props(&user_id, &notify_props).await?;
                 Some(Loaded::Users(vec![user]))
             }
+            Write::Profile(patch) => {
+                let user = client.patch_profile(&user_id, &patch).await?;
+                Some(Loaded::Users(vec![user]))
+            }
             Write::OpenDirect { user_ids } => {
                 let channel = match user_ids.as_slice() {
                     [other] => client.direct_channel(&user_id, other).await?,
@@ -368,6 +412,27 @@ pub(crate) async fn run(
                 client.remove_channel_member(&channel_id, &user_id).await?;
                 Some(Loaded::Left { channel_id })
             }
+            Write::RemoveMember {
+                channel_id,
+                user_id,
+            } => {
+                client.remove_channel_member(&channel_id, &user_id).await?;
+                Some(Loaded::Stats(client.channel_stats(&channel_id).await?))
+            }
+            Write::Archive { channel_id } => {
+                client.archive_channel(&channel_id).await?;
+                Some(Loaded::Left { channel_id })
+            }
+            Write::Privacy {
+                channel_id,
+                private,
+            } => {
+                let channel = client.set_channel_privacy(&channel_id, private).await?;
+                Some(Loaded::Channel {
+                    channel: Box::new(channel),
+                    member: None,
+                })
+            }
             Write::Browse { team_id } => {
                 let mut channels = Vec::new();
                 for page in 0..BROWSE_PAGES {
@@ -408,6 +473,23 @@ pub(crate) async fn run(
                     posts: results.list.ordered().cloned().collect(),
                     terms: query.terms,
                 })
+            }
+            Write::CreateCategory { team_id, category } => {
+                client.create_category(&team_id, &category).await?;
+                categories(&client, team_id).await?
+            }
+            Write::UpdateCategory { team_id, category } => {
+                client
+                    .update_categories(&team_id, std::slice::from_ref(&*category))
+                    .await?;
+                categories(&client, team_id).await?
+            }
+            Write::DeleteCategory {
+                team_id,
+                category_id,
+            } => {
+                client.delete_category(&team_id, &category_id).await?;
+                categories(&client, team_id).await?
             }
             Write::Patch { channel_id, patch } => {
                 let channel = client.patch_channel(&channel_id, &patch).await?;
@@ -461,6 +543,16 @@ pub(crate) async fn run(
         },
     };
     let _ = results.send(message);
+}
+
+/// A team's categories after a change to them, so the sidebar shows the
+/// server's result without waiting for the socket.
+async fn categories(client: &Client, team_id: String) -> Result<Option<Loaded>, ApiError> {
+    let categories = client.sidebar_categories(&team_id).await?;
+    Ok(Some(Loaded::Categories {
+        team_id,
+        categories,
+    }))
 }
 
 /// Asks the server what a link names.

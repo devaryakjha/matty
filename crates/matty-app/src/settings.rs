@@ -172,6 +172,18 @@ pub struct SavedAccount {
     pub display_name: String,
 }
 
+/// A server whose check went through, for the sign-in card's server step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentServer {
+    /// The normalized URL Matty checked, like `https://chat.example.com`.
+    pub url: String,
+    /// The server's `SiteName`, or its host when it has none.
+    pub name: String,
+}
+
+/// How many servers the server step remembers.
+pub const RECENT_SERVERS: usize = 3;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -199,6 +211,8 @@ pub struct Settings {
     /// the OS reduced-motion setting does the same on its own.
     pub reduce_motion: bool,
     pub account: Option<SavedAccount>,
+    /// Servers whose check went through, newest first.
+    pub recent_servers: Vec<RecentServer>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -226,12 +240,28 @@ impl Default for Settings {
             name_format: NameFormat::NicknameFullName,
             reduce_motion: false,
             account: None,
+            recent_servers: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }
 }
 
 impl Settings {
+    /// Puts `url` first among the recent servers under `name`, dropping
+    /// its older entry and any past [`RECENT_SERVERS`].
+    pub fn remember_server(&mut self, url: &str, name: &str) {
+        self.recent_servers
+            .retain(|server| !server.url.eq_ignore_ascii_case(url));
+        self.recent_servers.insert(
+            0,
+            RecentServer {
+                url: url.to_string(),
+                name: name.to_string(),
+            },
+        );
+        self.recent_servers.truncate(RECENT_SERVERS);
+    }
+
     /// Clamps values a hand-edited file could put out of range.
     fn sanitize(mut self) -> Self {
         let clamp = |value: f32, min: f32, max: f32, default: f32| {
@@ -255,6 +285,7 @@ impl Settings {
         );
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
+        self.recent_servers.truncate(RECENT_SERVERS);
         self
     }
 }
@@ -391,6 +422,12 @@ impl SettingsStore {
         cx.global::<GlobalSettings>().0.clone()
     }
 
+    /// The store, where one is installed (views built in tests may have none).
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalSettings>()
+            .map(|global| global.0.clone())
+    }
+
     pub fn get(&self) -> &Settings {
         &self.settings
     }
@@ -429,6 +466,29 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_servers_keep_the_newest_three_once_each() {
+        let mut settings = Settings::default();
+        for (url, name) in [
+            ("https://a.example.com", "A"),
+            ("https://b.example.com", "B"),
+            ("https://c.example.com", "C"),
+            ("https://A.example.com", "A again"),
+            ("https://d.example.com", "D"),
+        ] {
+            settings.remember_server(url, name);
+        }
+        let names: Vec<_> = settings
+            .recent_servers
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect();
+        assert_eq!(names, ["D", "A again", "C"]);
+        // An older file without the key still loads.
+        let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
+        assert!(old.recent_servers.is_empty());
+    }
 
     #[test]
     fn round_trips_and_keeps_unknown_keys() {

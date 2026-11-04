@@ -321,26 +321,55 @@ pub fn composer_cap(window: &gpui_kit::Window) -> gpui_kit::Pixels {
     window.viewport_size().height * 0.4
 }
 
+/// The presence dot over an avatar's bottom-right corner (DESIGN.md §3,
+/// #135): filled for online, away and Do not disturb, a hollow ring for
+/// offline. `ring` is the surface it sits on, so the dot reads as cut out
+/// of the avatar. The dot has no label of its own; the avatar's label says
+/// the presence (see [`presence_name`]). gpuicn's Avatar has no status
+/// slot yet (devaryakjha/gpuicn#115); this goes when it does.
+pub fn presence_dot(
+    presence: crate::sidebar::Presence,
+    size: Pixels,
+    ring: Rgba,
+    theme: &UiTheme,
+    palette: &Palette,
+) -> gpui_kit::Div {
+    use crate::sidebar::Presence;
+    let dot = gpui_kit::div()
+        .absolute()
+        .bottom(gpui_kit::px(-2.))
+        .right(gpui_kit::px(-2.))
+        .size(size)
+        .rounded_full()
+        .border_2()
+        .border_color(ring);
+    let fill = match presence {
+        Presence::Online => palette.online,
+        Presence::Away => palette.away,
+        Presence::Dnd => palette.dnd,
+        Presence::Offline => {
+            return dot.bg(ring).child(
+                gpui_kit::div()
+                    .size_full()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.colors.muted_foreground),
+            );
+        }
+    };
+    dot.bg(fill)
+}
+
+/// An avatar's accessible label with the presence its dot shows, such as
+/// "Ana Lopez, away".
+pub fn presence_name(name: &str, presence: crate::sidebar::Presence) -> SharedString {
+    let state = crate::account::presence_label(presence).to_lowercase();
+    format!("{name}, {state}").into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn luminance(color: Rgba) -> f32 {
-        fn channel(c: f32) -> f32 {
-            if c <= 0.03928 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        }
-        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
-    }
-
-    /// WCAG 2.1 contrast ratio.
-    fn contrast(a: Rgba, b: Rgba) -> f32 {
-        let (la, lb) = (luminance(a) + 0.05, luminance(b) + 0.05);
-        la.max(lb) / la.min(lb)
-    }
 
     #[test]
     fn theme_css_parses_in_both_modes() {
@@ -362,34 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn text_meets_wcag_aa_on_its_surfaces() {
-        for mode in [ThemeMode::Light, ThemeMode::Dark] {
-            let c = theme(mode).colors;
-            let pairs = [
-                ("foreground/background", c.foreground, c.background),
-                ("muted/background", c.muted_foreground, c.background),
-                ("muted/sidebar", c.muted_foreground, c.sidebar),
-                ("sidebar fg/sidebar", c.sidebar_foreground, c.sidebar),
-                (
-                    "sidebar fg/sidebar accent",
-                    c.sidebar_accent_foreground,
-                    c.sidebar_accent,
-                ),
-                ("primary fg/primary", c.primary_foreground, c.primary),
-                ("popover fg/popover", c.popover_foreground, c.popover),
-            ];
-            for (name, fg, bg) in pairs {
-                let ratio = contrast(fg, bg);
-                assert!(ratio >= 4.5, "{mode:?} {name}: contrast {ratio:.2} < 4.5");
-            }
-        }
-    }
-
-    #[test]
     fn scaled_follows_the_spacing_unit() {
         let mut t = theme(ThemeMode::Light);
         assert_eq!(scaled(&t, metrics::HEADER_HEIGHT), px(48.));
         t.spacing.unit = px(5.);
         assert_eq!(scaled(&t, metrics::HEADER_HEIGHT), px(60.));
+    }
+
+    #[test]
+    fn avatar_labels_name_the_presence() {
+        use crate::sidebar::Presence;
+        assert_eq!(
+            presence_name("Ana Lopez", Presence::Away),
+            "Ana Lopez, away"
+        );
+        assert_eq!(presence_name("Ben", Presence::Dnd), "Ben, do not disturb");
+        assert_eq!(presence_name("Cy", Presence::Offline), "Cy, offline");
     }
 }

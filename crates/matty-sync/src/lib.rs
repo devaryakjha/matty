@@ -21,6 +21,7 @@ mod load;
 #[cfg(not(target_family = "wasm"))]
 mod netwatch;
 mod outbox;
+mod presence;
 mod typing;
 #[cfg(target_family = "wasm")]
 mod web;

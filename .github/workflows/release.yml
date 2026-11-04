@@ -1,0 +1,223 @@
+name: Release
+
+# Runs only for a pushed version tag (PLAN §10, #179), never for branch pushes
+# or pull requests. A tag with a pre-release suffix (v0.1.0-beta.1) makes a
+# GitHub pre-release. Publishing waits for an approval on the `release`
+# environment, so a release needs Arya's explicit go.
+#
+# Optional repository secrets. Without them the app is ad hoc signed and the
+# release notes say so:
+#   MACOS_CERTIFICATE_P12       base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD  its export password
+#   APPLE_NOTARY_KEY_P8         contents of an App Store Connect API key (.p8)
+#   APPLE_NOTARY_KEY_ID         that key's id
+#   APPLE_NOTARY_ISSUER         its issuer id
+#   HOMEBREW_TAP_TOKEN          lets the homebrew job open the cask bump PR
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: macos universal
+    runs-on: macos-14
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      notarized: ${{ steps.package.outputs.notarized }}
+    env:
+      # Developer ID signing and notarization (#178) are skipped, and the
+      # build is ad hoc signed, while these secrets are not set.
+      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_NOTARY_KEY_P8 != '' && secrets.APPLE_NOTARY_KEY_ID != '' && secrets.APPLE_NOTARY_ISSUER != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches the workspace version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ "${version%%-*}" != "$cargo_version" ]]; then
+            echo "::error::tag $TAG does not match the workspace version $cargo_version in Cargo.toml"
+            exit 1
+          fi
+          prerelease=false
+          [[ "$version" != *-* ]] || prerelease=true
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Import the Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/matty-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          echo "::add-mask::$keychain_password"
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode >"$cert"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign
+          rm -f "$cert"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          # Prepend to the search list so codesign finds the identity.
+          read -r -a existing < <(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
+          if [[ -z "$identity" ]]; then
+            echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          echo "MATTY_SIGN_IDENTITY=$identity" >>"$GITHUB_ENV"
+          echo "MATTY_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
+
+      - name: Build target/dist/Matty.app
+        env:
+          MATTY_VERSION: ${{ steps.version.outputs.version }}
+          MATTY_BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/release-bundle
+
+      - name: The bundle is universal and signed
+        run: |
+          app=target/dist/Matty.app
+          file "$app/Contents/MacOS/matty"
+          lipo "$app/Contents/MacOS/matty" -verify_arch arm64 x86_64
+          codesign --verify --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Signature)=' || true
+          "$app/Contents/MacOS/matty" --version
+
+      - name: Package the DMG, zip and SHA256SUMS
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          MATTY_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          MATTY_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          notarized=false
+          if [[ "$HAS_NOTARY" == true && -n "${MATTY_SIGN_IDENTITY:-}" ]]; then
+            export MATTY_NOTARY_KEY="$RUNNER_TEMP/notary-key.p8"
+            printf '%s\n' "$APPLE_NOTARY_KEY_P8" >"$MATTY_NOTARY_KEY"
+            notarized=true
+          else
+            # Notarization needs a Developer ID signature.
+            unset MATTY_NOTARY_KEY_ID MATTY_NOTARY_ISSUER
+          fi
+          scripts/release-package "$VERSION"
+          rm -f "$RUNNER_TEMP/notary-key.p8"
+          echo "notarized=$notarized" >>"$GITHUB_OUTPUT"
+
+      - name: Remove the signing keychain
+        if: always() && env.MATTY_KEYCHAIN != ''
+        run: security delete-keychain "$MATTY_KEYCHAIN"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-release
+          path: target/dist/release/
+          if-no-files-found: error
+
+  publish:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Configure required reviewers on this environment in the repository
+    # settings; without them the release publishes without waiting.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: matty-release
+          path: release
+      - name: The checksums match
+        working-directory: release
+        run: sha256sum --check SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          NOTARIZED: ${{ needs.build.outputs.notarized }}
+        run: |
+          args=(--verify-tag --title "Matty $VERSION" --generate-notes)
+          [[ "$PRERELEASE" != true ]] || args+=(--prerelease)
+          if [[ "$NOTARIZED" == true ]]; then
+            notes="Download the DMG, open it and drag Matty to Applications."
+          else
+            notes="This build is not signed with a Developer ID or notarized. macOS will refuse to open it at first: right-click Matty.app, choose Open, then confirm, or run \`xattr -dr com.apple.quarantine /Applications/Matty.app\`."
+          fi
+          gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
+
+  homebrew:
+    # Opens a pull request on the tap that bumps the cask (#203). Stable
+    # releases only, and only once HOMEBREW_TAP_TOKEN (a token that can push
+    # to devaryakjha/homebrew-matty and open pull requests there) is set.
+    name: Homebrew cask bump
+    needs: [build, publish]
+    if: needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - if: env.HAS_TAP_TOKEN != 'true'
+        run: echo "HOMEBREW_TAP_TOKEN is not set; skipping the cask bump"
+      - if: env.HAS_TAP_TOKEN == 'true'
+        uses: actions/checkout@v4
+      - name: Open the bump pull request
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAP: devaryakjha/homebrew-matty
+        run: |
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          gh auth setup-git
+          gh repo clone "$TAP" "$RUNNER_TEMP/tap" -- --depth 1
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          scripts/homebrew-cask "$VERSION" "$RUNNER_TEMP/SHA256SUMS" >"$RUNNER_TEMP/tap/Casks/matty.rb"
+          cd "$RUNNER_TEMP/tap"
+          if [[ -z "$(git status --porcelain -- Casks/matty.rb)" ]]; then
+            echo "The cask is already at $VERSION"
+            exit 0
+          fi
+          branch="matty-$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add Casks/matty.rb
+          git commit -m "matty $VERSION"
+          git push origin "$branch"
+          gh pr create --repo "$TAP" --head "$branch" --title "matty $VERSION" \
+            --body "Bumps the cask to [Matty $VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION)."
