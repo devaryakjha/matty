@@ -405,6 +405,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   the emoji picker, P pins, S saves, U marks unread from there. Keys with a
   modifier stay with the keymap, and nothing fires while no post is
   selected, so ordinary typing is never stolen.
+- **Message context menu** (PLAN §4.2): right-clicking a message selects it
+  and opens a gpuicn `Menu` at the pointer with Reply in thread and Add
+  reaction, then the toolbar's More items (Copy text, Pin, Save) plus Mark
+  as unread, and Edit and Delete on your own posts (`design-41`). The menu
+  returns focus to the transcript when it closes, so the selection keys
+  keep working, and Escape then hands focus back to the composer.
 
 ## 5. Components
 

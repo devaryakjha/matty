@@ -1674,6 +1674,65 @@ impl ChannelView {
         items
     }
 
+    /// The right-click menu: reply and react first, then everything the
+    /// "More" button offers, with "Mark as unread" after Save.
+    fn context_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+        let view = cx.entity().downgrade();
+        let id = post.id.clone();
+        let act = |name: &'static str, label: &'static str, run: MenuAction| {
+            let view = view.clone();
+            MenuItem::new(
+                gpui_kit::ElementId::Name(format!("post.context.{name}").into()),
+                label,
+            )
+            .on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| run(this, window, cx)).ok();
+            })
+        };
+        let reply_id = id.clone();
+        let react_id = id.clone();
+        let unread_id = id.clone();
+        let mut items = vec![
+            act(
+                "reply",
+                "Reply in thread",
+                Box::new(move |_, _, cx| cx.emit(ChannelEvent::OpenThread(reply_id.clone()))),
+            ),
+            act(
+                "react",
+                "Add reaction…",
+                Box::new(move |this, _, cx| this.open_picker(Some(react_id.clone()), cx)),
+            ),
+            MenuItem::separator(),
+        ];
+        let more = Self::more_items_for(post, cx);
+        // `more` is copy, pin, save, then the owner's edit and delete.
+        let (keep, own) = more.split_at(3.min(more.len()));
+        items.extend(keep.iter().cloned());
+        items.push(act(
+            "unread",
+            "Mark as unread",
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::MarkUnread(unread_id.clone()))),
+        ));
+        items.extend(own.iter().cloned());
+        items
+    }
+
+    /// Selects the row that shows `id`, if it is in the transcript.
+    fn select_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(posts) = self.model.as_ref().map(|model| &model.posts) else {
+            return;
+        };
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index) if posts.get(*index).is_some_and(|post| &post.id == id))
+        });
+        if row.is_some() {
+            self.selection = row;
+            window.focus(&self.list_focus, cx);
+            cx.notify();
+        }
+    }
+
     /// "Delete message?" with the action named in the button (PLAN §4.5).
     fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
@@ -2295,7 +2354,18 @@ impl ChannelView {
         if let Some(summary) = &post.replies {
             row = row.child(Self::reply_footer(&id, summary, cx));
         }
-        row
+        // Right-click selects the row and opens the same actions as the
+        // toolbar's "More" button, plus reply and react (PLAN §4.2).
+        let context_items = Self::context_items_for(post, cx);
+        div()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    this.select_post(&id, window, cx);
+                    this.open_menu(context_items.clone(), event.position, window, cx);
+                }),
+            )
+            .child(row)
     }
 
     /// The thread line under a post with replies: who replied, how many,
