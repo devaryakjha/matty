@@ -348,6 +348,9 @@ pub enum ChannelEvent {
     OpenFile(SharedString),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
+    /// U on a selected post: unread from this post on (PLAN §4.2); sync
+    /// tells the server.
+    MarkUnread(SharedString),
     /// The user asked for the channel's pinned messages.
     OpenPinned,
     /// The user asked for the channel info pane (header info button or the
@@ -459,6 +462,16 @@ pub struct ChannelView {
     /// Posts that arrived while the reader was scrolled up; the jump pill
     /// counts them until the list is back at the end.
     unseen: usize,
+    /// The post the reader jumped to from a listing or a link, tinted as
+    /// a permalink target until the timer below clears it.
+    permalink: Option<SharedString>,
+    _permalink_task: Option<gpui_kit::Task<()>>,
+    /// A jump whose post is not in the transcript yet; applied when it
+    /// arrives with the channel or a later page.
+    pending_jump: Option<SharedString>,
+    /// The row chosen with the keyboard (PLAN §4.2); single keys act on it.
+    selection: Option<usize>,
+    list_focus: gpui_kit::FocusHandle,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -513,6 +526,16 @@ impl ChannelView {
                         .update(cx, |this, cx| {
                             let text = this.composer.read(cx).value(cx);
                             this.send(text, window, cx);
+                            true
+                        })
+                        .unwrap_or(false);
+                }
+                if keystroke.key == "tab" && keystroke.modifiers.shift {
+                    // Shift+Tab leaves the composer for keyboard message
+                    // selection (PLAN §4.2).
+                    return keys
+                        .update(cx, |this, cx| {
+                            this.select_newest(window, cx);
                             true
                         })
                         .unwrap_or(false);
@@ -672,6 +695,11 @@ impl ChannelView {
             lightbox_files: Vec::new(),
             editing: None,
             unseen: 0,
+            permalink: None,
+            _permalink_task: None,
+            pending_jump: None,
+            selection: None,
+            list_focus: cx.focus_handle(),
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -707,6 +735,8 @@ impl ChannelView {
                 list.scroll_to_item(divider, cx);
             });
         }
+        self.permalink = None;
+        self.selection = None;
         if crate::preview::enabled() {
             self.schedule_preview_arrivals(model.as_ref(), cx);
         }
@@ -723,12 +753,48 @@ impl ChannelView {
             composer.set_placeholder(placeholder, window, cx);
         });
         self.model = model;
+        self.apply_pending_jump(cx);
         cx.notify();
     }
 
     /// Adds posts that arrived from the server to the end of the transcript
     /// without disturbing the scroll position. While the reader is scrolled
     /// up, the jump pill counts them as "N new messages".
+    /// Scrolls to `post` and tints it as a permalink target for a few
+    /// seconds (PLAN §4.2). When the post is not on screen yet, the jump
+    /// waits for the channel or page that carries it.
+    pub fn jump_to(&mut self, post: SharedString, cx: &mut Context<Self>) {
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if self.model.as_ref().is_some_and(|m| m.posts[*index].id == post))
+        });
+        let Some(row) = row else {
+            self.pending_jump = Some(post);
+            return;
+        };
+        self.pending_jump = None;
+        self.list
+            .update(cx, |list, cx| list.scroll_to_item(row, cx));
+        self.permalink = Some(post);
+        self._permalink_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.permalink = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn apply_pending_jump(&mut self, cx: &mut Context<Self>) {
+        if let Some(post) = self.pending_jump.clone() {
+            self.jump_to(post, cx);
+        }
+    }
+
     pub fn append_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
         if posts.is_empty() {
             return;
@@ -748,6 +814,7 @@ impl ChannelView {
         if scrolled_up {
             self.unseen += arrived;
         }
+        self.apply_pending_jump(cx);
         cx.notify();
     }
 
@@ -1601,11 +1668,7 @@ impl ChannelView {
             items.push(act(
                 "delete",
                 "Delete…".into(),
-                Box::new(move |this, window, cx| {
-                    this.deleting = Some(delete_id.clone());
-                    this.delete.open(window, cx);
-                    cx.notify();
-                }),
+                Box::new(move |this, window, cx| this.ask_delete(delete_id.clone(), window, cx)),
             ));
         }
         items
@@ -2075,6 +2138,7 @@ impl ChannelView {
         post: &Post,
         profile: Option<&UserProfile>,
         editor: Option<&Entity<ComposerState>>,
+        highlight: MessageHighlight,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2151,11 +2215,7 @@ impl ChannelView {
             .timestamp(time.clone())
             .gutter_time(time)
             .continuation(post.continues)
-            .highlight(if post.mentions_me {
-                MessageHighlight::Mention
-            } else {
-                MessageHighlight::None
-            })
+            .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
@@ -2385,16 +2445,129 @@ impl ChannelView {
                             .as_ref()
                             .filter(|editing| editing.post == post.id)
                             .map(|editing| editing.composer.clone());
-                        Self::post_row(&post, profile, editor.as_ref(), cx).into_any_element()
+                        let highlight = this.row_highlight(index, &post);
+                        Self::post_row(&post, profile, editor.as_ref(), highlight, cx)
+                            .into_any_element()
                     })
                 }
                 None => div().into_any_element(),
             },
         )
         .unseen(self.unseen)
+        .track_focus(&self.list_focus)
+        .selected(self.selection)
+        .selectable({
+            let rows = self.rows.clone();
+            move |index, _| matches!(rows.get(index), Some(Row::Post(_)))
+        })
+        .on_select({
+            let view = cx.entity().downgrade();
+            move |index, window, cx| {
+                view.update(cx, |this, cx| this.select_row(index, window, cx))
+                    .ok();
+            }
+        })
+        .on_key({
+            let view = cx.entity().downgrade();
+            move |event, selected, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.selection_key(&event.keystroke, selected, window, cx)
+                })
+                .unwrap_or(false)
+            }
+        })
         .size_full()
         .pt(theme.space(2.))
         .pb(theme.space(1.))
+    }
+
+    /// Up, Down or Escape moved the selection; Escape hands focus back to
+    /// the composer (PLAN §4.2).
+    fn select_row(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.selection = index;
+        if index.is_none() {
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Enters selection mode on the newest post, from Shift+Tab in the
+    /// composer or a gutter click.
+    fn select_newest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let newest = self
+            .rows
+            .iter()
+            .rposition(|row| matches!(row, Row::Post(_)));
+        if newest.is_some() {
+            self.selection = newest;
+            window.focus(&self.list_focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// Single keys on the selected post, as in Discord: R reply, E edit,
+    /// Delete removes own, + react, P pin, S save, U mark unread. Keys with
+    /// a modifier are left to the keymap. Returns whether the key was used.
+    fn selection_key(
+        &mut self,
+        keystroke: &gpui_kit::Keystroke,
+        selected: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.platform || modifiers.alt {
+            return false;
+        }
+        let Some(Row::Post(index)) = selected.and_then(|row| self.rows.get(row).cloned()) else {
+            return false;
+        };
+        let Some(post) = self
+            .model
+            .as_ref()
+            .and_then(|m| m.posts.get(index))
+            .cloned()
+        else {
+            return false;
+        };
+        let id = post.id.clone();
+        match keystroke.key.as_str() {
+            "r" => cx.emit(ChannelEvent::OpenThread(id)),
+            "e" if post.mine => {
+                self.selection = None;
+                self.start_edit(id, window, cx);
+            }
+            "delete" | "backspace" if post.mine => self.ask_delete(id, window, cx),
+            "+" | "=" if keystroke.key == "+" || modifiers.shift => self.open_picker(Some(id), cx),
+            "p" => self.toggle_pin(id, cx),
+            "s" => self.toggle_save(id, cx),
+            "u" => cx.emit(ChannelEvent::MarkUnread(id)),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Opens "Delete message?" for `id` (PLAN §4.5).
+    fn ask_delete(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.deleting = Some(id);
+        self.delete.open(window, cx);
+        cx.notify();
+    }
+
+    /// Selection wins over permalink over mention: the reader's own choice
+    /// comes first, then the row they asked for.
+    fn row_highlight(&self, row: usize, post: &Post) -> MessageHighlight {
+        if self.selection == Some(row) {
+            MessageHighlight::Selected
+        } else if self.permalink.as_ref() == Some(&post.id) {
+            MessageHighlight::Permalink
+        } else if post.mentions_me {
+            MessageHighlight::Mention
+        } else {
+            MessageHighlight::None
+        }
     }
 
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
