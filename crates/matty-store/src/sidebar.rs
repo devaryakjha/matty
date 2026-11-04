@@ -111,7 +111,8 @@ pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<()> {
 }
 
 /// Inserts or replaces channel memberships, keeping both the root and the
-/// non-root counts.
+/// non-root counts. A scheme admin is stored with `channel_admin` in its
+/// roles, so the store needs no column for the flag.
 pub fn upsert_channel_members(conn: &Connection, members: &[ChannelMember]) -> Result<()> {
     let mut statement = conn.prepare_cached(
         "INSERT INTO channel_members (channel_id, user_id, roles, last_viewed_at, msg_count,
@@ -127,10 +128,20 @@ pub fn upsert_channel_members(conn: &Connection, members: &[ChannelMember]) -> R
              notify_props = excluded.notify_props, last_update_at = excluded.last_update_at",
     )?;
     for member in members {
+        let admin = member.scheme_admin
+            && !member
+                .roles
+                .split_whitespace()
+                .any(|r| r == "channel_admin");
+        let roles = if admin {
+            format!("{} channel_admin", member.roles).trim().to_owned()
+        } else {
+            member.roles.clone()
+        };
         statement.execute(params![
             member.channel_id,
             member.user_id,
-            member.roles,
+            roles,
             member.last_viewed_at,
             member.msg_count,
             member.mention_count,
@@ -205,6 +216,40 @@ pub fn upsert_category(
         statement.execute(params![category.id, channel_id, position as i64])?;
     }
     Ok(())
+}
+
+/// One stored category with its channels in order, as the server would
+/// send it back; `None` when it is not stored.
+pub fn category(conn: &Connection, category_id: &str) -> Result<Option<SidebarCategory>> {
+    let row = conn
+        .query_row(
+            "SELECT team_id, kind, display_name, sorting, collapsed, muted
+             FROM categories WHERE id = ?1",
+            [category_id],
+            |row| {
+                Ok(SidebarCategory {
+                    id: category_id.to_owned(),
+                    team_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    display_name: row.get(2)?,
+                    sorting: row.get(3)?,
+                    collapsed: row.get(4)?,
+                    muted: row.get(5)?,
+                    ..SidebarCategory::default()
+                })
+            },
+        )
+        .optional()?;
+    let Some(mut category) = row else {
+        return Ok(None);
+    };
+    let mut statement = conn.prepare_cached(
+        "SELECT channel_id FROM category_channels WHERE category_id = ?1 ORDER BY sort_order",
+    )?;
+    category.channel_ids = statement
+        .query_map([category_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Some(category))
 }
 
 /// Removes a category; its channels go with it only from the category.
@@ -689,6 +734,8 @@ pub fn channel_member(
                 urgent_mention_count: row.get(6)?,
                 notify_props: serde_json::from_str(&notify_props).unwrap_or_default(),
                 last_update_at: row.get(8)?,
+                // Stored as `channel_admin` in `roles`.
+                scheme_admin: false,
             })
         })
         .optional()?;

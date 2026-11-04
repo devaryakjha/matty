@@ -119,7 +119,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   rows are 28px, 8px padding, 6px radius, icon 16px. Unread rows use
   `ui_strong` in `sidebar-foreground`; read rows use `muted-foreground`;
   muted channels are 60% opacity; the selected row is `sidebar-accent`.
-  Mention counts are `primary` pills.
+  Mention counts are `primary` pills. A channel with an unsent draft shows
+  a `muted-foreground` pencil in its icon slot while another channel is
+  open, as Mattermost does.
 - **Channel view** has a 48px header (name in `title`, star, member count,
   pinned count, info) over the post list and the composer. Posts use 20px
   horizontal gutters, 32px avatars, Medium author and `meta` time, grouped
@@ -142,7 +144,11 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 
 - **Sign in** (PLAN §4.5) is one 400px card on the `sidebar` surface under
   the wordmark, never a wizard. Step one asks only for the server address
-  and assumes `https`. Step two shows the server as a muted chip with
+  and assumes `https`; leaving the field says what is wrong with an address
+  that cannot work, and typing clears it. Below Continue, up to three
+  servers checked before sit under a `RECENT SERVERS` label as outline
+  rows (the server's name, its host in `meta` when it differs) that check
+  that server again in one press. Step two shows the server as a muted chip with
   Change, then the password form, an OR rule, outline buttons for each SSO
   provider the server enables, and a personal access token behind a text
   link. Where the server offers both its own accounts and AD/LDAP, a joined

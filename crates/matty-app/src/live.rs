@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
-use matty_api::{ApiError, Client, ServerCapabilities};
+use matty_api::{ApiError, Client, ProbeError, ServerCapabilities};
 use matty_sync::{
     ChangeSet, Command, Connection, ImageSize, SidebarChannel, SidebarSection, SyncHandle,
     TeamWithUnreads, UploadState,
 };
 
+use crate::attachments::{AttachmentStatus, Upload, UploadSource};
 use crate::channel::{ChannelModel, Post};
 use crate::login::{PasswordSignIn, SignInFailure, SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
@@ -85,6 +86,8 @@ pub struct Live {
     stats: Option<Arc<ChannelStats>>,
     /// Who is typing in the open channel, and since when.
     typing: Vec<(String, Instant)>,
+    /// Who is typing a reply in the open thread, and since when (#137).
+    thread_typing: Vec<(String, Instant)>,
     /// A channel sync made ready (joined, created, a new direct message)
     /// that the sidebar has yet to show.
     ready: Option<String>,
@@ -145,6 +148,8 @@ pub struct Details {
     pub purpose: Option<SharedString>,
     pub members: usize,
     pub pinned: usize,
+    /// See [`crate::channel::ChannelModel::can_manage`].
+    pub can_manage: bool,
 }
 
 /// What a change set means for the window.
@@ -162,6 +167,8 @@ pub struct Update {
     /// Who is typing in the open channel now; the window checks again
     /// after [`TYPING_FOR`].
     pub typing: Option<Vec<SharedString>>,
+    /// Who is typing a reply in the open thread now (#137).
+    pub thread_typing: Option<Vec<SharedString>>,
     /// Messages waiting to send across every channel, failed ones left
     /// out, for the connection banner (#195).
     pub queued: Option<usize>,
@@ -177,6 +184,9 @@ pub struct Update {
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// The user's own name and username when the server sends them, so the
+    /// account menu follows a profile edit (#212).
+    pub me: Option<(String, String)>,
     /// The user's display and advanced settings from the server, for
     /// Preferences to mirror (#156, #157).
     pub account_preferences: Option<Arc<[matty_api::models::Preference]>>,
@@ -224,6 +234,11 @@ pub struct Update {
     /// The server refused the saved session; the window asks the user to
     /// sign in again.
     pub expired: bool,
+    /// A draft as sync stores it now, or `None` once deleted (#114).
+    pub draft: Option<(
+        crate::composer_draft::DraftKey,
+        Option<Arc<matty_api::models::Draft>>,
+    )>,
 }
 
 /// A post that just arrived, with the preferences that decide whether it
@@ -489,6 +504,7 @@ impl Live {
                 member: None,
                 stats: None,
                 typing: Vec::new(),
+                thread_typing: Vec::new(),
                 ready: None,
                 search: None,
                 listing: None,
@@ -525,6 +541,42 @@ impl Live {
             self.sync.send(Command::CancelUpload {
                 upload_id: id.to_owned(),
             });
+        }
+    }
+
+    /// The server ids of tray files that are up, for a draft (#114).
+    pub fn file_ids(&self, ids: &[SharedString]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.uploads.get(id.as_ref())?.file_id.clone())
+            .collect()
+    }
+
+    /// A file a stored draft carries, as a finished tray upload whose id is
+    /// its file id, so a send or a later save finds it again.
+    pub fn draft_upload(&mut self, channel_id: &str, file_id: &str) -> Upload {
+        let name = self
+            .uploads
+            .values()
+            .find(|job| job.file_id.as_deref() == Some(file_id))
+            .map(|job| job.name.clone())
+            .or_else(|| self.file_name(file_id))
+            .unwrap_or_else(|| "Attachment".to_owned());
+        let source = match self.thumbnails.get(file_id) {
+            Some(image) => UploadSource::Image(image.clone()),
+            None => UploadSource::Path(std::path::PathBuf::new()),
+        };
+        self.uploads.entry(file_id.to_owned()).or_insert(UploadJob {
+            channel_id: channel_id.to_owned(),
+            name: name.clone(),
+            source: source.clone(),
+            file_id: Some(file_id.to_owned()),
+        });
+        Upload {
+            id: file_id.to_owned().into(),
+            name: name.into(),
+            size: 0,
+            source,
+            status: AttachmentStatus::Ready,
         }
     }
 
@@ -586,6 +638,14 @@ impl Live {
 
     /// Takes the user's own `notify_props` from `user`. Other fetches of
     /// the user leave the map out, so an empty one changes nothing.
+    fn take_me(&mut self, user: &User, update: &mut Update) {
+        if user.id == self.me.0 {
+            self.me.1 = user.username.clone();
+            update.me = Some((crate::transcript::display_name(user), user.username.clone()));
+        }
+        self.take_notify_props(user, update);
+    }
+
     fn take_notify_props(&mut self, user: &User, update: &mut Update) {
         if user.id == self.me.0 && !user.notify_props.is_empty() {
             self.prefs = matty_notify::UserPrefs::from_props(
@@ -728,11 +788,35 @@ impl Live {
                 .stats
                 .as_ref()
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
+            can_manage: self.can_manage(),
         }
     }
 
+    /// Whether the user administers the open channel: its admin, or the
+    /// system's. Team admins pass on the server, but their role is not kept.
+    fn can_manage(&self) -> bool {
+        let has = |roles: &str, role: &str| roles.split_whitespace().any(|r| r == role);
+        let channel_admin = self
+            .member
+            .as_ref()
+            .is_some_and(|member| member.scheme_admin || has(&member.roles, "channel_admin"));
+        let system_admin = self
+            .users
+            .get(&self.me.0)
+            .is_some_and(|me| has(&me.roles, "system_admin"));
+        channel_admin || system_admin
+    }
+
     fn typing_names(&self) -> Vec<SharedString> {
-        self.typing
+        self.names_of(&self.typing)
+    }
+
+    fn thread_typing_names(&self) -> Vec<SharedString> {
+        self.names_of(&self.thread_typing)
+    }
+
+    fn names_of(&self, typing: &[(String, Instant)]) -> Vec<SharedString> {
+        typing
             .iter()
             .map(|(user_id, _)| {
                 self.users
@@ -757,13 +841,21 @@ impl Live {
             .collect()
     }
 
-    /// Drops typing notices older than [`TYPING_FOR`]; the names left when
-    /// any went.
-    pub fn expire_typing(&mut self, now: Instant) -> Option<Vec<SharedString>> {
-        let before = self.typing.len();
-        self.typing
-            .retain(|(_, since)| now.saturating_duration_since(*since) < TYPING_FOR);
-        (self.typing.len() != before).then(|| self.typing_names())
+    /// Drops typing notices older than [`TYPING_FOR`]; the names left in
+    /// the channel and in the open thread, for each where any went.
+    pub fn expire_typing(
+        &mut self,
+        now: Instant,
+    ) -> (Option<Vec<SharedString>>, Option<Vec<SharedString>>) {
+        let fresh =
+            |(_, since): &(String, Instant)| now.saturating_duration_since(*since) < TYPING_FOR;
+        let (channel, thread) = (self.typing.len(), self.thread_typing.len());
+        self.typing.retain(fresh);
+        self.thread_typing.retain(fresh);
+        (
+            (self.typing.len() != channel).then(|| self.typing_names()),
+            (self.thread_typing.len() != thread).then(|| self.thread_typing_names()),
+        )
     }
 
     /// Searches the shown team; the results come as [`Update::search`].
@@ -953,6 +1045,7 @@ impl Live {
 
     /// The right pane moved on from the thread.
     pub fn close_thread(&mut self) {
+        self.thread_typing.clear();
         if let Some((root_id, _)) = self.thread.take() {
             self.send(Command::CloseThread { root_id });
         }
@@ -1095,6 +1188,7 @@ impl Live {
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
+            channel_id: root.channel_id.clone().into(),
             channel_name: self.channel_name(&root.channel_id).unwrap_or_default(),
             root: shown(root),
             replies: replies
@@ -1169,6 +1263,11 @@ impl Live {
     }
 
     /// The team on screen.
+    /// The signed-in user, once sync has loaded them.
+    pub fn me_user(&self) -> Option<&User> {
+        self.users.get(&self.me.0)
+    }
+
     pub fn team(&self) -> Option<&str> {
         self.team.as_deref()
     }
@@ -1204,14 +1303,14 @@ impl Live {
             user_id: user.id.clone().into(),
             username: user.username.clone().into(),
             display_name: crate::transcript::display_name_as(user, self.names).into(),
-            position: None,
+            position: (!user.position.is_empty()).then(|| user.position.clone().into()),
             presence: self
                 .presence
                 .get(&user.id)
                 .copied()
                 .unwrap_or(Presence::Offline),
             status_text: None,
-            local_time: None,
+            time_zone: crate::profile::time_zone(&user.timezone),
         }
     }
 
@@ -1228,7 +1327,7 @@ impl Live {
     }
 
     pub fn is_typing(&self) -> bool {
-        !self.typing.is_empty()
+        !self.typing.is_empty() || !self.thread_typing.is_empty()
     }
 
     fn is_open(&self, channel_id: &str) -> bool {
@@ -1395,7 +1494,6 @@ impl Live {
             }
             ChangeSet::Upload { upload_id, state } => {
                 if let Some(job) = self.uploads.get_mut(upload_id) {
-                    use crate::attachments::AttachmentStatus;
                     let status = match state {
                         UploadState::Sending(fraction) => AttachmentStatus::Uploading(*fraction),
                         UploadState::Done { file_id } => {
@@ -1409,6 +1507,15 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::Draft {
+                channel_id,
+                root_id,
+                draft,
+            } => {
+                let key =
+                    crate::composer_draft::DraftKey::thread(channel_id.clone(), root_id.clone());
+                update.draft = Some((key, draft.clone()));
             }
             ChangeSet::LinkResolved { query, answer } => {
                 update.link = Some((query.clone(), answer.clone()));
@@ -1467,13 +1574,14 @@ impl Live {
             }
             ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
-                update.details = self.shown_details();
                 if let Some(member) = member {
                     self.member = Some(member.clone());
                     if self.shown.is_some() {
                         update.notifications = Some(notifications(member));
                     }
                 }
+                // After the member: whether the user may manage it follows.
+                update.details = self.shown_details();
             }
             ChangeSet::History {
                 channel_id,
@@ -1495,6 +1603,19 @@ impl Live {
                 self.typing.retain(|(id, _)| id != user_id);
                 self.typing.push((user_id.clone(), Instant::now()));
                 update.typing = Some(self.typing_names());
+            }
+            ChangeSet::Typing {
+                user_id, parent_id, ..
+            } if !parent_id.is_empty()
+                && *user_id != self.me.0
+                && self
+                    .thread
+                    .as_ref()
+                    .is_some_and(|(root_id, _)| root_id == parent_id) =>
+            {
+                self.thread_typing.retain(|(id, _)| id != user_id);
+                self.thread_typing.push((user_id.clone(), Instant::now()));
+                update.thread_typing = Some(self.thread_typing_names());
             }
             ChangeSet::Outbox { channel_id, sends } => {
                 let waiting = sends
@@ -1560,7 +1681,7 @@ impl Live {
             }
             ChangeSet::Me(user) => {
                 self.avatars.learn(&user.id, user.last_picture_update);
-                self.take_notify_props(user, &mut update);
+                self.take_me(user, &mut update);
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
                 }
@@ -1602,7 +1723,7 @@ impl Live {
                 for user in users.iter() {
                     self.avatars.learn(&user.id, user.last_picture_update);
                     self.users.insert(user.id.clone(), user.clone());
-                    self.take_notify_props(user, &mut update);
+                    self.take_me(user, &mut update);
                 }
                 if self.thread_list.is_some() {
                     update.threads = Some(self.threads_model());
@@ -1798,6 +1919,7 @@ impl Live {
                 let mut category =
                     Category::new(section.id.clone(), section.display_name.clone(), rows);
                 category.collapsed = section.collapsed;
+                category.kind = crate::sidebar::CategoryKind::from_server(&section.kind);
                 category
             })
             .collect()
@@ -1839,16 +1961,18 @@ fn connection_state(state: &matty_api::ws::ConnectionState) -> ConnectionState {
     }
 }
 
-/// Checks `url` and reads how its server lets people sign in. A server
-/// older than Matty supports is refused here, before anyone signs in.
+/// Checks `url` and reads how its server lets people sign in: `system/ping`
+/// first, then the client config. A server older than Matty supports is
+/// refused here, before anyone signs in.
 pub async fn check_server(url: String) -> Result<ServerCapabilities, String> {
+    let address = url.clone();
     let answer = matty_sync::io::run(async move {
-        let client = Client::new(&url)?;
-        client.capabilities().await
+        let client = Client::new(&url).map_err(ProbeError::Ping)?;
+        client.probe().await
     });
     match answer.recv().await {
         Ok(Ok(capabilities)) => supported(capabilities),
-        Ok(Err(error)) => Err(server_error(&error)),
+        Ok(Err(error)) => Err(probe_error(&address, &error)),
         Err(_) => Err(STOPPED.into()),
     }
 }
@@ -1999,24 +2123,61 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join(format!("matty-{}.sqlite", account.user_id)))
 }
 
-fn server_error(error: &ApiError) -> String {
+/// The sentence for a server check that stopped at `error`, naming
+/// `url`'s host where that helps.
+fn probe_error(url: &str, error: &ProbeError) -> String {
+    match error {
+        ProbeError::Ping(ApiError::Server { .. } | ApiError::Decode(_)) => format!(
+            "{} answered, but it is not a Mattermost server. Check the address.",
+            url_host(url)
+        ),
+        ProbeError::Ping(error) => server_error(url, error),
+        ProbeError::Unhealthy(_) => format!(
+            "The Mattermost server at {} says it is not working right now. Try again later or ask its administrator.",
+            url_host(url)
+        ),
+        ProbeError::Config(ApiError::Server { .. } | ApiError::Decode(_)) => format!(
+            "The Mattermost server at {} did not share its sign-in settings. Try again or ask its administrator.",
+            url_host(url)
+        ),
+        ProbeError::Config(error) => server_error(url, error),
+    }
+}
+
+/// `chat.example.com` from `https://chat.example.com/sub`.
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
+/// The server address a redirect points at: its `Location` without the
+/// API path Matty asked for.
+fn redirect_target(location: &str) -> &str {
+    let base = location
+        .find("/api/v4")
+        .map_or(location, |at| &location[..at]);
+    base.trim_end_matches('/')
+}
+
+/// The sentence for a request that never got a Mattermost answer.
+fn server_error(url: &str, error: &ApiError) -> String {
     match error {
         // Already one sentence for a person, naming what is wrong with the
         // certificate (`matty_api::error::describe_tls`).
         ApiError::Tls(text) => text.clone(),
-        ApiError::Timeout => {
-            "That server did not answer in time. Check the address and try again.".into()
-        }
-        ApiError::Redirected { location } => {
-            format!("That address sends Matty to {location}. Enter that address instead.")
-        }
-        ApiError::Server { status: 404, .. } => {
-            "That address answered, but it is not a Mattermost server.".into()
-        }
-        ApiError::Server { .. } | ApiError::Decode(_) => {
-            "That address answered, but not like a Mattermost server.".into()
-        }
-        _ => "Matty could not reach that server. Check the address and your connection.".into(),
+        ApiError::Timeout => format!(
+            "{} did not answer in time. Check the address and try again.",
+            url_host(url)
+        ),
+        ApiError::Redirected { location } if location.contains("://") => format!(
+            "That address sends Matty to {}. Enter that address instead.",
+            redirect_target(location)
+        ),
+        ApiError::InvalidUrl(_) => "That does not look like a server address.".into(),
+        _ => format!(
+            "Can't reach {}. Check the address and your connection.",
+            url_host(url)
+        ),
     }
 }
 
@@ -2130,11 +2291,55 @@ mod tests {
     fn certificate_errors_keep_their_own_words() {
         let text =
             "The server's certificate has expired. Ask the server's administrator to renew it.";
-        assert_eq!(server_error(&ApiError::Tls(text.into())), text);
+        assert_eq!(
+            probe_error(
+                "https://chat.example.com",
+                &ProbeError::Ping(ApiError::Tls(text.into()))
+            ),
+            text
+        );
         assert_eq!(
             sign_in_error(&ApiError::Tls(text.into())),
             SignInFailure::Message(text.into())
         );
+    }
+
+    #[test]
+    fn server_check_errors_say_what_went_wrong() {
+        let url = "https://chat.example.com";
+        let say = |error: ProbeError| probe_error(url, &error);
+        assert_eq!(
+            say(ProbeError::Ping(ApiError::Network("dns error".into()))),
+            "Can't reach chat.example.com. Check the address and your connection."
+        );
+        assert!(
+            say(ProbeError::Ping(ApiError::Timeout)).starts_with("chat.example.com did not answer")
+        );
+        // A redirect names the server it points at, not the API path.
+        assert_eq!(
+            say(ProbeError::Ping(ApiError::Redirected {
+                location: "https://mm.example.org/api/v4/system/ping".into()
+            })),
+            "That address sends Matty to https://mm.example.org. Enter that address instead."
+        );
+        for not_mattermost in [
+            ApiError::Decode("expected value".into()),
+            refused(404, ""),
+            refused(500, ""),
+        ] {
+            assert_eq!(
+                say(ProbeError::Ping(not_mattermost)),
+                "chat.example.com answered, but it is not a Mattermost server. Check the address."
+            );
+        }
+        assert!(say(ProbeError::Unhealthy("UNHEALTHY".into())).contains("not working right now"));
+        assert!(
+            say(ProbeError::Config(ApiError::Decode("x".into())))
+                .contains("did not share its sign-in settings")
+        );
+        // A config request that could not connect reads like any other.
+        assert!(say(ProbeError::Config(ApiError::Timeout)).contains("did not answer in time"));
+        assert_eq!(url_host("http://localhost:8065/sub"), "localhost:8065");
     }
 
     fn refused(status: u16, id: &str) -> ApiError {
@@ -2179,6 +2384,30 @@ mod tests {
         );
         assert!(says(refused(401, "api.user.login.inactive.app_error")).contains("deactivated"));
         assert_eq!(says(refused(400, "some.other.error")), "Server words.");
+    }
+
+    #[test]
+    fn a_profile_edit_renames_the_account() {
+        let mut live = live();
+        let me = User {
+            id: "me".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            ..Default::default()
+        };
+        let other = User {
+            id: "bo".into(),
+            username: "bo".into(),
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![other.clone()])));
+        assert_eq!(update.me, None);
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![me, other])));
+        let (name, username) = update.me.unwrap();
+        assert_eq!(username, "ada");
+        assert!(name.contains("Ada"), "{name}");
+        assert_eq!(live.me_user().map(|u| u.username.as_str()), Some("ada"));
     }
 
     #[test]
@@ -2733,6 +2962,45 @@ mod tests {
     }
 
     #[test]
+    fn only_channel_and_system_admins_may_manage_the_channel() {
+        let mut live = live();
+        opened(&mut live);
+        let member = |roles: &str, scheme_admin: bool| ChangeSet::Channel {
+            channel: Arc::new(Channel {
+                id: "c1".into(),
+                ..Channel::default()
+            }),
+            member: Some(Arc::new(ChannelMember {
+                channel_id: "c1".into(),
+                user_id: "me".into(),
+                roles: roles.into(),
+                scheme_admin,
+                ..ChannelMember::default()
+            })),
+        };
+        let manage = |update: Update| update.details.map(|d| d.can_manage);
+        assert_eq!(
+            manage(live.apply(&member("channel_user", false))),
+            Some(false)
+        );
+        assert_eq!(
+            manage(live.apply(&member("channel_user channel_admin", false))),
+            Some(true)
+        );
+        assert_eq!(
+            manage(live.apply(&member("channel_user", true))),
+            Some(true)
+        );
+        live.apply(&member("channel_user", false));
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "me".into(),
+            roles: "system_user system_admin".into(),
+            ..User::default()
+        }])));
+        assert!(live.details(0).can_manage);
+    }
+
+    #[test]
     fn the_banner_counts_waiting_sends_across_channels() {
         let mut live = live();
         let outbox = |channel: &str, errors: &[Option<&str>]| ChangeSet::Outbox {
@@ -2814,6 +3082,7 @@ mod tests {
                 purpose: None,
                 members: 0,
                 pinned: 1,
+                can_manage: false,
             })
         );
         let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {
@@ -2852,11 +3121,39 @@ mod tests {
         );
         assert_eq!(live.apply(&typing("me", "c1")).typing, None);
         assert_eq!(live.apply(&typing("bob", "c2")).typing, None);
-        assert_eq!(live.expire_typing(Instant::now()), None);
+        assert_eq!(live.expire_typing(Instant::now()), (None, None));
         assert_eq!(
             live.expire_typing(Instant::now() + TYPING_FOR),
-            Some(Vec::new())
+            (Some(Vec::new()), None)
         );
+        assert!(!live.is_typing());
+    }
+
+    #[test]
+    fn typing_a_reply_shows_in_the_open_thread_only() {
+        let mut live = live();
+        opened(&mut live);
+        let reply = |user: &str, root: &str| ChangeSet::Typing {
+            user_id: user.into(),
+            channel_id: "c1".into(),
+            parent_id: root.into(),
+        };
+        // No thread open: nothing shows, not even in the channel.
+        let update = live.apply(&reply("ada", "r1"));
+        assert_eq!((update.typing, update.thread_typing), (None, None));
+        live.open_thread("r1");
+        let update = live.apply(&reply("ada", "r1"));
+        assert_eq!(update.typing, None);
+        assert_eq!(update.thread_typing, Some(vec!["Someone".into()]));
+        assert_eq!(live.apply(&reply("bob", "r2")).thread_typing, None);
+        assert_eq!(live.apply(&reply("me", "r1")).thread_typing, None);
+        assert!(live.is_typing());
+        assert_eq!(
+            live.expire_typing(Instant::now() + TYPING_FOR),
+            (None, Some(Vec::new()))
+        );
+        live.apply(&reply("ada", "r1"));
+        live.close_thread();
         assert!(!live.is_typing());
     }
 
@@ -3141,6 +3438,31 @@ mod tests {
             state: UploadState::Failed("gone".into()),
         });
         assert_eq!(update.upload, None);
+    }
+
+    #[test]
+    fn a_stored_draft_reaches_the_window_with_its_files() {
+        let mut live = live();
+        let draft = matty_api::models::Draft {
+            channel_id: "c1".into(),
+            root_id: "r1".into(),
+            message: "later".into(),
+            file_ids: vec!["f1".into()],
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Draft {
+            channel_id: "c1".into(),
+            root_id: "r1".into(),
+            draft: Some(Arc::new(draft)),
+        });
+        let (key, stored) = update.draft.unwrap();
+        assert_eq!(key, crate::composer_draft::DraftKey::thread("c1", "r1"));
+        assert_eq!(stored.unwrap().message, "later");
+        // Its file comes back as a finished upload a send can carry.
+        let upload = live.draft_upload("c1", "f1");
+        assert!(upload.is_ready());
+        assert_eq!(live.file_ids(std::slice::from_ref(&upload.id)), ["f1"]);
+        assert_eq!(live.take_file_ids(&[upload.id]), ["f1"]);
     }
 
     #[test]

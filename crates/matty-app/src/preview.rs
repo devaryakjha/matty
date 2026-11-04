@@ -6,9 +6,14 @@
 //! `docs/screenshots/design-*` are taken this way (DESIGN.md §6).
 
 use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
-use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
+use crate::sidebar::{Category, CategoryKind, ChannelKind, ChannelRow, Presence, SidebarModel};
 
 /// Whether the preview fixtures are on for this process.
+/// Who is typing a reply in any preview thread.
+pub fn thread_typing() -> Vec<SharedString> {
+    vec!["Sam Okafor".into()]
+}
+
 pub fn enabled() -> bool {
     std::env::var_os("MATTY_PREVIEW").is_some_and(|value| !value.is_empty() && value != "0")
 }
@@ -17,7 +22,8 @@ pub fn enabled() -> bool {
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
 /// `login-ldap` offers AD/LDAP beside passwords, `login-mfa` and
-/// `login-mfa-error` show the code step, and `login-version` the server step
+/// `login-mfa-error` show the code step, `login-server` the empty server
+/// step, and `login-version` the server step
 /// refusing a server below the version floor. `sso-waiting` shows the card
 /// waiting for the browser after GitLab, and `sso-expired` the same after
 /// the three minutes ran out.
@@ -69,6 +75,7 @@ pub fn login() -> Option<LoginModel> {
                 "Sign-in timed out: the browser did not finish within three minutes.".into()
             }),
         ),
+        "login-server" => (LoginStep::Server, None),
         "login-version" => {
             let old = matty_api::UnsupportedVersion {
                 found: matty_api::Version::new(9, 3, 2),
@@ -119,7 +126,8 @@ pub fn sidebar() -> SidebarModel {
         selected: Some("general".into()),
         unread_threads: 2,
         drafts: 2,
-        categories: vec![
+        drafted: ["design".into()].into_iter().collect(),
+        categories: preview_kinds(vec![
             Category::new(
                 "favorites",
                 "Favorites",
@@ -152,8 +160,20 @@ pub fn sidebar() -> SidebarModel {
                     dm("jonas", "Jonas Weber", Presence::Offline),
                 ],
             ),
-        ],
+        ]),
     }
+}
+
+/// Gives the preview's categories the kinds their ids name.
+fn preview_kinds(mut categories: Vec<Category>) -> Vec<Category> {
+    for category in &mut categories {
+        category.kind = match category.id.as_ref() {
+            "favorites" => CategoryKind::Favorites,
+            "direct" => CategoryKind::Direct,
+            _ => CategoryKind::Channels,
+        };
+    }
+    categories
 }
 
 use crate::account::Account;
@@ -182,6 +202,27 @@ pub fn file_name(file_id: &str) -> Option<String> {
         .flat_map(|post| post.files)
         .find(|file| file.id.as_ref() == file_id)
         .map(|file| file.name.to_string())
+}
+
+/// `MATTY_PREVIEW_POSTS=<n>` fills `general` with `n` posts, the fixtures
+/// over and over, for scrolling a long channel (`scripts/perf-run`, #174).
+pub fn long_posts() -> Option<usize> {
+    std::env::var("MATTY_PREVIEW_POSTS").ok()?.parse().ok()
+}
+
+/// `posts` repeated to `count`, each copy with its own ids.
+fn repeat(posts: &[Post], count: usize) -> Vec<Post> {
+    posts
+        .iter()
+        .cycle()
+        .take(count)
+        .enumerate()
+        .map(|(index, post)| Post {
+            id: format!("{}-{index}", post.id).into(),
+            replies: None,
+            ..post.clone()
+        })
+        .collect()
 }
 
 pub fn channel(id: &str) -> Option<ChannelModel> {
@@ -474,6 +515,9 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         "town-square" => (activity(&row), false, None),
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
+        "general" if long_posts().is_some() => {
+            (repeat(&posts, long_posts().unwrap_or(0)), false, None)
+        }
         _ => (posts, false, Some(7)),
     };
     Some(ChannelModel {
@@ -503,6 +547,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         } else {
             DEFAULT_MAX_POST_SIZE
         },
+        can_manage: true,
         profiles: profiles(),
         notifications: Default::default(),
         typing: match id {
@@ -921,6 +966,7 @@ pub fn empty_channel(
         posts: vec![],
         first_unread: None,
         max_post_size: DEFAULT_MAX_POST_SIZE,
+        can_manage: true,
         profiles: profiles(),
         notifications: Default::default(),
         typing: vec![],
@@ -1047,14 +1093,14 @@ pub fn profiles() -> Vec<UserProfile> {
                    position: Option<&str>,
                    presence,
                    status_text: Option<&str>,
-                   local_time: Option<&str>| UserProfile {
+                   time_zone: Option<&str>| UserProfile {
         user_id: format!("u-{username}").into(),
         username: username.into(),
         display_name: display_name.into(),
         position: position.map(Into::into),
         presence,
         status_text: status_text.map(Into::into),
-        local_time: local_time.map(Into::into),
+        time_zone: time_zone.map(Into::into),
     };
     vec![
         profile(
@@ -1063,7 +1109,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Product designer"),
             Presence::Online,
             Some("In a review until 3"),
-            Some("14:32"),
+            Some("Asia/Kolkata"),
         ),
         profile(
             "sam",
@@ -1071,7 +1117,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Release manager"),
             Presence::Away,
             None,
-            Some("10:02"),
+            Some("Africa/Lagos"),
         ),
         profile(
             "lena",
@@ -1079,7 +1125,7 @@ pub fn profiles() -> Vec<UserProfile> {
             Some("Engineer, Windows"),
             Presence::Dnd,
             Some("Heads down"),
-            Some("10:02"),
+            Some("Europe/Berlin"),
         ),
         profile(
             "jonas",
@@ -1119,6 +1165,23 @@ pub fn drafts() -> DraftsModel {
                 updated: "Yesterday 17:03".into(),
             },
         ],
+    }
+}
+
+/// Puts the fixture drafts in the composers' book, so their channels show
+/// the sidebar's pencil and their composers open with the text.
+pub fn seed_drafts(cx: &mut gpui_kit::App) {
+    use crate::composer_draft::{DraftBook, DraftKey, Kept};
+    for draft in drafts().drafts {
+        let key = match draft.thread_root {
+            Some(root) => DraftKey::thread(draft.channel_id, root),
+            None => DraftKey::channel(draft.channel_id),
+        };
+        let kept = Kept {
+            text: draft.body,
+            ..Kept::default()
+        };
+        DraftBook::put(key, kept, cx);
     }
 }
 
@@ -1210,6 +1273,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         embeds: vec![],
     };
     Some(ThreadModel {
+        channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         replies: vec![
             reply(
