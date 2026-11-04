@@ -100,7 +100,7 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 │    │               ├───────────────────────────────────┤             │
 │    │               │ [ composer                   ➤ ] │             │
 └────┴───────────────┴───────────────────────────────────┴─────────────┘
-  56      240–400              ≥ 260 (flex)                  320–560
+  56      240–400              ≥ 260 (flex)                  320–640
 ```
 
 - **Title bar** (34px, `sidebar` background) spans the whole window. Left:
@@ -126,7 +126,7 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   within five minutes of the same author, day dividers with a centered pill,
   and the "New messages" rule. The composer is a bordered card
   with 10px radius, 12px padding and a formatting row below the text.
-- **Right pane** (default 400px, 320 to 560) shares the header height and
+- **Right pane** (default 400px, 320 to 640) shares the header height and
   separates from the channel with a hairline.
 - **Empty and loading states** center a 40px icon in a tinted circle, a
   `title` line and one `meta` sentence; never more, plus at most one
@@ -507,6 +507,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   does ("Join #design", "Message Priya Nair", "Open thread, 3 replies").
   `scripts/check-accessible-names.py` lists any Button that slipped
   (`design-55`). Nothing changes on screen.
+- **Sizes live in `style.rs`** (DESIGN §3, §5): the audit of every size
+  literal outside `style.rs` moved the ones views repeated into `metrics`
+  (`ICON_SMALL` 14, `ICON_TINY` 12, `ROW_SLOT` 20, `TYPING_LINE` 20,
+  `EMPTY_MAX_WIDTH` 420, `THREADS_LIST_WIDTH` 360, `DRAFTS_MAX_WIDTH` 760)
+  and pointed the quick switcher at `SWITCHER_MAX_WIDTH`. The right pane's
+  limits in §4 now match the code (320 to 640). Pixels are identical
+  (`design-56`).
 
 ## 5. Components
 
@@ -514,7 +521,10 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   tokens and `Styled` geometry only. If a look is impossible without
   restyling, it becomes a gpuicn issue, not a local override.
 - Icons are Lucide at 16px in chrome, 20px in empty states, 14px inside
-  badges and sidebar rows. Stroke color follows the text color around it.
+  chips, badges and menu rows, 12px for chevrons and kind glyphs beside
+  text (`metrics::ICON`, `ICON_LARGE`, `ICON_SMALL`, `ICON_TINY`). Stroke
+  color follows the text color around it. Every size and width a view
+  uses is a `metrics` constant in `style.rs`, never a literal.
 - Tooltips on every icon-only button, with the shortcut when there is one.
 - Empty states are built by `style::empty_state` (gpuicn `Empty` with its
   icon media sized to the 40px circle) or `style::centered_empty`; a view

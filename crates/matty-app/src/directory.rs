@@ -196,7 +196,7 @@ impl BrowseView {
                             .min_w_0()
                             .child(
                                 lucide(LucideIcon::Hash)
-                                    .size(scaled(&theme, 14.))
+                                    .size(scaled(&theme, metrics::ICON_SMALL))
                                     .text_color(muted),
                             )
                             .child(

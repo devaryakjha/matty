@@ -1169,11 +1169,11 @@ impl RightPaneView {
                         .flex()
                         .items_center()
                         .gap(theme.space(1.5))
-                        .child(lucide(glyph).size(scaled(&theme, 14.)).text_color(if on {
-                            theme.colors.foreground
-                        } else {
-                            muted
-                        }))
+                        .child(
+                            lucide(glyph)
+                                .size(scaled(&theme, metrics::ICON_SMALL))
+                                .text_color(if on { theme.colors.foreground } else { muted }),
+                        )
                         .child(text),
                 )
         };
@@ -1281,7 +1281,7 @@ impl RightPaneView {
                                 .text_color(theme.colors.destructive)
                                 .child(
                                     lucide(LucideIcon::LogOut)
-                                        .size(scaled(&theme, 14.))
+                                        .size(scaled(&theme, metrics::ICON_SMALL))
                                         .text_color(theme.colors.destructive),
                                 )
                                 .child("Leave"),

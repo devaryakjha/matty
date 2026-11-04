@@ -107,7 +107,7 @@ pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
     };
     let icon = |icon: LucideIcon| {
         lucide(icon)
-            .size(scaled(theme, 12.))
+            .size(scaled(theme, metrics::ICON_TINY))
             .text_color(muted)
             .into_any_element()
     };
@@ -1840,7 +1840,7 @@ impl ChannelView {
         };
         div()
             .flex_shrink_0()
-            .h(scaled(&theme, 20.))
+            .h(scaled(&theme, metrics::TYPING_LINE))
             .px(theme.space(4.))
             .type_style(style::META, &theme)
             .text_color(theme.colors.muted_foreground)
@@ -2458,7 +2458,7 @@ impl ChannelView {
                                     .child(channel.name.clone())
                                     .child(
                                         lucide(LucideIcon::ChevronDown)
-                                            .size(scaled(&theme, 14.))
+                                            .size(scaled(&theme, metrics::ICON_SMALL))
                                             .text_color(muted),
                                     ),
                             )
@@ -2489,7 +2489,7 @@ impl ChannelView {
                             }))
                             .child(
                                 lucide(LucideIcon::Star)
-                                    .size(scaled(&theme, 14.))
+                                    .size(scaled(&theme, metrics::ICON_SMALL))
                                     .text_color(if channel.favorite {
                                         Palette::read(cx).away
                                     } else {
@@ -3328,7 +3328,7 @@ impl ChannelView {
                         )
                         .child(
                             lucide(LucideIcon::UserPlus)
-                                .size(scaled(&theme, 14.))
+                                .size(scaled(&theme, metrics::ICON_SMALL))
                                 .text_color(theme.colors.muted_foreground),
                         )
                         .child("Add members"),
@@ -3342,7 +3342,11 @@ impl ChannelView {
             .justify_center()
             .p(theme.space(6.))
             .pb(theme.space(8.))
-            .child(div().max_w(scaled(&theme, 420.)).child(empty))
+            .child(
+                div()
+                    .max_w(scaled(&theme, metrics::EMPTY_MAX_WIDTH))
+                    .child(empty),
+            )
     }
 
     fn empty(cx: &App) -> impl IntoElement + use<> {

@@ -371,7 +371,7 @@ impl Render for ThreadsView {
             .cloned()
             .collect();
         let list = div()
-            .w(px(360.))
+            .w(scaled(&theme, metrics::THREADS_LIST_WIDTH))
             .flex_shrink_0()
             .h_full()
             .flex()

@@ -1956,7 +1956,7 @@ impl MainWindow {
             .font_weight(gpui_kit::FontWeight::NORMAL)
             .child(
                 lucide(LucideIcon::Search)
-                    .size(scaled(&theme, 14.))
+                    .size(scaled(&theme, metrics::ICON_SMALL))
                     .text_color(theme.colors.muted_foreground),
             )
             .child(div().flex_1().text_left().child("Search Matty"))
@@ -2150,7 +2150,7 @@ impl MainWindow {
             ),
             ConnectionState::Offline => (
                 lucide(LucideIcon::WifiOff)
-                    .size(scaled(&theme, 14.))
+                    .size(scaled(&theme, metrics::ICON_SMALL))
                     .text_color(theme.colors.destructive)
                     .into_any_element(),
                 "You're offline. Matty shows what it has and sends when you're back.".into(),
@@ -2268,7 +2268,7 @@ impl MainWindow {
                         .flex()
                         .items_center()
                         .gap(theme.space(1.5))
-                        .child(lucide(glyph).size(scaled(&theme, 14.)))
+                        .child(lucide(glyph).size(scaled(&theme, metrics::ICON_SMALL)))
                         .child(text.to_string()),
                 )
         };

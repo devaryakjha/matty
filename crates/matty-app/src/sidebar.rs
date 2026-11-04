@@ -531,7 +531,7 @@ impl SidebarView {
             .child(self.team_name.clone())
             .child(
                 lucide(LucideIcon::ChevronDown)
-                    .size(scaled(&theme, 14.))
+                    .size(scaled(&theme, metrics::ICON_SMALL))
                     .text_color(theme.colors.muted_foreground),
             );
         let loading = self.model.loading;
@@ -564,7 +564,7 @@ impl SidebarView {
     /// dot for people, a member count for group messages.
     fn row_icon(row: &ChannelRow, theme: &UiTheme, palette: &Palette) -> impl IntoElement + use<> {
         let icon_size = scaled(theme, metrics::ICON);
-        let slot = scaled(theme, 20.);
+        let slot = scaled(theme, metrics::ROW_SLOT);
         let color = theme.colors.muted_foreground;
         let boxed = |inner: gpui_kit::AnyElement| {
             div()
@@ -704,7 +704,7 @@ impl SidebarView {
         )
         .child(
             lucide(LucideIcon::Ellipsis)
-                .size(scaled(&theme, 14.))
+                .size(scaled(&theme, metrics::ICON_SMALL))
                 .text_color(theme.colors.muted_foreground),
         )
         .on_click(
@@ -759,7 +759,7 @@ impl SidebarView {
                 .selected(selected)
                 .icon(
                     div()
-                        .size(scaled(&theme, 20.))
+                        .size(scaled(&theme, metrics::ROW_SLOT))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -841,7 +841,7 @@ impl SidebarView {
                 // The chevron turns from right to down as the category opens
                 // (DESIGN.md §1 motion), snapping under reduced motion.
                 lucide(LucideIcon::ChevronRight)
-                    .size(scaled(&theme, 12.))
+                    .size(scaled(&theme, metrics::ICON_TINY))
                     .text_color(theme.colors.muted_foreground)
                     .with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
                         turn * std::f32::consts::FRAC_PI_2,
