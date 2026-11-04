@@ -19,9 +19,10 @@ use matty_api::models::Preference;
 use super::{MainWindow, TEXT_SIZES};
 use crate::actions::Platform;
 use crate::dnd;
+use crate::mattermost_theme::ServerThemes;
 use crate::settings::{
     ClockFormat, MessageDisplay, NameFormat, RemoteImages, SendKey, Settings, ThemeChoice,
-    UpdateChannel,
+    ThemeSource, UpdateChannel,
 };
 use crate::sidebar::Presence;
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -33,7 +34,7 @@ use crate::ui::{
     select::Select,
     sidebar::{Sidebar, SidebarItem},
     switch::Switch,
-    tag::Tag,
+    tag::{Tag, TagVariant},
     theme::UiTheme,
     toggle_group::{ToggleGroup, ToggleGroupItem},
 };
@@ -263,6 +264,30 @@ impl MainWindow {
     ) {
         self.settings
             .update(cx, |store, cx| store.update(cx, |s| mirror(preferences, s)));
+    }
+
+    /// Keeps the account's Mattermost theme for the team on screen current
+    /// (#214): `preferences`, when sync sent them, hold every account
+    /// preference, themes among them. Reinstalls the theme when the one to
+    /// show changed and Preferences says to use it.
+    pub(super) fn sync_server_theme(
+        &mut self,
+        preferences: Option<&[Preference]>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::mattermost_theme::ServerThemes;
+        let changed = match &self.live {
+            Some(live) => {
+                let team = live.team().map(str::to_owned);
+                ServerThemes::update(cx, preferences, team.as_deref())
+            }
+            None => ServerThemes::clear(cx),
+        };
+        if changed {
+            crate::apply_theme(window, cx);
+            cx.notify();
+        }
     }
 
     /// Opens a section of Preferences.
@@ -616,6 +641,56 @@ impl MainWindow {
                 };
                 theme_store.update(cx, |store, cx| store.update(cx, |s| s.theme = choice));
             });
+        let source_store = store.clone();
+        let colors_group = choices(
+            "preferences.colors",
+            "Colors",
+            match settings.theme_source {
+                ThemeSource::Matty => "matty",
+                ThemeSource::Mattermost => "mattermost",
+            },
+            &[("matty", "Matty"), ("mattermost", "My Mattermost theme")],
+            move |value, cx| {
+                let source = match value {
+                    "mattermost" => ThemeSource::Mattermost,
+                    _ => ThemeSource::Matty,
+                };
+                source_store.update(cx, |store, cx| {
+                    store.update(cx, |s| s.theme_source = source)
+                });
+            },
+        );
+        let imported = ServerThemes::current(cx).cloned();
+        let use_imported = settings.theme_source == ThemeSource::Mattermost;
+        let colors_hint: SharedString = match (&imported, use_imported) {
+            (_, false) => "Matty's own colors, light or dark as chosen above.".into(),
+            (Some(imported), true) => format!(
+                "{} from your Mattermost account, for the team on screen. \
+                 It sets light or dark itself.",
+                imported.name()
+            )
+            .into(),
+            (None, true) => {
+                "Your Mattermost theme shows once Matty connects to your server.".into()
+            }
+        };
+        let failing = imported
+            .filter(|_| use_imported)
+            .map(|imported| imported.failing())
+            .unwrap_or_default();
+        let colors = hinted(colors_group, colors_hint, &theme)
+            .when(!failing.is_empty(), |colors| {
+                colors.child(contrast_warning(&failing, &theme))
+            });
+        let theme_group = if use_imported {
+            hinted(
+                theme_group,
+                "Your Mattermost theme decides light or dark.",
+                &theme,
+            )
+        } else {
+            div().child(theme_group)
+        };
         let size_value: SharedString = TEXT_SIZES
             .iter()
             .min_by(|a, b| {
@@ -741,6 +816,7 @@ impl MainWindow {
         };
         page(&theme)
             .child(group("Theme", theme_group, false, &theme))
+            .child(group("Colors", colors, false, &theme))
             .child(group("Text size", size_group, false, &theme))
             .child(group(
                 "Message display",
@@ -1361,6 +1437,47 @@ fn hinted(control: impl IntoElement, hint: impl Into<SharedString>, theme: &UiTh
                 .type_style(style::META, theme)
                 .text_color(theme.colors.muted_foreground)
                 .child(hint.into()),
+        )
+}
+
+/// Says that some of a Mattermost theme's color pairs fall below WCAG AA
+/// (#214, PLAN §8): a destructive tag, then how many and the three that
+/// miss by most, with their ratios.
+fn contrast_warning(failing: &[crate::contrast::Pair], theme: &UiTheme) -> Div {
+    let mut worst: Vec<_> = failing.iter().collect();
+    worst.sort_by(|a, b| (a.ratio() / a.kind.minimum()).total_cmp(&(b.ratio() / b.kind.minimum())));
+    let named: Vec<String> = worst
+        .iter()
+        .take(3)
+        .map(|pair| format!("{} ({:.1}:1)", pair.name.to_lowercase(), pair.ratio()))
+        .collect();
+    let examples = match named.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    let count = match failing.len() {
+        1 => "One color pair in this theme falls".to_owned(),
+        n => format!("{n} color pairs in this theme fall"),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(theme.space(1.5))
+        .child(
+            Tag::new("preferences.colors.contrast", "Hard to read")
+                .variant(TagVariant::Destructive)
+                .icon(LucideIcon::TriangleAlert),
+        )
+        .child(
+            div()
+                .type_style(style::META, theme)
+                .text_color(theme.colors.muted_foreground)
+                .child(format!(
+                    "{count} below WCAG AA contrast (4.5:1 for \
+                     text, 3:1 for other UI), such as {examples}."
+                )),
         )
 }
 

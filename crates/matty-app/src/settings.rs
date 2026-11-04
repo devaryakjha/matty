@@ -38,6 +38,19 @@ pub enum ThemeChoice {
     Dark,
 }
 
+/// Whose colors Matty shows (#214): its own, or the Mattermost theme the
+/// account keeps on the server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeSource {
+    /// Matty's theme, light or dark as [`ThemeChoice`] says.
+    #[default]
+    Matty,
+    /// The account's Mattermost theme for the team on screen, which is
+    /// light or dark by itself.
+    Mattermost,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateChannel {
@@ -221,6 +234,8 @@ pub struct Settings {
     pub sidebar_width: f32,
     pub right_pane_width: f32,
     pub theme: ThemeChoice,
+    /// Matty's colors or the account's Mattermost theme (#214).
+    pub theme_source: ThemeSource,
     pub text_scale: f32,
     /// Window zoom from Cmd+= / Cmd+- / Cmd+0, scaling text and spacing.
     pub zoom: f32,
@@ -267,6 +282,7 @@ impl Default for Settings {
             sidebar_width: SIDEBAR_DEFAULT,
             right_pane_width: RIGHT_PANE_DEFAULT,
             theme: ThemeChoice::System,
+            theme_source: ThemeSource::Matty,
             text_scale: 1.,
             zoom: 1.,
             launch_at_login: false,

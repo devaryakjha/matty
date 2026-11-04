@@ -1282,6 +1282,19 @@ pub fn drafts() -> DraftsModel {
 
 /// Puts the fixture drafts in the composers' book, so their channels show
 /// the sidebar's pencil and their composers open with the text.
+/// `MATTY_PREVIEW_THEME` names a built-in Mattermost theme (`Denim`,
+/// `Sapphire`, `Quartz`, `Indigo`, `Onyx`) or holds a theme's JSON, which
+/// stands in for the account's (#214). Returns whether it was set.
+pub fn seed_theme(cx: &mut gpui_kit::App) -> bool {
+    use crate::mattermost_theme::{ServerThemes, Theme};
+    let Ok(value) = std::env::var("MATTY_PREVIEW_THEME") else {
+        return false;
+    };
+    let theme = Theme::built_in(&value).unwrap_or_else(|| Theme::parse(&value));
+    ServerThemes::preview(theme, cx);
+    true
+}
+
 pub fn seed_drafts(cx: &mut gpui_kit::App) {
     use crate::composer_draft::{DraftBook, DraftKey, Kept};
     for draft in drafts().drafts {

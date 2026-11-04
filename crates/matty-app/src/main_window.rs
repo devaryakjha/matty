@@ -386,6 +386,9 @@ impl MainWindow {
         };
         if crate::preview::enabled() {
             crate::preview::seed_drafts(cx);
+            if crate::preview::seed_theme(cx) {
+                crate::apply_theme(window, cx);
+            }
         }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| {
@@ -1922,8 +1925,8 @@ impl MainWindow {
             self.collapsed_threads = Some(threads);
             cx.notify();
         }
-        if let Some(preferences) = update.account_preferences {
-            self.mirror_account_preferences(&preferences, cx);
+        if let Some(preferences) = &update.account_preferences {
+            self.mirror_account_preferences(preferences, cx);
         }
         if let Some(thread) = update.thread {
             if self.threads_open {
@@ -1991,6 +1994,8 @@ impl MainWindow {
             self._live_task = None;
             self.forget_signed_out(cx);
         }
+        // The account's Mattermost theme, for the team on screen (#214).
+        self.sync_server_theme(update.account_preferences.as_deref(), window, cx);
         if update.expired && self.login.is_none() {
             self.session_expired(window, cx);
         }

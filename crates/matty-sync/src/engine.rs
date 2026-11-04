@@ -3908,10 +3908,11 @@ fn cached_link(db: &Db, query: &crate::LinkQuery) -> Result<Option<crate::LinkAn
 
 /// Whether link previews show: the server's `EnableLinkPreviews`, then the
 /// user's `display_settings/link_previews`, on unless set to "false".
-/// The categories of account preferences Preferences mirrors (#156, #157).
-const ACCOUNT_CATEGORIES: [&str; 2] = ["display_settings", "advanced_settings"];
+/// The categories of account preferences Preferences mirrors (#156, #157),
+/// and the user's Mattermost themes (#214).
+const ACCOUNT_CATEGORIES: [&str; 3] = ["display_settings", "advanced_settings", "theme"];
 
-/// The user's display and advanced settings, for
+/// The user's display and advanced settings and themes, for
 /// [`ChangeSet::AccountPreferences`].
 pub(crate) fn account_preferences(preferences: &[Preference]) -> Arc<[Preference]> {
     preferences

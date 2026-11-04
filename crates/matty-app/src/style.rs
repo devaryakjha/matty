@@ -40,8 +40,10 @@ pub fn theme(mode: ThemeMode) -> UiTheme {
 }
 
 /// Colors with a meaning shadcn's tokens do not cover (DESIGN.md §2):
-/// presence. Mentions, the "New messages" line and links use gpuicn's own
-/// treatment of `primary` and `destructive`, so they need no token here.
+/// presence, and the sidebar's quiet text and mention counts, which a
+/// Mattermost theme (#214) colors apart from the channel view. The "New
+/// messages" line and links use gpuicn's own treatment of `primary` and
+/// `destructive`, so they need no token here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     /// Presence dot: online.
@@ -50,6 +52,13 @@ pub struct Palette {
     pub away: Rgba,
     /// Presence dot: do not disturb.
     pub dnd: Rgba,
+    /// Read channels, icons and labels on the sidebar. gpuicn has no
+    /// muted foreground for the sidebar, so this stands in for one.
+    pub sidebar_muted: Rgba,
+    /// Mention counts on the sidebar.
+    pub mention: Rgba,
+    /// Text on [`mention`](Self::mention).
+    pub mention_foreground: Rgba,
 }
 
 impl Global for Palette {}
@@ -57,17 +66,18 @@ impl Global for Palette {}
 impl Palette {
     /// The semantic colors for `mode`.
     pub fn for_mode(mode: ThemeMode) -> Self {
-        match mode {
-            ThemeMode::Light => Self {
-                online: rgb(0x16a34a),
-                away: rgb(0xcc7a00),
-                dnd: rgb(0xd42020),
-            },
-            ThemeMode::Dark => Self {
-                online: rgb(0x3fb950),
-                away: rgb(0xf2b038),
-                dnd: rgb(0xf0564f),
-            },
+        let colors = theme(mode).colors;
+        let (online, away, dnd) = match mode {
+            ThemeMode::Light => (rgb(0x16a34a), rgb(0xcc7a00), rgb(0xd42020)),
+            ThemeMode::Dark => (rgb(0x3fb950), rgb(0xf2b038), rgb(0xf0564f)),
+        };
+        Self {
+            online,
+            away,
+            dnd,
+            sidebar_muted: colors.muted_foreground,
+            mention: colors.primary,
+            mention_foreground: colors.primary_foreground,
         }
     }
 
@@ -84,17 +94,23 @@ impl Palette {
 /// and motion settings the app already applied. Does nothing when the
 /// installed theme is already this one, so views are not repainted.
 pub fn install(mode: ThemeMode, cx: &mut App) {
-    let mut next = theme(mode);
+    install_theme(theme(mode), Palette::for_mode(mode), cx);
+}
+
+/// Installs `next` and its `palette`, such as an imported Mattermost theme
+/// (#214), keeping the text scale, spacing unit and motion settings the app
+/// already applied. Does nothing when both are already installed.
+pub fn install_theme(mut next: UiTheme, palette: Palette, cx: &mut App) {
     if cx.has_global::<UiTheme>() {
         let current = UiTheme::read(cx);
         next.text_scale = current.text_scale;
         next.spacing = current.spacing;
         next.motion = current.motion;
-        if *current == next && cx.has_global::<Palette>() {
+        if *current == next && cx.try_global::<Palette>() == Some(&palette) {
             return;
         }
     }
-    cx.set_global(Palette::for_mode(mode));
+    cx.set_global(palette);
     UiTheme::set(cx, next);
 }
 
@@ -351,12 +367,18 @@ pub fn presence_dot(
         Presence::Away => palette.away,
         Presence::Dnd => palette.dnd,
         Presence::Offline => {
+            // On the sidebar, the sidebar's own quiet color (#214).
+            let color = if ring == theme.colors.sidebar {
+                palette.sidebar_muted
+            } else {
+                theme.colors.muted_foreground
+            };
             return dot.bg(ring).child(
                 gpui_kit::div()
                     .size_full()
                     .rounded_full()
                     .border_1()
-                    .border_color(theme.colors.muted_foreground),
+                    .border_color(color),
             );
         }
     };
