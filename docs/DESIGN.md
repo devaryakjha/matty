@@ -171,6 +171,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `destructive` over it. The B, I and code buttons wrap the selection in
   Markdown and leave focus in the composer; Up in an empty composer edits
   the user's last post, Shift+Up replies to the newest one.
+- **Queued rows** (#195): a post written while offline reads "Will send
+  when back online" with a clock after it, at 60% like any pending row. A
+  post the server does not have yet shows no reply, reaction or save
+  actions; its menu holds Copy text, Copy as Markdown and, while it waits,
+  Edit (in place, without "(edited)") and Discard…, which asks in the same
+  alert dialog with a Discard button. A send already on its way offers
+  neither until it comes back.
 - **Thread pane replies** behave like the channel composer: Enter or the
   send button adds the reply as a "Sending…" row at 60% under the thread,
   the replies count follows, a failed reply offers Retry and Delete in
