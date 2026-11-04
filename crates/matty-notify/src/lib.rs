@@ -7,7 +7,7 @@ mod macos;
 pub mod mention;
 pub mod policy;
 
-pub use backend::Notifier;
+pub use backend::{Badge, Clicked, Notifier};
 pub use mention::MentionKeys;
 pub use policy::{
     AppState, ChannelKind, ChannelPrefs, Event, Level, Notification, UserPrefs, decide,

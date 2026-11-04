@@ -11,12 +11,12 @@ use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{
-    ChangeSet, Command, Connection, ImageSize, SidebarSection, SyncHandle, TeamWithUnreads,
-    UploadState,
+    ChangeSet, Command, Connection, ImageSize, SidebarChannel, SidebarSection, SyncHandle,
+    TeamWithUnreads, UploadState,
 };
 
 use crate::channel::{ChannelModel, Post};
-use crate::login::{SignInMethods, SsoProvider};
+use crate::login::{PasswordSignIn, SignInFailure, SignInMethods, SsoProvider};
 use crate::main_window::ConnectionState;
 use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
@@ -50,6 +50,12 @@ pub struct Live {
     /// The thread in the right pane: its root, and its posts once sync
     /// has published them (root first).
     thread: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// Whether the open thread has older replies to page in, and whether
+    /// the last page failed (#122).
+    thread_pages: (bool, bool),
+    /// The roots of the open channel's replies that its posts leave out,
+    /// for the "Commented on" line (#123).
+    reply_roots: Arc<[matty_api::models::Post]>,
     /// The shown team's followed threads and their root posts, for the
     /// Threads view and the sidebar's count (#124).
     thread_list: Option<ThreadList>,
@@ -59,6 +65,11 @@ pub struct Live {
     threads_on: Option<bool>,
     /// Whether link previews show (#187); until sync says, they do.
     link_previews: bool,
+    /// How people's names read (#156), from settings.
+    names: crate::settings::NameFormat,
+    /// Not connected: an open channel with no posts may just not be saved
+    /// here yet (#163).
+    offline: bool,
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
@@ -96,6 +107,8 @@ pub struct Live {
     asked_remote_images: std::collections::HashSet<String>,
     /// Full-size images for the lightbox, by file id, once fetched.
     full_images: HashMap<String, Arc<gpui_kit::Image>>,
+    /// Profile pictures, shared with the views (#153).
+    avatars: crate::avatars::Avatars,
 }
 
 /// One tray file on its way to the server.
@@ -164,6 +177,9 @@ pub struct Update {
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// The user's display and advanced settings from the server, for
+    /// Preferences to mirror (#156, #157).
+    pub account_preferences: Option<Arc<[matty_api::models::Preference]>>,
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
@@ -194,9 +210,15 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// The server's `MaxFileSize`, for the trays to check files against.
+    pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
+    /// A profile picture arrived; the windows redraw to show it.
+    pub avatars: bool,
+    /// What a link in a message turned out to name (#85, #103).
+    pub link: Option<(matty_sync::LinkQuery, Option<matty_sync::LinkAnswer>)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
     /// The server refused the saved session; the window asks the user to
@@ -333,7 +355,7 @@ pub fn notify_props(
 
 /// What an image's bytes are. The server's type is a fallback only: it
 /// labels every thumbnail `image/jpeg`, even one it kept as PNG.
-fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
+pub(crate) fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
     use gpui_kit::ImageFormat;
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
@@ -362,7 +384,9 @@ fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageForma
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
 /// the order changed. Posts before the first shown one are older history
-/// and go on top.
+/// and go on top. Unsent rows at the bottom may be passed by posts that
+/// arrive under them, as after a reconnect's backfill (#164): they are
+/// taken out and appended again in their new place.
 fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
     let kept: HashMap<&str, &Post> = old.iter().map(|post| (post.id.as_ref(), post)).collect();
     let present: std::collections::HashSet<&str> =
@@ -382,14 +406,26 @@ fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
         .and_then(|first| new.iter().position(|post| post.id.as_ref() == *first))
         .unwrap_or(0);
     let (prepended, new) = new.split_at(start);
-    let (head, tail) = new.split_at(remaining.len().min(new.len()));
-    if head
+    let matched = new
         .iter()
-        .map(|post| post.id.as_ref())
-        .ne(remaining.iter().copied())
-    {
+        .zip(&remaining)
+        .take_while(|(post, id)| post.id.as_ref() == **id)
+        .count();
+    // The shown posts after the matching run must all be unsent ones.
+    let unsent = |id: &&str| {
+        kept.get(id)
+            .is_some_and(|post| post.status != crate::channel::PostStatus::Sent)
+    };
+    if !remaining[matched..].iter().all(unsent) {
         return None;
     }
+    let mut removed = removed;
+    removed.extend(
+        remaining[matched..]
+            .iter()
+            .map(|id| SharedString::from(id.to_string())),
+    );
+    let (head, tail) = new.split_at(matched);
     let updated = head
         .iter()
         .filter(|post| kept.get(post.id.as_ref()) != Some(post))
@@ -413,6 +449,14 @@ impl Live {
         let media = media_dir(account);
         let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
+        let asker = sync.clone();
+        let avatars =
+            crate::avatars::Avatars::new(std::rc::Rc::new(move |user_id: &str, version| {
+                asker.send(Command::LoadAvatar {
+                    user_id: user_id.to_owned(),
+                    last_picture_update: version,
+                });
+            }));
         Ok((
             Self {
                 sync,
@@ -429,10 +473,14 @@ impl Live {
                 posts: None,
                 max_post_size: None,
                 thread: None,
+                thread_pages: (false, false),
+                reply_roots: Arc::from([]),
                 thread_list: None,
                 threads_choice: None,
                 threads_on: None,
                 link_previews: true,
+                names: crate::settings::NameFormat::default(),
+                offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
@@ -451,6 +499,7 @@ impl Live {
                 remote_images: HashMap::new(),
                 asked_remote_images: std::collections::HashSet::new(),
                 full_images: HashMap::new(),
+                avatars,
             },
             changes,
         ))
@@ -501,6 +550,7 @@ impl Live {
             channel_id: row.id.to_string(),
         });
         self.posts = None;
+        self.reply_roots = Arc::from([]);
         self.shown = None;
         self.failed.clear();
         self.channel = None;
@@ -557,6 +607,8 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let mut model = crate::transcript::channel_model(
             row,
@@ -564,6 +616,7 @@ impl Live {
             &self.users,
             &viewer,
             self.max_post_size,
+            &self.reply_roots,
         );
         let details = self.details(model.pinned);
         model.header = details.header;
@@ -575,6 +628,7 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        model.offline = self.offline;
         for post in &mut model.posts {
             if self.failed.contains(post.id.as_ref()) {
                 post.status = crate::channel::PostStatus::Failed;
@@ -683,7 +737,7 @@ impl Live {
             .map(|(user_id, _)| {
                 self.users
                     .get(user_id)
-                    .map(crate::transcript::display_name)
+                    .map(|user| crate::transcript::display_name_as(user, self.names))
                     .unwrap_or_else(|| "Someone".into())
                     .into()
             })
@@ -818,6 +872,8 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let listed: Vec<_> = posts
             .iter()
@@ -856,6 +912,7 @@ impl Live {
         }
         self.close_thread();
         self.thread = Some((root_id.to_owned(), None));
+        self.thread_pages = (false, false);
         self.send(Command::OpenThread {
             root_id: root_id.to_owned(),
         });
@@ -866,6 +923,27 @@ impl Live {
         if let Some((root_id, _)) = self.thread.take() {
             self.send(Command::CloseThread { root_id });
         }
+    }
+
+    /// Names people in `names` from now on (#156): the views on screen
+    /// come back renamed.
+    pub fn set_names(&mut self, names: crate::settings::NameFormat) -> Update {
+        let mut update = Update::default();
+        if names == self.names {
+            return update;
+        }
+        self.names = names;
+        if self.posts.is_some() {
+            update.channel = self.channel_update();
+            update.profiles = Some(self.profiles());
+        }
+        update.thread = self.thread_model();
+        if self.thread_list.is_some() {
+            update.threads = Some(self.threads_model());
+        }
+        update.search = self.search_model();
+        update.categories = self.shown_categories();
+        update
     }
 
     /// Whether a draft's link is worth asking the server about (#187).
@@ -886,6 +964,26 @@ impl Live {
                 team_id,
                 root_id: root_id.to_owned(),
             });
+        }
+    }
+
+    /// The thread pane reached its oldest loaded reply (#122).
+    pub fn load_older_replies(&self, root_id: &str) {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|(open, _)| open == root_id)
+        {
+            self.send(Command::LoadOlderReplies {
+                root_id: root_id.to_owned(),
+            });
+        }
+    }
+
+    /// The Threads list reached its last row (#122).
+    pub fn load_more_threads(&self) {
+        if let Some(team_id) = self.team.clone() {
+            self.send(Command::LoadMoreThreads { team_id });
         }
     }
 
@@ -910,7 +1008,7 @@ impl Live {
     /// The shown team's followed threads as the Threads view lists them;
     /// a thread whose root is not cached yet waits for it.
     fn threads_model(&self) -> crate::threads::ThreadsModel {
-        let Some((threads, roots)) = &self.thread_list else {
+        let Some((threads, roots, more, failed)) = &self.thread_list else {
             return crate::threads::ThreadsModel::default();
         };
         let viewer = crate::transcript::Viewer {
@@ -920,6 +1018,8 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let rows = threads
             .iter()
@@ -938,6 +1038,8 @@ impl Live {
         crate::threads::ThreadsModel {
             threads: rows,
             loading: false,
+            more: *more,
+            failed: *failed,
         }
     }
 
@@ -955,6 +1057,8 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -966,6 +1070,9 @@ impl Live {
                 .map(shown)
                 .collect(),
             following: false,
+            reply_count: usize::try_from(root.reply_count).unwrap_or(0),
+            older: self.thread_pages.0,
+            failed_older: self.thread_pages.1,
         };
         for post in std::iter::once(&mut model.root).chain(model.replies.iter_mut()) {
             if self.failed.contains(post.id.as_ref()) {
@@ -989,6 +1096,8 @@ impl Live {
             zone: &self.zone,
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
@@ -1014,7 +1123,16 @@ impl Live {
             .flat_map(|sections| sections.iter())
             .flat_map(|section| section.channels.iter())
             .find(|channel| channel.id == channel_id)
-            .map(|channel| channel.display_name.clone().into())
+            .map(|channel| self.sidebar_name(channel).into())
+    }
+
+    /// A sidebar channel's name: a direct message's in the user's name
+    /// format (#156), any other channel's as the server names it.
+    fn sidebar_name(&self, channel: &SidebarChannel) -> String {
+        match &channel.dm_user {
+            Some(person) => crate::transcript::display_name_as(person, self.names),
+            None => channel.display_name.clone(),
+        }
     }
 
     /// The team on screen.
@@ -1022,11 +1140,37 @@ impl Live {
         self.team.as_deref()
     }
 
+    /// The server's address, for telling its links from others.
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// The user's teams as (id, URL name).
+    pub fn team_names(&self) -> Vec<(String, String)> {
+        self.teams
+            .iter()
+            .map(|team| (team.id.clone(), team.name.clone()))
+            .collect()
+    }
+
+    /// The profile of someone whose posts have been on screen, by username.
+    pub fn known_user(&self, username: &str) -> Option<UserProfile> {
+        self.users
+            .values()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+            .map(|user| self.profile(user))
+    }
+
+    /// The profile for a user sync found.
+    pub fn user_profile(&self, user: &User) -> UserProfile {
+        self.profile(user)
+    }
+
     fn profile(&self, user: &User) -> UserProfile {
         UserProfile {
             user_id: user.id.clone().into(),
             username: user.username.clone().into(),
-            display_name: crate::transcript::display_name(user).into(),
+            display_name: crate::transcript::display_name_as(user, self.names).into(),
             position: None,
             presence: self
                 .presence
@@ -1043,6 +1187,11 @@ impl Live {
         let id = self.ready.as_deref()?;
         self.row(id)?;
         self.ready.take().map(Into::into)
+    }
+
+    /// The profile pictures, for the window to share with its views.
+    pub fn avatars(&self) -> crate::avatars::Avatars {
+        self.avatars.clone()
     }
 
     pub fn is_typing(&self) -> bool {
@@ -1137,6 +1286,9 @@ impl Live {
                 update.directory = Some(rows);
             }
             ChangeSet::People { team_id, users } if self.team.as_ref() == Some(team_id) => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                }
                 let mut people: Vec<_> = users
                     .iter()
                     .filter(|user| user.id != self.me.0 && user.delete_at == 0 && !user.is_bot)
@@ -1177,6 +1329,16 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
+            ChangeSet::Avatar {
+                user_id,
+                last_picture_update,
+                image,
+            } => {
+                let picture = image
+                    .as_ref()
+                    .and_then(|(bytes, content_type)| crate::avatars::picture(bytes, content_type));
+                update.avatars = self.avatars.landed(user_id, *last_picture_update, picture);
+            }
             ChangeSet::RemoteImage {
                 url,
                 bytes,
@@ -1214,6 +1376,9 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::LinkResolved { query, answer } => {
+                update.link = Some((query.clone(), answer.clone()));
             }
             ChangeSet::Search { terms, posts } => {
                 if let Some((asked, results)) = self.search.as_mut()
@@ -1361,29 +1526,48 @@ impl Live {
                 update.arrived = Some(Arrival::new(arrived, &self.me.0, &self.prefs));
             }
             ChangeSet::Me(user) => {
+                self.avatars.learn(&user.id, user.last_picture_update);
                 self.take_notify_props(user, &mut update);
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
                 }
             }
-            ChangeSet::Thread { root_id, posts } => {
+            ChangeSet::Thread {
+                root_id,
+                posts,
+                older,
+                failed,
+            } => {
                 if let Some((open, shown)) = &mut self.thread
                     && open == root_id
                 {
                     *shown = Some(posts.clone());
+                    self.thread_pages = (*older, *failed);
                     update.thread = self.thread_model();
+                }
+            }
+            ChangeSet::ReplyRoots { channel_id, roots } => {
+                if self
+                    .open
+                    .as_ref()
+                    .is_some_and(|row| row.id.as_ref() == channel_id)
+                {
+                    self.reply_roots = roots.clone();
                 }
             }
             ChangeSet::ThreadList {
                 team_id,
                 threads,
                 roots,
+                more,
+                failed,
             } if self.team.as_ref() == Some(team_id) => {
-                self.thread_list = Some((threads.clone(), roots.clone()));
+                self.thread_list = Some((threads.clone(), roots.clone(), *more, *failed));
                 update.threads = Some(self.threads_model());
             }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
                     self.users.insert(user.id.clone(), user.clone());
                     self.take_notify_props(user, &mut update);
                 }
@@ -1429,6 +1613,7 @@ impl Live {
             }
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);
+                update.max_file_size = Some(capabilities.max_file_size);
                 self.threads_choice = Some(matches!(
                     capabilities.collapsed_threads,
                     matty_api::capabilities::CollapsedThreads::DefaultOn
@@ -1437,8 +1622,16 @@ impl Live {
                 update.collapsed_threads = self.threads();
             }
             ChangeSet::CollapsedThreads(on) => {
+                let changed = self.threads_on != Some(*on);
                 self.threads_on = Some(*on);
                 update.collapsed_threads = self.threads();
+                // The footer gives way to inline replies, or back (#123).
+                if changed && self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
+            }
+            ChangeSet::AccountPreferences(preferences) => {
+                update.account_preferences = Some(preferences.clone());
             }
             ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
                 self.link_previews = *on;
@@ -1453,12 +1646,31 @@ impl Live {
                     update.expired = true;
                     update.connection = Some(ConnectionState::Offline);
                 }
-                Connection::Socket(state) => update.connection = Some(connection_state(state)),
+                Connection::Socket(state) => {
+                    // Pictures that could not load while offline get
+                    // another try.
+                    if matches!(state, matty_api::ws::ConnectionState::Connected { .. }) {
+                        self.avatars.retry_failed();
+                    }
+                    update.connection = Some(connection_state(state));
+                }
                 Connection::Failed { .. } => update.connection = Some(ConnectionState::Offline),
                 Connection::SignedOut => update.signed_out = true,
                 _ => {}
             },
             _ => {}
+        }
+        if let Some(state) = &update.connection {
+            let offline = *state != ConnectionState::Online;
+            if offline != self.offline {
+                self.offline = offline;
+                // Only an empty channel reads it, and a patch would not
+                // carry it.
+                if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
+                    self.shown = None;
+                    update.channel = self.channel_update();
+                }
+            }
         }
         update
     }
@@ -1530,7 +1742,15 @@ impl Live {
                             _ => ChannelKind::Public,
                         };
                         let mut row =
-                            ChannelRow::new(channel.id.clone(), channel.display_name.clone(), kind);
+                            ChannelRow::new(channel.id.clone(), self.sidebar_name(channel), kind);
+                        if channel.kind == "D"
+                            && let Some(user_id) = &channel.dm_user_id
+                        {
+                            row = row.person(user_id.clone());
+                        }
+                        if let Some(person) = &channel.dm_user {
+                            row = row.handle(person.username.clone());
+                        }
                         if channel.unreads.messages > 0 {
                             row = row.unread();
                         }
@@ -1586,16 +1806,26 @@ fn connection_state(state: &matty_api::ws::ConnectionState) -> ConnectionState {
     }
 }
 
-/// Checks `url` and reads how its server lets people sign in.
+/// Checks `url` and reads how its server lets people sign in. A server
+/// older than Matty supports is refused here, before anyone signs in.
 pub async fn check_server(url: String) -> Result<ServerCapabilities, String> {
     let answer = matty_sync::io::run(async move {
         let client = Client::new(&url)?;
         client.capabilities().await
     });
     match answer.recv().await {
-        Ok(Ok(capabilities)) => Ok(capabilities),
+        Ok(Ok(capabilities)) => supported(capabilities),
         Ok(Err(error)) => Err(server_error(&error)),
         Err(_) => Err(STOPPED.into()),
+    }
+}
+
+/// `capabilities` if the server is at or above Matty's version floor
+/// (PLAN §6.3), otherwise the sentence naming both versions.
+fn supported(capabilities: ServerCapabilities) -> Result<ServerCapabilities, String> {
+    match capabilities.minimum_supported() {
+        Ok(()) => Ok(capabilities),
+        Err(old) => Err(old.to_string()),
     }
 }
 
@@ -1605,12 +1835,17 @@ pub struct Session {
     pub user: User,
 }
 
-/// Signs in to `url` with a login id and password.
-pub async fn sign_in(url: String, login_id: String, password: String) -> Result<Session, String> {
+/// Signs in to `url` with a login id and password, an MFA code once the
+/// server asked for one, and `ldap_only` for AD/LDAP. `device_id` stays
+/// empty: the server only takes a push-notification device there
+/// (PLAN §6.3).
+pub async fn sign_in(url: String, sign_in: PasswordSignIn) -> Result<Session, SignInFailure> {
     let answer = matty_sync::io::run(async move {
         let credentials = matty_api::Credentials {
-            login_id,
-            password,
+            login_id: sign_in.login_id,
+            password: sign_in.password,
+            mfa_token: sign_in.mfa_token,
+            ldap_only: sign_in.ldap_only,
             ..Default::default()
         };
         Client::new(&url)?.login(&credentials).await
@@ -1621,12 +1856,12 @@ pub async fn sign_in(url: String, login_id: String, password: String) -> Result<
             user: signed_in.user,
         }),
         Ok(Err(error)) => Err(sign_in_error(&error)),
-        Err(_) => Err(STOPPED.into()),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
     }
 }
 
 /// Signs in with a personal access token.
-pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, String> {
+pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, SignInFailure> {
     let answer =
         matty_sync::io::run(
             async move { Client::new(&url)?.login_personal_access_token(&token).await },
@@ -1637,15 +1872,39 @@ pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, S
             user: signed_in.user,
         }),
         Ok(Err(error)) => Err(sign_in_error(&error)),
-        Err(_) => Err(STOPPED.into()),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
+    }
+}
+
+/// Finishes browser SSO with the `server_token` from the `mattermost://`
+/// hand-off (PLAN §6.6, #75).
+pub async fn sign_in_with_desktop_token(
+    url: String,
+    server_token: String,
+) -> Result<Session, SignInFailure> {
+    let answer = matty_sync::io::run(async move {
+        Client::new(&url)?
+            .login_desktop_token(&server_token, "")
+            .await
+    });
+    match answer.recv().await {
+        Ok(Ok(signed_in)) => Ok(Session {
+            client: signed_in.client,
+            user: signed_in.user,
+        }),
+        Ok(Err(error)) => Err(sign_in_error(&error)),
+        Err(_) => Err(SignInFailure::Message(STOPPED.into())),
     }
 }
 
 /// A team's followed threads and their cached root posts, as sync sent
-/// them.
+/// them, then whether more are on the server and whether the last page of
+/// them failed (#122).
 type ThreadList = (
     Arc<[matty_sync::ThreadSummary]>,
     Arc<[matty_api::models::Post]>,
+    bool,
+    bool,
 );
 
 const STOPPED: &str = "Matty could not start its network thread. Quit and open it again.";
@@ -1709,6 +1968,15 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
 
 fn server_error(error: &ApiError) -> String {
     match error {
+        // Already one sentence for a person, naming what is wrong with the
+        // certificate (`matty_api::error::describe_tls`).
+        ApiError::Tls(text) => text.clone(),
+        ApiError::Timeout => {
+            "That server did not answer in time. Check the address and try again.".into()
+        }
+        ApiError::Redirected { location } => {
+            format!("That address sends Matty to {location}. Enter that address instead.")
+        }
         ApiError::Server { status: 404, .. } => {
             "That address answered, but it is not a Mattermost server.".into()
         }
@@ -1719,18 +1987,33 @@ fn server_error(error: &ApiError) -> String {
     }
 }
 
-fn sign_in_error(error: &ApiError) -> String {
-    match error {
-        ApiError::MfaRequired => {
-            "This account uses multi-factor authentication, which Matty does not support yet."
-                .into()
+fn sign_in_error(error: &ApiError) -> SignInFailure {
+    let message: String = match (error, error.id()) {
+        (ApiError::MfaRequired, _) => return SignInFailure::MfaRequired,
+        (
+            _,
+            Some(
+                "api.user.check_user_login_attempts.too_many.app_error"
+                | "api.user.check_user_login_attempts.too_many_ldap.app_error",
+            ),
+        ) => "This account is locked after too many failed attempts. Reset your password or ask your server's administrator to unlock it.".into(),
+        (_, Some("api.user.login.inactive.app_error")) => {
+            "This account is deactivated. Ask your server's administrator to reactivate it.".into()
         }
-        ApiError::Server { status: 401, .. } => {
+        (_, Some("api.user.login.not_verified.app_error")) => {
+            "Verify your email address first, with the link the server sent you.".into()
+        }
+        (ApiError::Server { status: 401, .. }, _) => {
             "That login or password is not right. Check them and try again.".into()
         }
-        ApiError::Server { message, .. } if !message.is_empty() => message.clone(),
+        (ApiError::Server { message, .. }, _) if !message.is_empty() => message.clone(),
+        (ApiError::RateLimited, _) => {
+            "Too many tries in a row. Wait a moment and try again.".into()
+        }
+        (ApiError::Tls(text), _) => text.clone(),
         _ => "Matty could not reach the server. Check your connection and try again.".into(),
-    }
+    };
+    SignInFailure::Message(message.into())
 }
 
 #[cfg(test)]
@@ -1745,6 +2028,7 @@ mod tests {
             kind: kind.into(),
             display_name: id.into(),
             dm_user_id: (kind == "D").then(|| format!("{id}-user")),
+            dm_user: None,
             unreads: Unreads {
                 messages,
                 mentions,
@@ -1793,6 +2077,76 @@ mod tests {
         live
     }
 
+    fn capabilities(version: &str) -> ServerCapabilities {
+        let config = HashMap::from([("Version".to_string(), serde_json::json!(version))]);
+        ServerCapabilities::from_old_format(&config, &HashMap::new()).unwrap()
+    }
+
+    #[test]
+    fn a_server_below_the_floor_is_refused_naming_both_versions() {
+        let error = supported(capabilities("9.3.2")).unwrap_err();
+        let minimum = matty_api::capabilities::MINIMUM_VERSION.to_string();
+        assert!(error.contains("9.3.2"), "{error}");
+        assert!(error.contains(&minimum), "{error}");
+        assert!(supported(capabilities(&minimum)).is_ok());
+        assert!(supported(capabilities("11.0.1")).is_ok());
+    }
+
+    #[test]
+    fn certificate_errors_keep_their_own_words() {
+        let text =
+            "The server's certificate has expired. Ask the server's administrator to renew it.";
+        assert_eq!(server_error(&ApiError::Tls(text.into())), text);
+        assert_eq!(
+            sign_in_error(&ApiError::Tls(text.into())),
+            SignInFailure::Message(text.into())
+        );
+    }
+
+    fn refused(status: u16, id: &str) -> ApiError {
+        ApiError::Server {
+            status,
+            id: id.into(),
+            message: "Server words.".into(),
+            request_id: None,
+        }
+    }
+
+    #[test]
+    fn sign_in_errors_are_specific() {
+        assert_eq!(
+            sign_in_error(&ApiError::MfaRequired),
+            SignInFailure::MfaRequired
+        );
+        let says = |error: ApiError| match sign_in_error(&error) {
+            SignInFailure::Message(text) => text.to_string(),
+            SignInFailure::MfaRequired => String::new(),
+        };
+        assert!(
+            says(refused(
+                401,
+                "api.user.login.invalid_credentials_email_username"
+            ))
+            .contains("login or password is not right")
+        );
+        assert!(
+            says(refused(
+                401,
+                "api.user.check_user_login_attempts.too_many.app_error"
+            ))
+            .contains("locked")
+        );
+        assert!(
+            says(refused(
+                401,
+                "api.user.check_user_login_attempts.too_many_ldap.app_error"
+            ))
+            .contains("locked")
+        );
+        assert!(says(refused(401, "api.user.login.inactive.app_error")).contains("deactivated"));
+        assert_eq!(says(refused(400, "some.other.error")), "Server words.");
+    }
+
     #[test]
     fn the_first_team_in_the_users_order_is_shown() {
         let mut live = live();
@@ -1818,6 +2172,41 @@ mod tests {
         );
         // Another team's sidebar changing leaves the shown one alone.
         assert_eq!(live.apply(&t2).categories, None);
+    }
+
+    #[test]
+    fn a_dm_row_follows_the_name_format_and_keeps_the_username_to_find_it() {
+        use crate::settings::NameFormat;
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let mut dm = channel("dm", "D", 0, 0);
+        dm.display_name = "ada".into();
+        dm.dm_user = Some(User {
+            id: "dm-user".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            nickname: "Countess".into(),
+            ..User::default()
+        });
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![dm])]),
+        });
+        let row = &update.categories.unwrap()[0].rows[0];
+        assert_eq!(row.name.as_ref(), "Countess");
+        assert_eq!(row.handle.as_deref(), Some("ada"));
+        // A new format renames the sidebar (and so the switcher) at once.
+        let update = live.set_names(NameFormat::FullName);
+        assert_eq!(
+            update.categories.unwrap()[0].rows[0].name.as_ref(),
+            "Ada Lovelace"
+        );
+        let update = live.set_names(NameFormat::Username);
+        assert_eq!(update.categories.unwrap()[0].rows[0].name.as_ref(), "ada");
+        assert_eq!(live.channel_name("dm").as_deref(), Some("ada"));
     }
 
     #[test]
@@ -2066,6 +2455,8 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
+            author_id: SharedString::default(),
+            kind: crate::channel::PostKind::Regular,
             time: 600,
             day: "Today".into(),
             date: SharedString::default(),
@@ -2079,6 +2470,8 @@ mod tests {
             pinned: false,
             status: crate::channel::PostStatus::Sent,
             replies: None,
+            root_id: "".into(),
+            reply_to: None,
             files: vec![],
             embeds: vec![],
         }
@@ -2120,6 +2513,29 @@ mod tests {
     }
 
     #[test]
+    fn posts_arriving_under_an_unsent_row_keep_the_scroll() {
+        let mut failed = shown("me:1", "not sent");
+        failed.status = crate::channel::PostStatus::Failed;
+        let old = [shown("a", "one"), failed.clone()];
+        // A backfill brings posts written before the failed send.
+        let new = [
+            shown("a", "one"),
+            shown("b", "two"),
+            shown("c", "three"),
+            failed.clone(),
+        ];
+        assert_eq!(
+            patch(&old, &new),
+            Some(ChannelUpdate::Patch {
+                removed: vec!["me:1".into()],
+                prepended: vec![],
+                updated: vec![],
+                appended: vec![shown("b", "two"), shown("c", "three"), failed],
+            })
+        );
+    }
+
+    #[test]
     fn a_post_between_shown_ones_resets() {
         let old = [shown("a", "one"), shown("c", "three")];
         let new = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
@@ -2144,6 +2560,8 @@ mod tests {
         let thread = |root: &str| ChangeSet::Thread {
             root_id: root.into(),
             posts: Arc::from(vec![post("root", "Plan?"), post("r1", "Yes")]),
+            older: true,
+            failed: false,
         };
         assert_eq!(live.apply(&thread("root")).thread, None, "not open");
         live.open_thread("root");
@@ -2152,6 +2570,7 @@ mod tests {
         assert_eq!(model.root.body.as_ref(), "Plan?");
         let replies: Vec<_> = model.replies.iter().map(|r| r.body.as_ref()).collect();
         assert_eq!(replies, ["Yes"]);
+        assert!(model.older, "older replies wait on the server");
         assert_eq!(live.thread_channel().as_deref(), Some("c1"));
         assert_eq!(live.apply(&thread("other")).thread, None);
         live.close_thread();
@@ -2226,14 +2645,44 @@ mod tests {
             // "gone" has no cached root yet, so it waits.
             threads: Arc::from(vec![summary("root", 2), summary("gone", 1)]),
             roots: Arc::from(vec![root.clone()]),
+            more: true,
+            failed: false,
         };
         assert_eq!(live.apply(&list("t2")).threads, None, "another team");
         let model = live.apply(&list("t1")).threads.unwrap();
         assert_eq!(model.threads.len(), 1);
+        assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
         assert_eq!((row.summary.count, row.summary.unread), (2, true));
         assert_eq!(model.unread(), 1);
+    }
+
+    #[test]
+    fn an_empty_channel_says_so_only_while_online() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let empty = ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(Vec::new()),
+        };
+        let Some(ChannelUpdate::Replace(model)) = live.apply(&empty).channel else {
+            panic!("the channel shows");
+        };
+        assert!(!model.offline);
+        let socket = |state| ChangeSet::Connection(Connection::Socket(state));
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Stopped));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn offline");
+        };
+        assert!(model.offline && model.posts.is_empty());
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Connected {
+            connection_id: "x".into(),
+        }));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn online");
+        };
+        assert!(!model.offline);
     }
 
     fn opened(live: &mut Live) {
@@ -2747,6 +3196,36 @@ mod tests {
         let image = updated[0].embeds[0].image().unwrap();
         assert_eq!((image.width, image.height), (1200, 630));
         assert!(image.loaded.is_some());
+    }
+
+    #[test]
+    fn a_profile_picture_lands_for_the_views_and_a_failure_keeps_initials() {
+        let mut live = live();
+        let avatars = live.avatars();
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            last_picture_update: 5,
+            ..User::default()
+        }])));
+        assert!(avatars.image("ada").is_none(), "initials until it lands");
+        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Avatar {
+            user_id: user_id.into(),
+            last_picture_update: 5,
+            image: image.map(|bytes| (Arc::from(bytes), "image/png".to_owned())),
+        };
+        let update = live.apply(&answer("ada", Some(b"\x89PNG\r\n\x1a\nface")));
+        assert!(update.avatars, "the windows redraw");
+        assert!(avatars.image("ada").is_some());
+        // No picture, or bytes that are not an image: the initials stay.
+        assert!(!live.apply(&answer("bob", None)).avatars);
+        let page = ChangeSet::Avatar {
+            user_id: "eve".into(),
+            last_picture_update: 5,
+            image: Some((Arc::from(&b"<html>"[..]), "text/html".to_owned())),
+        };
+        assert!(!live.apply(&page).avatars);
+        assert!(avatars.image("bob").is_none());
+        assert!(avatars.image("eve").is_none());
     }
 
     #[test]

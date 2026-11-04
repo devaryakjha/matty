@@ -95,6 +95,32 @@ pub fn for_channel(conn: &Connection, channel_id: &str) -> Result<Vec<Outgoing>>
     Ok(rows)
 }
 
+/// The channel's next send: its oldest one that has not failed. Failed
+/// sends wait for Retry and do not hold up the ones after them.
+pub fn next(conn: &Connection, channel_id: &str) -> Result<Option<Outgoing>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT {COLUMNS} FROM outbox WHERE channel_id = ?1 AND last_error IS NULL
+             ORDER BY seq LIMIT 1"
+        ))?
+        .query_row([channel_id], from_row)
+        .optional()?)
+}
+
+/// Changes an unsent post's text in place (#195): the queued send and its
+/// optimistic row both take it, and its place in the queue stays. `false`
+/// when it is not queued.
+pub fn edit(conn: &Connection, pending_post_id: &str, message: &str) -> Result<bool> {
+    let changed = conn
+        .prepare_cached("UPDATE outbox SET message = ?2 WHERE pending_post_id = ?1")?
+        .execute(params![pending_post_id, message])?;
+    if changed > 0 {
+        conn.prepare_cached("UPDATE posts SET message = ?2 WHERE id = ?1")?
+            .execute(params![pending_post_id, message])?;
+    }
+    Ok(changed > 0)
+}
+
 /// Records an attempt starting: one more try, no error.
 pub fn attempt(conn: &Connection, pending_post_id: &str) -> Result<()> {
     conn.prepare_cached(
@@ -134,4 +160,19 @@ pub fn remove(conn: &Connection, pending_post_id: &str) -> Result<bool> {
         .prepare_cached("DELETE FROM outbox WHERE pending_post_id = ?1")?
         .execute([pending_post_id])?;
     Ok(removed > 0)
+}
+
+/// Drops every queued send with its optimistic post and files, and says
+/// how many there were. Sign out calls it so nothing written in this
+/// session goes out under the next one (#194).
+pub fn clear(conn: &Connection) -> Result<usize> {
+    let ids: Vec<String> = conn
+        .prepare_cached("SELECT pending_post_id FROM outbox")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in &ids {
+        crate::posts::remove_post(conn, id)?;
+    }
+    conn.prepare_cached("DELETE FROM outbox")?.execute([])?;
+    Ok(ids.len())
 }

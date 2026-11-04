@@ -8,8 +8,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     Action, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::account::{Account, AccountEvent, AccountView};
@@ -17,8 +17,8 @@ use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
     HistoryForward, MarkAllRead, MarkChannelRead, NextChannel, NextUnreadChannel, OpenPreferences,
     Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
-    ZoomOut,
+    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter,
+    UploadFiles, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    ClockFormat, LogLevel, MessageDisplay, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX,
-    SIDEBAR_MIN, SendKey, SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
+    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
+    SettingsStore, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -39,18 +39,14 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
-    field::Field,
     input::{InputEvent, InputState},
     kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
-    scroll_area::ScrollArea,
-    select::{Select, SelectEvent, SelectItem, SelectState},
-    switch::Switch,
+    select::{SelectEvent, SelectItem, SelectState},
     theme::{UiTheme, transition_value},
     title_bar::TitleBar,
     toast::{Notice, ToastState},
-    toggle_group::{ToggleGroup, ToggleGroupItem},
 };
 
 /// The log detail choices: the setting, the picker's value and its label.
@@ -131,7 +127,7 @@ const NARROW_SIDEBAR: f32 = 640.;
 /// The width of gpuicn's Resizable handle, counted when turning the
 /// persisted right-pane width into the channel width the split wants.
 const SPLIT_HANDLE: f32 = 8.;
-/// The text size presets the preferences dialog offers, within the
+/// The text size presets the Preferences sheet offers, within the
 /// 0.8–1.5 range settings accept.
 const TEXT_SIZES: &[(&str, f32)] = &[
     ("small", 0.9),
@@ -140,8 +136,14 @@ const TEXT_SIZES: &[(&str, f32)] = &[
     ("larger", 1.3),
 ];
 
+/// The server the preview's links point at, as its Copy link writes them.
+const PREVIEW_SERVER: &str = "https://chat.example.com";
+
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
+
+mod preferences;
+mod sso;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
@@ -160,6 +162,8 @@ pub struct MainWindow {
     sidebar_visible: bool,
     shortcuts: DialogHandle,
     preferences: DialogHandle,
+    /// The section Preferences shows (#155).
+    preferences_section: preferences::Section,
     /// Preferences' mention keywords, saved to the server on Enter or when
     /// the field loses focus (#192).
     keywords: Entity<InputState>,
@@ -172,6 +176,8 @@ pub struct MainWindow {
     collapsed_threads: Option<(bool, bool)>,
     /// Where notifications go on this platform (#141).
     notifier: Box<dyn matty_notify::Notifier>,
+    /// What the dock badge shows now (#141).
+    badge: matty_notify::Badge,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -232,6 +238,15 @@ pub struct MainWindow {
     kept_unread: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
+    /// The browser sign-in the card waits on (#75).
+    sso: Option<sso::PendingSso>,
+    /// The link sync is finding, with the permalink's post (#85, #103).
+    link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
+    /// The join prompt for a link to a public channel the user is not in.
+    link_join: DialogHandle,
+    link_join_offer: Option<crate::links::JoinOffer>,
+    /// A permalink's post to show once its channel, just joined, opens.
+    link_jump: Option<(SharedString, SharedString)>,
     sidebar_shown: bool,
 }
 
@@ -243,8 +258,13 @@ impl MainWindow {
         cx.subscribe_in(
             &settings,
             window,
-            |_, _, _: &SettingsChanged, window, cx| {
+            |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
+                let names = store.read(cx).get().name_format;
+                if let Some(live) = this.live.as_mut() {
+                    let update = live.set_names(names);
+                    this.apply_update(update, window, cx);
+                }
                 cx.notify();
             },
         )
@@ -275,6 +295,7 @@ impl MainWindow {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
                 SwitcherEvent::Forward { post, channel } => this.forward(post, channel, cx),
+                SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
             },
         )
         .detach();
@@ -297,6 +318,9 @@ impl MainWindow {
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        if crate::preview::enabled() {
+            cx.set_global(crate::preview::avatars());
+        }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
         if crate::preview::enabled() {
@@ -398,6 +422,7 @@ impl MainWindow {
             match event {
                 ThreadsEvent::MarkAllRead => live.read_all_threads(),
                 ThreadsEvent::Unfollow(root) => live.follow_thread(root, false),
+                ThreadsEvent::LoadMore => live.load_more_threads(),
                 ThreadsEvent::Open { root, unread } => {
                     // Only while on screen: the view keeps its selection
                     // when the user goes back to a channel.
@@ -577,6 +602,8 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
+                ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
+                ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -604,7 +631,7 @@ impl MainWindow {
                             name.to_string(),
                             source.clone(),
                         );
-                        this.start_upload(id.clone(), job, cx);
+                        this.start_upload(id.clone(), job, window, cx);
                     }
                 }
                 ChannelEvent::CancelUpload(id) => {
@@ -614,7 +641,7 @@ impl MainWindow {
                 }
                 ChannelEvent::RetryUpload(id) => {
                     if let Some(job) = this.live.as_ref().and_then(|live| live.upload_job(id)) {
-                        this.start_upload(id.clone(), job, cx);
+                        this.start_upload(id.clone(), job, window, cx);
                     }
                 }
                 ChannelEvent::OpenFile(id) => this.download_file(id, cx),
@@ -769,6 +796,19 @@ impl MainWindow {
         })
         .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
+        // A click on a notification opens its channel at its post (#139).
+        let (clicked_tx, clicked) = async_channel::bounded(8);
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(clicked) = clicked.recv().await {
+                let opened = this.update_in(cx, |this, window, cx| {
+                    this.open_notification(clicked, window, cx)
+                });
+                if opened.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut this = Self {
             settings,
             login,
@@ -782,9 +822,11 @@ impl MainWindow {
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
+            preferences_section: preferences::Section::default(),
             keywords,
             log_level,
-            notifier: matty_notify::backend::platform(),
+            notifier: matty_notify::backend::platform(clicked_tx),
+            badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
             browse,
@@ -815,9 +857,19 @@ impl MainWindow {
             _typing_task: None,
             _view_task: None,
             kept_unread: None,
+            link_asked: None,
+            link_join: DialogHandle::new(false),
+            link_join_offer: None,
+            link_jump: None,
             login_server: None,
+            sso: None,
             sidebar_shown: false,
         };
+        cx.observe(&this.sidebar, |this, _, cx| this.update_badge(cx))
+            .detach();
+        cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
+            .detach();
+        this.follow_links(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
@@ -867,10 +919,15 @@ impl MainWindow {
                 return;
             }
         };
+        cx.set_global(live.avatars());
+        let mut live = live;
+        // Nothing is on screen yet, so the update has nothing to show.
+        let _ = live.set_names(self.settings.read(cx).get().name_format);
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
                 Account {
+                    user_id: account.user_id.clone().into(),
                     display_name: account.display_name.clone().into(),
                     username: account.username.clone().into(),
                     presence: if crate::offline() {
@@ -903,13 +960,14 @@ impl MainWindow {
         &mut self,
         id: SharedString,
         job: crate::live::UploadJob,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(live) = &mut self.live else {
             return;
         };
         live.track_upload(&id, job.clone());
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move {
                     match job.source {
@@ -918,7 +976,7 @@ impl MainWindow {
                     }
                 })
                 .await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 // Removed from the tray while it was being read.
                 let Some(live) = this
                     .live
@@ -936,19 +994,34 @@ impl MainWindow {
                     }),
                     Err(error) => {
                         tracing::warn!(%error, "could not read a file to upload");
-                        this.channel.update(cx, |view, cx| {
-                            view.set_upload_status(
-                                &id,
-                                crate::attachments::AttachmentStatus::Failed,
-                                cx,
-                            );
-                        });
+                        let failed = crate::attachments::AttachmentStatus::Failed;
+                        this.set_upload_status(&id, failed, window, cx);
                     }
                 }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Hands a file's progress to the tray it came from: the channel's
+    /// or the thread reply's, by id.
+    fn set_upload_status(
+        &mut self,
+        id: &str,
+        status: crate::attachments::AttachmentStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if id.starts_with(crate::right_pane::UPLOAD_PREFIX) {
+            self.right_pane.update(cx, |view, cx| {
+                view.set_upload_status(id, status, window, cx)
+            });
+        } else {
+            self.channel.update(cx, |view, cx| {
+                view.set_upload_status(id, status, window, cx)
+            });
+        }
     }
 
     /// Saves a post's file to the download folder; it opens once saved
@@ -1016,14 +1089,10 @@ impl MainWindow {
         });
     }
 
-    /// Puts a post's permalink on the clipboard and says so (#133).
     /// Forwards a post from the open channel as a new post holding its
     /// permalink, which the server and the webapp show as the quoted post.
     fn forward(&mut self, post_id: &str, to: &SharedString, cx: &mut Context<Self>) {
-        let link = self.live.as_ref().and_then(|live| {
-            let from = self.selected_channel.as_ref()?;
-            live.permalink(from, post_id)
-        });
+        let link = self.permalink(post_id);
         let (Some(live), Some(link)) = (&self.live, link) else {
             self.push_error(
                 "Couldn't forward the message. Try again once you're connected.",
@@ -1089,16 +1158,32 @@ impl MainWindow {
         });
     }
 
-    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+    /// A post's permalink in the open channel, or the preview's stand-in.
+    fn permalink(&self, post_id: &str) -> Option<String> {
         let link = self.live.as_ref().and_then(|live| {
             let channel = self.selected_channel.as_ref()?;
             live.permalink(channel, post_id)
         });
-        let link = link.or_else(|| {
-            crate::preview::enabled()
-                .then(|| format!("https://chat.example.com/matty/pl/{post_id}"))
-        });
-        let Some(link) = link else {
+        link.or_else(|| {
+            crate::preview::enabled().then(|| format!("{PREVIEW_SERVER}/matty/pl/{post_id}"))
+        })
+    }
+
+    /// Opens a post Matty cannot draw in the web app (#104).
+    fn open_in_browser(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        match self.permalink(post_id) {
+            Some(link) => cx.open_url(&link),
+            None => self.push_error_with(
+                "Couldn't open the message. Try again once you're connected.",
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// Puts a post's permalink on the clipboard and says so (#133).
+    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        let Some(link) = self.permalink(post_id) else {
             self.push_error_with(
                 "Couldn't copy the link. Try again once you're connected.",
                 None,
@@ -1173,6 +1258,16 @@ impl MainWindow {
             return;
         };
         let update = live.apply(change);
+        self.apply_update(update, window, cx);
+    }
+
+    /// Shows what sync's latest change means for the window.
+    fn apply_update(
+        &mut self,
+        update: crate::live::Update,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(name) = update.team_name {
             self.browse
                 .update(cx, |browse, cx| browse.set_team_name(name.clone(), cx));
@@ -1331,8 +1426,13 @@ impl MainWindow {
             }
         }
         if let Some((id, status)) = update.upload {
+            self.set_upload_status(&id, status, window, cx);
+        }
+        if let Some(bytes) = update.max_file_size {
             self.channel
-                .update(cx, |view, cx| view.set_upload_status(&id, status, cx));
+                .update(cx, |view, _| view.set_max_file_size(bytes));
+            self.right_pane
+                .update(cx, |view, _| view.set_max_file_size(bytes));
         }
         if let Some(names) = update.typing {
             let someone = !names.is_empty();
@@ -1358,6 +1458,9 @@ impl MainWindow {
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
             cx.notify();
+        }
+        if let Some(preferences) = update.account_preferences {
+            self.mirror_account_preferences(&preferences, cx);
         }
         if let Some(thread) = update.thread {
             if self.threads_open {
@@ -1405,8 +1508,16 @@ impl MainWindow {
         }
         if let Some(id) = update.ready {
             self.open_channel(id, window, cx);
+            self.finish_link_jump(cx);
+        }
+        if let Some((query, answer)) = update.link {
+            self.link_resolved(query, answer, window, cx);
+        }
+        if update.avatars {
+            cx.refresh_windows();
         }
         if update.signed_out {
+            cx.set_global(crate::avatars::Avatars::default());
             self.live = None;
             self._live_task = None;
             self.forget_signed_out(cx);
@@ -1465,14 +1576,13 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 this.login_server = None;
             }
-            LoginEvent::SignIn { login_id, password } => {
+            LoginEvent::SignIn(sign_in) => {
                 let Some(server) = this.login_server.clone() else {
                     model.step = LoginStep::Server;
                     return view.update(cx, |view, cx| view.set_model(model, window, cx));
                 };
                 model.busy = true;
-                let signing_in =
-                    crate::live::sign_in(server.clone(), login_id.clone(), password.clone());
+                let signing_in = crate::live::sign_in(server.clone(), sign_in.clone());
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Token(token) => {
@@ -1485,14 +1595,16 @@ impl MainWindow {
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Sso(provider) => {
-                // The browser flow is #75.
-                model.error = Some(
-                    format!(
-                        "{} sign-in is not in Matty yet. Use a password or a personal access token.",
-                        provider.label()
-                    )
-                    .into(),
-                );
+                let Some(server) = this.login_server.clone() else {
+                    model.step = LoginStep::Server;
+                    return view.update(cx, |view, cx| view.set_model(model, window, cx));
+                };
+                model.step = model.step.to_browser(*provider);
+                this.start_sso(server, *provider, view, window, cx);
+            }
+            LoginEvent::CancelSso => {
+                this.cancel_sso();
+                model.step = model.step.back_to_methods();
             }
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
@@ -1503,7 +1615,9 @@ impl MainWindow {
     fn finish_sign_in(
         &mut self,
         server: String,
-        signing_in: impl std::future::Future<Output = Result<crate::live::Session, String>> + 'static,
+        signing_in: impl std::future::Future<
+            Output = Result<crate::live::Session, crate::login::SignInFailure>,
+        > + 'static,
         view: &Entity<LoginView>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1530,11 +1644,10 @@ impl MainWindow {
                     this.login_server = None;
                     cx.notify();
                 }
-                Err(error) => {
+                Err(failure) => {
                     let _ = view.update(cx, |view, cx| {
                         let mut model = view.model().clone();
-                        model.busy = false;
-                        model.error = Some(error.into());
+                        model.sign_in_failed(failure);
                         view.set_model(model, window, cx);
                     });
                 }
@@ -1568,7 +1681,19 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 model.error = None;
             }
-            LoginEvent::SignIn { .. } | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
+            // The preview asks for a code once, to show the MFA step.
+            LoginEvent::SignIn(sign_in) if sign_in.mfa_token.is_none() => {
+                model.sign_in_failed(crate::login::SignInFailure::MfaRequired);
+            }
+            LoginEvent::Sso(provider) => {
+                model.step = model.step.to_browser(*provider);
+                model.error = None;
+            }
+            LoginEvent::CancelSso => {
+                model.step = model.step.back_to_methods();
+                model.error = None;
+            }
+            LoginEvent::SignIn(_) | LoginEvent::Token(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());
             }
         }
@@ -1577,6 +1702,24 @@ impl MainWindow {
 
     /// Shows `id` in the channel view and marks it in the sidebar. Until
     /// sync lands only the preview fixtures have content.
+    /// Brings Matty forward on the channel a notification was about, at
+    /// its post.
+    fn open_notification(
+        &mut self,
+        clicked: matty_notify::Clicked,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.activate(true);
+        window.activate_window();
+        self.open_channel(clicked.channel_id.into(), window, cx);
+        if !clicked.post_id.is_empty() {
+            let post = clicked.post_id.into();
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(post, cx));
+        }
+    }
+
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,
@@ -1721,7 +1864,8 @@ impl MainWindow {
                 profile.user_id.clone(),
                 profile.display_name.clone(),
                 kind.clone(),
-            );
+            )
+            .person(profile.user_id.clone());
             self.add_row("direct", row, cx);
             self.joined.push(crate::preview::empty_channel(
                 profile.user_id.clone(),
@@ -2029,7 +2173,10 @@ impl MainWindow {
             .then(|| crate::preview::thread(&channel_id, &post_id))
             .flatten();
         self.right_pane.update(cx, |pane, cx| {
-            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+            pane.set_content(
+                thread.map(|thread| RightPaneContent::Thread(Box::new(thread))),
+                cx,
+            )
         });
         self.right_pane_open = true;
         cx.notify();
@@ -2077,6 +2224,7 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
@@ -2134,18 +2282,41 @@ impl MainWindow {
                     pane.update(cx, |view, cx| view.set_link_preview(url, card, cx));
                 }
             }
-            RightPaneEvent::Reply { root, text, unfurl } => {
-                if let Some(live) = &self.live
+            RightPaneEvent::Reply {
+                root,
+                text,
+                files,
+                unfurl,
+            } => {
+                if let Some(live) = &mut self.live
                     && let Some(channel_id) = live.thread_channel()
                 {
+                    let file_ids = live.take_file_ids(files);
                     live.send(matty_sync::Command::SendPost {
                         pending_post_id: String::new(),
                         channel_id,
                         root_id: root.to_string(),
                         message: text.to_string(),
-                        file_ids: Vec::new(),
+                        file_ids,
                         props: crate::embeds::send_props(*unfurl),
                     });
+                }
+            }
+            RightPaneEvent::Upload { id, name, source } => {
+                if let Some(channel) = self.live.as_ref().and_then(|live| live.thread_channel()) {
+                    let job =
+                        crate::live::UploadJob::new(channel, name.to_string(), source.clone());
+                    self.start_upload(id.clone(), job, window, cx);
+                }
+            }
+            RightPaneEvent::CancelUpload(id) => {
+                if let Some(live) = &mut self.live {
+                    live.cancel_upload(id);
+                }
+            }
+            RightPaneEvent::RetryUpload(id) => {
+                if let Some(job) = self.live.as_ref().and_then(|live| live.upload_job(id)) {
+                    self.start_upload(id.clone(), job, window, cx);
                 }
             }
             RightPaneEvent::Retry(post) => {
@@ -2155,9 +2326,29 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::SaveEdit { post, text } => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::EditPost {
+                        post_id: post.to_string(),
+                        message: text.to_string(),
+                    });
+                }
+            }
+            RightPaneEvent::Discard(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::Discard {
+                        pending_post_id: post.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::ToggleFollow { root, following } => {
                 if let Some(live) = &self.live {
                     live.follow_thread(root, *following);
+                }
+            }
+            RightPaneEvent::LoadOlderReplies(root) => {
+                if let Some(live) = &self.live {
+                    live.load_older_replies(root);
                 }
             }
             // Sync owns the rest (PLAN §4.3); the pane already shows them.
@@ -2593,6 +2784,18 @@ impl MainWindow {
             .into_any_element()
     }
 
+    /// Puts the unread and mention totals on the dock icon (#141); signed
+    /// out, the sidebar is loading and the badge clears.
+    fn update_badge(&mut self, cx: &mut Context<Self>) {
+        let rail = self.rail.read(cx);
+        let badge =
+            crate::badge::dock_badge(self.sidebar.read(cx).model(), rail.teams(), rail.current());
+        if badge != self.badge {
+            self.badge = badge;
+            self.notifier.set_badge(badge);
+        }
+    }
+
     /// Sign out returns to the sign-in card at once; sync ends the session
     /// on the server and then stops, and the account's cache is deleted
     /// (#160). Offline, the server is told nothing but the cache still goes.
@@ -2690,6 +2893,8 @@ impl MainWindow {
             self.connection = state;
             let away = self.connection != ConnectionState::Online;
             self.channel.update(cx, |view, cx| view.set_away(away, cx));
+            self.right_pane
+                .update(cx, |view, cx| view.set_away(away, cx));
             cx.notify();
         }
     }
@@ -2831,9 +3036,6 @@ impl MainWindow {
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
     }
 
-    /// Preferences (DESIGN.md §5): appearance first, with every control a
-    /// gpuicn one and every change written to settings straight away so
-    /// the window re-themes behind the dialog.
     /// Escape in the channel (#147): closes the right pane when one is
     /// open, else views the open channel on the server and clears its
     /// unread mark.
@@ -2938,665 +3140,269 @@ impl MainWindow {
         self.account.read(cx).account().username.to_string()
     }
 
-    /// Sends the typed keywords when they differ from the server's.
-    fn save_keywords(&mut self, cx: &mut Context<Self>) {
-        let (Some(live), Some(props)) = (&self.live, &self.notify_props) else {
-            return;
-        };
-        let typed = self.keywords.read(cx).value().to_string();
-        let next = matty_notify::mention::with_keywords(&self.username(cx), props, &typed);
-        if next != *props {
-            live.send(matty_sync::Command::SetNotifyProps {
-                notify_props: next.clone(),
-            });
-            self.notify_props = Some(next);
-        }
-    }
-
-    /// Writes one of the user's `notify_props` to the server (#158). The
-    /// server sends the user back, which updates the policy's preferences.
-    fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
-        let Some(props) = &self.notify_props else {
-            return;
-        };
-        if props.get(key).map(String::as_str) == Some(value) {
-            return;
-        }
-        let mut next = props.clone();
-        next.insert(key.to_owned(), value.to_owned());
-        if let Some(live) = &self.live {
-            live.send(matty_sync::Command::SetNotifyProps {
-                notify_props: next.clone(),
-            });
-        }
-        self.notify_props = Some(next);
-        cx.notify();
-    }
-
-    /// Turns collapsed reply threads on or off for the user (#157). The
-    /// server's preferences come back and every count follows.
-    fn set_collapsed_threads(&mut self, on: bool, cx: &mut Context<Self>) {
-        let Some((choice, current)) = self.collapsed_threads else {
-            return;
-        };
-        if current == on {
-            return;
-        }
-        if let Some(live) = &self.live {
-            live.send(matty_sync::Command::SetCollapsedThreads { on });
-        }
-        self.collapsed_threads = Some((choice, on));
-        cx.notify();
-    }
-
-    /// Asks for a folder and saves downloads there from now on (#160).
-    fn choose_download_folder(&mut self, cx: &mut Context<Self>) {
-        let answer = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose".into()),
-        });
-        let settings = self.settings.clone();
-        cx.spawn(async move |_, cx| {
-            let Ok(Ok(Some(paths))) = answer.await else {
-                return;
-            };
-            let Some(folder) = paths.into_iter().next() else {
-                return;
-            };
-            settings.update(cx, |store, cx| {
-                store.update(cx, |s| s.download_folder = Some(folder))
-            });
-        })
-        .detach();
-    }
-
-    /// Preferences' Notifications section, from the user's `notify_props`
-    /// with Mattermost's defaults (#158).
-    fn notification_prefs(
-        &self,
-        props: &std::collections::HashMap<String, String>,
-        labelled_row: &dyn Fn(SharedString, SharedString, gpui_kit::AnyElement) -> gpui_kit::Div,
-        section: &dyn Fn(&'static str, gpui_kit::AnyElement) -> gpui_kit::Div,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Div {
-        let theme = UiTheme::read(cx).clone();
-        let user = matty_notify::UserPrefs::from_props(&self.username(cx), "", props);
-        let level: SharedString = match user.desktop {
-            matty_notify::Level::All => "all",
-            matty_notify::Level::Mention => "mention",
-            matty_notify::Level::None => "none",
-        }
-        .into();
-        let view = cx.entity().downgrade();
-        let item = |id: &'static str, value: &'static str, text: &'static str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text)
-                .flex_1()
-                .child(text)
-        };
-        let desktop = ToggleGroup::new("preferences.desktop")
-            .aria_label("Notify me about")
-            .joined(true)
-            .w_full()
-            .value([level])
-            .item(item("preferences.desktop.all", "all", "All messages"))
-            .item(item("preferences.desktop.mention", "mention", "Mentions"))
-            .item(item("preferences.desktop.none", "none", "Nothing"))
-            .on_change({
-                let view = view.clone();
-                move |next, _, cx| {
-                    let value = next.first().map(|v| v.to_string());
-                    view.update(cx, |this, cx| {
-                        this.set_notify_prop("desktop", value.as_deref().unwrap_or("mention"), cx)
-                    })
-                    .ok();
-                }
-            });
-        let on = |key: &str, default: bool| props.get(key).map_or(default, |v| v == "true");
-        let switch = |id: &'static str,
-                      title: &'static str,
-                      detail: SharedString,
-                      checked: bool,
-                      key: &'static str,
-                      values: (&'static str, &'static str)| {
-            let view = view.clone();
-            labelled_row(
-                title.into(),
-                detail,
-                Switch::new(id)
-                    .checked(checked)
-                    .aria_label(title)
-                    .on_change(move |next, _, _, cx| {
-                        let value = if next { values.0 } else { values.1 };
-                        view.update(cx, |this, cx| this.set_notify_prop(key, value, cx))
-                            .ok();
-                    })
-                    .into_any_element(),
-            )
-        };
-        let first_name = self.account.read(cx).account().display_name.clone();
-        let first_name = first_name
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        let first_name_detail: SharedString = if first_name.is_empty() {
-            "Your first name counts as a mention.".into()
-        } else {
-            format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(5.))
-            .child(section(
-                "Notifications",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(3.))
-                    .child(desktop)
-                    .child(switch(
-                        "preferences.desktop-threads",
-                        "Replies in threads I follow",
-                        "Notify for every reply, not only mentions.".into(),
-                        user.desktop_threads == matty_notify::Level::All,
-                        "desktop_threads",
-                        ("all", "mention"),
-                    ))
-                    .child(switch(
-                        "preferences.desktop-sound",
-                        "Sound",
-                        "Play a sound with each notification.".into(),
-                        user.desktop_sound,
-                        "desktop_sound",
-                        ("true", "false"),
-                    ))
-                    .into_any_element(),
-            ))
-            .child(section(
-                "Mentions",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(3.))
-                    .child(switch(
-                        "preferences.first-name",
-                        "First name",
-                        first_name_detail,
-                        on("first_name", false),
-                        "first_name",
-                        ("true", "false"),
-                    ))
-                    .child(switch(
-                        "preferences.channel-wide",
-                        "@channel, @all and @here",
-                        "Messages to the whole channel count as mentions.".into(),
-                        on("channel", true),
-                        "channel",
-                        ("true", "false"),
-                    ))
-                    .child(
-                        Field::new("preferences.keywords", &self.keywords)
-                            .label("Keywords")
-                            .description(
-                                "Words that count as mentioning you, separated by commas. \
-                                 @username always does.",
-                            ),
-                    )
-                    .into_any_element(),
-            ))
-    }
-
-    fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = UiTheme::read(cx).clone();
-        let settings = self.settings.read(cx).get().clone();
-        let store = self.settings.clone();
-        let label = |text: &'static str| {
-            div()
-                .type_style(style::LABEL, &theme)
-                .text_color(theme.colors.muted_foreground)
-                .child(text.to_uppercase())
-        };
-        let section = |title: &'static str, control: gpui_kit::AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(theme.space(2.))
-                .child(label(title))
-                .child(control)
-        };
-        let theme_value: SharedString = match settings.theme {
-            ThemeChoice::System => "system",
-            ThemeChoice::Light => "light",
-            ThemeChoice::Dark => "dark",
-        }
-        .into();
-        let theme_item = |id: &'static str, value: &'static str, glyph: LucideIcon, text: &str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text.to_string())
-                .flex_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(theme.space(1.5))
-                        .child(lucide(glyph).size(scaled(&theme, metrics::ICON_SMALL)))
-                        .child(text.to_string()),
-                )
-        };
-        let theme_store = store.clone();
-        let theme_group = ToggleGroup::new("preferences.theme")
-            .aria_label("Theme")
-            .joined(true)
-            .w_full()
-            .value([theme_value])
-            .item(theme_item(
-                "preferences.theme.system",
-                "system",
-                LucideIcon::Monitor,
-                "System",
-            ))
-            .item(theme_item(
-                "preferences.theme.light",
-                "light",
-                LucideIcon::Sun,
-                "Light",
-            ))
-            .item(theme_item(
-                "preferences.theme.dark",
-                "dark",
-                LucideIcon::Moon,
-                "Dark",
-            ))
-            .on_change(move |next, _, cx| {
-                let choice = match next.first().map(|v| v.as_ref()) {
-                    Some("light") => ThemeChoice::Light,
-                    Some("dark") => ThemeChoice::Dark,
-                    _ => ThemeChoice::System,
-                };
-                theme_store.update(cx, |store, cx| store.update(cx, |s| s.theme = choice));
-            });
-        let size_value: SharedString = TEXT_SIZES
-            .iter()
-            .min_by(|a, b| {
-                (a.1 - settings.text_scale)
-                    .abs()
-                    .total_cmp(&(b.1 - settings.text_scale).abs())
-            })
-            .map(|(name, _)| *name)
-            .unwrap_or("default")
-            .into();
-        let size_store = store.clone();
-        let mut size_group = ToggleGroup::new("preferences.text-size")
-            .aria_label("Text size")
-            .joined(true)
-            .w_full()
-            .value([size_value]);
-        for (name, scale) in TEXT_SIZES {
-            let text = format!("{}%", (scale * 100.).round());
-            size_group = size_group.item(
-                ToggleGroupItem::new(
-                    gpui_kit::ElementId::Name(format!("preferences.text-size.{name}").into()),
-                    *name,
-                )
-                .aria_label(format!("Text size {text}"))
-                .flex_1()
-                .child(text),
-            );
-        }
-        let size_group = size_group.on_change(move |next, _, cx| {
-            let scale = TEXT_SIZES
-                .iter()
-                .find(|(name, _)| next.first().map(|v| v.as_ref()) == Some(*name))
-                .map(|(_, scale)| *scale)
-                .unwrap_or(1.);
-            size_store.update(cx, |store, cx| store.update(cx, |s| s.text_scale = scale));
-        });
-        let clock_value: SharedString = match settings.clock {
-            ClockFormat::TwelveHour => "12",
-            ClockFormat::TwentyFourHour => "24",
-        }
-        .into();
-        let clock_store = store.clone();
-        let clock_item = |id: &'static str, value: &'static str, text: &'static str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text)
-                .flex_1()
-                .child(text)
-        };
-        let clock_group = ToggleGroup::new("preferences.clock")
-            .aria_label("Clock")
-            .joined(true)
-            .w_full()
-            .value([clock_value])
-            .item(clock_item("preferences.clock.12", "12", "12-hour"))
-            .item(clock_item("preferences.clock.24", "24", "24-hour"))
-            .on_change(move |next, _, cx| {
-                let clock = match next.first().map(|v| v.as_ref()) {
-                    Some("12") => ClockFormat::TwelveHour,
-                    _ => ClockFormat::TwentyFourHour,
-                };
-                clock_store.update(cx, |store, cx| store.update(cx, |s| s.clock = clock));
-            });
-        let send_value: SharedString = match settings.send_on {
-            SendKey::Enter => "enter",
-            SendKey::ModEnter => "mod-enter",
-        }
-        .into();
-        let mod_enter_label = match Platform::current() {
-            Platform::MacOs => "Cmd+Enter",
-            Platform::Other => "Ctrl+Enter",
-        };
-        let send_store = store.clone();
-        let send_group = ToggleGroup::new("preferences.send")
-            .aria_label("Send message with")
-            .joined(true)
-            .w_full()
-            .value([send_value])
-            .item(clock_item("preferences.send.enter", "enter", "Enter"))
-            .item(clock_item(
-                "preferences.send.mod-enter",
-                "mod-enter",
-                mod_enter_label,
-            ))
-            .on_change(move |next, _, cx| {
-                let send_on = match next.first().map(|v| v.as_ref()) {
-                    Some("mod-enter") => SendKey::ModEnter,
-                    _ => SendKey::Enter,
-                };
-                send_store.update(cx, |store, cx| store.update(cx, |s| s.send_on = send_on));
-            });
-        let display_value: SharedString = match settings.display {
-            MessageDisplay::Standard => "standard",
-            MessageDisplay::Compact => "compact",
-        }
-        .into();
-        let display_store = store.clone();
-        let display_group = ToggleGroup::new("preferences.display")
-            .aria_label("Message display")
-            .joined(true)
-            .w_full()
-            .value([display_value])
-            .item(clock_item(
-                "preferences.display.standard",
-                "standard",
-                "Standard",
-            ))
-            .item(clock_item(
-                "preferences.display.compact",
-                "compact",
-                "Compact",
-            ))
-            .on_change(move |next, _, cx| {
-                let display = match next.first().map(|v| v.as_ref()) {
-                    Some("compact") => MessageDisplay::Compact,
-                    _ => MessageDisplay::Standard,
-                };
-                display_store.update(cx, |store, cx| store.update(cx, |s| s.display = display));
-            });
-        let display_hint = match settings.display {
-            MessageDisplay::Standard => "Avatars and a name line above each message.",
-            MessageDisplay::Compact => "One line per message, with the time in the margin.",
-        };
-        let display_section = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .child(display_group)
-            .child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(display_hint),
-            );
-        let send_hint = match settings.send_on {
-            SendKey::Enter => "Shift+Enter starts a new line.",
-            SendKey::ModEnter => "Enter starts a new line.",
-        };
-        let send_section = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .child(send_group)
-            .child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(send_hint),
-            );
-        let labelled_row =
-            |title: SharedString, detail: SharedString, control: gpui_kit::AnyElement| {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(theme.space(4.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(0.5))
-                            .child(
-                                div()
-                                    .type_style(style::UI, &theme)
-                                    .text_color(theme.colors.foreground)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .type_style(style::META, &theme)
-                                    .text_color(theme.colors.muted_foreground)
-                                    .child(detail),
-                            ),
-                    )
-                    .child(control)
-            };
-        let switch_row =
-            |id: &'static str,
-             title: &'static str,
-             detail: &'static str,
-             checked: bool,
-             write: fn(&mut crate::settings::Settings, bool)| {
-                let store = store.clone();
-                labelled_row(
-                    title.into(),
-                    detail.into(),
-                    Switch::new(id)
-                        .checked(checked)
-                        .aria_label(title)
-                        .on_change(move |next, _, _, cx| {
-                            store.update(cx, |store, cx| store.update(cx, |s| write(s, next)))
-                        })
-                        .into_any_element(),
-                )
-            };
-        let threads = self
-            .collapsed_threads
-            .filter(|(choice, _)| *choice)
-            .map(|(_, on)| {
-                let view = cx.entity().downgrade();
-                section(
-                    "Threads",
-                    labelled_row(
-                        "Collapsed reply threads".into(),
-                        "Replies stay in their thread instead of the channel.".into(),
-                        Switch::new("preferences.collapsed-threads")
-                            .checked(on)
-                            .aria_label("Collapsed reply threads")
-                            .on_change(move |next, _, _, cx| {
-                                view.update(cx, |this, cx| this.set_collapsed_threads(next, cx))
-                                    .ok();
-                            })
-                            .into_any_element(),
-                    )
-                    .into_any_element(),
-                )
-            });
-        let download_folder = settings
-            .download_folder
-            .clone()
-            .or_else(dirs::download_dir)
-            .map(|path| SharedString::from(path.display().to_string()))
-            .unwrap_or_else(|| "Your Downloads folder".into());
-        let files = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(3.))
-            .child(
-                // A path can be long: one truncated line, the whole path
-                // in a tooltip.
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(theme.space(4.))
-                    .child(
-                        div()
-                            .id("preferences.download-folder.path")
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(0.5))
-                            .tooltip({
-                                let path = download_folder.clone();
-                                move |_, cx| crate::ui::tooltip::text_tooltip(path.clone(), cx)
-                            })
-                            .child(
-                                div()
-                                    .type_style(style::UI, &theme)
-                                    .text_color(theme.colors.foreground)
-                                    .child("Download folder"),
-                            )
-                            .child(
-                                div()
-                                    .type_style(style::META, &theme)
-                                    .text_color(theme.colors.muted_foreground)
-                                    .truncate()
-                                    .child(download_folder),
-                            ),
-                    )
-                    .child(
-                        Button::new("preferences.download-folder")
-                            .variant(ButtonVariant::Outline)
-                            .size(ButtonSize::Sm)
-                            .aria_label("Change download folder")
-                            .label("Change…")
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.choose_download_folder(cx)),
-                            ),
-                    ),
-            )
-            .child(labelled_row(
-                "Log detail".into(),
-                "How much goes into the logs.".into(),
-                div()
-                    .flex_shrink_0()
-                    .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                    .child(Select::new(&self.log_level).aria_label("Log detail"))
-                    .into_any_element(),
-            ))
-            .child(labelled_row(
-                "Logs".into(),
-                "Attach them when you report a problem.".into(),
-                Button::new("preferences.open-logs")
-                    .variant(ButtonVariant::Outline)
-                    .size(ButtonSize::Sm)
-                    .aria_label("Open logs folder")
-                    .label("Open folder")
-                    .on_click(|_, _, cx| {
-                        if let Some(dir) = crate::logging::default_dir() {
-                            let _ = std::fs::create_dir_all(&dir);
-                            cx.open_with_system(&dir);
-                        }
-                    })
-                    .into_any_element(),
-            ));
-        let notifications = self
-            .notify_props
-            .as_ref()
-            .map(|props| self.notification_prefs(props, &labelled_row, &section, cx));
-        // The sections scroll inside the popup, which stays within the
-        // window: the title and Done above them take about space(24.).
-        let body_height = theme
-            .space(158.)
-            .min(window.viewport_size().height - theme.space(40.));
-        let popup = dialog_popup("preferences.popup", "Preferences", cx)
-            .child(dialog_title("preferences.title", cx).child("Preferences"))
-            .child(
-                dialog_description("preferences.description", cx)
-                    .child("Changes apply right away and are saved for next time."),
-            )
-            .child(
-                ScrollArea::new("preferences.body")
-                    .aria_label("Preferences")
-                    .h(body_height)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(5.))
-                            .pt(theme.space(1.))
-                            // Room for the scrollbar beside the switches.
-                            .pr(theme.space(3.))
-                            .child(section("Theme", theme_group.into_any_element()))
-                            .child(section("Text size", size_group.into_any_element()))
-                            .child(section("Clock", clock_group.into_any_element()))
-                            .child(section(
-                                "Send message with",
-                                send_section.into_any_element(),
-                            ))
-                            .child(section(
-                                "Message display",
-                                display_section.into_any_element(),
-                            ))
-                            .children(threads)
-                            .children(notifications)
-                            .child(section(
-                                "Window",
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(theme.space(3.))
-                                    .child(switch_row(
-                                        "preferences.close-to-tray",
-                                        "Keep running when closed",
-                                        "Closing the window leaves Matty in the tray.",
-                                        settings.close_to_tray,
-                                        |s, v| s.close_to_tray = v,
-                                    ))
-                                    .child(switch_row(
-                                        "preferences.launch-at-login",
-                                        "Open at login",
-                                        "Start Matty when you sign in.",
-                                        settings.launch_at_login,
-                                        |s, v| s.launch_at_login = v,
-                                    ))
-                                    .child(switch_row(
-                                        "preferences.reduce-motion",
-                                        "Reduce motion",
-                                        "Panes and banners change without sliding.",
-                                        settings.reduce_motion,
-                                        |s, v| s.reduce_motion = v,
-                                    ))
-                                    .into_any_element(),
-                            ))
-                            .child(section("Files and logs", files.into_any_element())),
-                    ),
-            )
-            .child(dialog_close("preferences.close", cx).label("Done"));
-        dialog("preferences", &self.preferences, popup, window, cx)
-    }
-
     fn browse(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let handle = self.browse.read(cx).handle().clone();
         let popup = dialog_popup("browse.popup", "Browse channels", cx).child(self.browse.clone());
         dialog("browse", &handle, popup, window, cx)
+    }
+
+    // Links in messages and the switcher (#85, #103). `links::route`
+    // decides where a link goes; these act on it.
+
+    /// Opens a link clicked in a message or pasted into the switcher.
+    fn open_message_link(
+        &mut self,
+        url: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::links::LinkTarget;
+        let (server, teams, team) = if let Some(live) = &self.live {
+            (
+                Some(live.server().to_owned()),
+                live.team_names(),
+                live.team().map(str::to_owned),
+            )
+        } else if crate::preview::enabled() {
+            let teams: Vec<(String, String)> = crate::preview::teams()
+                .into_iter()
+                .map(|team| (team.id.to_string(), team.id.to_string()))
+                .collect();
+            let team = teams.first().map(|(id, _)| id.clone());
+            (Some(PREVIEW_SERVER.to_owned()), teams, team)
+        } else {
+            (None, Vec::new(), None)
+        };
+        let names: Vec<&str> = teams.iter().map(|(_, name)| name.as_str()).collect();
+        match crate::links::route(&url, server.as_deref(), &names) {
+            LinkTarget::External(url) => cx.open_url(&url),
+            LinkTarget::Nothing => {}
+            LinkTarget::Hashtag(tag) => self.search(format!("#{tag}").into(), window, cx),
+            LinkTarget::User(username) => self.open_user(username, window, cx),
+            LinkTarget::Channel { team: named, name } => {
+                let team_id = match named {
+                    Some(named) => teams
+                        .iter()
+                        .find(|(_, team)| team.eq_ignore_ascii_case(&named))
+                        .map(|(id, _)| id.clone()),
+                    None => team,
+                };
+                if let Some(team_id) = team_id {
+                    let query = matty_sync::LinkQuery::Channel { team_id, name };
+                    self.resolve_link(query, None, window, cx);
+                }
+            }
+            LinkTarget::Permalink { post_id, .. } => {
+                let post = Some(post_id.as_str().into());
+                self.resolve_link(matty_sync::LinkQuery::Post { post_id }, post, window, cx);
+            }
+        }
+    }
+
+    /// `@name`: the direct message with them, found or started.
+    fn open_user(&mut self, username: String, window: &mut Window, cx: &mut Context<Self>) {
+        let known = match &self.live {
+            Some(live) => live.known_user(&username),
+            None => crate::preview::profiles()
+                .into_iter()
+                .find(|profile| profile.username.eq_ignore_ascii_case(&username)),
+        };
+        match known {
+            Some(profile) => self.message(&profile, window, cx),
+            None => {
+                let query = matty_sync::LinkQuery::User { username };
+                self.resolve_link(query, None, window, cx);
+            }
+        }
+    }
+
+    /// Asks sync what `query` names; the preview answers from its fixtures.
+    fn resolve_link(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(live) = &self.live {
+            self.link_asked = Some((query.clone(), post));
+            live.send(matty_sync::Command::ResolveLink { query });
+        } else if crate::preview::enabled() {
+            self.resolve_preview_link(query, post, window, cx);
+        }
+    }
+
+    fn resolve_preview_link(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows: Vec<crate::sidebar::ChannelRow> = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter().cloned())
+            .collect();
+        let found = match &query {
+            matty_sync::LinkQuery::Post { post_id } => rows
+                .iter()
+                .find(|row| {
+                    crate::preview::channel(&row.id).is_some_and(|channel| {
+                        channel.posts.iter().any(|p| p.id.as_ref() == post_id)
+                    })
+                })
+                .map(|row| row.id.clone()),
+            matty_sync::LinkQuery::Channel { name, .. } => {
+                let joined = rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == name)
+                    .map(|row| row.id.clone());
+                if joined.is_none()
+                    && let Some(channel) = crate::preview::directory()
+                        .into_iter()
+                        .find(|channel| channel.id.as_ref() == name)
+                {
+                    return self.offer_join(channel.id, channel.name, post, window, cx);
+                }
+                joined
+            }
+            matty_sync::LinkQuery::User { .. } => None,
+        };
+        match found {
+            Some(id) => self.open_at(id, post, window, cx),
+            None => self.link_not_found(&query, cx),
+        }
+    }
+
+    /// Sync found (or did not find) what a link names.
+    fn link_resolved(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        answer: Option<matty_sync::LinkAnswer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, post)) = self.link_asked.take_if(|(asked, _)| *asked == query) else {
+            return;
+        };
+        let Some(live) = &self.live else {
+            return;
+        };
+        match answer {
+            None => self.link_not_found(&query, cx),
+            Some(matty_sync::LinkAnswer::User(user)) => {
+                let profile = live.user_profile(&user);
+                self.message(&profile, window, cx);
+            }
+            Some(matty_sync::LinkAnswer::Channel(channel)) => {
+                use crate::links::Opening;
+                let member = live.row(&channel.id).is_some();
+                match crate::links::opening(&channel, member, live.team()) {
+                    Opening::Open => self.open_at(channel.id.clone().into(), post, window, cx),
+                    Opening::Join => self.offer_join(
+                        channel.id.clone().into(),
+                        channel.name.clone().into(),
+                        post,
+                        window,
+                        cx,
+                    ),
+                    Opening::OtherTeam => self.push_error(
+                        "That channel is in another team, and Matty can't switch teams yet.",
+                        cx,
+                    ),
+                    Opening::Closed => {
+                        self.push_error("You can't open that channel. Ask a member to add you.", cx)
+                    }
+                }
+            }
+        }
+    }
+
+    fn link_not_found(&mut self, query: &matty_sync::LinkQuery, cx: &mut Context<Self>) {
+        self.push_error(
+            match query {
+                matty_sync::LinkQuery::Post { .. } => {
+                    "That message was deleted, or it's in a channel you can't see."
+                }
+                matty_sync::LinkQuery::Channel { .. } => {
+                    "That channel doesn't exist, or you can't see it."
+                }
+                matty_sync::LinkQuery::User { .. } => "No one on this server has that username.",
+            },
+            cx,
+        );
+    }
+
+    /// Opens a channel, at `post` when a permalink named one.
+    fn open_at(
+        &mut self,
+        id: SharedString,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_channel(id, window, cx);
+        if let Some(post) = post {
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(post, cx));
+        }
+    }
+
+    fn offer_join(
+        &mut self,
+        channel_id: SharedString,
+        name: SharedString,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.link_join_offer = Some(crate::links::JoinOffer {
+            channel_id,
+            name,
+            post,
+        });
+        self.link_join.open(window, cx);
+        cx.notify();
+    }
+
+    /// Join on the link's join prompt: the channel opens once joined, at
+    /// the permalink's post.
+    fn join_from_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(offer) = self.link_join_offer.take() else {
+            return;
+        };
+        self.link_jump = offer.post.map(|post| (offer.channel_id.clone(), post));
+        self.join_channel(offer.channel_id, window, cx);
+        self.finish_link_jump(cx);
+    }
+
+    /// Jumps to the post a joined channel's link named, once it is open.
+    fn finish_link_jump(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_channel.clone();
+        if let Some((_, post)) = self
+            .link_jump
+            .take_if(|(channel, _)| selected.as_ref() == Some(channel))
+        {
+            self.channel.update(cx, |view, cx| view.jump_to(post, cx));
+        }
+    }
+
+    fn link_join_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        crate::links::join_dialog(
+            &self.link_join,
+            self.link_join_offer.as_ref(),
+            move |window, cx| {
+                view.update(cx, |this, cx| this.join_from_link(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        )
     }
 
     fn directory_dialogs(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3694,6 +3500,12 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
                 this.step_channel(Step::Next, true, window, cx)
             }))
+            // File > Upload files with focus outside both composers goes
+            // to the channel's; each composer answers it first itself.
+            .on_action(cx.listener(|this, _: &UploadFiles, window, cx| {
+                this.channel
+                    .update(cx, |view, cx| view.choose_files(window, cx))
+            }))
             .on_action(cx.listener(|this, _: &UnreadsFilter, _, cx| {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
@@ -3701,6 +3513,9 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
+            .on_action(
+                cx.listener(|this, _: &crate::menu::SignOut, window, cx| this.sign_out(window, cx)),
+            )
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
             })
@@ -3770,6 +3585,7 @@ impl Render for MainWindow {
             .child(self.preferences(window, cx))
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
+            .child(self.link_join_dialog(window, cx))
             .child(switcher_element)
             .child(self.toasts.clone())
     }
