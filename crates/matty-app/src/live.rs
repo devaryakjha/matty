@@ -1574,6 +1574,7 @@ mod tests {
             status: crate::channel::PostStatus::Sent,
             replies: None,
             files: vec![],
+            embeds: vec![],
         }
     }
 
