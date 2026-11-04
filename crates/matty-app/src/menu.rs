@@ -103,6 +103,8 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Quit Matty", Quit),
         ]),
         Menu::new("File").items([
+            item("Open in new window"),
+            MenuItem::separator(),
             dialog("Upload files"),
             MenuItem::separator(),
             dialog("Create channel"),
@@ -151,6 +153,8 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+            item("Close window"),
         ]),
         Menu::new("Help").items([
             item("Keyboard shortcuts"),

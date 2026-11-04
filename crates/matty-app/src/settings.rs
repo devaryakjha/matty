@@ -194,6 +194,18 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
+/// A channel or thread popped out into its own window, to open again at
+/// launch (#222): the server it is on, the channel, the thread's root post
+/// when it is a thread, and where the window was.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PopOutPlace {
+    pub server: String,
+    pub channel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+    pub bounds: WindowGeometry,
+}
+
 /// A server the user signed in to, so its cache can open at launch. Holds
 /// no secret: the session token belongs in the keychain (#77). The fields
 /// after `display_name` came with multiple servers (#206); a file without
@@ -274,6 +286,8 @@ pub struct Settings {
     pub recent_servers: Vec<RecentServer>,
     /// The last searches, newest first, at most [`RECENT_SEARCHES`] (#129).
     pub recent_searches: Vec<String>,
+    /// Channels and threads in their own windows (#222).
+    pub popouts: Vec<PopOutPlace>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -308,6 +322,7 @@ impl Default for Settings {
             servers: Vec::new(),
             recent_servers: Vec::new(),
             recent_searches: Vec::new(),
+            popouts: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }

@@ -16,9 +16,9 @@ use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusComposer,
     FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead, NextChannel,
-    NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
-    QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search, ShowShortcuts,
-    ToggleRightPane, ToggleSidebar, UnreadsFilter, UploadFiles, ZoomIn, ZoomOut,
+    NextUnreadChannel, OpenInNewWindow, OpenPreferences, Platform, PreviousChannel,
+    PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search,
+    ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, UploadFiles, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -179,6 +179,7 @@ type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 mod background;
 mod drafts;
 mod other_servers;
+mod popouts;
 mod preferences;
 mod servers;
 mod sounds;
@@ -583,6 +584,7 @@ impl MainWindow {
             |this, _, event: &ChannelEvent, window, cx| match event {
                 ChannelEvent::Offline(action) => this.say_offline(action, cx),
                 ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
+                ChannelEvent::OpenThreadWindow(root) => this.pop_out_thread(root.clone(), None, cx),
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
                 ChannelEvent::OpenInfo => this.show_channel_info(cx),
                 ChannelEvent::OpenDirect { display_name, .. } => {
@@ -857,6 +859,9 @@ impl MainWindow {
         .detach();
         cx.subscribe_in(&right_pane, window, Self::pane_event)
             .detach();
+        let requests = crate::popout::requests(cx);
+        cx.subscribe_in(&requests, window, Self::popout_request)
+            .detach();
         cx.subscribe_in(
             &sidebar,
             window,
@@ -894,6 +899,7 @@ impl MainWindow {
                         return this.set_muted(id.clone(), *muted, cx);
                     }
                     SidebarEvent::Leave(id) => return this.leave_channel(id.clone(), window, cx),
+                    SidebarEvent::PopOut(id) => return this.pop_out_channel(id.clone(), cx),
                     SidebarEvent::Close(id) => return this.close_direct(id.clone(), window, cx),
                     SidebarEvent::NewCategory { channel_id } => {
                         let channel_id = channel_id.clone();
@@ -1791,6 +1797,10 @@ impl MainWindow {
                 tracing::info!("first sidebar from sync shown");
                 self.sidebar_shown = true;
             }
+            // Pop-outs left open last time come back over this sidebar (#222).
+            if let Some(live) = &self.live {
+                crate::popout::restore(live, cx);
+            }
             let selected = self.selected_channel.clone();
             let model = self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
@@ -2210,6 +2220,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The window already showing it, if a pop-out does (#222).
+        if crate::popout::show_notified(&clicked, cx) {
+            return;
+        }
         cx.activate(true);
         window.activate_window();
         if !self.show_notified_server(&clicked, window, cx) {
@@ -2779,6 +2793,7 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::PopOut(root) => self.pop_out_pane_thread(pane, root, cx),
             RightPaneEvent::CopyLink(post) => self.copy_link(post, cx),
             RightPaneEvent::SetSaved { post, saved } => {
                 let action = if *saved {
@@ -3792,6 +3807,8 @@ impl MainWindow {
             show_preview: true,
             ..matty_notify::AppState::default()
         };
+        // A pop-out with focus shows its own channel or thread (#222).
+        let app = crate::popout::seen_by_focused(app, cx);
         if let Some(notification) = arrival.decide(app) {
             self.notifier.show(&notification);
         }
@@ -4286,6 +4303,9 @@ impl Render for MainWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ChannelInfo, _, cx| this.show_channel_info(cx)))
+            .on_action(cx.listener(|this, _: &OpenInNewWindow, window, cx| {
+                this.open_in_new_window(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
             .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
             .on_action(

@@ -35,6 +35,7 @@ pub mod mattermost_theme;
 pub mod menu;
 pub mod offline;
 pub mod perf;
+pub mod popout;
 pub mod preview;
 pub mod profile;
 pub mod profile_editor;

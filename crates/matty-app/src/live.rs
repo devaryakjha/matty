@@ -25,6 +25,7 @@ use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence};
 
+mod popout;
 mod teams;
 
 /// A running sync engine and what the window last heard from it.
@@ -123,6 +124,8 @@ pub struct Live {
     team_icons: crate::avatars::TeamIcons,
     /// The server's custom emoji by name, shared with the views.
     custom_emoji: crate::emoji::CustomEmoji,
+    /// Which windows hold each channel and thread open (#222).
+    views: popout::OpenViews,
 }
 
 /// One tray file on its way to the server.
@@ -577,13 +580,16 @@ impl Live {
                 emoji_images,
                 team_icons,
                 custom_emoji: crate::emoji::CustomEmoji::default(),
+                views: popout::OpenViews::default(),
             },
             changes,
         )
     }
 
     pub fn send(&self, command: Command) {
-        self.sync.send(command);
+        if self.views.allows(&command) {
+            self.sync.send(command);
+        }
     }
 
     /// Remembers a tray file so its progress reaches the tray.
