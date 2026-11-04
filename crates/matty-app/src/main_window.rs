@@ -80,6 +80,9 @@ const CONTENT_MIN: f32 = 260.;
 /// Below this window width the right pane overlays the channel as a drawer
 /// instead of splitting it (PLAN §4.1 narrow windows).
 const NARROW_RIGHT_PANE: f32 = 900.;
+/// Below this window width the sidebar collapses to a drawer opened from the
+/// title bar (PLAN §4.1 narrow windows).
+const NARROW_SIDEBAR: f32 = 640.;
 /// The width of gpuicn's Resizable handle, counted when turning the
 /// persisted right-pane width into the channel width the split wants.
 const SPLIT_HANDLE: f32 = 8.;
@@ -126,6 +129,12 @@ pub struct MainWindow {
     /// the backdrop) closes the pane too.
     right_drawer: DrawerHandle,
     right_drawer_shown: bool,
+    /// In a narrow window the sidebar is this drawer from the left edge,
+    /// opened from the title bar or Cmd/Ctrl+Shift+D and closed by picking a
+    /// channel.
+    sidebar_drawer: DrawerHandle,
+    sidebar_drawer_open: bool,
+    sidebar_drawer_shown: bool,
     /// The Threads view stands in for the channel while the sidebar's
     /// Threads row is chosen.
     threads: Entity<ThreadsView>,
@@ -558,6 +567,13 @@ impl MainWindow {
             &sidebar,
             window,
             |this, _, event: &SidebarEvent, window, cx| {
+                // Picking a place to go closes the narrow-window drawer.
+                if matches!(
+                    event,
+                    SidebarEvent::Select(_) | SidebarEvent::OpenThreads | SidebarEvent::OpenDrafts
+                ) {
+                    this.sidebar_drawer_open = false;
+                }
                 let id = match event {
                     SidebarEvent::Select(id) => id.clone(),
                     SidebarEvent::OpenThreads => return this.show_threads(cx),
@@ -612,6 +628,9 @@ impl MainWindow {
             right_pane_open: false,
             right_drawer: DrawerHandle::new(false),
             right_drawer_shown: false,
+            sidebar_drawer: DrawerHandle::new(false),
+            sidebar_drawer_open: false,
+            sidebar_drawer_shown: false,
             threads,
             toasts,
             threads_open: false,
@@ -1778,24 +1797,58 @@ impl MainWindow {
         f32::from(window.viewport_size().width) < NARROW_RIGHT_PANE
     }
 
-    /// Keeps the right-pane drawer in step with `right_pane_open` in a
-    /// narrow window, and lets a dismissal from the drawer close the pane.
-    fn sync_right_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let wanted = self.right_pane_open
+    /// Whether the window is too narrow for the sidebar beside the channel.
+    fn narrow_sidebar(window: &Window) -> bool {
+        f32::from(window.viewport_size().width) < NARROW_SIDEBAR
+    }
+
+    /// Keeps the narrow-window drawers in step with their open flags, and
+    /// lets a dismissal from a drawer (Escape, the backdrop) clear the flag.
+    fn sync_drawers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let signed_in = self.login.is_none();
+        let right = self.right_pane_open
             && Self::narrow_right_pane(window)
-            && self.login.is_none()
+            && signed_in
             && !self.threads_open
             && !self.drafts_open;
-        if wanted && !self.right_drawer_shown {
-            self.right_drawer.open(window, cx);
-            self.right_drawer_shown = true;
-        } else if wanted && !self.right_drawer.is_open() {
+        if sync_drawer(
+            &self.right_drawer,
+            &mut self.right_drawer_shown,
+            right,
+            window,
+            cx,
+        ) {
             self.right_pane_open = false;
-            self.right_drawer_shown = false;
-        } else if !wanted && self.right_drawer_shown {
-            self.right_drawer.close(window, cx);
-            self.right_drawer_shown = false;
         }
+        let sidebar = self.sidebar_drawer_open && Self::narrow_sidebar(window) && signed_in;
+        if sync_drawer(
+            &self.sidebar_drawer,
+            &mut self.sidebar_drawer_shown,
+            sidebar,
+            window,
+            cx,
+        ) {
+            self.sidebar_drawer_open = false;
+        }
+    }
+
+    /// The sidebar as a drawer from the left edge, mounted always and shown
+    /// only in a narrow window (PLAN §4.1).
+    fn sidebar_drawer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = f32::from(window.viewport_size().width);
+        let width = self
+            .settings
+            .read(cx)
+            .get()
+            .sidebar_width
+            .min(viewport * 0.85);
+        Drawer::new("main.sidebar-drawer", &self.sidebar_drawer)
+            .direction(DrawerSide::Left)
+            .content(
+                DrawerContent::new("main.sidebar-drawer.panel", "Sidebar")
+                    .w(px(width))
+                    .child(self.sidebar.clone()),
+            )
     }
 
     /// The right pane as a drawer from the right edge, mounted always and
@@ -1897,7 +1950,7 @@ impl MainWindow {
 
     /// DESIGN.md §4: navigation on the left, the quick switcher as a search
     /// pill in the middle, mentions, saved, help and the user on the right.
-    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn title_bar(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
         // Signed out there is nothing to navigate: window controls only.
         if self.login.is_some() {
             return TitleBar::new().into_any_element();
@@ -1934,6 +1987,18 @@ impl MainWindow {
                     .items_center()
                     .gap(theme.space(0.5))
                     .flex_shrink_0()
+                    // The sidebar lives in a drawer at this width; this is
+                    // the pointer's way to it.
+                    .when(narrow, |group| {
+                        group.child(Self::icon_button(
+                            "titlebar.sidebar",
+                            "Toggle sidebar",
+                            LucideIcon::PanelLeft,
+                            Box::new(ToggleSidebar),
+                            true,
+                            cx,
+                        ))
+                    })
                     .child(Self::icon_button(
                         "titlebar.back",
                         "Back",
@@ -2498,9 +2563,10 @@ impl Render for MainWindow {
         let theme = UiTheme::read(cx).clone();
         let sidebar_width = px(self.settings.read(cx).get().sidebar_width);
         let settings = self.settings.clone();
-        self.sync_right_drawer(window, cx);
+        self.sync_drawers(window, cx);
+        let narrow_sidebar = Self::narrow_sidebar(window);
         let content = self.content(window, cx);
-        let frame = if self.sidebar_visible {
+        let frame = if self.sidebar_visible && !narrow_sidebar {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
                 .first(self.sidebar.clone())
                 .second(content)
@@ -2525,8 +2591,12 @@ impl Render for MainWindow {
         div()
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
-                this.sidebar_visible = !this.sidebar_visible;
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                if Self::narrow_sidebar(window) {
+                    this.sidebar_drawer_open = !this.sidebar_drawer_open;
+                } else {
+                    this.sidebar_visible = !this.sidebar_visible;
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(Some(ZOOM_STEP), cx)))
@@ -2593,7 +2663,7 @@ impl Render for MainWindow {
             .text_color(theme.colors.foreground)
             .font_family(theme.fonts.body.clone())
             .type_style(style::UI, &theme)
-            .child(self.title_bar(cx))
+            .child(self.title_bar(narrow_sidebar, cx))
             .children(if self.login.is_none() {
                 self.connection_banner(cx)
             } else {
@@ -2624,6 +2694,7 @@ impl Render for MainWindow {
                     .into_any_element(),
             })
             .child(self.right_drawer(window, cx))
+            .child(self.sidebar_drawer(window, cx))
             .child(self.shortcut_sheet(window, cx))
             .child(self.preferences(window, cx))
             .child(self.browse(window, cx))
@@ -2631,6 +2702,30 @@ impl Render for MainWindow {
             .child(switcher_element)
             .child(self.toasts.clone())
     }
+}
+
+/// Opens or closes `handle` to match `wanted`, remembering in `shown`
+/// whether this code opened it. Returns true when the drawer was dismissed
+/// on its own (Escape, the backdrop) while still wanted, so the caller can
+/// clear the state that wanted it.
+fn sync_drawer(
+    handle: &DrawerHandle,
+    shown: &mut bool,
+    wanted: bool,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) -> bool {
+    if wanted && !*shown {
+        handle.open(window, cx);
+        *shown = true;
+    } else if wanted && !handle.is_open() {
+        *shown = false;
+        return true;
+    } else if !wanted && *shown {
+        handle.close(window, cx);
+        *shown = false;
+    }
+    false
 }
 
 /// Opens a saved file in its app when it is a kind that only shows

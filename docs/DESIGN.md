@@ -465,6 +465,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   the backdrop and the pane's own close button all close it, and widening
   the window past 900px turns it back into the split with nothing lost
   (`design-49`).
+- **Narrow windows, sidebar** (PLAN §4.1): below 640px the sidebar leaves
+  the split and the title bar gains a panel button at the far left. It and
+  Cmd/Ctrl+Shift+D open the sidebar as a drawer from the left edge at its
+  saved width; picking a channel, Threads or Drafts closes it, as do
+  Escape and the backdrop. The team rail stays put, so switching teams
+  never needs the drawer (`design-50`).
 
 ## 5. Components
 
