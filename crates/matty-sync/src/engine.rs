@@ -222,6 +222,13 @@ pub enum Command {
         /// The contents.
         bytes: Vec<u8>,
     },
+    /// Fetches a file's thumbnail, from the media cache or the server;
+    /// [`ChangeSet::Thumbnail`](crate::ChangeSet::Thumbnail) answers. A
+    /// file without one gets no answer.
+    LoadThumbnail {
+        /// The file.
+        file_id: String,
+    },
     /// Stops an upload that is still sending.
     CancelUpload {
         /// The caller's id for it.
@@ -407,6 +414,10 @@ impl std::fmt::Debug for Command {
                 .field("file_name", file_name)
                 .field("bytes", &bytes.len())
                 .finish(),
+            Self::LoadThumbnail { file_id } => f
+                .debug_struct("LoadThumbnail")
+                .field("file_id", file_id)
+                .finish(),
             Self::CancelUpload { upload_id } => f
                 .debug_struct("CancelUpload")
                 .field("upload_id", upload_id)
@@ -523,6 +534,11 @@ pub(crate) struct Engine {
     typing: TypingThrottle,
     /// Uploads still sending, by the caller's id; aborting one cancels it.
     uploads: std::collections::HashMap<String, JoinHandle<()>>,
+    /// Where images are kept between runs; without it they are fetched
+    /// each time.
+    media: Option<matty_store::media::MediaCache>,
+    /// Thumbnails on their way from the server.
+    fetching: BTreeSet<String>,
 }
 
 impl Engine {
@@ -545,7 +561,14 @@ impl Engine {
             loaded_inbox: Some(loaded_inbox),
             typing: TypingThrottle::default(),
             uploads: std::collections::HashMap::new(),
+            media: None,
+            fetching: BTreeSet::new(),
         }
+    }
+
+    pub(crate) fn with_media(mut self, media: Option<matty_store::media::MediaCache>) -> Self {
+        self.media = media;
+        self
     }
 
     /// Runs until every [`SyncHandle`](crate::SyncHandle) is dropped.
@@ -588,6 +611,7 @@ impl Engine {
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
         let mut uploads = Vec::new();
+        let mut thumbnails = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
         let mut writes = Vec::new();
@@ -861,6 +885,9 @@ impl Engine {
                     file_name,
                     bytes,
                 }),
+                Message::Command(Command::LoadThumbnail { file_id }) => {
+                    thumbnails.push(file_id);
+                }
                 Message::Command(Command::CancelUpload { upload_id }) => {
                     if let Some(task) = self.uploads.remove(&upload_id) {
                         task.abort();
@@ -930,6 +957,9 @@ impl Engine {
         for what in fetches {
             self.fetch(what);
         }
+        for file_id in thumbnails {
+            self.thumbnail(file_id, dirty);
+        }
         for upload in uploads {
             self.upload(upload, dirty);
         }
@@ -959,6 +989,49 @@ impl Engine {
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// Answers from the media cache, or fetches the thumbnail; it comes
+    /// back as [`Loaded::Thumbnail`].
+    fn thumbnail(&mut self, file_id: String, dirty: &mut Dirty) {
+        let key = matty_store::media::file_key(&file_id, matty_store::media::FileVariant::Thumb);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::Thumbnail {
+                        file_id,
+                        bytes: Arc::from(cached.bytes),
+                        content_type: cached.content_type,
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(file_id.clone()) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let image = match client.file_thumbnail(&file_id, None).await {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type,
+                    ..
+                }) => Some((bytes, content_type.unwrap_or_else(|| "image/jpeg".into()))),
+                Ok(matty_api::Fetched::NotModified) => None,
+                Err(error) => {
+                    tracing::debug!(%error, file_id, "no thumbnail");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::Thumbnail { file_id, image });
+        });
     }
 
     /// Starts sending a file; it reports back as [`Loaded::Upload`].
@@ -1257,6 +1330,27 @@ impl Engine {
                     self.uploads.remove(&upload_id);
                 }
                 dirty.direct.push(ChangeSet::Upload { upload_id, state });
+            }
+            Loaded::Thumbnail { file_id, image } => {
+                self.fetching.remove(&file_id);
+                if let Some((bytes, content_type)) = image {
+                    if let Some(media) = &self.media {
+                        let key = matty_store::media::file_key(
+                            &file_id,
+                            matty_store::media::FileVariant::Thumb,
+                        );
+                        if let Err(error) =
+                            media.put(self.store.conn(), &key, &bytes, &content_type)
+                        {
+                            tracing::warn!(%error, "could not keep a thumbnail");
+                        }
+                    }
+                    dirty.direct.push(ChangeSet::Thumbnail {
+                        file_id,
+                        bytes: Arc::from(bytes),
+                        content_type,
+                    });
+                }
             }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,

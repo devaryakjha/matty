@@ -25,6 +25,8 @@ pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW, UploadState}
 pub use engine::Command;
 /// Where an account's database lives.
 pub use matty_store::default_path as database_path;
+/// Where an account's media cache lives.
+pub use matty_store::media::default_dir as media_dir;
 pub use matty_store::outbox::Outgoing;
 /// The snapshot types change sets carry, so the app needs no store crate.
 pub use matty_store::sidebar::{SidebarChannel, SidebarSection, TeamWithUnreads, Unreads};

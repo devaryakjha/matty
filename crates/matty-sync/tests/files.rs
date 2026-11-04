@@ -1,4 +1,4 @@
-//! Files go up ahead of the post that carries them (PLAN §4.6).
+//! Files: uploads ahead of the post that carries them, and thumbnails.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -84,4 +84,57 @@ async fn an_upload_reports_progress_then_its_file_id() {
         matches!(c, ChangeSet::Upload { upload_id, state: UploadState::Failed(_) } if upload_id == "u2")
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thumbnail_comes_from_the_server_once_then_the_cache() {
+    use matty_sync::Connection;
+
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/files/f1/thumbnail"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/jpeg")
+                .set_body_bytes(b"jpeg".to_vec()),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let sync =
+        matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(dir.path().join("media"))).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("token"),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Connection(Connection::Loaded))
+    })
+    .await;
+
+    for _ in 0..2 {
+        sync.send(Command::LoadThumbnail {
+            file_id: "f1".into(),
+        });
+        let ChangeSet::Thumbnail {
+            file_id,
+            bytes,
+            content_type,
+        } = next(&changes, |c| matches!(c, ChangeSet::Thumbnail { .. })).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (file_id.as_str(), &*bytes, content_type.as_str()),
+            ("f1", &b"jpeg"[..], "image/jpeg")
+        );
+    }
+    let fetched = common::requested(&server)
+        .await
+        .into_iter()
+        .filter(|path| path.ends_with("/thumbnail"))
+        .count();
+    assert_eq!(fetched, 1);
 }

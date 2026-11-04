@@ -56,6 +56,9 @@ pub struct Live {
     /// The composer's files, by the tray's id: where each goes and its
     /// server id once up.
     uploads: HashMap<String, UploadJob>,
+    /// Image files' thumbnails by file id, and those asked for.
+    thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
+    asked_thumbnails: std::collections::HashSet<String>,
 }
 
 /// One tray file on its way to the server.
@@ -202,6 +205,34 @@ pub fn notify_props(
     ])
 }
 
+/// What an image's bytes are. The server's type is a fallback only: it
+/// labels every thumbnail `image/jpeg`, even one it kept as PNG.
+fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
+    use gpui_kit::ImageFormat;
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
+        [0xFF, 0xD8, 0xFF, ..] => Some(ImageFormat::Jpeg),
+        [b'G', b'I', b'F', b'8', ..] => Some(ImageFormat::Gif),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some(ImageFormat::Webp),
+        [b'B', b'M', ..] => Some(ImageFormat::Bmp),
+        _ => ImageFormat::from_mime_type(content_type),
+    }
+}
+
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
 /// the order changed.
@@ -246,7 +277,10 @@ impl Live {
         path: PathBuf,
         account: &SavedAccount,
     ) -> std::io::Result<(Self, async_channel::Receiver<ChangeSet>)> {
-        let sync = matty_sync::spawn_at(path)?;
+        let media = url::Url::parse(&account.server)
+            .ok()
+            .and_then(|server| matty_sync::media_dir(&server, &account.user_id));
+        let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
         Ok((
             Self {
@@ -269,6 +303,8 @@ impl Live {
                 ready: None,
                 search: None,
                 uploads: HashMap::new(),
+                thumbnails: HashMap::new(),
+                asked_thumbnails: std::collections::HashSet::new(),
             },
             changes,
         ))
@@ -335,6 +371,7 @@ impl Live {
         if model.loading {
             return None;
         }
+        self.ask_thumbnails(&model.posts);
         let update = self
             .shown
             .as_deref()
@@ -368,7 +405,25 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
+            if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
+                file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+            }
+        }
         Some(model)
+    }
+
+    /// Asks sync for the thumbnails of image files not yet asked for.
+    fn ask_thumbnails(&mut self, posts: &[Post]) {
+        for file in posts.iter().flat_map(|post| &post.files) {
+            if crate::attachments::is_image(&file.name)
+                && self.asked_thumbnails.insert(file.id.to_string())
+            {
+                self.sync.send(Command::LoadThumbnail {
+                    file_id: file.id.to_string(),
+                });
+            }
+        }
     }
 
     /// The header, purpose and counts as far as they are known; until the
@@ -596,6 +651,26 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
+            ChangeSet::Thumbnail {
+                file_id,
+                bytes,
+                content_type,
+            } => {
+                let Some(format) = image_format(bytes, content_type) else {
+                    return update;
+                };
+                let image = gpui_kit::Image::from_bytes(format, bytes.to_vec());
+                self.thumbnails.insert(file_id.clone(), Arc::new(image));
+                let shown = self.shown.as_ref().is_some_and(|posts| {
+                    posts
+                        .iter()
+                        .flat_map(|post| &post.files)
+                        .any(|file| file.id.as_ref() == file_id)
+                });
+                if shown {
+                    update.channel = self.channel_update();
+                }
+            }
             ChangeSet::Upload { upload_id, state } => {
                 if let Some(job) = self.uploads.get_mut(upload_id) {
                     use crate::attachments::AttachmentStatus;
@@ -1413,5 +1488,48 @@ mod tests {
         live.cancel_upload("upload-1");
         assert!(live.upload_job("upload-1").is_none());
         assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
+    }
+
+    #[test]
+    fn a_thumbnail_fills_its_file_on_screen() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let mut post = matty_api::models::Post {
+            id: "p1".into(),
+            user_id: "ada".into(),
+            ..Default::default()
+        };
+        post.metadata.files.push(matty_api::models::FileInfo {
+            id: "f1".into(),
+            name: "menu.png".into(),
+            ..Default::default()
+        });
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        assert!(live.asked_thumbnails.contains("f1"));
+        let update = live.apply(&ChangeSet::Thumbnail {
+            file_id: "f1".into(),
+            bytes: Arc::from(&b"png"[..]),
+            content_type: "image/png".into(),
+        });
+        let Some(ChannelUpdate::Patch { updated, .. }) = update.channel else {
+            panic!("expected a patch, got {:?}", update.channel);
+        };
+        assert!(updated[0].files[0].preview.is_some());
+    }
+
+    #[test]
+    fn an_image_format_comes_from_its_bytes() {
+        use gpui_kit::ImageFormat;
+        let png = b"\x89PNG\r\n\x1a\n";
+        assert_eq!(image_format(png, "image/jpeg"), Some(ImageFormat::Png));
+        assert_eq!(
+            image_format(&[0xFF, 0xD8, 0xFF, 0xE0], "image/png"),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(image_format(b"??", "image/gif"), Some(ImageFormat::Gif));
+        assert_eq!(image_format(b"??", "text/plain"), None);
     }
 }

@@ -105,6 +105,16 @@ pub enum ChangeSet {
         /// Where it is.
         state: UploadState,
     },
+    /// A file's thumbnail: the answer to
+    /// [`Command::LoadThumbnail`](crate::Command::LoadThumbnail).
+    Thumbnail {
+        /// The file.
+        file_id: String,
+        /// The encoded image.
+        bytes: Arc<[u8]>,
+        /// Its MIME type, such as `image/jpeg`.
+        content_type: String,
+    },
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].
