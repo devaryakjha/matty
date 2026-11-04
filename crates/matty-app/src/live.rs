@@ -1185,10 +1185,17 @@ pub fn status(presence: Presence) -> &'static str {
     }
 }
 
+/// Reconnect attempts that read as a blip; after them the banner says the
+/// app is offline and offers Retry now (#162). The backoff waits about
+/// 1, 2 and 4 seconds before these, so a dropped Wi-Fi shows as offline
+/// within ten seconds.
+const OFFLINE_AFTER: u32 = 3;
+
 fn connection_state(state: &matty_api::ws::ConnectionState) -> ConnectionState {
     use matty_api::ws::ConnectionState as Ws;
     match state {
         Ws::Connecting | Ws::Connected { .. } => ConnectionState::Online,
+        Ws::Reconnecting { attempt, .. } if *attempt > OFFLINE_AFTER => ConnectionState::Offline,
         Ws::Reconnecting { attempt, .. } => ConnectionState::Reconnecting { attempt: *attempt },
         Ws::Unauthorized | Ws::Stopped => ConnectionState::Offline,
     }
@@ -1605,6 +1612,19 @@ mod tests {
             update.connection,
             Some(ConnectionState::Reconnecting { attempt: 2 })
         );
+        let update = live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Reconnecting {
+                attempt: OFFLINE_AFTER + 1,
+                reason: "dns error".into(),
+            },
+        )));
+        assert_eq!(update.connection, Some(ConnectionState::Offline));
+        let update = live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Connected {
+                connection_id: "c".into(),
+            },
+        )));
+        assert_eq!(update.connection, Some(ConnectionState::Online));
         assert!(
             live.apply(&ChangeSet::Connection(Connection::SignedOut))
                 .signed_out

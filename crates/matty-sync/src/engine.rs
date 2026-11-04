@@ -121,6 +121,9 @@ pub enum Command {
     /// Catch up with the server now, as after a reconnect: memberships,
     /// each cached channel since its cursor, and thread lists.
     Resync,
+    /// Reconnects the socket at once, skipping the backoff wait: the
+    /// offline banner's Retry now (#162).
+    Reconnect,
     /// Sends a post: an optimistic row shows at once, the outbox keeps the
     /// send until the server has it, and a failure keeps the text for
     /// [`Command::Retry`] (#38).
@@ -439,6 +442,7 @@ impl std::fmt::Debug for Command {
                 .field("team_id", team_id)
                 .finish(),
             Self::Resync => f.write_str("Resync"),
+            Self::Reconnect => f.write_str("Reconnect"),
             Self::SendPost {
                 pending_post_id,
                 channel_id,
@@ -892,6 +896,11 @@ impl Engine {
                     events::apply(&tx, *event, self.me.as_deref(), dirty, &mut fetches)?;
                 }
                 Message::Command(Command::Resync) => dirty.resync = true,
+                Message::Command(Command::Reconnect) => {
+                    if let Some(session) = &self.session {
+                        session.socket.reconnect_now();
+                    }
+                }
                 Message::Command(Command::SendPost {
                     pending_post_id,
                     channel_id,
