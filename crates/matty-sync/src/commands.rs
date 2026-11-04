@@ -93,6 +93,9 @@ pub(crate) enum Write {
         post_id: String,
         target_time: i64,
     },
+    /// An interactive dialog's values or cancellation (#211); the user id
+    /// is filled in as it goes.
+    SubmitDialog(Box<matty_api::models::SubmitDialogRequest>),
     /// An interactive message's button press or menu choice (#211).
     PostAction {
         post_id: String,
@@ -199,6 +202,7 @@ impl Write {
             Self::DeletePreferences(_) => "delete preferences",
             Self::Reminder { .. } => "set reminder",
             Self::PostAction { .. } => "run action",
+            Self::SubmitDialog(_) => "submit dialog",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -260,6 +264,7 @@ impl Write {
             }
             Self::Create(channel) => channel.name.clone(),
             Self::Suggest { term, .. } => term.clone(),
+            Self::SubmitDialog(submit) => submit.callback_id.clone(),
             Self::Resolve(query) => match query {
                 crate::LinkQuery::Post { post_id } => post_id.clone(),
                 crate::LinkQuery::Channel { name, .. } => name.clone(),
@@ -630,6 +635,15 @@ pub(crate) async fn run(
                     .do_post_action(&post_id, &action_id, selected_option.as_deref(), &cookie)
                     .await?;
                 Some(Loaded::PostActionDone { post_id, action_id })
+            }
+            Write::SubmitDialog(mut submit) => {
+                submit.user_id.clone_from(&user_id);
+                let answer = client.submit_dialog(&submit).await?;
+                Some(Loaded::DialogSubmitted {
+                    callback_id: submit.callback_id,
+                    cancelled: submit.cancelled,
+                    answer,
+                })
             }
             Write::Pin { post_id, pinned } => {
                 if pinned {

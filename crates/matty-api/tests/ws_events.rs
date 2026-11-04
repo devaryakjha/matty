@@ -45,6 +45,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ("license_changed", "LicenseChanged"),
     ("multiple_channels_viewed", "MultipleChannelsViewed"),
     ("new_user", "NewUser"),
+    ("open_dialog", "OpenDialog"),
     ("post_acknowledgement_added", "PostAcknowledgementAdded"),
     ("post_acknowledgement_removed", "PostAcknowledgementRemoved"),
     ("post_deleted", "PostDeleted"),
@@ -155,6 +156,24 @@ fn values_come_through() {
         unreachable!()
     };
     assert!(channel_times.values().all(|t| *t > 0));
+
+    let WsEvent::OpenDialog(open) = decode("open_dialog") else {
+        unreachable!()
+    };
+    assert_eq!(open.url, "https://integrations.example.com/deploy/dialog");
+    assert_eq!(open.dialog.callback_id, "deploy-1482");
+    assert!(open.dialog.notify_on_cancel);
+    let kinds: Vec<&str> = open
+        .dialog
+        .elements
+        .iter()
+        .map(|e| e.kind.as_str())
+        .collect();
+    assert_eq!(kinds, ["textarea", "select", "bool", "radio"]);
+    assert_eq!(open.dialog.elements[0].min_length, 5);
+    assert_eq!(open.dialog.elements[1].data_source, "users");
+    assert!(open.dialog.elements[1].options.is_empty(), "null options");
+    assert_eq!(open.dialog.elements[3].options[1].value, "night");
 
     let event = Event::from(fixture("user_removed"));
     let WsEvent::UserRemoved { user_id, .. } = &event.kind else {

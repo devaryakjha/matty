@@ -574,6 +574,26 @@ pub enum Command {
         /// The action's cookie, which an ephemeral post needs.
         cookie: String,
     },
+    /// Sends an interactive dialog's values to its integration, or with
+    /// `cancelled` set and no values, that the user closed it (#211);
+    /// [`ChangeSet::DialogSubmitted`](crate::ChangeSet::DialogSubmitted) or
+    /// a failure answers.
+    SubmitDialog {
+        /// The dialog's integration URL.
+        url: String,
+        /// The dialog's callback id.
+        callback_id: String,
+        /// The dialog's state, sent back unchanged.
+        state: String,
+        /// The channel the user was in.
+        channel_id: String,
+        /// That channel's team.
+        team_id: String,
+        /// The values by field name.
+        submission: std::collections::HashMap<String, serde_json::Value>,
+        /// The user closed it instead.
+        cancelled: bool,
+    },
     /// Asks the server to remind the user of a post at `target_time`
     /// (Unix seconds); only a failure answers.
     SetReminder {
@@ -923,6 +943,16 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RunPostAction")
                 .field("post_id", post_id)
                 .field("action_id", action_id)
+                .finish_non_exhaustive(),
+            // The values may hold a password: only the dialog is named.
+            Self::SubmitDialog {
+                callback_id,
+                cancelled,
+                ..
+            } => f
+                .debug_struct("SubmitDialog")
+                .field("callback_id", callback_id)
+                .field("cancelled", cancelled)
                 .finish_non_exhaustive(),
             Self::SetReminder {
                 post_id,
@@ -1845,6 +1875,27 @@ impl Engine {
                     selected_option,
                     cookie,
                 }),
+                Message::Command(Command::SubmitDialog {
+                    url,
+                    callback_id,
+                    state,
+                    channel_id,
+                    team_id,
+                    submission,
+                    cancelled,
+                }) => writes.push(Write::SubmitDialog(Box::new(
+                    matty_api::models::SubmitDialogRequest {
+                        kind: "dialog_submission".into(),
+                        url,
+                        callback_id,
+                        state,
+                        user_id: String::new(),
+                        channel_id,
+                        team_id,
+                        submission,
+                        cancelled,
+                    },
+                ))),
                 Message::Command(Command::SetReminder {
                     post_id,
                     target_time,
@@ -3052,6 +3103,15 @@ impl Engine {
             Loaded::PostActionDone { post_id, action_id } => dirty
                 .direct
                 .push(ChangeSet::PostActionDone { post_id, action_id }),
+            Loaded::DialogSubmitted {
+                callback_id,
+                cancelled,
+                answer,
+            } => dirty.direct.push(ChangeSet::DialogSubmitted {
+                callback_id,
+                cancelled,
+                answer,
+            }),
             Loaded::Search {
                 terms,
                 page,

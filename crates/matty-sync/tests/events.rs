@@ -616,6 +616,25 @@ async fn ephemeral_edits_and_deletes_are_not_stored() {
     assert!(posts::post(store.conn(), "eph").unwrap().is_none());
 }
 
+/// #211: an integration's dialog goes to the view as it came.
+#[tokio::test]
+async fn an_open_dialog_reaches_the_view() {
+    let open = matty_api::models::OpenDialogRequest {
+        trigger_id: "t1".into(),
+        url: "https://hook.example.com".into(),
+        dialog: matty_api::models::Dialog {
+            callback_id: "deploy".into(),
+            title: "Approve".into(),
+            ..Default::default()
+        },
+    };
+    let (seen, _store, _dir) = run(vec![event(WsEvent::OpenDialog(Box::new(open.clone())))]).await;
+    assert!(
+        seen.iter()
+            .any(|c| matches!(c, ChangeSet::OpenDialog(d) if **d == open))
+    );
+}
+
 mod fetches {
     use super::*;
     use matty_api::Client;

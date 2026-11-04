@@ -261,8 +261,9 @@ starts early.
 - Emoji picker polish (G7 M2 release), custom emoji upload.
 - Slash commands: built-in and server-registered commands with autocomplete;
   `/commands/execute`.
-- Interactive message attachments (buttons and menus from integrations) and
-  ephemeral messages.
+- Interactive message attachments (buttons and menus from integrations), in
+  the channel and in threads, the interactive dialogs integrations open
+  from them or from slash commands, and ephemeral messages.
 - Profile hover cards, user profile pane, edit own profile and avatar.
 - Message actions: copy text, forward, follow/unfollow thread, set
   reminder, mark unread.

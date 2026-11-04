@@ -262,6 +262,8 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
+    /// An integration's interactive dialog (#211).
+    interactive_dialog: Entity<crate::interactive_dialog::InteractiveDialogView>,
     /// Update checks and the "Restart to update" toast (#180).
     _updater: Entity<crate::updater::UpdatePrompt>,
     threads_open: bool,
@@ -847,7 +849,8 @@ impl MainWindow {
                 }
                 ChannelEvent::DismissEphemeral(post) => {
                     if let Some(live) = &mut this.live {
-                        live.dismiss_ephemeral(post);
+                        let update = live.dismiss_ephemeral(post);
+                        this.apply_update(update, window, cx);
                     }
                 }
                 ChannelEvent::Forward(post) => {
@@ -1118,7 +1121,17 @@ impl MainWindow {
             login_server: None,
             sso: None,
             sidebar_shown: false,
+            interactive_dialog: cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new()),
         };
+        cx.subscribe(&this.interactive_dialog, |this, _, event, _| {
+            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
+            if let Some(live) = &this.live {
+                let channel = this.selected_channel.clone().unwrap_or_default();
+                let team = live.team().unwrap_or_default().to_owned();
+                live.send(submit.command(channel.to_string(), team));
+            }
+        })
+        .detach();
         cx.observe(&this.sidebar, |this, _, cx| this.update_badge(cx))
             .detach();
         cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
@@ -1140,6 +1153,14 @@ impl MainWindow {
             this.open_server(&account, window, cx);
         }
         this.refresh_server_rail(cx);
+        if let Some(root) = crate::preview::start_thread() {
+            this.open_thread(root, cx);
+        }
+        if let Some(request) = crate::preview::dialog() {
+            let sources = crate::preview::menu_sources();
+            this.interactive_dialog
+                .update(cx, |dialog, cx| dialog.open(request, &sources, window, cx));
+        }
         this
     }
 
@@ -1734,6 +1755,14 @@ impl MainWindow {
         let Some(live) = self.live.as_mut() else {
             return;
         };
+        if let Some(change) = crate::interactive_dialog::DialogChange::from_change(change) {
+            // A dialog opens where the user is; a pop-out shows its own.
+            let here = !crate::popout::active(cx);
+            let sources = || live.menu_sources();
+            self.interactive_dialog.update(cx, |dialog, cx| {
+                dialog.apply(change, here, sources, window, cx)
+            });
+        }
         let update = live.apply(change);
         self.apply_update(update, window, cx);
     }
@@ -2996,6 +3025,18 @@ impl MainWindow {
             RightPaneEvent::LoadOlderReplies(root) => {
                 if let Some(live) = &self.live {
                     live.load_older_replies(root);
+                }
+            }
+            RightPaneEvent::PostAction(choice) => {
+                if let Some(live) = &mut self.live {
+                    let update = live.run_post_action(choice);
+                    self.apply_update(update, window, cx);
+                }
+            }
+            RightPaneEvent::DismissEphemeral(post) => {
+                if let Some(live) = &mut self.live {
+                    let update = live.dismiss_ephemeral(post);
+                    self.apply_update(update, window, cx);
                 }
             }
             // Sync owns the rest (PLAN §4.3); the pane already shows them.
@@ -4382,6 +4423,7 @@ impl Render for MainWindow {
             .child(self.directory_dialogs(window, cx))
             .child(self.link_join_dialog(window, cx))
             .child(self.forward_dialog(window, cx))
+            .child(self.interactive_dialog.clone())
             .child(switcher_element)
             .child(self.toasts.clone())
     }

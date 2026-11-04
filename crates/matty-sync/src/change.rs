@@ -105,6 +105,22 @@ pub enum ChangeSet {
         /// The button or menu.
         action_id: String,
     },
+    /// An integration opened an interactive dialog (#211), in answer to a
+    /// button press or slash command of this user's.
+    OpenDialog(Arc<matty_api::models::OpenDialogRequest>),
+    /// The server passed on a dialog's submission or cancellation: the
+    /// answer to [`Command::SubmitDialog`](crate::Command::SubmitDialog).
+    /// The integration's complaints are in `answer`; empty, it took it. A
+    /// failure to reach it comes as [`ChangeSet::Failed`] with the action
+    /// `submit dialog`.
+    DialogSubmitted {
+        /// The dialog's callback id.
+        callback_id: String,
+        /// Whether this was the cancellation.
+        cancelled: bool,
+        /// What the integration said.
+        answer: matty_api::models::SubmitDialogResponse,
+    },
     /// Unread or mention counts changed somewhere: the team rail with its
     /// badges, in rail order.
     Unreads {
