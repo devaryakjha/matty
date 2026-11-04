@@ -317,3 +317,36 @@ async fn removing_a_member_reaches_the_server_and_recounts() {
         |r| r.method.as_str() == "DELETE" && r.url.path() == "/api/v4/channels/c1/members/ada"
     ));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn editing_the_profile_patches_only_the_changed_fields() {
+    let server = server().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/api/v4/users/{ME}/patch")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id": ME, "username": "me", "first_name": "Ada", "position": "Engineer"}),
+        ))
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+
+    sync.send(Command::UpdateProfile {
+        patch: matty_api::ProfilePatch {
+            first_name: Some("Ada".into()),
+            position: Some("Engineer".into()),
+            ..Default::default()
+        },
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Users(users)
+            if users.iter().any(|u| u.id == ME && u.position == "Engineer"))
+    })
+    .await;
+    let requests = server.received_requests().await.unwrap_or_default();
+    let patch = requests
+        .iter()
+        .find(|r| r.method.as_str() == "PUT" && r.url.path().ends_with("/patch"))
+        .unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert_eq!(body, json!({"first_name": "Ada", "position": "Engineer"}));
+}

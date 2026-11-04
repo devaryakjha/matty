@@ -244,6 +244,12 @@ pub enum Command {
         /// Every key, changed or not: the server replaces the map.
         notify_props: std::collections::HashMap<String, String>,
     },
+    /// Changes the user's own names, nickname, position or username;
+    /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
+    UpdateProfile {
+        /// The fields to change.
+        patch: matty_api::ProfilePatch,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -617,6 +623,7 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
+            Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -1251,6 +1258,9 @@ impl Engine {
                 }),
                 Message::Command(Command::SetNotifyProps { notify_props }) => {
                     writes.push(Write::NotifyProps(notify_props))
+                }
+                Message::Command(Command::UpdateProfile { patch }) => {
+                    writes.push(Write::Profile(patch))
                 }
                 Message::Command(Command::SetCollapsedThreads { on }) => {
                     if let Some(me) = &self.me {

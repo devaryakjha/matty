@@ -165,6 +165,9 @@ pub struct Update {
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// The user's own name and username when the server sends them, so the
+    /// account menu follows a profile edit (#212).
+    pub me: Option<(String, String)>,
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
@@ -547,6 +550,14 @@ impl Live {
 
     /// Takes the user's own `notify_props` from `user`. Other fetches of
     /// the user leave the map out, so an empty one changes nothing.
+    fn take_me(&mut self, user: &User, update: &mut Update) {
+        if user.id == self.me.0 {
+            self.me.1 = user.username.clone();
+            update.me = Some((crate::transcript::display_name(user), user.username.clone()));
+        }
+        self.take_notify_props(user, update);
+    }
+
     fn take_notify_props(&mut self, user: &User, update: &mut Update) {
         if user.id == self.me.0 && !user.notify_props.is_empty() {
             self.prefs = matty_notify::UserPrefs::from_props(
@@ -940,6 +951,11 @@ impl Live {
     }
 
     /// The team on screen.
+    /// The signed-in user, once sync has loaded them.
+    pub fn me_user(&self) -> Option<&User> {
+        self.users.get(&self.me.0)
+    }
+
     pub fn team(&self) -> Option<&str> {
         self.team.as_deref()
     }
@@ -1249,7 +1265,7 @@ impl Live {
                 update.arrived = Some(Arrival::new(arrived, &self.me.0, &self.prefs));
             }
             ChangeSet::Me(user) => {
-                self.take_notify_props(user, &mut update);
+                self.take_me(user, &mut update);
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
                 }
@@ -1273,7 +1289,7 @@ impl Live {
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
-                    self.take_notify_props(user, &mut update);
+                    self.take_me(user, &mut update);
                 }
                 if self.thread_list.is_some() {
                     update.threads = Some(self.threads_model());
@@ -1662,6 +1678,30 @@ mod tests {
         // The engine may still be opening the file; let the folder outlive it.
         std::mem::forget(dir);
         live
+    }
+
+    #[test]
+    fn a_profile_edit_renames_the_account() {
+        let mut live = live();
+        let me = User {
+            id: "me".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            ..Default::default()
+        };
+        let other = User {
+            id: "bo".into(),
+            username: "bo".into(),
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![other.clone()])));
+        assert_eq!(update.me, None);
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![me, other])));
+        let (name, username) = update.me.unwrap();
+        assert_eq!(username, "ada");
+        assert!(name.contains("Ada"), "{name}");
+        assert_eq!(live.me_user().map(|u| u.username.as_str()), Some("ada"));
     }
 
     #[test]

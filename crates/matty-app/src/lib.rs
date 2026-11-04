@@ -25,6 +25,7 @@ pub mod login;
 mod main_window;
 pub mod preview;
 pub mod profile;
+pub mod profile_editor;
 pub mod rail;
 pub mod right_pane;
 pub mod secrets;

@@ -50,6 +50,7 @@ pub(crate) enum Write {
         dnd_end_time: Option<i64>,
     },
     NotifyProps(std::collections::HashMap<String, String>),
+    Profile(matty_api::ProfilePatch),
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -144,6 +145,7 @@ impl Write {
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
+            Self::Profile(_) => "save your profile",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
@@ -179,7 +181,7 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) => user_id.to_owned(),
+            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -338,6 +340,10 @@ pub(crate) async fn run(
             }
             Write::NotifyProps(notify_props) => {
                 let user = client.patch_notify_props(&user_id, &notify_props).await?;
+                Some(Loaded::Users(vec![user]))
+            }
+            Write::Profile(patch) => {
+                let user = client.patch_profile(&user_id, &patch).await?;
                 Some(Loaded::Users(vec![user]))
             }
             Write::OpenDirect { user_ids } => {

@@ -178,6 +178,8 @@ pub struct MainWindow {
     create_channel: Entity<CreateChannelView>,
     /// Name, rename and delete dialogs for sidebar categories (#208).
     categories: Entity<crate::categories::CategoryDialogs>,
+    /// "Edit profile…" from the account menu (#212).
+    profile_editor: Entity<crate::profile_editor::ProfileEditor>,
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
@@ -320,6 +322,18 @@ impl MainWindow {
             },
         )
         .detach();
+        let profile_editor = cx.new(|cx| crate::profile_editor::ProfileEditor::new(window, cx));
+        cx.subscribe(
+            &profile_editor,
+            |this, _, saved: &crate::profile_editor::ProfileSaved, _| {
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::UpdateProfile {
+                        patch: saved.0.clone(),
+                    });
+                }
+            },
+        )
+        .detach();
         let rail = cx.new(|_| {
             let teams = if crate::preview::enabled() {
                 crate::preview::teams()
@@ -356,6 +370,7 @@ impl MainWindow {
                 }
                 // Custom status text has no sync command yet (#136).
                 AccountEvent::SetStatus(_) => {}
+                AccountEvent::EditProfile => this.edit_profile(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
         )
@@ -823,6 +838,7 @@ impl MainWindow {
             new_message,
             create_channel,
             categories,
+            profile_editor,
             joined: Vec::new(),
             rail,
             right_pane_open: false,
@@ -1311,6 +1327,9 @@ impl MainWindow {
         if let Some(queued) = update.queued {
             self.queued = queued;
             cx.notify();
+        }
+        if let Some((display_name, username)) = update.me {
+            self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
             let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
@@ -3611,6 +3630,47 @@ impl MainWindow {
 
     /// The user confirmed a category dialog: sync saves it, and the
     /// sidebar follows the server's answer.
+    /// The account menu and the saved account follow the user's name.
+    fn renamed(&mut self, display_name: String, username: String, cx: &mut Context<Self>) {
+        self.account.update(cx, |view, cx| {
+            let mut account = view.account().clone();
+            account.display_name = display_name.clone().into();
+            account.username = username.clone().into();
+            view.set_account(account, cx);
+        });
+        self.settings.update(cx, |settings, cx| {
+            settings.update(cx, |s| {
+                if let Some(saved) = &mut s.account
+                    && (saved.display_name != display_name || saved.username != username)
+                {
+                    saved.display_name = display_name;
+                    saved.username = username;
+                }
+            })
+        });
+    }
+
+    /// Opens "Edit profile" with the user's fields from the server, or the
+    /// account menu's names in the preview.
+    fn edit_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::profile_editor::ProfileFields;
+        let fields = match self.live.as_ref().and_then(|live| live.me_user()) {
+            Some(user) => ProfileFields::of(user),
+            None => {
+                let account = self.account.read(cx).account();
+                let mut names = account.display_name.splitn(2, ' ');
+                ProfileFields {
+                    first_name: names.next().unwrap_or_default().to_string(),
+                    last_name: names.next().unwrap_or_default().to_string(),
+                    username: account.username.to_string(),
+                    ..Default::default()
+                }
+            }
+        };
+        self.profile_editor
+            .update(cx, |editor, cx| editor.open(fields, window, cx));
+    }
+
     fn category_changed(&mut self, event: &crate::categories::CategoryEvent) {
         use crate::categories::CategoryEvent;
         let Some(live) = &self.live else {
@@ -3643,6 +3703,7 @@ impl MainWindow {
         let create = self.create_channel.read(cx).handle().clone();
         div()
             .child(self.categories.clone())
+            .child(self.profile_editor.clone())
             .child(dialog(
                 "new-message",
                 &message,

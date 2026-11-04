@@ -41,6 +41,34 @@ pub struct ChannelPatch {
     pub purpose: Option<String>,
 }
 
+/// The fields of the user's own profile to change, as `PUT users/{id}/patch`
+/// takes them; `None` leaves a field alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProfilePatch {
+    /// Given name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    /// Family name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
+    /// Nickname.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    /// Job title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// Without `@`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+impl ProfilePatch {
+    /// Whether the patch changes nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A post search, as `POST teams/{id}/posts/search` takes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SearchQuery {
@@ -152,6 +180,16 @@ impl Client {
         channel_ids: &[String],
     ) -> Result<std::collections::HashMap<String, i64>, ApiError> {
         self.post("channels/stats/member_count", channel_ids).await
+    }
+
+    /// `PUT users/{user_id}/patch`: changes the user's names, nickname,
+    /// position or username, and returns the updated user.
+    pub async fn patch_profile(
+        &self,
+        user_id: &str,
+        patch: &ProfilePatch,
+    ) -> Result<crate::models::User, ApiError> {
+        self.put(&format!("users/{user_id}/patch"), patch).await
     }
 
     /// `PUT channels/{channel_id}/patch`: renames a channel or changes its
