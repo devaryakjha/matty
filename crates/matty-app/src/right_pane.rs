@@ -4,6 +4,7 @@
 //! Escape.
 
 use gpui_icons::{LucideIcon, lucide};
+use gpui_kit::base::input::{MoveDown, MoveUp};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
@@ -80,6 +81,21 @@ struct Suggestion {
     insert: SharedString,
     label: SharedString,
     detail: SharedString,
+}
+
+/// Where the highlight lands after one arrow press among `count` rows:
+/// down from nothing starts at the top, up from nothing at the bottom, and
+/// both wrap around.
+fn step(at: Option<usize>, count: usize, down: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (at, down) {
+        (None, true) => 0,
+        (None, false) => count - 1,
+        (Some(at), true) => (at + 1) % count,
+        (Some(at), false) => (at + count - 1) % count,
+    })
 }
 
 /// At most this many suggestions show at once.
@@ -250,6 +266,8 @@ pub struct RightPaneView {
     /// What `from:` and `in:` can suggest, and what they suggest now.
     hints: SearchHints,
     suggestions: Vec<Suggestion>,
+    /// The suggestion the arrow keys point at, which Enter picks.
+    suggestion_at: Option<usize>,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -320,37 +338,46 @@ impl RightPaneView {
             state
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
-        let subscriptions =
-            vec![
-                cx.subscribe_in(
-                    &composer,
-                    window,
-                    |this, composer, event: &ComposerEvent, window, cx| match event {
-                        ComposerEvent::Change => {
-                            let text = composer.read(cx).value(cx);
-                            this.draft_len = text.chars().count();
-                            this.draft_changed(&text, cx);
-                            cx.notify();
-                        }
-                        ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
-                        _ => {}
-                    },
-                ),
-                cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
-                    match event {
-                        InputEvent::PressEnter { .. } => {
-                            this.suggestions.clear();
-                            this.submit_search(cx);
-                        }
-                        InputEvent::Change => {
-                            let query = input.read(cx).value().to_string();
-                            this.suggestions = suggestions(&query, &this.hints);
-                            cx.notify();
-                        }
-                        _ => {}
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, composer, event: &ComposerEvent, window, cx| match event {
+                    ComposerEvent::Change => {
+                        let text = composer.read(cx).value(cx);
+                        this.draft_len = text.chars().count();
+                        this.draft_changed(&text, cx);
+                        cx.notify();
                     }
-                }),
-            ];
+                    ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => {
+                        if let Some(pick) =
+                            this.suggestion_at.and_then(|at| this.suggestions.get(at))
+                        {
+                            let insert = pick.insert.clone();
+                            this.accept_suggestion(insert, window, cx);
+                            return;
+                        }
+                        this.suggestions.clear();
+                        this.submit_search(cx);
+                    }
+                    InputEvent::Change => {
+                        let query = input.read(cx).value().to_string();
+                        this.suggestions = suggestions(&query, &this.hints);
+                        this.suggestion_at = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+        ];
         Self {
             composer_cap: px(320.),
             content: None,
@@ -369,6 +396,7 @@ impl RightPaneView {
             loading: false,
             hints: SearchHints::default(),
             suggestions: Vec::new(),
+            suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -656,6 +684,20 @@ impl RightPaneView {
             input.focus(window, cx);
         });
         self.suggestions.clear();
+        self.suggestion_at = None;
+        cx.notify();
+    }
+
+    /// Moves the highlight through the suggestions with the arrow keys,
+    /// leaving the keys to the field when nothing is suggested.
+    fn step_suggestion(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = self.suggestions.len();
+        if count == 0 {
+            cx.propagate();
+            return;
+        }
+        self.suggestion_at = step(self.suggestion_at, count, down);
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -1454,6 +1496,13 @@ impl RightPaneView {
                     .gap(theme.space(1.5))
                     .border_b(style::hairline())
                     .border_color(theme.colors.border)
+                    // Caught on the way down, before the field moves its cursor.
+                    .capture_action(
+                        cx.listener(|this, _: &MoveDown, _, cx| this.step_suggestion(true, cx)),
+                    )
+                    .capture_action(
+                        cx.listener(|this, _: &MoveUp, _, cx| this.step_suggestion(false, cx)),
+                    )
                     .child(Input::new(&self.search).aria_label("Search messages"))
                     .when(!self.suggestions.is_empty(), |field| {
                         field.child(self.suggestion_list(cx))
@@ -1484,7 +1533,11 @@ impl RightPaneView {
                         Button::new(gpui_kit::ElementId::Name(
                             format!("right-pane.search.suggestion.{index}").into(),
                         ))
-                        .variant(ButtonVariant::Ghost)
+                        .variant(if self.suggestion_at == Some(index) {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
                         .w_full()
                         .justify_start()
                         .aria_label(format!("Search {}", suggestion.insert))
@@ -2027,6 +2080,16 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_walk_the_suggestions_and_wrap() {
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(2));
+        assert_eq!(step(Some(2), 3, true), Some(0));
+        assert_eq!(step(Some(0), 3, false), Some(2));
+        assert_eq!(step(Some(1), 3, true), Some(2));
+        assert_eq!(step(None, 0, true), None);
+    }
 
     #[test]
     fn from_and_in_suggest_people_and_channels_for_the_last_word() {
