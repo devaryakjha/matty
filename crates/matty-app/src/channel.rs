@@ -37,7 +37,6 @@ use crate::ui::{
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::EmptyContent,
     lightbox::{LightboxImage, LightboxState, lightbox},
-    markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{
         Message, MessageDensity, MessageHighlight, MessageStatus, Reaction, day_divider,
@@ -191,6 +190,8 @@ pub enum PostKind {
 pub struct Post {
     pub id: SharedString,
     pub author: SharedString,
+    /// The author's user id, for their profile picture; empty when unknown.
+    pub author_id: SharedString,
     pub kind: PostKind,
     /// Minutes since midnight in the user's zone; `ClockFormat` prints it.
     pub time: u16,
@@ -234,6 +235,8 @@ pub struct ReplySummary {
     pub last_day: SharedString,
     /// Display names of the people who replied, newest first, at most three.
     pub participants: Vec<SharedString>,
+    /// Their user ids, in the same order, for their pictures.
+    pub participant_ids: Vec<SharedString>,
     pub following: bool,
     /// Replies the user has not read yet.
     pub unread: bool,
@@ -410,6 +413,17 @@ pub(crate) fn apply_format(
     true
 }
 
+/// The user's own id, from a post of theirs on screen, for a send that
+/// has not come back from sync yet.
+pub fn own_id(posts: &[Post]) -> SharedString {
+    posts
+        .iter()
+        .rev()
+        .find(|post| post.mine && !post.author_id.is_empty())
+        .map(|post| post.author_id.clone())
+        .unwrap_or_default()
+}
+
 impl ReplySummary {
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
@@ -583,6 +597,8 @@ pub enum ChannelEvent {
     JumpLatest,
     /// The user asked for the channel's pinned messages.
     OpenPinned,
+    /// The user clicked a link or an entity chip in a message (#103).
+    OpenLink(SharedString),
     /// The user asked for the channel info pane (header info button or the
     /// members count).
     OpenInfo,
@@ -767,6 +783,7 @@ impl ChannelView {
         let list = cx.new(|cx| MessageListState::new(rows.len(), cx));
         let view = cx.weak_entity();
         let keys = view.clone();
+        let people = view.clone();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
             state.set_triggers(['@', '~', ':'], cx);
@@ -852,15 +869,30 @@ impl ChannelView {
             });
             // People get their avatar, emoji their glyph; channels keep the
             // suggestion's icon.
-            state.set_suggestion_leading(|suggestion, _, _| {
+            state.set_suggestion_leading(move |suggestion, _, cx| {
                 if let Some(username) = suggestion.value.strip_prefix('@') {
                     let initial: String = suggestion.label.chars().take(1).collect();
+                    let user_id = people
+                        .upgrade()
+                        .and_then(|view| {
+                            view.read(cx)
+                                .model
+                                .iter()
+                                .flat_map(|model| model.profiles.iter())
+                                .find(|profile| profile.username.as_ref() == username)
+                                .map(|profile| profile.user_id.clone())
+                        })
+                        .unwrap_or_default();
                     Some(
-                        Avatar::new(gpui_kit::ElementId::Name(
-                            format!("suggest.{username}").into(),
-                        ))
-                        .size(AvatarSize::Sm)
-                        .fallback(initial)
+                        crate::avatars::with_picture(
+                            Avatar::new(gpui_kit::ElementId::Name(
+                                format!("suggest.{username}").into(),
+                            ))
+                            .size(AvatarSize::Sm)
+                            .fallback(initial),
+                            &user_id,
+                            cx,
+                        )
                         .into_any_element(),
                     )
                 } else if suggestion.value.starts_with('~') {
@@ -1766,6 +1798,7 @@ impl ChannelView {
         let post = Post {
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
+            author_id: own_id(&model.posts),
             kind: PostKind::Regular,
             time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
@@ -2870,12 +2903,16 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let initial: String = post.author.chars().take(1).collect();
-        let avatar = Avatar::new(gpui_kit::ElementId::Name(
-            format!("post.{id}.avatar").into(),
-        ))
-        .size(AvatarSize::Default)
-        .fallback(initial)
-        .aria_label(post.author.clone());
+        let avatar = crate::avatars::with_picture(
+            Avatar::new(gpui_kit::ElementId::Name(
+                format!("post.{id}.avatar").into(),
+            ))
+            .size(AvatarSize::Default)
+            .fallback(initial)
+            .aria_label(post.author.clone()),
+            &post.author_id,
+            cx,
+        );
         let Some(profile) = profile.cloned() else {
             return avatar.into_any_element();
         };
@@ -3084,12 +3121,19 @@ impl ChannelView {
                 Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
                 None => match &post.kind {
                     PostKind::Unsupported(_) => Self::unsupported_card(&id, cx).into_any_element(),
-                    _ => markdown(
-                        gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
-                        post.body.clone(),
-                        cx,
-                    )
-                    .into_any_element(),
+                    _ => {
+                        let link_view = cx.entity().downgrade();
+                        crate::links::message_body(
+                            gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
+                            &post.body,
+                            move |url, _, cx| {
+                                let event = ChannelEvent::OpenLink(url.clone());
+                                link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                            },
+                            cx,
+                        )
+                        .into_any_element()
+                    }
                 },
             });
         if post.status == PostStatus::Pending && away {
@@ -3270,13 +3314,22 @@ impl ChannelView {
                         .enumerate()
                         .map(|(index, name)| {
                             let initial: String = name.chars().take(1).collect();
+                            let user_id = summary
+                                .participant_ids
+                                .get(index)
+                                .map(SharedString::as_ref)
+                                .unwrap_or_default();
                             div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                Avatar::new(gpui_kit::ElementId::Name(
-                                    format!("post.{id}.thread.{index}").into(),
-                                ))
-                                .size(AvatarSize::Sm)
-                                .fallback(initial)
-                                .aria_label(name.clone()),
+                                crate::avatars::with_picture(
+                                    Avatar::new(gpui_kit::ElementId::Name(
+                                        format!("post.{id}.thread.{index}").into(),
+                                    ))
+                                    .size(AvatarSize::Sm)
+                                    .fallback(initial)
+                                    .aria_label(name.clone()),
+                                    user_id,
+                                    cx,
+                                ),
                             )
                         }),
                 ),
@@ -3988,6 +4041,7 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
+            author_id: SharedString::default(),
             kind: PostKind::Regular,
             time: 600,
             day: day.into(),

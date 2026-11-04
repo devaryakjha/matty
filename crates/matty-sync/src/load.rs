@@ -102,6 +102,11 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// What a link names, or `None` when it is gone or hidden.
+    Resolved {
+        query: crate::LinkQuery,
+        answer: Option<crate::LinkAnswer>,
+    },
     /// A link's Open Graph data, or `None` when it has none.
     LinkPreview {
         url: String,
@@ -110,6 +115,13 @@ pub(crate) enum Loaded {
     /// An outside image, or `None` when the URL gave none.
     RemoteImage {
         url: String,
+        image: Option<(Vec<u8>, String)>,
+    },
+    /// A profile picture at a `last_picture_update`, or `None` when the
+    /// server gave none.
+    Avatar {
+        user_id: String,
+        version: i64,
         image: Option<(Vec<u8>, String)>,
     },
     /// Search results, best first.

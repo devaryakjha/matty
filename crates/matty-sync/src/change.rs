@@ -161,6 +161,17 @@ pub enum ChangeSet {
         /// Its MIME type, such as `image/png`.
         content_type: String,
     },
+    /// A user's profile picture: the answer to
+    /// [`Command::LoadAvatar`](crate::Command::LoadAvatar), with no image
+    /// when it could not be had.
+    Avatar {
+        /// The user.
+        user_id: String,
+        /// The `last_picture_update` the picture is for.
+        last_picture_update: i64,
+        /// The encoded image and its MIME type.
+        image: Option<(Arc<[u8]>, String)>,
+    },
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].
@@ -217,6 +228,47 @@ pub enum ChangeSet {
     LinkPreviews(bool),
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
+    /// What a link in a message points at: the answer to
+    /// [`Command::ResolveLink`](crate::Command::ResolveLink). `None` when
+    /// it is gone or the user may not see it.
+    LinkResolved {
+        /// What was asked.
+        query: LinkQuery,
+        /// The channel (for a post, the post's channel) or the user.
+        answer: Option<LinkAnswer>,
+    },
+}
+
+/// Something a link names that the app cannot find on its own (#85, #103).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkQuery {
+    /// A permalink's post, which may be in any channel.
+    Post {
+        /// The post.
+        post_id: String,
+    },
+    /// A channel by its team and URL name, as `~name` and channel links
+    /// write it.
+    Channel {
+        /// The team.
+        team_id: String,
+        /// The channel's URL name.
+        name: String,
+    },
+    /// A person by username, as `@name` writes it.
+    User {
+        /// The username.
+        username: String,
+    },
+}
+
+/// What a [`LinkQuery`] found.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkAnswer {
+    /// The channel, whether or not the user is a member.
+    Channel(Arc<Channel>),
+    /// The person.
+    User(Arc<User>),
 }
 
 /// A post that just arrived from someone else.

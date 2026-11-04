@@ -146,6 +146,7 @@ fn display_post(
     Post {
         id: post.id.clone().into(),
         author: author.into(),
+        author_id: post.user_id.clone().into(),
         kind,
         time,
         day,
@@ -208,6 +209,7 @@ fn system_post(
     Post {
         id: post.id.clone().into(),
         author: SharedString::default(),
+        author_id: SharedString::default(),
         kind: PostKind::System { activity },
         time,
         day,
@@ -441,14 +443,18 @@ pub fn thread_row(
 ) -> crate::threads::ThreadRow {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let (last_time, last_day, _) = when(thread.last_reply_at, viewer.zone, today);
-    let participants = thread
+    let people: Vec<&User> = thread
         .participants
         .iter()
         .rev()
         .filter_map(|id| users.get(id))
         .take(3)
+        .collect();
+    let participants = people
+        .iter()
         .map(|user| display_name(user).into())
         .collect();
+    let participant_ids = people.iter().map(|user| user.id.clone().into()).collect();
     crate::threads::ThreadRow {
         channel_id: root.channel_id.clone().into(),
         thread: crate::right_pane::ThreadModel {
@@ -462,6 +468,7 @@ pub fn thread_row(
             last_time,
             last_day,
             participants,
+            participant_ids,
             following: true,
             unread: thread.unread_replies > 0,
         },

@@ -273,3 +273,23 @@ async fn one_channel_and_my_membership() {
         members[0]["channel_id"].as_str().unwrap()
     );
 }
+
+#[tokio::test]
+async fn a_channel_by_its_url_name() {
+    let server = MockServer::start().await;
+    let channels: Vec<Value> = fixture("my_channels");
+    Mock::given(method("GET"))
+        .and(path("/api/v4/teams/t1/channels/name/town-square"))
+        .and(query_param("include_deleted", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&channels[0]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap();
+    // Anything but a channel name's characters is dropped from the path.
+    let channel = client
+        .channel_by_name("t1", "town-square/?#")
+        .await
+        .unwrap();
+    assert_eq!(channel.id, channels[0]["id"].as_str().unwrap());
+}

@@ -443,3 +443,18 @@ fn a_closed_conversation_leaves_the_sidebar_until_shown_again() {
     );
     assert_eq!(sidebar::show_preference("O", "c1", "town", ME), None);
 }
+
+#[test]
+fn links_find_channels_by_team_and_name_and_users_by_username() {
+    let store = seeded();
+    let conn = store.conn();
+    let town = sidebar::channel_by_name(conn, "t1", "town")
+        .unwrap()
+        .unwrap();
+    assert_eq!(town.id, "town");
+    assert_eq!(sidebar::channel_by_name(conn, "t2", "town").unwrap(), None);
+    assert_eq!(sidebar::channel_by_name(conn, "t1", "nope").unwrap(), None);
+    let alice = sidebar::user_by_username(conn, "Alice").unwrap().unwrap();
+    assert_eq!(alice.id, "u1");
+    assert_eq!(sidebar::user_by_username(conn, "carol").unwrap(), None);
+}

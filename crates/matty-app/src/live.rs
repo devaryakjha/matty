@@ -94,6 +94,8 @@ pub struct Live {
     asked_remote_images: std::collections::HashSet<String>,
     /// Full-size images for the lightbox, by file id, once fetched.
     full_images: HashMap<String, Arc<gpui_kit::Image>>,
+    /// Profile pictures, shared with the views (#153).
+    avatars: crate::avatars::Avatars,
 }
 
 /// One tray file on its way to the server.
@@ -192,6 +194,10 @@ pub struct Update {
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
+    /// A profile picture arrived; the windows redraw to show it.
+    pub avatars: bool,
+    /// What a link in a message turned out to name (#85, #103).
+    pub link: Option<(matty_sync::LinkQuery, Option<matty_sync::LinkAnswer>)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
     /// The server refused the saved session; the window asks the user to
@@ -328,7 +334,7 @@ pub fn notify_props(
 
 /// What an image's bytes are. The server's type is a fallback only: it
 /// labels every thumbnail `image/jpeg`, even one it kept as PNG.
-fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
+pub(crate) fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
     use gpui_kit::ImageFormat;
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
@@ -422,6 +428,14 @@ impl Live {
         let media = media_dir(account);
         let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
+        let asker = sync.clone();
+        let avatars =
+            crate::avatars::Avatars::new(std::rc::Rc::new(move |user_id: &str, version| {
+                asker.send(Command::LoadAvatar {
+                    user_id: user_id.to_owned(),
+                    last_picture_update: version,
+                });
+            }));
         Ok((
             Self {
                 sync,
@@ -459,6 +473,7 @@ impl Live {
                 remote_images: HashMap::new(),
                 asked_remote_images: std::collections::HashSet::new(),
                 full_images: HashMap::new(),
+                avatars,
             },
             changes,
         ))
@@ -909,6 +924,32 @@ impl Live {
         self.team.as_deref()
     }
 
+    /// The server's address, for telling its links from others.
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// The user's teams as (id, URL name).
+    pub fn team_names(&self) -> Vec<(String, String)> {
+        self.teams
+            .iter()
+            .map(|team| (team.id.clone(), team.name.clone()))
+            .collect()
+    }
+
+    /// The profile of someone whose posts have been on screen, by username.
+    pub fn known_user(&self, username: &str) -> Option<UserProfile> {
+        self.users
+            .values()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+            .map(|user| self.profile(user))
+    }
+
+    /// The profile for a user sync found.
+    pub fn user_profile(&self, user: &User) -> UserProfile {
+        self.profile(user)
+    }
+
     fn profile(&self, user: &User) -> UserProfile {
         UserProfile {
             user_id: user.id.clone().into(),
@@ -930,6 +971,11 @@ impl Live {
         let id = self.ready.as_deref()?;
         self.row(id)?;
         self.ready.take().map(Into::into)
+    }
+
+    /// The profile pictures, for the window to share with its views.
+    pub fn avatars(&self) -> crate::avatars::Avatars {
+        self.avatars.clone()
     }
 
     pub fn is_typing(&self) -> bool {
@@ -1024,6 +1070,9 @@ impl Live {
                 update.directory = Some(rows);
             }
             ChangeSet::People { team_id, users } if self.team.as_ref() == Some(team_id) => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                }
                 let mut people: Vec<_> = users
                     .iter()
                     .filter(|user| user.id != self.me.0 && user.delete_at == 0 && !user.is_bot)
@@ -1064,6 +1113,16 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
+            ChangeSet::Avatar {
+                user_id,
+                last_picture_update,
+                image,
+            } => {
+                let picture = image
+                    .as_ref()
+                    .and_then(|(bytes, content_type)| crate::avatars::picture(bytes, content_type));
+                update.avatars = self.avatars.landed(user_id, *last_picture_update, picture);
+            }
             ChangeSet::RemoteImage {
                 url,
                 bytes,
@@ -1101,6 +1160,9 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::LinkResolved { query, answer } => {
+                update.link = Some((query.clone(), answer.clone()));
             }
             ChangeSet::Search { terms, posts } => {
                 if let Some((asked, results)) = self.search.as_mut()
@@ -1200,6 +1262,7 @@ impl Live {
                 update.arrived = Some(Arrival::new(arrived, &self.me.0, &self.prefs));
             }
             ChangeSet::Me(user) => {
+                self.avatars.learn(&user.id, user.last_picture_update);
                 self.take_notify_props(user, &mut update);
                 if self.posts.is_some() {
                     update.channel = self.channel_update();
@@ -1223,6 +1286,7 @@ impl Live {
             }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
                     self.users.insert(user.id.clone(), user.clone());
                     self.take_notify_props(user, &mut update);
                 }
@@ -1285,7 +1349,14 @@ impl Live {
                     update.expired = true;
                     update.connection = Some(ConnectionState::Offline);
                 }
-                Connection::Socket(state) => update.connection = Some(connection_state(state)),
+                Connection::Socket(state) => {
+                    // Pictures that could not load while offline get
+                    // another try.
+                    if matches!(state, matty_api::ws::ConnectionState::Connected { .. }) {
+                        self.avatars.retry_failed();
+                    }
+                    update.connection = Some(connection_state(state));
+                }
                 Connection::Failed { .. } => update.connection = Some(ConnectionState::Offline),
                 Connection::SignedOut => update.signed_out = true,
                 _ => {}
@@ -1375,6 +1446,11 @@ impl Live {
                         };
                         let mut row =
                             ChannelRow::new(channel.id.clone(), channel.display_name.clone(), kind);
+                        if channel.kind == "D"
+                            && let Some(user_id) = &channel.dm_user_id
+                        {
+                            row = row.person(user_id.clone());
+                        }
                         if channel.unreads.messages > 0 {
                             row = row.unread();
                         }
@@ -2029,6 +2105,7 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
+            author_id: SharedString::default(),
             kind: crate::channel::PostKind::Regular,
             time: 600,
             day: "Today".into(),
@@ -2677,6 +2754,36 @@ mod tests {
         let image = updated[0].embeds[0].image().unwrap();
         assert_eq!((image.width, image.height), (1200, 630));
         assert!(image.loaded.is_some());
+    }
+
+    #[test]
+    fn a_profile_picture_lands_for_the_views_and_a_failure_keeps_initials() {
+        let mut live = live();
+        let avatars = live.avatars();
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            last_picture_update: 5,
+            ..User::default()
+        }])));
+        assert!(avatars.image("ada").is_none(), "initials until it lands");
+        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Avatar {
+            user_id: user_id.into(),
+            last_picture_update: 5,
+            image: image.map(|bytes| (Arc::from(bytes), "image/png".to_owned())),
+        };
+        let update = live.apply(&answer("ada", Some(b"\x89PNG\r\n\x1a\nface")));
+        assert!(update.avatars, "the windows redraw");
+        assert!(avatars.image("ada").is_some());
+        // No picture, or bytes that are not an image: the initials stay.
+        assert!(!live.apply(&answer("bob", None)).avatars);
+        let page = ChangeSet::Avatar {
+            user_id: "eve".into(),
+            last_picture_update: 5,
+            image: Some((Arc::from(&b"<html>"[..]), "text/html".to_owned())),
+        };
+        assert!(!live.apply(&page).avatars);
+        assert!(avatars.image("bob").is_none());
+        assert!(avatars.image("eve").is_none());
     }
 
     #[test]

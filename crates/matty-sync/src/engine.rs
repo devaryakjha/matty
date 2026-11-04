@@ -261,6 +261,12 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Finds what a link names, from the cache or else the server;
+    /// [`ChangeSet::LinkResolved`](crate::ChangeSet::LinkResolved) answers.
+    ResolveLink {
+        /// What the link names.
+        query: crate::LinkQuery,
+    },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
         /// The channel.
@@ -341,6 +347,18 @@ pub enum Command {
     LoadRemoteImage {
         /// The image's URL.
         url: String,
+    },
+    /// Loads a user's profile picture (#153): from the media cache, else
+    /// from the server, keeping it for next time. [`ChangeSet::Avatar`]
+    /// always answers, with no image when there is none to show.
+    ///
+    /// [`ChangeSet::Avatar`]: crate::ChangeSet::Avatar
+    LoadAvatar {
+        /// The user.
+        user_id: String,
+        /// Their `last_picture_update` as the app knows it; `None` uses
+        /// the stored user's.
+        last_picture_update: Option<i64>,
     },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
@@ -578,6 +596,9 @@ impl std::fmt::Debug for Command {
                 .debug_struct("JoinChannel")
                 .field("channel_id", channel_id)
                 .finish(),
+            Self::ResolveLink { query } => {
+                f.debug_struct("ResolveLink").field("query", query).finish()
+            }
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -606,6 +627,14 @@ impl std::fmt::Debug for Command {
             Self::LoadRemoteImage { .. } => {
                 f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
             }
+            Self::LoadAvatar {
+                user_id,
+                last_picture_update,
+            } => f
+                .debug_struct("LoadAvatar")
+                .field("user_id", user_id)
+                .field("last_picture_update", last_picture_update)
+                .finish(),
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
                 .field("file_id", file_id)
@@ -826,6 +855,7 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
+        let mut avatars = Vec::new();
         let mut threads_to_fetch = Vec::new();
         let mut thread_lists_to_fetch = Vec::new();
         let mut link_previews = Vec::new();
@@ -1242,6 +1272,15 @@ impl Engine {
                 Message::Command(Command::LeaveChannel { channel_id }) => {
                     writes.push(Write::Leave { channel_id });
                 }
+                Message::Command(Command::ResolveLink { query }) => {
+                    match cached_link(&tx, &query)? {
+                        Some(answer) => dirty.direct.push(ChangeSet::LinkResolved {
+                            query,
+                            answer: Some(answer),
+                        }),
+                        None => writes.push(Write::Resolve(query)),
+                    }
+                }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
@@ -1262,6 +1301,10 @@ impl Engine {
                 Message::Command(Command::LoadRemoteImage { url }) => {
                     remote_images.push(url);
                 }
+                Message::Command(Command::LoadAvatar {
+                    user_id,
+                    last_picture_update,
+                }) => avatars.push((user_id, last_picture_update)),
                 Message::Command(Command::LoadLinkPreview { url }) => {
                     link_previews.push(url);
                 }
@@ -1350,6 +1393,9 @@ impl Engine {
         }
         for url in remote_images {
             self.remote_image(url, dirty);
+        }
+        for (user_id, version) in avatars {
+            self.avatar(user_id, version, dirty);
         }
         for (team_id, since) in thread_lists_to_fetch {
             self.fetch_thread_list(team_id, since);
@@ -1746,6 +1792,65 @@ impl Engine {
                 }
             };
             let _ = results.send(Loaded::RemoteImage { url, image });
+        });
+    }
+
+    /// Answers a profile picture from the media cache, or fetches it; it
+    /// comes back as [`Loaded::Avatar`]. Without a session there is no
+    /// picture to fetch, which the app hears as an empty answer.
+    fn avatar(&mut self, user_id: String, version: Option<i64>, dirty: &mut Dirty) {
+        let version = version.unwrap_or_else(|| {
+            sidebar::users(self.store.conn(), std::slice::from_ref(&user_id))
+                .ok()
+                .and_then(|users| users.first().map(|user| user.last_picture_update))
+                .unwrap_or(0)
+        });
+        let key = matty_store::media::avatar_key(&user_id, version);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::Avatar {
+                        user_id,
+                        last_picture_update: version,
+                        image: Some((Arc::from(cached.bytes), cached.content_type)),
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Avatar {
+                user_id,
+                last_picture_update: version,
+                image: None,
+            });
+            return;
+        };
+        if !self.fetching.insert(key) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let image = match client.avatar(&user_id, None).await {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type,
+                    ..
+                }) => Some((bytes, content_type.unwrap_or_else(|| "image/png".into()))),
+                Ok(matty_api::Fetched::NotModified) => None,
+                Err(error) => {
+                    tracing::debug!(%error, user_id, "no profile picture");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            });
         });
     }
 
@@ -2249,6 +2354,28 @@ impl Engine {
                         content_type,
                     });
                 }
+            }
+            Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            } => {
+                let key = matty_store::media::avatar_key(&user_id, version);
+                self.fetching.remove(&key);
+                if let Some((bytes, content_type)) = &image
+                    && let Some(media) = &self.media
+                    && let Err(error) = media.put(self.store.conn(), &key, bytes, content_type)
+                {
+                    tracing::warn!(%error, "could not keep a profile picture");
+                }
+                dirty.direct.push(ChangeSet::Avatar {
+                    user_id,
+                    last_picture_update: version,
+                    image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
+                });
+            }
+            Loaded::Resolved { query, answer } => {
+                dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
@@ -2831,6 +2958,24 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
         CollapsedThreads::DefaultOn => chosen.unwrap_or(true),
         CollapsedThreads::DefaultOff => chosen.unwrap_or(false),
     }
+}
+
+/// What the cache already knows about a link's target; `None` sends the
+/// question to the server.
+fn cached_link(db: &Db, query: &crate::LinkQuery) -> Result<Option<crate::LinkAnswer>, StoreError> {
+    use crate::{LinkAnswer, LinkQuery};
+    Ok(match query {
+        LinkQuery::Post { post_id } => match posts::post(db, post_id)? {
+            Some(post) => sidebar::channel(db, &post.channel_id)?
+                .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+            None => None,
+        },
+        LinkQuery::Channel { team_id, name } => sidebar::channel_by_name(db, team_id, name)?
+            .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+        LinkQuery::User { username } => {
+            sidebar::user_by_username(db, username)?.map(|user| LinkAnswer::User(Arc::new(user)))
+        }
+    })
 }
 
 /// Whether link previews show: the server's `EnableLinkPreviews`, then the

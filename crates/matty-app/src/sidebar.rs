@@ -4,7 +4,7 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _, px,
 };
@@ -48,6 +48,8 @@ pub struct ChannelRow {
     pub unread: bool,
     pub mentions: usize,
     pub muted: bool,
+    /// A direct message's other person, whose picture the row shows.
+    pub person: Option<SharedString>,
 }
 
 impl ChannelRow {
@@ -63,7 +65,14 @@ impl ChannelRow {
             unread: false,
             mentions: 0,
             muted: false,
+            person: None,
         }
+    }
+
+    /// The direct message's other person, by user id.
+    pub fn person(mut self, user_id: impl Into<SharedString>) -> Self {
+        self.person = Some(user_id.into());
+        self
     }
 
     pub fn unread(mut self) -> Self {
@@ -668,7 +677,12 @@ impl SidebarView {
 
     /// The icon slot: `#` and lock for channels, an avatar with a presence
     /// dot for people, a member count for group messages.
-    fn row_icon(row: &ChannelRow, theme: &UiTheme, palette: &Palette) -> impl IntoElement + use<> {
+    fn row_icon(
+        row: &ChannelRow,
+        theme: &UiTheme,
+        palette: &Palette,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         let icon_size = scaled(theme, metrics::ICON);
         let slot = scaled(theme, metrics::ROW_SLOT);
         let color = theme.colors.muted_foreground;
@@ -721,13 +735,17 @@ impl SidebarView {
                     .relative()
                     .size(slot)
                     .child(
-                        Avatar::new(element_id("sidebar.avatar", &row.id))
-                            .size(AvatarSize::Sm)
-                            .fallback(initial)
-                            .aria_label(row.name.clone())
-                            .w(slot)
-                            .h(slot)
-                            .text_size(theme.text(9.)),
+                        crate::avatars::with_picture(
+                            Avatar::new(element_id("sidebar.avatar", &row.id))
+                                .size(AvatarSize::Sm)
+                                .fallback(initial)
+                                .aria_label(row.name.clone()),
+                            row.person.as_deref().unwrap_or_default(),
+                            cx,
+                        )
+                        .w(slot)
+                        .h(slot)
+                        .text_size(theme.text(9.)),
                     )
                     .child(
                         div()
@@ -763,7 +781,7 @@ impl SidebarView {
         let mut item = SidebarItem::new(element_id("sidebar.channel", &row.id), row.name.clone())
             .size(SidebarItemSize::Small)
             .selected(selected)
-            .icon(Self::row_icon(row, &theme, &palette))
+            .icon(Self::row_icon(row, &theme, &palette, cx))
             .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
             .on_activate(cx.listener(move |this, _, _, cx| {
                 this.model.selected = Some(id.clone());
