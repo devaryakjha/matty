@@ -97,6 +97,20 @@ pub(crate) enum Write {
     ReadAllThreads {
         team_id: String,
     },
+    /// A new custom sidebar category (#208).
+    CreateCategory {
+        team_id: String,
+        category: Box<matty_api::models::SidebarCategory>,
+    },
+    /// Saves a renamed category, or one a channel moved into.
+    UpdateCategory {
+        team_id: String,
+        category: Box<matty_api::models::SidebarCategory>,
+    },
+    DeleteCategory {
+        team_id: String,
+        category_id: String,
+    },
     /// Follows or unfollows a thread; the store already shows it.
     Follow {
         team_id: String,
@@ -132,6 +146,9 @@ impl Write {
             Self::Preferences(_) => "save preferences",
             Self::ReadThread { .. } => "mark thread read",
             Self::ReadAllThreads { .. } => "mark threads read",
+            Self::CreateCategory { .. } => "create category",
+            Self::UpdateCategory { .. } => "change category",
+            Self::DeleteCategory { .. } => "delete category",
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
         }
@@ -159,6 +176,10 @@ impl Write {
             | Self::People { team_id }
             | Self::Search { team_id, .. }
             | Self::ReadAllThreads { team_id } => team_id.clone(),
+            Self::CreateCategory { category, .. } | Self::UpdateCategory { category, .. } => {
+                category.display_name.clone()
+            }
+            Self::DeleteCategory { category_id, .. } => category_id.clone(),
             Self::ReadThread { thread_id, .. } | Self::Follow { thread_id, .. } => {
                 thread_id.clone()
             }
@@ -389,6 +410,23 @@ pub(crate) async fn run(
                     terms: query.terms,
                 })
             }
+            Write::CreateCategory { team_id, category } => {
+                client.create_category(&team_id, &category).await?;
+                categories(&client, team_id).await?
+            }
+            Write::UpdateCategory { team_id, category } => {
+                client
+                    .update_categories(&team_id, std::slice::from_ref(&*category))
+                    .await?;
+                categories(&client, team_id).await?
+            }
+            Write::DeleteCategory {
+                team_id,
+                category_id,
+            } => {
+                client.delete_category(&team_id, &category_id).await?;
+                categories(&client, team_id).await?
+            }
             Write::Patch { channel_id, patch } => {
                 let channel = client.patch_channel(&channel_id, &patch).await?;
                 Some(Loaded::Channel {
@@ -441,6 +479,16 @@ pub(crate) async fn run(
         },
     };
     let _ = results.send(message);
+}
+
+/// A team's categories after a change to them, so the sidebar shows the
+/// server's result without waiting for the socket.
+async fn categories(client: &Client, team_id: String) -> Result<Option<Loaded>, ApiError> {
+    let categories = client.sidebar_categories(&team_id).await?;
+    Ok(Some(Loaded::Categories {
+        team_id,
+        categories,
+    }))
 }
 
 #[cfg(test)]

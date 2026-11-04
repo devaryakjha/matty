@@ -6,7 +6,7 @@
 //! `docs/screenshots/design-*` are taken this way (DESIGN.md §6).
 
 use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
-use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
+use crate::sidebar::{Category, CategoryKind, ChannelKind, ChannelRow, Presence, SidebarModel};
 
 /// Whether the preview fixtures are on for this process.
 /// Who is typing a reply in any preview thread.
@@ -76,7 +76,7 @@ pub fn sidebar() -> SidebarModel {
         selected: Some("general".into()),
         unread_threads: 2,
         drafts: 2,
-        categories: vec![
+        categories: preview_kinds(vec![
             Category::new(
                 "favorites",
                 "Favorites",
@@ -109,8 +109,20 @@ pub fn sidebar() -> SidebarModel {
                     dm("jonas", "Jonas Weber", Presence::Offline),
                 ],
             ),
-        ],
+        ]),
     }
+}
+
+/// Gives the preview's categories the kinds their ids name.
+fn preview_kinds(mut categories: Vec<Category>) -> Vec<Category> {
+    for category in &mut categories {
+        category.kind = match category.id.as_ref() {
+            "favorites" => CategoryKind::Favorites,
+            "direct" => CategoryKind::Direct,
+            _ => CategoryKind::Channels,
+        };
+    }
+    categories
 }
 
 use crate::account::Account;

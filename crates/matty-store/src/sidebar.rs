@@ -207,6 +207,40 @@ pub fn upsert_category(
     Ok(())
 }
 
+/// One stored category with its channels in order, as the server would
+/// send it back; `None` when it is not stored.
+pub fn category(conn: &Connection, category_id: &str) -> Result<Option<SidebarCategory>> {
+    let row = conn
+        .query_row(
+            "SELECT team_id, kind, display_name, sorting, collapsed, muted
+             FROM categories WHERE id = ?1",
+            [category_id],
+            |row| {
+                Ok(SidebarCategory {
+                    id: category_id.to_owned(),
+                    team_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    display_name: row.get(2)?,
+                    sorting: row.get(3)?,
+                    collapsed: row.get(4)?,
+                    muted: row.get(5)?,
+                    ..SidebarCategory::default()
+                })
+            },
+        )
+        .optional()?;
+    let Some(mut category) = row else {
+        return Ok(None);
+    };
+    let mut statement = conn.prepare_cached(
+        "SELECT channel_id FROM category_channels WHERE category_id = ?1 ORDER BY sort_order",
+    )?;
+    category.channel_ids = statement
+        .query_map([category_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Some(category))
+}
+
 /// Removes a category; its channels go with it only from the category.
 pub fn delete_category(conn: &Connection, category_id: &str) -> Result<()> {
     conn.execute("DELETE FROM categories WHERE id = ?1", [category_id])?;

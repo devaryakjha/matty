@@ -443,3 +443,14 @@ fn a_closed_conversation_leaves_the_sidebar_until_shown_again() {
     );
     assert_eq!(sidebar::show_preference("O", "c1", "town", ME), None);
 }
+
+#[test]
+fn a_category_reads_back_as_the_server_sent_it() {
+    let store = seeded();
+    let chan = sidebar::category(store.conn(), "chan").unwrap().unwrap();
+    assert_eq!(
+        chan,
+        category("chan", "channels", &["town", "noisy", "old", "other"])
+    );
+    assert_eq!(sidebar::category(store.conn(), "nope").unwrap(), None);
+}

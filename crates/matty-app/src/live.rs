@@ -1374,6 +1374,7 @@ impl Live {
                 let mut category =
                     Category::new(section.id.clone(), section.display_name.clone(), rows);
                 category.collapsed = section.collapsed;
+                category.kind = crate::sidebar::CategoryKind::from_server(&section.kind);
                 category
             })
             .collect()

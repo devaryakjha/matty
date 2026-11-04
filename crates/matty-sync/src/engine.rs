@@ -353,6 +353,37 @@ pub enum Command {
         /// The caller's id for it.
         upload_id: String,
     },
+    /// A new custom sidebar category named `name`, with `channel_id`
+    /// moved into it when given (#208). The team's categories come back
+    /// in the sidebar change sets.
+    CreateCategory {
+        /// The team whose sidebar gets it.
+        team_id: String,
+        /// Its title.
+        name: String,
+        /// A channel to move into it.
+        channel_id: Option<String>,
+    },
+    /// Renames a category.
+    RenameCategory {
+        /// The category.
+        category_id: String,
+        /// Its new title.
+        name: String,
+    },
+    /// Deletes a custom category; the server moves its channels back to
+    /// their default categories.
+    DeleteCategory {
+        /// The category.
+        category_id: String,
+    },
+    /// Moves a channel to the top of another category.
+    MoveToCategory {
+        /// The channel.
+        channel_id: String,
+        /// Where it goes.
+        category_id: String,
+    },
     /// Renames a channel or changes its header or purpose; `None` leaves
     /// a field alone. The channel comes back in
     /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
@@ -609,6 +640,31 @@ impl std::fmt::Debug for Command {
             Self::CancelUpload { upload_id } => f
                 .debug_struct("CancelUpload")
                 .field("upload_id", upload_id)
+                .finish(),
+            Self::CreateCategory {
+                team_id,
+                channel_id,
+                ..
+            } => f
+                .debug_struct("CreateCategory")
+                .field("team_id", team_id)
+                .field("channel_id", channel_id)
+                .finish_non_exhaustive(),
+            Self::RenameCategory { category_id, .. } => f
+                .debug_struct("RenameCategory")
+                .field("category_id", category_id)
+                .finish_non_exhaustive(),
+            Self::DeleteCategory { category_id } => f
+                .debug_struct("DeleteCategory")
+                .field("category_id", category_id)
+                .finish(),
+            Self::MoveToCategory {
+                channel_id,
+                category_id,
+            } => f
+                .debug_struct("MoveToCategory")
+                .field("channel_id", channel_id)
+                .field("category_id", category_id)
                 .finish(),
             Self::PatchChannel { channel_id, .. } => f
                 .debug_struct("PatchChannel")
@@ -1245,6 +1301,48 @@ impl Engine {
                 Message::Command(Command::CancelUpload { upload_id }) => {
                     if let Some(task) = self.uploads.remove(&upload_id) {
                         task.abort();
+                    }
+                }
+                Message::Command(Command::CreateCategory {
+                    team_id,
+                    name,
+                    channel_id,
+                }) => {
+                    let category = matty_api::models::SidebarCategory {
+                        user_id: self.me.clone().unwrap_or_default(),
+                        team_id: team_id.clone(),
+                        kind: "custom".into(),
+                        display_name: name,
+                        channel_ids: channel_id.into_iter().collect(),
+                        ..Default::default()
+                    };
+                    writes.push(Write::CreateCategory {
+                        team_id,
+                        category: Box::new(category),
+                    });
+                }
+                Message::Command(Command::RenameCategory { category_id, name }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)? {
+                        category.display_name = name;
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
+                Message::Command(Command::MoveToCategory {
+                    channel_id,
+                    category_id,
+                }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)? {
+                        category.channel_ids.retain(|id| *id != channel_id);
+                        category.channel_ids.insert(0, channel_id);
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
+                Message::Command(Command::DeleteCategory { category_id }) => {
+                    if let Some(category) = sidebar::category(&tx, &category_id)? {
+                        writes.push(Write::DeleteCategory {
+                            team_id: category.team_id,
+                            category_id,
+                        });
                     }
                 }
                 Message::Command(Command::PatchChannel {
@@ -2950,5 +3048,14 @@ fn snapshot(
             }
             Ok(posts)
         }
+    }
+}
+
+/// Saves `category` back to the server as the user's (`me`).
+fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCategory) -> Write {
+    category.user_id = me.unwrap_or_default().to_owned();
+    Write::UpdateCategory {
+        team_id: category.team_id.clone(),
+        category: Box::new(category),
     }
 }

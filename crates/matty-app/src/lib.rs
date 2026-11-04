@@ -9,6 +9,7 @@
 pub mod account;
 pub mod actions;
 pub mod attachments;
+pub mod categories;
 pub mod channel;
 pub mod channel_settings;
 pub mod directory;

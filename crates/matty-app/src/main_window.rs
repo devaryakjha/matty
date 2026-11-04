@@ -176,6 +176,8 @@ pub struct MainWindow {
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
     create_channel: Entity<CreateChannelView>,
+    /// Name, rename and delete dialogs for sidebar categories (#208).
+    categories: Entity<crate::categories::CategoryDialogs>,
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
@@ -310,6 +312,14 @@ impl MainWindow {
             });
         }
         let create_channel = cx.new(|cx| CreateChannelView::new(window, cx));
+        let categories = cx.new(|cx| crate::categories::CategoryDialogs::new(window, cx));
+        cx.subscribe(
+            &categories,
+            |this, _, event: &crate::categories::CategoryEvent, _| {
+                this.category_changed(event);
+            },
+        )
+        .detach();
         let rail = cx.new(|_| {
             let teams = if crate::preview::enabled() {
                 crate::preview::teams()
@@ -685,6 +695,36 @@ impl MainWindow {
                     }
                     SidebarEvent::Leave(id) => return this.leave_channel(id.clone(), window, cx),
                     SidebarEvent::Close(id) => return this.close_direct(id.clone(), window, cx),
+                    SidebarEvent::NewCategory { channel_id } => {
+                        let channel_id = channel_id.clone();
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.create(channel_id, window, cx));
+                    }
+                    SidebarEvent::RenameCategory { id, name } => {
+                        let (id, name) = (id.clone(), name.clone());
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.rename(id, &name, window, cx));
+                    }
+                    SidebarEvent::DeleteCategory { id, name } => {
+                        let (id, name) = (id.clone(), name.clone());
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.delete(id, name, window, cx));
+                    }
+                    SidebarEvent::MoveToCategory {
+                        channel_id,
+                        category_id,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveToCategory {
+                                channel_id: channel_id.to_string(),
+                                category_id: category_id.to_string(),
+                            });
+                        }
+                        return;
+                    }
                 };
                 this.open_channel(id, window, cx);
             },
@@ -754,6 +794,7 @@ impl MainWindow {
             browse,
             new_message,
             create_channel,
+            categories,
             joined: Vec::new(),
             rail,
             right_pane_open: false,
@@ -3490,10 +3531,40 @@ impl MainWindow {
         dialog("browse", &handle, popup, window, cx)
     }
 
+    /// The user confirmed a category dialog: sync saves it, and the
+    /// sidebar follows the server's answer.
+    fn category_changed(&mut self, event: &crate::categories::CategoryEvent) {
+        use crate::categories::CategoryEvent;
+        let Some(live) = &self.live else {
+            return;
+        };
+        let command = match event {
+            CategoryEvent::Create { name, channel_id } => {
+                let Some(team_id) = live.team() else {
+                    return;
+                };
+                matty_sync::Command::CreateCategory {
+                    team_id: team_id.to_owned(),
+                    name: name.clone(),
+                    channel_id: channel_id.as_ref().map(ToString::to_string),
+                }
+            }
+            CategoryEvent::Rename { category_id, name } => matty_sync::Command::RenameCategory {
+                category_id: category_id.to_string(),
+                name: name.clone(),
+            },
+            CategoryEvent::Delete { category_id } => matty_sync::Command::DeleteCategory {
+                category_id: category_id.to_string(),
+            },
+        };
+        live.send(command);
+    }
+
     fn directory_dialogs(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message = self.new_message.read(cx).handle().clone();
         let create = self.create_channel.read(cx).handle().clone();
         div()
+            .child(self.categories.clone())
             .child(dialog(
                 "new-message",
                 &message,

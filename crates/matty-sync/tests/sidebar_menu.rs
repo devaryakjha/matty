@@ -139,3 +139,99 @@ async fn choosing_collapsed_threads_tells_the_server_and_the_window() {
     assert_eq!(saved[0]["name"], "collapsed_reply_threads");
     assert_eq!(saved[0]["value"], "on");
 }
+
+/// The categories requests the server received, as (method, path, body).
+async fn category_requests(server: &wiremock::MockServer) -> Vec<(String, String, Value)> {
+    let requests = server.received_requests().await.unwrap_or_default();
+    requests
+        .iter()
+        .filter(|r| r.method.as_str() != "GET" && r.url.path().contains("/channels/categories"))
+        .map(|r| {
+            let body = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            (r.method.to_string(), r.url.path().to_owned(), body)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn categories_are_created_renamed_moved_into_and_deleted_on_the_server() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "categories": [
+                {"id": "cat", "team_id": "t1", "type": "channels", "display_name": "Channels", "channel_ids": ["c1"]},
+                {"id": "mine", "team_id": "t1", "type": "custom", "display_name": "Mine", "channel_ids": ["c2"]}
+            ],
+            "order": ["mine", "cat"]
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "new"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories/mine"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    // Loaded: the categories are stored.
+    let (sync, _changes) = connected(&server).await;
+
+    sync.send(Command::CreateCategory {
+        team_id: "t1".into(),
+        name: "Projects".into(),
+        channel_id: Some("c1".into()),
+    });
+    sync.send(Command::RenameCategory {
+        category_id: "mine".into(),
+        name: "Ours".into(),
+    });
+    sync.send(Command::MoveToCategory {
+        channel_id: "c1".into(),
+        category_id: "mine".into(),
+    });
+    sync.send(Command::DeleteCategory {
+        category_id: "mine".into(),
+    });
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = category_requests(&server).await;
+        if sent.len() == 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    let find = |verb: &'static str| sent.iter().filter(move |(m, _, _)| m == verb);
+    let created = &find("POST").next().unwrap().2;
+    assert_eq!(created["display_name"], "Projects");
+    assert_eq!(created["type"], "custom");
+    assert_eq!(created["user_id"], ME);
+    assert_eq!(created["channel_ids"], json!(["c1"]));
+    let updates: Vec<&Value> = find("PUT").map(|(_, _, body)| &body[0]).collect();
+    assert!(
+        updates
+            .iter()
+            .any(|c| c["display_name"] == "Ours" && c["user_id"] == ME),
+        "{updates:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|c| c["channel_ids"] == json!(["c1", "c2"])),
+        "{updates:?}"
+    );
+    assert_eq!(
+        find("DELETE").next().unwrap().1,
+        "/api/v4/users/me/teams/t1/channels/categories/mine"
+    );
+}
