@@ -3487,6 +3487,7 @@ mod tests {
             first_name: Some("Ada".into()),
             channel_wide: true,
             keywords: vec!["deploy".into()],
+            ..Default::default()
         };
         assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }
