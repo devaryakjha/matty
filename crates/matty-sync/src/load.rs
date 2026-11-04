@@ -136,10 +136,10 @@ pub(crate) enum Loaded {
         url: String,
         image: Option<(Vec<u8>, String)>,
     },
-    /// A profile picture at a `last_picture_update`, or `None` when the
-    /// server gave none.
-    Avatar {
-        user_id: String,
+    /// A picture at a version, or `None` when the server gave none.
+    Picture {
+        picture: crate::Picture,
+        id: String,
         version: i64,
         image: Option<(Vec<u8>, String)>,
     },
@@ -193,6 +193,13 @@ pub(crate) enum Loaded {
     Sent {
         pending_post_id: String,
         post: Box<matty_api::models::Post>,
+    },
+    /// One of a queued post's offline files is on the server (#194).
+    FileUp {
+        pending_post_id: String,
+        /// The local path it was read from.
+        path: String,
+        file_id: String,
     },
     /// A queued post could not be sent.
     SendFailed {

@@ -3,10 +3,17 @@
 //! the way the picker tabs show them. Custom emoji join once sync loads
 //! them from the server.
 
-use gpui_icons::LucideIcon;
-use gpui_kit::SharedString;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
+use gpui_icons::LucideIcon;
+use gpui_kit::{App, Global, Image, ImageSource, SharedString};
+
+use crate::avatars::EmojiImages;
 use crate::ui::emoji_picker::{Emoji, EmojiCategory};
+use crate::ui::message::Reaction;
 
 /// How many recently picked emoji the picker remembers.
 pub const RECENT_LIMIT: usize = 27;
@@ -75,6 +82,60 @@ pub fn suggest(query: &str, limit: usize) -> Vec<(SharedString, SharedString)> {
 /// The glyph behind a shortcode, for reactions and the composer.
 pub fn glyph(name: &str) -> Option<SharedString> {
     emojis::get_by_shortcode(name).map(|emoji| emoji.as_str().into())
+}
+
+/// The server's custom emoji, name to id (#153), as an app global the
+/// views read while rendering. [`crate::live::Live`] fills it from sync.
+#[derive(Clone, Default)]
+pub struct CustomEmoji(Rc<RefCell<HashMap<String, String>>>);
+
+impl Global for CustomEmoji {}
+
+impl CustomEmoji {
+    /// Replaces the list with `emoji`.
+    pub fn set(&self, emoji: &[matty_api::models::Emoji]) {
+        *self.0.borrow_mut() = emoji
+            .iter()
+            .map(|one| (one.name.clone(), one.id.clone()))
+            .collect();
+    }
+
+    /// The id of the custom emoji called `name`.
+    pub fn id(&self, name: &str) -> Option<String> {
+        self.0.borrow().get(name).cloned()
+    }
+
+    /// Whether `name` is one of the server's custom emoji.
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.borrow().contains_key(name)
+    }
+}
+
+/// The image for the custom emoji called `name`, asking sync for it the
+/// first time. `None` until it lands, and for names that are not custom
+/// emoji, so the view shows `:name:` meanwhile.
+pub fn custom_image(name: &str, cx: &App) -> Option<Arc<Image>> {
+    let id = cx.try_global::<CustomEmoji>()?.id(name)?;
+    cx.try_global::<EmojiImages>()?.image(&id)
+}
+
+/// [`custom_image`] as a source for gpuicn's views.
+pub fn custom_source(name: &str, cx: &App) -> Option<ImageSource> {
+    custom_image(name, cx).map(ImageSource::Image)
+}
+
+/// A reaction chip for `emoji` (a glyph, or `:name:` for a custom emoji),
+/// with the custom emoji's image once it has one.
+pub fn reaction(emoji: &SharedString, count: usize, mine: bool, cx: &App) -> Reaction {
+    let chip = Reaction::new(emoji.clone(), count, mine);
+    let custom = emoji
+        .strip_prefix(':')
+        .and_then(|name| name.strip_suffix(':'))
+        .and_then(|name| custom_image(name, cx));
+    match custom {
+        Some(image) => chip.image(image),
+        None => chip,
+    }
 }
 
 fn convert(emoji: &'static emojis::Emoji) -> Option<Emoji> {

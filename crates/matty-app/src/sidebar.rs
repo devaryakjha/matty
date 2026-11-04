@@ -1223,6 +1223,7 @@ impl SidebarView {
             cx,
         );
         let trigger = collapsible_trigger(element_id("sidebar.category", &category.id), open, cx)
+            .aria_label(category.name.clone())
             .w_full()
             .h(theme.space(6.))
             .px(theme.space(2.))

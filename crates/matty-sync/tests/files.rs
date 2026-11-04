@@ -4,7 +4,7 @@
 mod common;
 
 use common::{connected, next, server};
-use matty_sync::{ChangeSet, Command, ImageSize, UploadState};
+use matty_sync::{ChangeSet, Command, ImageSize, Picture, UploadState};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -372,22 +372,11 @@ async fn a_profile_picture_is_fetched_once_per_version_and_kept() {
             .filter(|path| path.ends_with("/u2/image"))
             .count()
     };
-    let avatar = |user_id: &str, version| Command::LoadAvatar {
-        user_id: user_id.into(),
-        last_picture_update: Some(version),
+    let avatar = |user_id: &str, version| Command::LoadPicture {
+        picture: Picture::Avatar,
+        id: user_id.into(),
+        version: Some(version),
     };
-    type Answer = (String, i64, Option<(std::sync::Arc<[u8]>, String)>);
-    async fn answer(changes: &async_channel::Receiver<ChangeSet>) -> Answer {
-        let ChangeSet::Avatar {
-            user_id,
-            last_picture_update,
-            image,
-        } = next(changes, |c| matches!(c, ChangeSet::Avatar { .. })).await
-        else {
-            unreachable!()
-        };
-        (user_id, last_picture_update, image)
-    }
 
     {
         let sync = matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(media.clone())).unwrap();
@@ -428,4 +417,123 @@ async fn a_profile_picture_is_fetched_once_per_version_and_kept() {
     sync.send(avatar("u3", 1));
     assert_eq!(answer(&changes).await.2, None);
     assert_eq!(fetches().await, 2);
+}
+
+type Answer = (String, i64, Option<(std::sync::Arc<[u8]>, String)>);
+
+/// The next picture answer.
+async fn answer(changes: &async_channel::Receiver<ChangeSet>) -> Answer {
+    let ChangeSet::Picture {
+        id, version, image, ..
+    } = next(changes, |c| matches!(c, ChangeSet::Picture { .. })).await
+    else {
+        unreachable!()
+    };
+    (id, version, image)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn emoji_images_and_team_icons_are_fetched_once_per_version_and_kept() {
+    let server = common::server_with_config(json!({"EnableCustomEmoji": "true"})).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/emoji"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "e1", "name": "partyparrot", "creator_id": "u2", "update_at": 5}
+        ])))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    for (route, body) in [
+        ("/api/v4/emoji/e1/image", &b"GIF89aparrot"[..]),
+        ("/api/v4/teams/t1/image", &b"\x89PNGteam"[..]),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.to_vec()))
+            .mount(&server)
+            .await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let media = dir.path().join("media");
+    let fetches = |suffix: &'static str| {
+        let server = &server;
+        async move {
+            common::requested(server)
+                .await
+                .iter()
+                .filter(|path| path.ends_with(suffix))
+                .count()
+        }
+    };
+    let load = |picture, id: &str, version| Command::LoadPicture {
+        picture,
+        id: id.into(),
+        version,
+    };
+
+    {
+        let sync = matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(media.clone())).unwrap();
+        let changes = sync.subscribe();
+        sync.send(Command::Connect {
+            client: matty_api::Client::new(server.uri())
+                .unwrap()
+                .with_token("token"),
+        });
+        // The emoji list reaches the app, so it can map names to ids.
+        let ChangeSet::CustomEmoji(emoji) = next(
+            &changes,
+            |c| matches!(c, ChangeSet::CustomEmoji(emoji) if !emoji.is_empty()),
+        )
+        .await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (emoji[0].id.as_str(), emoji[0].name.as_str()),
+            ("e1", "partyparrot")
+        );
+
+        // No version: sync uses the emoji's stored update_at.
+        for _ in 0..2 {
+            sync.send(load(Picture::Emoji, "e1", None));
+            let (id, version, image) = answer(&changes).await;
+            assert_eq!((id.as_str(), version), ("e1", 5));
+            assert_eq!(
+                image.unwrap().1,
+                "image/png",
+                "an untyped answer is taken as PNG; GPUI sniffs the bytes"
+            );
+        }
+        assert_eq!(
+            fetches("/emoji/e1/image").await,
+            1,
+            "the second ask came from the cache"
+        );
+
+        for _ in 0..2 {
+            sync.send(load(Picture::TeamIcon, "t1", Some(30)));
+            let (id, version, image) = answer(&changes).await;
+            assert_eq!((id.as_str(), version), ("t1", 30));
+            assert_eq!(&*image.unwrap().0, &b"\x89PNGteam"[..]);
+        }
+        assert_eq!(fetches("/teams/t1/image").await, 1);
+        // A new icon time is a new icon.
+        sync.send(load(Picture::TeamIcon, "t1", Some(40)));
+        assert_eq!(answer(&changes).await.1, 40);
+        assert_eq!(fetches("/teams/t1/image").await, 2);
+        // A team that never set an icon asks the server nothing.
+        sync.send(load(Picture::TeamIcon, "t2", Some(0)));
+        assert_eq!(answer(&changes).await, ("t2".into(), 0, None));
+        assert_eq!(fetches("/teams/t2/image").await, 0);
+    }
+
+    // Offline, the kept pictures still show without a request.
+    let sync = matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(media)).unwrap();
+    let changes = sync.subscribe();
+    sync.send(load(Picture::Emoji, "e1", None));
+    assert!(answer(&changes).await.2.is_some());
+    sync.send(load(Picture::TeamIcon, "t1", Some(40)));
+    assert!(answer(&changes).await.2.is_some());
+    assert_eq!(fetches("/emoji/e1/image").await, 1);
+    assert_eq!(fetches("/teams/t1/image").await, 2);
 }
