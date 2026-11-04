@@ -105,6 +105,39 @@ jobs:
       - name: The app never opens the database itself
         run: scripts/check-app-no-db.sh
 
+  # The browser build (docs/web.md): it compiles, links, fits Cloudflare's
+  # 25 MiB file limit, and the result is kept for a manual deploy.
+  web:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-17
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+          cache-directories: target/web
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          curl -sSfL "https://github.com/rustwasm/wasm-bindgen/releases/download/$version/wasm-bindgen-$version-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local/bin "wasm-bindgen-$version-x86_64-unknown-linux-musl/wasm-bindgen"
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+            | tar xz --strip-components=2 -C /usr/local/bin binaryen-version_132/bin/wasm-opt
+      - run: scripts/web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-web
+          path: crates/matty-web/dist
+          if-no-files-found: error
+
   deny:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -256,7 +289,16 @@ jobs:
           shared-key: integration
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.server == '12.0' }}
       - name: Start the server in the background
-        run: docker compose -f docker/compose.yml up -d
+        # Docker Hub now and then refuses an anonymous pull ("unauthorized:
+        # authentication required"), so the pull is retried.
+        run: |
+          for attempt in 1 2 3 4; do
+            docker compose -f docker/compose.yml pull --quiet && break
+            [ "$attempt" = 4 ] && exit 1
+            echo "Pull failed, retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          docker compose -f docker/compose.yml up -d
       - name: Build the tests while it starts
         run: cargo test --locked -p matty-api -p matty-store -p matty-sync --no-run
       - name: Wait for the server
@@ -281,7 +323,7 @@ jobs:
   # were skipped on purpose.
   ci:
     if: ${{ !cancelled() }}
-    needs: [changes, linux, deny, macos, macos-universal, integration]
+    needs: [changes, linux, web, deny, macos, macos-universal, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

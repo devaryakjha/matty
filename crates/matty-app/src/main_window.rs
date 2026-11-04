@@ -70,6 +70,33 @@ pub enum ConnectionState {
     Offline,
 }
 
+/// What the connection banner says for `state` with `queued` messages
+/// waiting, and whether it is the offline one (with Retry now); `None`
+/// when online (#162).
+fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, bool)> {
+    let (text, offline): (SharedString, bool) = match state {
+        ConnectionState::Online => return None,
+        ConnectionState::Reconnecting { attempt } if *attempt <= 1 => {
+            ("Connection lost. Reconnecting…".into(), false)
+        }
+        ConnectionState::Reconnecting { attempt } => (
+            format!("Connection lost. Reconnecting (attempt {attempt})…").into(),
+            false,
+        ),
+        ConnectionState::Offline => (
+            "You're offline. Matty shows what it has and sends when you're back.".into(),
+            true,
+        ),
+    };
+    // What is waiting goes when the connection is back (#195).
+    let text = match queued {
+        0 => text,
+        1 => format!("{text} 1 message waiting to send.").into(),
+        n => format!("{text} {n} messages waiting to send.").into(),
+    };
+    Some((text, offline))
+}
+
 /// `chat.example.com` from `https://chat.example.com`.
 fn host(url: &str) -> String {
     url.split_once("://")
@@ -165,9 +192,13 @@ pub struct MainWindow {
     preferences: DialogHandle,
     /// The section Preferences shows (#155).
     preferences_section: preferences::Section,
-    /// Preferences' mention keywords, saved to the server on Enter or when
-    /// the field loses focus (#192).
+    /// Preferences' field for a new mention keyword, added on Enter or
+    /// when the field loses focus (#192).
     keywords: Entity<InputState>,
+    /// Preferences' field for a new highlight-only keyword (#192).
+    highlight_keywords: Entity<InputState>,
+    /// The server takes `highlight_keys`: it is licensed (#192).
+    highlight_keys: bool,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
@@ -467,9 +498,11 @@ impl MainWindow {
         cx.subscribe(&threads, |this, threads, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
             let unread = threads.read(cx).model().unread();
+            let mentions = threads.read(cx).model().mentions();
             this.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
             let Some(live) = &mut this.live else {
@@ -890,20 +923,23 @@ impl MainWindow {
         )
         .detach();
         let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
-        let keywords = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
-            if let Some(props) = &preview_props {
-                let text = matty_notify::mention::keywords_text("arya", props);
-                input.set_value(text, window, cx);
-            }
-            input
-        });
-        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                this.save_keywords(cx);
-            }
-        })
-        .detach();
+        let keyword_input =
+            |list: matty_notify::KeywordList, window: &mut Window, cx: &mut Context<Self>| {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a keyword"));
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                            this.add_keywords(list, window, cx);
+                        }
+                    },
+                )
+                .detach();
+                input
+            };
+        let keywords = keyword_input(matty_notify::KeywordList::Mention, window, cx);
+        let highlight_keywords = keyword_input(matty_notify::KeywordList::Highlight, window, cx);
         let level = settings.read(cx).get().log_level;
         let log_level = cx.new(|cx| {
             let mut state = SelectState::new(
@@ -960,6 +996,8 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             preferences_section: preferences::Section::default(),
             keywords,
+            highlight_keywords,
+            highlight_keys: crate::preview::enabled(),
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
             badge: matty_notify::Badge::Clear,
@@ -1489,7 +1527,7 @@ impl MainWindow {
                     .await;
                 let left = this.update(cx, |this, cx| {
                     let live = this.live.as_mut()?;
-                    let (names, thread) = live.expire_typing(std::time::Instant::now());
+                    let (names, thread) = live.expire_typing(web_time::Instant::now());
                     let left = live.is_typing();
                     if let Some(names) = names {
                         this.channel
@@ -1713,13 +1751,12 @@ impl MainWindow {
             self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
-            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
-            self.keywords.update(cx, |input, cx| {
-                if input.value() != text.as_str() {
-                    input.set_value(text, window, cx);
-                }
-            });
             self.notify_props = Some(props);
+            cx.notify();
+        }
+        if let Some(on) = update.highlight_keys {
+            self.highlight_keys = on;
+            cx.notify();
         }
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
@@ -1738,12 +1775,13 @@ impl MainWindow {
             }
         }
         if let Some(model) = update.threads {
-            let unread = model.unread();
+            let (unread, mentions) = (model.unread(), model.mentions());
             self.threads
                 .update(cx, |view, cx| view.set_model(model, cx));
             self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
                 model.unread_threads = unread;
+                model.thread_mentions = mentions;
                 sidebar.set_model(model, cx);
             });
         }
@@ -1973,10 +2011,8 @@ impl MainWindow {
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
 
-    /// Shows `id` in the channel view and marks it in the sidebar. Until
-    /// sync lands only the preview fixtures have content.
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post.
+    /// its post, or with a thread reply's thread open at the reply.
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -1986,13 +2022,30 @@ impl MainWindow {
         cx.activate(true);
         window.activate_window();
         self.open_channel(clicked.channel_id.into(), window, cx);
-        if !clicked.post_id.is_empty() {
+        if !clicked.root_id.is_empty() {
+            // A thread reply opens its thread at the reply (#141): with
+            // collapsed threads on, the channel does not show it. The
+            // channel goes to the root, which it always shows.
+            let root: gpui_kit::SharedString = clicked.root_id.into();
+            let post: gpui_kit::SharedString = if clicked.post_id.is_empty() {
+                root.clone()
+            } else {
+                clicked.post_id.into()
+            };
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(root.clone(), cx));
+            self.open_thread(root.clone(), cx);
+            self.right_pane
+                .update(cx, |pane, cx| pane.jump_to(root, post, cx));
+        } else if !clicked.post_id.is_empty() {
             let post = clicked.post_id.into();
             self.channel
                 .update(cx, |channel, cx| channel.jump_to(post, cx));
         }
     }
 
+    /// Shows `id` in the channel view and marks it in the sidebar. Until
+    /// sync lands only the preview fixtures have content.
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,
@@ -3301,33 +3354,16 @@ impl MainWindow {
         } else {
             &self.banner_last
         };
-        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) = match state {
-            ConnectionState::Online => return None,
-            ConnectionState::Reconnecting { attempt } => (
-                crate::ui::spinner::Spinner::new("banner.spinner")
-                    .color(theme.colors.muted_foreground)
-                    .into_any_element(),
-                if *attempt <= 1 {
-                    "Connection lost. Reconnecting…".into()
-                } else {
-                    format!("Connection lost. Reconnecting (attempt {attempt})…").into()
-                },
-                false,
-            ),
-            ConnectionState::Offline => (
-                lucide(LucideIcon::WifiOff)
-                    .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(theme.colors.destructive)
-                    .into_any_element(),
-                "You're offline. Matty shows what it has and sends when you're back.".into(),
-                true,
-            ),
-        };
-        // What is waiting goes when the connection is back (#195).
-        let text: SharedString = match self.queued {
-            0 => text,
-            1 => format!("{text} 1 message waiting to send.").into(),
-            n => format!("{text} {n} messages waiting to send.").into(),
+        let (text, offline) = banner_text(state, self.queued)?;
+        let icon: gpui_kit::AnyElement = if offline {
+            lucide(LucideIcon::WifiOff)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.destructive)
+                .into_any_element()
+        } else {
+            crate::ui::spinner::Spinner::new("banner.spinner")
+                .color(theme.colors.muted_foreground)
+                .into_any_element()
         };
         let foreground = if offline {
             theme.colors.destructive
@@ -3488,7 +3524,11 @@ impl MainWindow {
             })
             .flatten();
         let app = matty_notify::AppState {
-            dnd: self.account.read(cx).account().presence == crate::sidebar::Presence::Dnd,
+            dnd: {
+                let account = self.account.read(cx).account();
+                account.presence == crate::sidebar::Presence::Dnd
+                    && matty_notify::dnd_active(account.dnd_end, jiff::Timestamp::now().as_second())
+            },
             focused: window.is_window_active(),
             visible_channel: (!self.threads_open && !self.drafts_open)
                 .then(|| self.selected_channel.as_ref().map(|id| id.to_string()))
@@ -4067,7 +4107,7 @@ pub(crate) fn download_folder(chosen: Option<std::path::PathBuf>) -> std::path::
     chosen
         .or_else(dirs::download_dir)
         .or_else(dirs::home_dir)
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(fallback_folder)
 }
 
 /// Opens a saved file in its app when it is a kind that only shows
@@ -4093,11 +4133,56 @@ fn opens_safely(path: &std::path::Path) -> bool {
         .is_some_and(|extension| SAFE.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
+/// Where a download goes when the OS names no folder: the temporary folder
+/// on the desktop. In the browser, which picks the folder itself, only the
+/// file name is used.
+fn fallback_folder() -> std::path::PathBuf {
+    #[cfg(target_family = "wasm")]
+    return std::path::PathBuf::new();
+    #[cfg(not(target_family = "wasm"))]
+    std::env::temp_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
-    use super::{Seen, opens_safely};
+    use super::{ConnectionState, Seen, banner_text, opens_safely};
+
+    #[test]
+    fn the_banner_says_what_the_connection_is_doing() {
+        let say = |state, queued| {
+            banner_text(&state, queued).map(|(text, offline)| (text.to_string(), offline))
+        };
+        assert_eq!(say(ConnectionState::Online, 0), None);
+        assert_eq!(
+            say(ConnectionState::Online, 3),
+            None,
+            "nothing shows while online"
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 1 }, 0),
+            Some(("Connection lost. Reconnecting…".into(), false))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 4 }, 0),
+            Some(("Connection lost. Reconnecting (attempt 4)…".into(), false))
+        );
+        let offline = "You're offline. Matty shows what it has and sends when you're back.";
+        assert_eq!(
+            say(ConnectionState::Offline, 0),
+            Some((offline.into(), true)),
+            "only the offline banner offers Retry now"
+        );
+        assert_eq!(
+            say(ConnectionState::Offline, 1),
+            Some((format!("{offline} 1 message waiting to send."), true))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 2 }, 5).map(|(text, _)| text),
+            Some("Connection lost. Reconnecting (attempt 2)… 5 messages waiting to send.".into())
+        );
+    }
 
     #[test]
     fn the_open_channel_counts_as_viewed_only_when_seen() {

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
+#[cfg(not(target_family = "wasm"))]
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::MakeWriter;
@@ -28,7 +29,9 @@ use crate::settings::LogLevel;
 /// Log files kept, one per day, including today's.
 pub const KEPT_FILES: usize = 7;
 /// Log files are named `matty.<yyyy-mm-dd>.log`.
+#[cfg(not(target_family = "wasm"))]
 const FILE_PREFIX: &str = "matty";
+#[cfg(not(target_family = "wasm"))]
 const FILE_SUFFIX: &str = "log";
 
 /// What replaces a redacted value.
@@ -167,8 +170,15 @@ pub fn default_dir() -> Option<PathBuf> {
     }
 }
 
+/// The web has no log files; [`init`] logs to the browser console instead.
+#[cfg(target_family = "wasm")]
+pub fn appender(_: &Path) -> io::Result<fn() -> io::Sink> {
+    Err(io::Error::other("no log files on the web"))
+}
+
 /// A daily-rotating appender in `dir` that keeps [`KEPT_FILES`] files. Older
 /// files are removed when it opens and at each rotation.
+#[cfg(not(target_family = "wasm"))]
 pub fn appender(dir: &Path) -> io::Result<RollingFileAppender> {
     std::fs::create_dir_all(dir)?;
     RollingFileAppender::builder()
@@ -217,12 +227,19 @@ pub fn init(dir: Option<&Path>, level: LogLevel) -> Option<LevelHandle> {
     let to_file = file.map(|file| {
         fmt::layer()
             .with_ansi(false)
+            .with_timer(clock())
             .with_writer(Redacting::new(file, enabled))
     });
-    let to_stderr = failure.is_some().then(|| {
+    // The browser's stderr goes nowhere; its console is where logs show.
+    #[cfg(target_family = "wasm")]
+    let (failure, stderr) = (failure.filter(|_| false), Console::default);
+    #[cfg(not(target_family = "wasm"))]
+    let stderr = io::stderr;
+    let to_stderr = (failure.is_some() || cfg!(target_family = "wasm")).then(|| {
         fmt::layer()
             .with_ansi(false)
-            .with_writer(Redacting::new(io::stderr, enabled))
+            .with_timer(clock())
+            .with_writer(Redacting::new(stderr, enabled))
     });
     tracing_subscriber::registry()
         .with(filter)
@@ -237,6 +254,44 @@ pub fn init(dir: Option<&Path>, level: LogLevel) -> Option<LevelHandle> {
         tracing::warn!("log redaction is off (MATTY_LOG_UNREDACTED=1)");
     }
     Some(LevelHandle(handle))
+}
+
+/// Each line's timestamp. The browser's clock is not `std`'s, and its
+/// console stamps lines itself, so the web build writes none.
+fn clock() -> impl tracing_subscriber::fmt::time::FormatTime {
+    #[cfg(not(target_family = "wasm"))]
+    return tracing_subscriber::fmt::time::SystemTime;
+    #[cfg(target_family = "wasm")]
+    return ();
+}
+
+/// Writes each log line to the browser console.
+#[cfg(target_family = "wasm")]
+#[derive(Default)]
+struct Console(Vec<u8>);
+
+#[cfg(target_family = "wasm")]
+impl Write for Console {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.0.is_empty() {
+            let line = String::from_utf8_lossy(&self.0);
+            web_sys::console::log_1(&line.trim_end().into());
+            self.0.clear();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl Drop for Console {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
 }
 
 #[cfg(test)]

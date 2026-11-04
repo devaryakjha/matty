@@ -68,8 +68,19 @@ impl Client {
             progress(sent, total);
             Ok::<_, std::io::Error>(chunk)
         }));
+        #[cfg(not(target_family = "wasm"))]
         let file = Part::stream_with_length(reqwest::Body::wrap_stream(chunks), total)
             .file_name(upload.file_name);
+        // fetch() takes the whole body at once; progress jumps to done.
+        #[cfg(target_family = "wasm")]
+        let file = {
+            let mut chunks = chunks;
+            let mut all = Vec::with_capacity(total as usize);
+            while let Some(Ok(chunk)) = futures_util::StreamExt::next(&mut chunks).await {
+                all.extend_from_slice(&chunk);
+            }
+            Part::bytes(all).file_name(upload.file_name)
+        };
         // The server reads fields in order: the channel must come first.
         let form = Form::new()
             .text("channel_id", upload.channel_id)
@@ -89,7 +100,9 @@ impl Client {
     /// each piece of the body to `chunk` with the bytes received so far and
     /// the length the server gave, if any. An error from `chunk` stops the
     /// download. Allows a long transfer rather than the usual timeout, and
-    /// returns the bytes received.
+    /// returns the bytes received. Not in the browser, which saves files
+    /// itself.
+    #[cfg(not(target_family = "wasm"))]
     pub async fn download_file(
         &self,
         file_id: &str,

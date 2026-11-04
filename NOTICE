@@ -10,3 +10,9 @@ crates/matty-markdown/fixtures/webapp.json
   scripts/import-markdown-fixtures.py. The source commit is recorded in the
   file. Copyright (c) 2015-present Mattermost, Inc. Licensed under the
   Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+crates/matty-web/assets/IBMPlexSans-Regular.ttf
+  IBM Plex Sans, converted from the WOFF2 in @ibm/plex-sans 1.1.0. The web
+  build loads it as GPUI's fallback font. Copyright (c) 2017 IBM Corp., with
+  Reserved Font Name "Plex". Licensed under the SIL Open Font License 1.1
+  (crates/matty-web/assets/IBMPlexSans-LICENSE.txt).

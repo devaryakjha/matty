@@ -1,5 +1,6 @@
 //! Saving a post's file to the user's download folder (PLAN §4.6 Files).
 
+#[cfg(not(target_family = "wasm"))]
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,24 @@ pub(crate) async fn download(
     name: String,
     results: UnboundedSender<Loaded>,
 ) {
+    #[cfg(target_family = "wasm")]
+    let state = {
+        let _ = folder;
+        let _ = &results;
+        match client.file(&file_id, None).await {
+            Ok(matty_api::Fetched::Fresh { bytes, .. }) => {
+                match crate::web::save_download(&name, &bytes) {
+                    Ok(()) => DownloadState::Done(PathBuf::from(name)),
+                    Err(error) => DownloadState::Failed(error),
+                }
+            }
+            Ok(matty_api::Fetched::NotModified) => {
+                DownloadState::Failed("the server sent nothing".into())
+            }
+            Err(error) => DownloadState::Failed(error.to_string()),
+        }
+    };
+    #[cfg(not(target_family = "wasm"))]
     let state = match save(&client, &file_id, &folder, &name, &results).await {
         Ok(path) => DownloadState::Done(path),
         Err(error) => DownloadState::Failed(error),
@@ -28,6 +47,7 @@ pub(crate) async fn download(
 /// Writes the body beside its final name and renames once it is whole, so
 /// a half-written file never sits under it; the partial file goes on
 /// failure.
+#[cfg(not(target_family = "wasm"))]
 async fn save(
     client: &Client,
     file_id: &str,
@@ -78,6 +98,7 @@ async fn save(
 /// Which report a download at `received` of `total` bytes belongs to: one
 /// per percent, or per megabyte when the size is unknown, so the screen is
 /// not redrawn for every packet.
+#[cfg(not(target_family = "wasm"))]
 fn progress_step(received: u64, total: Option<u64>) -> u64 {
     match total {
         Some(total) if total > 0 => received.saturating_mul(100) / total,
@@ -87,6 +108,7 @@ fn progress_step(received: u64, total: Option<u64>) -> u64 {
 
 /// `folder/name`, or `name (1).ext` and up when that is taken. Only the
 /// name's last component counts, so a server name never leaves `folder`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn unique_path(folder: &Path, name: &str) -> PathBuf {
     let name = Path::new(name)
         .file_name()

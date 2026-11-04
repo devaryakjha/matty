@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
@@ -196,6 +198,9 @@ pub struct Update {
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
+    /// Whether the server takes highlight-only keywords, for Preferences
+    /// (#192).
+    pub highlight_keys: Option<bool>,
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
@@ -1871,6 +1876,9 @@ impl Live {
                         | matty_api::capabilities::CollapsedThreads::DefaultOff
                 ));
                 update.collapsed_threads = self.threads();
+                // `highlight_keys` came in 9.3 (below Matty's floor) for
+                // licensed servers; an unlicensed one drops the prop.
+                update.highlight_keys = Some(capabilities.licensed);
             }
             ChangeSet::CollapsedThreads(on) => {
                 let changed = self.threads_on != Some(*on);
@@ -2220,7 +2228,15 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
     url::Url::parse(&account.server)
         .ok()
         .and_then(|server| matty_sync::database_path(&server, &account.user_id))
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("matty-{}.sqlite", account.user_id)))
+        .unwrap_or_else(|| {
+            // The browser has no temporary folder; this path only names
+            // the database, which is kept in memory there.
+            #[cfg(target_family = "wasm")]
+            let dir = PathBuf::new();
+            #[cfg(not(target_family = "wasm"))]
+            let dir = std::env::temp_dir();
+            dir.join(format!("matty-{}.sqlite", account.user_id))
+        })
 }
 
 /// The sentence for a server check that stopped at `error`, naming
@@ -2780,6 +2796,33 @@ mod tests {
     }
 
     #[test]
+    fn network_failures_show_the_banner_and_never_a_dialog() {
+        let mut live = live();
+        // The account could not load because the network is down.
+        let update = live.apply(&ChangeSet::Connection(Connection::Failed {
+            error: matty_api::ApiError::Network("dns error".into()).to_string(),
+        }));
+        assert_eq!(update.connection, Some(ConnectionState::Offline));
+        assert!(!update.expired, "a network error is not a sign-in prompt");
+        assert!(!update.signed_out);
+        // Commands that need a connection while there is none, or that the
+        // network dropped, leave the banner to speak.
+        for failure in [
+            matty_sync::CommandError::Offline,
+            matty_sync::CommandError::Server {
+                action: "edit",
+                target: "p1".into(),
+                error: matty_api::ApiError::Network("connection reset".into()).to_string(),
+            },
+        ] {
+            let update = live.apply(&ChangeSet::Failed(failure));
+            assert!(update.join_failed.is_none());
+            assert!(!update.expired);
+            assert!(!update.signed_out);
+        }
+    }
+
+    #[test]
     fn the_connection_and_sign_out_reach_the_window() {
         let mut live = live();
         let update = live.apply(&ChangeSet::Connection(Connection::Socket(
@@ -3018,7 +3061,7 @@ mod tests {
             last_reply_at: 0,
             last_viewed_at: 0,
             unread_replies: unread,
-            unread_mentions: 0,
+            unread_mentions: unread / 2,
             participants: vec!["ada".into()],
         };
         let list = |team: &str| ChangeSet::ThreadList {
@@ -3035,8 +3078,17 @@ mod tests {
         assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
-        assert_eq!((row.summary.count, row.summary.unread), (2, true));
+        // The row carries the server's unread counts (#124).
+        assert_eq!(
+            (
+                row.summary.count,
+                row.summary.unread_replies,
+                row.summary.unread_mentions
+            ),
+            (2, 2, 1)
+        );
         assert_eq!(model.unread(), 1);
+        assert_eq!(model.mentions(), 1);
     }
 
     #[test]
@@ -3483,6 +3535,7 @@ mod tests {
             first_name: Some("Ada".into()),
             channel_wide: true,
             keywords: vec!["deploy".into()],
+            ..Default::default()
         };
         assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }

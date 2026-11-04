@@ -14,17 +14,26 @@
 //! channel's gets nothing installed ([`offer`]).
 //!
 //! Plain Rust with no GPUI; the app drives [`Updater`] from its I/O thread.
+//! The web build has no updater (the page is the latest build); it uses only
+//! the version and channel.
 
+#[cfg(not(target_family = "wasm"))]
 pub mod install;
 
 use std::collections::BTreeMap;
+#[cfg(not(target_family = "wasm"))]
 use std::io::Write as _;
+#[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(not(target_family = "wasm"))]
 use aws_lc_rs::digest;
+#[cfg(not(target_family = "wasm"))]
 use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
+#[cfg(not(target_family = "wasm"))]
 use base64::Engine as _;
+#[cfg(not(target_family = "wasm"))]
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 
@@ -54,9 +63,13 @@ pub const SIGNATURE_ASSET: &str = "matty-update.json.sig";
 /// How often a running app checks again.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
+#[cfg(not(target_family = "wasm"))]
 const MAX_MANIFEST: u64 = 64 * 1024;
+#[cfg(not(target_family = "wasm"))]
 const MAX_SIGNATURE: u64 = 1024;
+#[cfg(not(target_family = "wasm"))]
 const MAX_RELEASE_LIST: u64 = 4 * 1024 * 1024;
+#[cfg(not(target_family = "wasm"))]
 const MAX_ARCHIVE: u64 = 1024 * 1024 * 1024;
 
 /// What can stop a check, a download or an install.
@@ -147,6 +160,7 @@ pub struct Archive {
 /// Checks `signature` (base64 ed25519 over the exact `bytes`) with
 /// `public_key` and only then parses the manifest. Nothing in an unsigned or
 /// altered manifest is ever read.
+#[cfg(not(target_family = "wasm"))]
 pub fn verify_manifest(
     bytes: &[u8],
     signature: &str,
@@ -289,11 +303,13 @@ pub fn pick(releases: &[Release], channel: Channel, current: &Version) -> Option
 }
 
 /// Lowercase hex of `bytes`.
+#[cfg(not(target_family = "wasm"))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Checks the feed and downloads updates for one build.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Debug)]
 pub struct Updater {
     http: reqwest::Client,
@@ -304,6 +320,7 @@ pub struct Updater {
     platform: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Updater {
     /// An updater for this build, or `None` when it cannot update itself:
     /// no compiled-in key, a platform without archives, or a version that is

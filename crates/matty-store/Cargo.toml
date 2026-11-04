@@ -19,6 +19,12 @@ rusqlite.workspace = true
 thiserror.workspace = true
 url.workspace = true
 dirs.workspace = true
+web-time.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+# rusqlite builds SQLite with sqlite-wasm-rs here; its browser host hooks
+# (clock, entropy, sleep) come from this feature. Data stays in memory.
+sqlite-wasm-rs = { version = "0.6", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 tempfile.workspace = true
