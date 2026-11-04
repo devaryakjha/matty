@@ -240,6 +240,9 @@ pub struct ChannelModel {
     pub typing: Vec<SharedString>,
     /// The user's notification settings for this channel.
     pub notifications: ChannelNotifications,
+    /// Matty is offline, so no posts may only mean none were saved here
+    /// yet (#163).
+    pub offline: bool,
 }
 
 /// When a channel notifies, per surface; `Default` follows the account
@@ -3551,6 +3554,36 @@ impl ChannelView {
             .child(row(3, &[0.46]))
     }
 
+    /// A channel with nothing saved on this computer while offline: saying
+    /// it is empty would be wrong, so it says why and that it will load.
+    fn offline_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let place: SharedString = match channel.kind {
+            ChannelKind::Direct { .. } => format!("your conversation with {}", channel.name).into(),
+            _ => format!("#{}", channel.name).into(),
+        };
+        let empty = style::empty_state(
+            LucideIcon::WifiOff,
+            "You're offline",
+            format!(
+                "Matty hasn't saved {place} on this computer yet. Its messages load when you're back online."
+            ),
+            cx,
+        );
+        div()
+            .size_full()
+            .flex()
+            .items_end()
+            .justify_center()
+            .p(theme.space(6.))
+            .pb(theme.space(8.))
+            .child(
+                div()
+                    .max_w(scaled(&theme, metrics::EMPTY_MAX_WIDTH))
+                    .child(empty),
+            )
+    }
+
     /// A channel with no posts yet: its purpose and a way to bring people in.
     fn empty_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -3681,6 +3714,8 @@ impl Render for ChannelView {
         }
         let body = if channel.loading && channel.posts.is_empty() {
             Self::loading(cx).into_any_element()
+        } else if channel.posts.is_empty() && channel.offline {
+            Self::offline_channel(&channel, cx).into_any_element()
         } else if channel.posts.is_empty() {
             Self::empty_channel(&channel, cx).into_any_element()
         } else {
@@ -3776,6 +3811,7 @@ mod tests {
     #[test]
     fn rows_interleave_day_and_new_message_dividers() {
         let channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -3816,6 +3852,7 @@ mod tests {
     fn removing_a_post_changes_only_its_rows() {
         let mut channel = ChannelModel {
             purpose: None,
+            offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
@@ -3871,6 +3908,7 @@ mod tests {
     #[test]
     fn prepending_history_keeps_the_unread_marker_and_skips_known_posts() {
         let mut channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
