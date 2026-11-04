@@ -60,6 +60,10 @@ pub struct SearchModel {
     pub results: Vec<ListedPost>,
     /// True while sync runs the query.
     pub searching: bool,
+    /// Another page of results may follow.
+    pub more: bool,
+    /// The next page is on its way.
+    pub loading_more: bool,
 }
 
 /// What search's `in:` and `from:` suggest: (handle, shown name) pairs.
@@ -143,6 +147,8 @@ pub enum RightPaneEvent {
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
+    /// The user asked for the search's next page.
+    SearchMore,
     /// The user replied under `root`; the pane already shows the reply
     /// pending (PLAN §4.3).
     Reply {
@@ -1190,6 +1196,7 @@ impl RightPaneView {
         id: &'static str,
         items: &[ListedPost],
         empty: (LucideIcon, &'static str, &'static str),
+        more: Option<bool>,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let theme = UiTheme::read(cx).clone();
@@ -1265,6 +1272,26 @@ impl RightPaneView {
                         cx,
                     ))
             }))
+            // `Some(loading)` when another page may follow.
+            .when_some(more, |list, loading| {
+                list.child(
+                    div().px(theme.space(4.)).pb(theme.space(2.)).child(
+                        Button::new(gpui_kit::ElementId::Name(format!("{id}.more").into()))
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .w_full()
+                            .disabled(loading)
+                            .label(if loading {
+                                "Loading more\u{2026}"
+                            } else {
+                                "Show more results"
+                            })
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::SearchMore)),
+                            ),
+                    ),
+                )
+            })
             .into_any_element()
     }
 
@@ -1327,6 +1354,7 @@ impl RightPaneView {
                         "Nothing matched",
                         "Try fewer words, or narrow with from: and in:.",
                     ),
+                    model.more.then_some(model.loading_more),
                     cx,
                 ))
                 .into_any_element()
@@ -1878,6 +1906,7 @@ impl Render for RightPaneView {
                         "Nothing pinned yet",
                         "Pin a message from its More menu to keep it here for everyone.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Saved(posts)) => root
@@ -1890,6 +1919,7 @@ impl Render for RightPaneView {
                         "Nothing saved yet",
                         "Save a message from its hover toolbar to find it here later.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Mentions(posts)) => root
@@ -1902,6 +1932,7 @@ impl Render for RightPaneView {
                         "No mentions yet",
                         "Messages that mention you or your keywords show up here.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Search(model)) => root

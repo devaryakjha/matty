@@ -390,6 +390,8 @@ pub enum Command {
         terms: String,
         /// The user's offset from UTC in seconds, for `on:` and the like.
         time_zone_offset: i32,
+        /// Which page of results, from 0.
+        page: u32,
     },
     /// Asks the server to remind the user of a post at `target_time`
     /// (Unix seconds); only a failure answers.
@@ -1318,9 +1320,11 @@ impl Engine {
                     team_id,
                     terms,
                     time_zone_offset,
+                    page,
                 }) => {
                     let mut query = matty_api::SearchQuery::new(terms);
                     query.time_zone_offset = time_zone_offset;
+                    query.page = page;
                     query.per_page = SEARCH_PAGE;
                     writes.push(Write::Search {
                         team_id,
@@ -2295,9 +2299,16 @@ impl Engine {
                     });
                 }
             }
-            Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
+            Loaded::Search {
                 terms,
+                page,
+                posts,
+                more,
+            } => dirty.direct.push(ChangeSet::Search {
+                terms,
+                page,
                 posts: Arc::from(posts),
+                more,
             }),
             Loaded::Listing { listing, posts } => dirty.direct.push(ChangeSet::Listing {
                 listing,

@@ -408,9 +408,12 @@ pub(crate) async fn run(
             }
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
+                let posts: Vec<_> = results.list.ordered().cloned().collect();
                 Some(Loaded::Search {
-                    posts: results.list.ordered().cloned().collect(),
+                    more: posts.len() >= query.per_page as usize,
+                    posts,
                     terms: query.terms,
+                    page: query.page,
                 })
             }
             Write::Patch { channel_id, patch } => {

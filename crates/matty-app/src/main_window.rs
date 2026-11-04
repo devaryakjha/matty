@@ -2114,6 +2114,12 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::SearchMore => {
+                if let Some(model) = self.live.as_mut().and_then(|live| live.search_more()) {
+                    self.right_pane
+                        .update(cx, |pane, cx| pane.set_search(model, window, cx));
+                }
+            }
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
@@ -2237,6 +2243,8 @@ impl MainWindow {
         }
         let preview = crate::preview::enabled();
         let model = SearchModel {
+            more: false,
+            loading_more: false,
             results: if preview {
                 crate::preview::search(&query)
             } else {

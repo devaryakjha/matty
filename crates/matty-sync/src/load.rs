@@ -115,7 +115,9 @@ pub(crate) enum Loaded {
     /// Search results, best first.
     Search {
         terms: String,
+        page: u32,
         posts: Vec<matty_api::models::Post>,
+        more: bool,
     },
     /// A listing's posts, newest first.
     Listing {

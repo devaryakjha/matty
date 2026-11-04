@@ -167,8 +167,12 @@ pub enum ChangeSet {
     Search {
         /// What was searched for.
         terms: String,
-        /// The posts that matched.
+        /// Which page of results, from 0.
+        page: u32,
+        /// The posts that matched on this page.
         posts: Arc<[Post]>,
+        /// A full page came back, so another may follow.
+        more: bool,
     },
     /// A listing of posts outside their channel: the answer to
     /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors
