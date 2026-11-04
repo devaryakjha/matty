@@ -140,6 +140,9 @@ const TEXT_SIZES: &[(&str, f32)] = &[
     ("larger", 1.3),
 ];
 
+/// The server the preview's links point at, as its Copy link writes them.
+const PREVIEW_SERVER: &str = "https://chat.example.com";
+
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
@@ -232,6 +235,13 @@ pub struct MainWindow {
     kept_unread: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
+    /// The link sync is finding, with the permalink's post (#85, #103).
+    link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
+    /// The join prompt for a link to a public channel the user is not in.
+    link_join: DialogHandle,
+    link_join_offer: Option<crate::links::JoinOffer>,
+    /// A permalink's post to show once its channel, just joined, opens.
+    link_jump: Option<(SharedString, SharedString)>,
     sidebar_shown: bool,
 }
 
@@ -274,6 +284,7 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
+                SwitcherEvent::OpenLink(url) => this.open_link(url.clone(), window, cx),
             },
         )
         .detach();
@@ -576,6 +587,7 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
+                ChannelEvent::OpenLink(url) => this.open_link(url.clone(), window, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -795,6 +807,10 @@ impl MainWindow {
             _typing_task: None,
             _view_task: None,
             kept_unread: None,
+            link_asked: None,
+            link_join: DialogHandle::new(false),
+            link_join_offer: None,
+            link_jump: None,
             login_server: None,
             sidebar_shown: false,
         };
@@ -1003,8 +1019,7 @@ impl MainWindow {
             live.permalink(channel, post_id)
         });
         let link = link.or_else(|| {
-            crate::preview::enabled()
-                .then(|| format!("https://chat.example.com/matty/pl/{post_id}"))
+            crate::preview::enabled().then(|| format!("{PREVIEW_SERVER}/matty/pl/{post_id}"))
         });
         let Some(link) = link else {
             self.push_error_with(
@@ -1303,6 +1318,10 @@ impl MainWindow {
         }
         if let Some(id) = update.ready {
             self.open_channel(id, window, cx);
+            self.finish_link_jump(cx);
+        }
+        if let Some((query, answer)) = update.link {
+            self.link_resolved(query, answer, window, cx);
         }
         if update.signed_out {
             self.live = None;
@@ -1993,6 +2012,7 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::OpenLink(url) => self.open_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
@@ -3498,6 +3518,260 @@ impl MainWindow {
         dialog("browse", &handle, popup, window, cx)
     }
 
+    // Links in messages and the switcher (#85, #103). `links::route`
+    // decides where a link goes; these act on it.
+
+    /// Opens a link clicked in a message or pasted into the switcher.
+    fn open_link(&mut self, url: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::links::LinkTarget;
+        let (server, teams, team) = if let Some(live) = &self.live {
+            (
+                Some(live.server().to_owned()),
+                live.team_names(),
+                live.team().map(str::to_owned),
+            )
+        } else if crate::preview::enabled() {
+            let teams: Vec<(String, String)> = crate::preview::teams()
+                .into_iter()
+                .map(|team| (team.id.to_string(), team.id.to_string()))
+                .collect();
+            let team = teams.first().map(|(id, _)| id.clone());
+            (Some(PREVIEW_SERVER.to_owned()), teams, team)
+        } else {
+            (None, Vec::new(), None)
+        };
+        let names: Vec<&str> = teams.iter().map(|(_, name)| name.as_str()).collect();
+        match crate::links::route(&url, server.as_deref(), &names) {
+            LinkTarget::External(url) => cx.open_url(&url),
+            LinkTarget::Nothing => {}
+            LinkTarget::Hashtag(tag) => self.search(format!("#{tag}").into(), window, cx),
+            LinkTarget::User(username) => self.open_user(username, window, cx),
+            LinkTarget::Channel { team: named, name } => {
+                let team_id = match named {
+                    Some(named) => teams
+                        .iter()
+                        .find(|(_, team)| team.eq_ignore_ascii_case(&named))
+                        .map(|(id, _)| id.clone()),
+                    None => team,
+                };
+                if let Some(team_id) = team_id {
+                    let query = matty_sync::LinkQuery::Channel { team_id, name };
+                    self.resolve_link(query, None, window, cx);
+                }
+            }
+            LinkTarget::Permalink { post_id, .. } => {
+                let post = Some(post_id.as_str().into());
+                self.resolve_link(matty_sync::LinkQuery::Post { post_id }, post, window, cx);
+            }
+        }
+    }
+
+    /// `@name`: the direct message with them, found or started.
+    fn open_user(&mut self, username: String, window: &mut Window, cx: &mut Context<Self>) {
+        let known = match &self.live {
+            Some(live) => live.known_user(&username),
+            None => crate::preview::profiles()
+                .into_iter()
+                .find(|profile| profile.username.eq_ignore_ascii_case(&username)),
+        };
+        match known {
+            Some(profile) => self.message(&profile, window, cx),
+            None => {
+                let query = matty_sync::LinkQuery::User { username };
+                self.resolve_link(query, None, window, cx);
+            }
+        }
+    }
+
+    /// Asks sync what `query` names; the preview answers from its fixtures.
+    fn resolve_link(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(live) = &self.live {
+            self.link_asked = Some((query.clone(), post));
+            live.send(matty_sync::Command::ResolveLink { query });
+        } else if crate::preview::enabled() {
+            self.resolve_preview_link(query, post, window, cx);
+        }
+    }
+
+    fn resolve_preview_link(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rows: Vec<crate::sidebar::ChannelRow> = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter().cloned())
+            .collect();
+        let found = match &query {
+            matty_sync::LinkQuery::Post { post_id } => rows
+                .iter()
+                .find(|row| {
+                    crate::preview::channel(&row.id).is_some_and(|channel| {
+                        channel.posts.iter().any(|p| p.id.as_ref() == post_id)
+                    })
+                })
+                .map(|row| row.id.clone()),
+            matty_sync::LinkQuery::Channel { name, .. } => {
+                let joined = rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == name)
+                    .map(|row| row.id.clone());
+                if joined.is_none()
+                    && let Some(channel) = crate::preview::directory()
+                        .into_iter()
+                        .find(|channel| channel.id.as_ref() == name)
+                {
+                    return self.offer_join(channel.id, channel.name, post, window, cx);
+                }
+                joined
+            }
+            matty_sync::LinkQuery::User { .. } => None,
+        };
+        match found {
+            Some(id) => self.open_at(id, post, window, cx),
+            None => self.link_not_found(&query, cx),
+        }
+    }
+
+    /// Sync found (or did not find) what a link names.
+    fn link_resolved(
+        &mut self,
+        query: matty_sync::LinkQuery,
+        answer: Option<matty_sync::LinkAnswer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, post)) = self.link_asked.take_if(|(asked, _)| *asked == query) else {
+            return;
+        };
+        let Some(live) = &self.live else {
+            return;
+        };
+        match answer {
+            None => self.link_not_found(&query, cx),
+            Some(matty_sync::LinkAnswer::User(user)) => {
+                let profile = live.user_profile(&user);
+                self.message(&profile, window, cx);
+            }
+            Some(matty_sync::LinkAnswer::Channel(channel)) => {
+                use crate::links::Opening;
+                let member = live.row(&channel.id).is_some();
+                match crate::links::opening(&channel, member, live.team()) {
+                    Opening::Open => self.open_at(channel.id.clone().into(), post, window, cx),
+                    Opening::Join => self.offer_join(
+                        channel.id.clone().into(),
+                        channel.name.clone().into(),
+                        post,
+                        window,
+                        cx,
+                    ),
+                    Opening::OtherTeam => self.push_error(
+                        "That channel is in another team, and Matty can't switch teams yet.",
+                        cx,
+                    ),
+                    Opening::Closed => {
+                        self.push_error("You can't open that channel. Ask a member to add you.", cx)
+                    }
+                }
+            }
+        }
+    }
+
+    fn link_not_found(&mut self, query: &matty_sync::LinkQuery, cx: &mut Context<Self>) {
+        self.push_error(
+            match query {
+                matty_sync::LinkQuery::Post { .. } => {
+                    "That message was deleted, or it's in a channel you can't see."
+                }
+                matty_sync::LinkQuery::Channel { .. } => {
+                    "That channel doesn't exist, or you can't see it."
+                }
+                matty_sync::LinkQuery::User { .. } => "No one on this server has that username.",
+            },
+            cx,
+        );
+    }
+
+    /// Opens a channel, at `post` when a permalink named one.
+    fn open_at(
+        &mut self,
+        id: SharedString,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_channel(id, window, cx);
+        if let Some(post) = post {
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(post, cx));
+        }
+    }
+
+    fn offer_join(
+        &mut self,
+        channel_id: SharedString,
+        name: SharedString,
+        post: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.link_join_offer = Some(crate::links::JoinOffer {
+            channel_id,
+            name,
+            post,
+        });
+        self.link_join.open(window, cx);
+        cx.notify();
+    }
+
+    /// Join on the link's join prompt: the channel opens once joined, at
+    /// the permalink's post.
+    fn join_from_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(offer) = self.link_join_offer.take() else {
+            return;
+        };
+        self.link_jump = offer.post.map(|post| (offer.channel_id.clone(), post));
+        self.join_channel(offer.channel_id, window, cx);
+        self.finish_link_jump(cx);
+    }
+
+    /// Jumps to the post a joined channel's link named, once it is open.
+    fn finish_link_jump(&mut self, cx: &mut Context<Self>) {
+        let selected = self.selected_channel.clone();
+        if let Some((_, post)) = self
+            .link_jump
+            .take_if(|(channel, _)| selected.as_ref() == Some(channel))
+        {
+            self.channel.update(cx, |view, cx| view.jump_to(post, cx));
+        }
+    }
+
+    fn link_join_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        crate::links::join_dialog(
+            &self.link_join,
+            self.link_join_offer.as_ref(),
+            move |window, cx| {
+                view.update(cx, |this, cx| this.join_from_link(window, cx))
+                    .ok();
+            },
+            window,
+            cx,
+        )
+    }
+
     fn directory_dialogs(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let message = self.new_message.read(cx).handle().clone();
         let create = self.create_channel.read(cx).handle().clone();
@@ -3669,6 +3943,7 @@ impl Render for MainWindow {
             .child(self.preferences(window, cx))
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
+            .child(self.link_join_dialog(window, cx))
             .child(switcher_element)
             .child(self.toasts.clone())
     }

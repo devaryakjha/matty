@@ -102,6 +102,11 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// What a link names, or `None` when it is gone or hidden.
+    Resolved {
+        query: crate::LinkQuery,
+        answer: Option<crate::LinkAnswer>,
+    },
     /// A link's Open Graph data, or `None` when it has none.
     LinkPreview {
         url: String,
