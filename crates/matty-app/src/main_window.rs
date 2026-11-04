@@ -3453,6 +3453,8 @@ impl MainWindow {
                     s.remove_server(&account.data_key());
                 }
                 s.account = None;
+                // The account's Mattermost theme goes with it (#214).
+                s.mattermost_theme = None;
             })
         });
         // Other servers stay signed in: the next one opens.

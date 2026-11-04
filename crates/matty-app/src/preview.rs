@@ -1291,7 +1291,7 @@ pub fn seed_theme(cx: &mut gpui_kit::App) -> bool {
         return false;
     };
     let theme = Theme::built_in(&value).unwrap_or_else(|| Theme::parse(&value));
-    ServerThemes::preview(theme, cx);
+    ServerThemes::preview(theme, value, cx);
     true
 }
 

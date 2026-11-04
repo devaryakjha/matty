@@ -236,6 +236,10 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// Matty's colors or the account's Mattermost theme (#214).
     pub theme_source: ThemeSource,
+    /// The Mattermost theme last shown, as the server's preference value,
+    /// so Matty starts in it before sync connects (#214). Dropped on
+    /// signing out.
+    pub mattermost_theme: Option<String>,
     pub text_scale: f32,
     /// Window zoom from Cmd+= / Cmd+- / Cmd+0, scaling text and spacing.
     pub zoom: f32,
@@ -283,6 +287,7 @@ impl Default for Settings {
             right_pane_width: RIGHT_PANE_DEFAULT,
             theme: ThemeChoice::System,
             theme_source: ThemeSource::Matty,
+            mattermost_theme: None,
             text_scale: 1.,
             zoom: 1.,
             launch_at_login: false,

@@ -314,7 +314,7 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
     // The account's Mattermost theme, when chosen and known (#214), sets
     // light or dark itself.
     if settings.theme_source == ThemeSource::Mattermost
-        && let Some(imported) = mattermost_theme::ServerThemes::current(cx)
+        && let Some(imported) = mattermost_theme::shown(&settings, cx)
     {
         let (theme, palette) = imported.ui();
         style::install_theme(theme, palette, cx);

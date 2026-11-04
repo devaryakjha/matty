@@ -6,7 +6,9 @@
 //! (`sidebarBg`, `centerChannelBg`, `buttonBg`, …). [`Theme`] reads it the
 //! way the web app does, [`Theme::ui`] maps it onto gpuicn's tokens and
 //! Matty's [`Palette`], and [`Theme::failing`] lists the color pairs that
-//! fall below WCAG AA, which Preferences warns about.
+//! fall below WCAG AA. Preferences warns about them only for custom themes
+//! ([`Theme::warnings`]): Mattermost's built-ins fail a few pairs too, and
+//! a user cannot fix those.
 //!
 //! [`ServerThemes`] is the global the window keeps current from the
 //! account's preferences and the team on screen; `apply_theme` installs
@@ -18,6 +20,7 @@ use gpui_kit::{App, Global, Rgba};
 use matty_api::models::Preference;
 
 use crate::contrast::{self, Pair, over};
+use crate::settings::Settings;
 use crate::style::{self, Palette};
 use crate::ui::theme::{ThemeMode, UiTheme};
 
@@ -184,6 +187,11 @@ impl Theme {
         }
     }
 
+    /// Whether this is one of Mattermost's own themes.
+    pub fn is_built_in(&self) -> bool {
+        BUILT_IN.iter().any(|(name, _)| *name == self.kind)
+    }
+
     /// Light when the channel view's background is light, as text on it
     /// reads better in black than in white.
     pub fn mode(&self) -> ThemeMode {
@@ -271,6 +279,16 @@ impl Theme {
             .into_iter()
             .filter(|pair| !pair.passes())
             .collect()
+    }
+
+    /// The failing pairs Preferences warns about: none for a built-in
+    /// theme, whose colors the user cannot change, else [`failing`](Self::failing).
+    pub fn warnings(&self) -> Vec<Pair> {
+        if self.is_built_in() {
+            Vec::new()
+        } else {
+            self.failing()
+        }
     }
 }
 
@@ -368,7 +386,8 @@ pub struct ServerThemes {
     /// a team id. `None` until the account's preferences arrive.
     values: Option<BTreeMap<String, String>>,
     team: Option<String>,
-    shown: Option<Theme>,
+    /// The theme shown and the preference value it was read from.
+    shown: Option<(Theme, String)>,
 }
 
 impl Global for ServerThemes {}
@@ -377,7 +396,19 @@ impl ServerThemes {
     /// The theme for the team on screen, once the account's preferences
     /// have arrived.
     pub fn current(cx: &App) -> Option<&Theme> {
-        cx.try_global::<Self>()?.shown.as_ref()
+        cx.try_global::<Self>()?
+            .shown
+            .as_ref()
+            .map(|(theme, _)| theme)
+    }
+
+    /// The preference value the current theme was read from, which
+    /// [`Settings::mattermost_theme`] caches for the next start.
+    pub fn current_value(cx: &App) -> Option<&str> {
+        cx.try_global::<Self>()?
+            .shown
+            .as_ref()
+            .map(|(_, value)| value.as_str())
     }
 
     /// Takes the account's `theme` preferences (when `preferences` is
@@ -415,20 +446,32 @@ impl ServerThemes {
     }
 
     /// Shows `theme` with no account behind it, for `MATTY_PREVIEW`.
-    pub fn preview(theme: Theme, cx: &mut App) {
+    pub fn preview(theme: Theme, value: String, cx: &mut App) {
         cx.set_global(Self {
             values: Some(BTreeMap::new()),
             team: None,
-            shown: Some(theme),
+            shown: Some((theme, value)),
         });
     }
 }
 
-/// The team's own theme, else the one for every team, else Denim.
-fn resolve(values: &BTreeMap<String, String>, team: Option<&str>) -> Theme {
-    team.and_then(|team| values.get(team))
+/// The theme to show: the account's for the team on screen once sync has
+/// sent it, else the one cached from the last run, so Matty does not
+/// flash its own colors at start.
+pub fn shown(settings: &Settings, cx: &App) -> Option<Theme> {
+    ServerThemes::current(cx)
+        .cloned()
+        .or_else(|| settings.mattermost_theme.as_deref().map(Theme::parse))
+}
+
+/// The team's own theme, else the one for every team, else Denim, with
+/// the value it was read from.
+fn resolve(values: &BTreeMap<String, String>, team: Option<&str>) -> (Theme, String) {
+    let value = team
+        .and_then(|team| values.get(team))
         .or_else(|| values.get(""))
-        .map_or_else(Theme::denim, |value| Theme::parse(value))
+        .map_or(DENIM, String::as_str);
+    (Theme::parse(value), value.to_owned())
 }
 
 #[cfg(test)]
@@ -559,10 +602,11 @@ mod tests {
             ("t2".to_owned(), QUARTZ.to_owned()),
         ]
         .into();
-        assert_eq!(resolve(&values, Some("t1")).kind, "Onyx");
-        assert_eq!(resolve(&values, Some("t2")).kind, "Quartz");
-        assert_eq!(resolve(&values, None).kind, "Onyx");
-        assert_eq!(resolve(&BTreeMap::new(), Some("t1")).kind, "Denim");
+        assert_eq!(resolve(&values, Some("t1")).0.kind, "Onyx");
+        assert_eq!(resolve(&values, Some("t2")).0.kind, "Quartz");
+        assert_eq!(resolve(&values, None).0.kind, "Onyx");
+        assert_eq!(resolve(&values, Some("t2")).1, QUARTZ);
+        assert_eq!(resolve(&BTreeMap::new(), Some("t1")).0.kind, "Denim");
     }
 
     #[test]
@@ -591,5 +635,53 @@ mod tests {
             .map(|p| format!("{} {:.2}", p.name, p.ratio()))
             .collect();
         assert!(failing.is_empty(), "{failing:?}");
+    }
+
+    #[test]
+    fn only_custom_themes_warn() {
+        // Every built-in fails some pair, but the user cannot fix them.
+        for (name, _) in BUILT_IN {
+            let theme = Theme::built_in(name).unwrap();
+            assert!(theme.is_built_in());
+            assert!(!theme.failing().is_empty(), "{name}");
+            assert!(theme.warnings().is_empty(), "{name}");
+        }
+        // A custom theme with Denim's colors warns about the same pairs.
+        let custom = Theme::parse(&DENIM.replace(r#""type":"Denim""#, r#""type":"custom""#));
+        assert!(!custom.is_built_in());
+        assert_eq!(custom.colors, Theme::denim().colors);
+        assert_eq!(custom.warnings().len(), Theme::denim().failing().len());
+    }
+
+    fn preference(name: &str, value: &str) -> Preference {
+        Preference {
+            category: CATEGORY.into(),
+            name: name.into(),
+            value: value.into(),
+            ..Preference::default()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_cached_theme_stands_in_until_sync_sends_one(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let settings = Settings {
+                mattermost_theme: Some(ONYX.into()),
+                ..Settings::default()
+            };
+            // Before sync: the cache from the last run.
+            assert_eq!(shown(&settings, cx).unwrap().kind, "Onyx");
+            assert_eq!(shown(&Settings::default(), cx), None);
+            // Sync's theme wins, and its value is what to cache next.
+            let changed = ServerThemes::update(cx, Some(&[preference("", QUARTZ)]), Some("t1"));
+            assert!(changed);
+            assert_eq!(shown(&settings, cx).unwrap().kind, "Quartz");
+            assert_eq!(ServerThemes::current_value(cx), Some(QUARTZ));
+            // A team switch to the same theme changes nothing.
+            assert!(!ServerThemes::update(cx, None, Some("t2")));
+            // Signing out forgets it.
+            assert!(ServerThemes::clear(cx));
+            assert_eq!(ServerThemes::current_value(cx), None);
+        });
     }
 }

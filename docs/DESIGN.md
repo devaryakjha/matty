@@ -89,9 +89,15 @@ the tokens above on Matty's theme for its mode (light when
 
 `sidebarHeaderBg`, `sidebarHeaderTextColor`, `newMessageSeparator`,
 `mentionHighlightBg`, `mentionHighlightLink` and `codeTheme` have no
-gpuicn token yet and are read but not shown. Preferences warns, with a
-destructive tag, when a mapped pair falls below 4.5:1 for text or 3:1 for
-other UI; Mattermost's own built-in themes do in places.
+gpuicn token yet and are read but not shown. For a custom theme,
+Preferences warns with a destructive tag when a mapped pair falls below
+4.5:1 for text or 3:1 for other UI. The five built-ins fail a few pairs
+too (Denim's presence dots on white), but the user cannot change them, so
+they never warn.
+
+The last theme shown is cached in the settings file
+(`mattermost_theme`), so Matty starts in it rather than flashing its own
+colors until sync connects; signing out drops it.
 
 Mentions, the "New messages" line and links need no token of their own:
 gpuicn's `Message` tints a mention row with `primary` at 6% behind a 2px

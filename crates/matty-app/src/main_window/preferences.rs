@@ -276,7 +276,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::mattermost_theme::ServerThemes;
+        let signed_in = self.live.is_some();
         let changed = match &self.live {
             Some(live) => {
                 let team = live.team().map(str::to_owned);
@@ -284,6 +284,16 @@ impl MainWindow {
             }
             None => ServerThemes::clear(cx),
         };
+        // The theme is cached for the next start, and dropped on signing
+        // out; writing settings reapplies the theme.
+        if changed || !signed_in {
+            let value = ServerThemes::current_value(cx).map(str::to_owned);
+            if value != self.settings.read(cx).get().mattermost_theme {
+                self.settings.update(cx, |store, cx| {
+                    store.update(cx, |s| s.mattermost_theme = value)
+                });
+            }
+        }
         if changed {
             crate::apply_theme(window, cx);
             cx.notify();
@@ -660,7 +670,7 @@ impl MainWindow {
                 });
             },
         );
-        let imported = ServerThemes::current(cx).cloned();
+        let imported = crate::mattermost_theme::shown(&settings, cx);
         let use_imported = settings.theme_source == ThemeSource::Mattermost;
         let colors_hint: SharedString = match (&imported, use_imported) {
             (_, false) => "Matty's own colors, light or dark as chosen above.".into(),
@@ -676,7 +686,7 @@ impl MainWindow {
         };
         let failing = imported
             .filter(|_| use_imported)
-            .map(|imported| imported.failing())
+            .map(|imported| imported.warnings())
             .unwrap_or_default();
         let colors = hinted(colors_group, colors_hint, &theme)
             .when(!failing.is_empty(), |colors| {
