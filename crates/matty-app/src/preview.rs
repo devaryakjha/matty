@@ -16,21 +16,36 @@ pub fn enabled() -> bool {
 /// A sidebar with every row state DESIGN.md §4 describes.
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
+/// `sso-waiting` shows the card waiting for the browser after GitLab, and
+/// `sso-expired` the same after the three minutes ran out.
 pub fn login() -> Option<LoginModel> {
     let value = std::env::var("MATTY_PREVIEW").ok()?;
-    let error = match value.as_str() {
-        "login" => None,
-        "login-error" => Some("That password is not right. Check it and try again.".into()),
+    let (error, browser) = match value.as_str() {
+        "login" => (None, false),
+        "login-error" => (
+            Some("That password is not right. Check it and try again.".into()),
+            false,
+        ),
+        "sso-waiting" => (None, true),
+        "sso-expired" => (
+            Some("Sign-in timed out: the browser did not finish within three minutes.".into()),
+            true,
+        ),
         _ => return None,
     };
+    let methods = LoginStep::Methods {
+        server_name: "chat.example.com".into(),
+        methods: SignInMethods {
+            password: true,
+            ldap: false,
+            sso: vec![SsoProvider::GitLab, SsoProvider::Google],
+        },
+    };
     Some(LoginModel {
-        step: LoginStep::Methods {
-            server_name: "chat.example.com".into(),
-            methods: SignInMethods {
-                password: true,
-                ldap: false,
-                sso: vec![SsoProvider::GitLab, SsoProvider::Google],
-            },
+        step: if browser {
+            methods.to_browser(SsoProvider::GitLab)
+        } else {
+            methods
         },
         busy: false,
         error,

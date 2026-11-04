@@ -45,6 +45,7 @@ tracing-appender = "0.2"
 regex = "1"
 emojis = "0.6"
 async-channel = "2"
+getrandom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 insta = "1"
 keyring = "4.2"

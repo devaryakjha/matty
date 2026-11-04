@@ -61,6 +61,47 @@ pub enum LoginStep {
         server_name: SharedString,
         methods: SignInMethods,
     },
+    /// The browser is open at `provider`'s sign-in; Matty waits for the
+    /// `mattermost://` hand-off (#75). An error here (a timeout or a
+    /// failed hand-off) offers Retry.
+    Browser {
+        server_name: SharedString,
+        methods: SignInMethods,
+        provider: SsoProvider,
+    },
+}
+
+impl LoginStep {
+    /// The methods step this one came from, for Cancel.
+    pub fn back_to_methods(&self) -> LoginStep {
+        match self {
+            LoginStep::Browser {
+                server_name,
+                methods,
+                ..
+            } => LoginStep::Methods {
+                server_name: server_name.clone(),
+                methods: methods.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// Waiting for `provider` in the browser, from the methods step (or
+    /// from waiting already, for Retry). The server step stays put.
+    pub fn to_browser(&self, provider: SsoProvider) -> LoginStep {
+        match self.back_to_methods() {
+            LoginStep::Methods {
+                server_name,
+                methods,
+            } => LoginStep::Browser {
+                server_name,
+                methods,
+                provider,
+            },
+            other => other,
+        }
+    }
 }
 
 /// Everything the card draws besides what the person typed.
@@ -90,8 +131,10 @@ pub enum LoginEvent {
     CheckServer(String),
     /// Sign in with a login id and password (also LDAP).
     SignIn { login_id: String, password: String },
-    /// Start the browser flow for `provider`.
+    /// Start (or restart) the browser flow for `provider`.
     Sso(SsoProvider),
+    /// Stop waiting for the browser and go back to the methods.
+    CancelSso,
     /// Sign in with a personal access token.
     Token(String),
     /// Back to the server step.
@@ -170,9 +213,11 @@ impl LoginView {
             ));
         }
         // First launch lands with the cursor in the field it asks for.
+        let focus = cx.focus_handle();
         let first = match &model.step {
             LoginStep::Server => server.read(cx).focus_handle(cx),
             LoginStep::Methods { .. } => login_id.read(cx).focus_handle(cx),
+            LoginStep::Browser { .. } => focus.clone(),
         };
         window.on_next_frame(move |window, cx| window.focus(&first, cx));
         Self {
@@ -182,7 +227,7 @@ impl LoginView {
             password,
             token,
             show_token: false,
-            focus: cx.focus_handle(),
+            focus,
             _subscriptions: subscriptions,
         }
     }
@@ -201,6 +246,7 @@ impl LoginView {
             let focus = match &self.model.step {
                 LoginStep::Server => self.server.read(cx).focus_handle(cx),
                 LoginStep::Methods { .. } => self.login_id.read(cx).focus_handle(cx),
+                LoginStep::Browser { .. } => self.focus.clone(),
             };
             window.on_next_frame(move |window, cx| window.focus(&focus, cx));
         }
@@ -292,7 +338,7 @@ impl LoginView {
                         .flex_shrink_0()
                         .mt(theme.space(0.5)),
                 )
-                .child(error)
+                .child(div().flex_1().min_w_0().child(error))
         })
     }
 
@@ -476,6 +522,118 @@ impl LoginView {
         card
     }
 
+    /// Waiting for the browser: what is happening, a spinner while it
+    /// does, and Cancel; after a timeout or a failed hand-off, the error
+    /// and Retry.
+    fn browser_step(
+        &self,
+        server_name: &SharedString,
+        provider: SsoProvider,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        let failed = self.model.error.is_some();
+        let status = if self.model.busy {
+            "Signing in…".to_string()
+        } else {
+            format!("Waiting for {}…", provider.label())
+        };
+        let status_row = div()
+            .flex()
+            .items_center()
+            .gap(theme.space(2.))
+            .px(theme.space(3.))
+            .h(theme.space(9.))
+            .rounded(theme.radius.md)
+            .bg(theme.colors.muted)
+            .child(if failed {
+                lucide(LucideIcon::Server)
+                    .size(scaled(&theme, 14.))
+                    .text_color(muted)
+                    .into_any_element()
+            } else {
+                Spinner::new("login.browser.spinner")
+                    .color(muted)
+                    .into_any_element()
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .type_style(style::UI_STRONG, &theme)
+                    .text_color(theme.colors.foreground)
+                    .child(server_name.clone()),
+            )
+            .when(!failed, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .type_style(style::META, &theme)
+                        .text_color(muted)
+                        .child(status),
+                )
+            });
+        let cancel = Button::new("login.browser.cancel")
+            .variant(if failed {
+                ButtonVariant::Ghost
+            } else {
+                ButtonVariant::Outline
+            })
+            .size(ButtonSize::Lg)
+            .w_full()
+            .disabled(self.model.busy)
+            .aria_label("Cancel browser sign-in")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.model.error = None;
+                cx.emit(LoginEvent::CancelSso);
+            }))
+            .child("Cancel");
+        let retry = Button::new("login.browser.retry")
+            .variant(ButtonVariant::Default)
+            .size(ButtonSize::Lg)
+            .w_full()
+            .aria_label(format!("Try {} sign-in again", provider.label()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.model.error = None;
+                cx.emit(LoginEvent::Sso(provider));
+            }))
+            .child(
+                lucide(LucideIcon::ExternalLink)
+                    .size(scaled(&theme, 14.))
+                    .text_color(theme.colors.primary_foreground),
+            )
+            .child("Retry");
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(4.))
+            .child(if failed {
+                Self::heading(
+                    "Browser sign-in did not finish",
+                    "Try again to open a new sign-in page, or cancel to pick another way in.",
+                    &theme,
+                )
+            } else {
+                Self::heading(
+                    "Waiting for your browser…",
+                    "Finish signing in in the browser window Matty opened. Matty continues on its own when you are done.",
+                    &theme,
+                )
+            })
+            .child(status_row)
+            .children(self.error_line(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(2.))
+                    .when(failed, |col| col.child(retry))
+                    .child(cancel),
+            )
+    }
+
     fn heading(
         title: &'static str,
         text: &'static str,
@@ -536,6 +694,13 @@ impl Render for LoginView {
             } => self
                 .methods_step(&server_name, &methods, cx)
                 .into_any_element(),
+            LoginStep::Browser {
+                server_name,
+                provider,
+                ..
+            } => self
+                .browser_step(&server_name, provider, cx)
+                .into_any_element(),
         };
         div()
             .track_focus(&self.focus)
@@ -595,7 +760,40 @@ impl Render for LoginView {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_server_url;
+    use super::{LoginStep, SignInMethods, SsoProvider, normalize_server_url};
+
+    #[test]
+    fn browser_step_goes_back_to_the_same_methods() {
+        let methods = LoginStep::Methods {
+            server_name: "chat.example.com".into(),
+            methods: SignInMethods {
+                password: true,
+                ldap: false,
+                sso: vec![SsoProvider::GitLab, SsoProvider::Saml],
+            },
+        };
+        let waiting = methods.to_browser(SsoProvider::Saml);
+        assert!(matches!(
+            waiting,
+            LoginStep::Browser {
+                provider: SsoProvider::Saml,
+                ..
+            }
+        ));
+        assert_eq!(waiting.back_to_methods(), methods);
+        // Retry keeps waiting on the provider asked for.
+        assert!(matches!(
+            waiting.to_browser(SsoProvider::GitLab),
+            LoginStep::Browser {
+                provider: SsoProvider::GitLab,
+                ..
+            }
+        ));
+        assert_eq!(
+            LoginStep::Server.to_browser(SsoProvider::GitLab),
+            LoginStep::Server
+        );
+    }
 
     #[test]
     fn assumes_https_and_trims() {
