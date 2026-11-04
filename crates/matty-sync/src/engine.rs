@@ -256,6 +256,12 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Finds what a link names, from the cache or else the server;
+    /// [`ChangeSet::LinkResolved`](crate::ChangeSet::LinkResolved) answers.
+    ResolveLink {
+        /// What the link names.
+        query: crate::LinkQuery,
+    },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
         /// The channel.
@@ -585,6 +591,9 @@ impl std::fmt::Debug for Command {
                 .debug_struct("JoinChannel")
                 .field("channel_id", channel_id)
                 .finish(),
+            Self::ResolveLink { query } => {
+                f.debug_struct("ResolveLink").field("query", query).finish()
+            }
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -1229,6 +1238,15 @@ impl Engine {
                 }
                 Message::Command(Command::LeaveChannel { channel_id }) => {
                     writes.push(Write::Leave { channel_id });
+                }
+                Message::Command(Command::ResolveLink { query }) => {
+                    match cached_link(&tx, &query)? {
+                        Some(answer) => dirty.direct.push(ChangeSet::LinkResolved {
+                            query,
+                            answer: Some(answer),
+                        }),
+                        None => writes.push(Write::Resolve(query)),
+                    }
                 }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
@@ -2319,6 +2337,9 @@ impl Engine {
                     image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
                 });
             }
+            Loaded::Resolved { query, answer } => {
+                dirty.direct.push(ChangeSet::LinkResolved { query, answer })
+            }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
                 posts: Arc::from(posts),
@@ -2900,6 +2921,24 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
         CollapsedThreads::DefaultOn => chosen.unwrap_or(true),
         CollapsedThreads::DefaultOff => chosen.unwrap_or(false),
     }
+}
+
+/// What the cache already knows about a link's target; `None` sends the
+/// question to the server.
+fn cached_link(db: &Db, query: &crate::LinkQuery) -> Result<Option<crate::LinkAnswer>, StoreError> {
+    use crate::{LinkAnswer, LinkQuery};
+    Ok(match query {
+        LinkQuery::Post { post_id } => match posts::post(db, post_id)? {
+            Some(post) => sidebar::channel(db, &post.channel_id)?
+                .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+            None => None,
+        },
+        LinkQuery::Channel { team_id, name } => sidebar::channel_by_name(db, team_id, name)?
+            .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+        LinkQuery::User { username } => {
+            sidebar::user_by_username(db, username)?.map(|user| LinkAnswer::User(Arc::new(user)))
+        }
+    })
 }
 
 /// Whether link previews show: the server's `EnableLinkPreviews`, then the

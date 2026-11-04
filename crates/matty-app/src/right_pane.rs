@@ -28,7 +28,6 @@ use crate::ui::{
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
-    markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{Message, MessageHighlight, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
@@ -120,6 +119,8 @@ pub enum RightPaneEvent {
     ViewImages(Vec<SharedString>),
     /// The channel info pane asked for the pinned listing.
     OpenPinned,
+    /// The user clicked a link or an entity chip in a message (#103).
+    OpenLink(SharedString),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -868,11 +869,18 @@ impl RightPaneView {
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))
-            .child(markdown(
-                gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
-                post.body.clone(),
-                cx,
-            ))
+            .child({
+                let link_view = view.clone();
+                crate::links::message_body(
+                    gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
+                    &post.body,
+                    move |url, _, cx| {
+                        let event = RightPaneEvent::OpenLink(url.clone());
+                        link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    },
+                    cx,
+                )
+            })
             .children((!post.files.is_empty()).then(|| {
                 let (image_view, image_post) = (view.clone(), post.clone());
                 let file_view = view.clone();
