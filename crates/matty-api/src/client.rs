@@ -194,6 +194,9 @@ pub enum Fetched {
     },
 }
 
+/// The largest outside image [`Client::outside_image`] takes, in bytes.
+pub const MAX_OUTSIDE_IMAGE: u64 = 20 * 1024 * 1024;
+
 /// A Mattermost REST v4 client for one server and, optionally, one session.
 #[derive(Clone)]
 pub struct Client {
@@ -372,6 +375,52 @@ impl Client {
         Ok(Fetched::Fresh {
             bytes: bytes.to_vec(),
             etag,
+            content_type,
+        })
+    }
+
+    /// `GET url` on an outside host, for an image the server does not
+    /// proxy: no session token, only `http` and `https`, an `image/*`
+    /// answer of at most [`MAX_OUTSIDE_IMAGE`] bytes.
+    pub async fn outside_image(&self, url: &str) -> Result<Fetched, ApiError> {
+        let parsed = Url::parse(url).map_err(|e| ApiError::InvalidUrl(e.to_string()))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(ApiError::InvalidUrl(format!("not a web link: {url}")));
+        }
+        let response = self
+            .http
+            .get(parsed)
+            .send()
+            .await
+            .map_err(ApiError::from_transport)?;
+        let response = Self::checked(response).await?;
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if !content_type
+            .as_deref()
+            .is_some_and(|kind| kind.starts_with("image/"))
+        {
+            return Err(ApiError::Decode(format!(
+                "not an image: {}",
+                content_type.unwrap_or_default()
+            )));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_OUTSIDE_IMAGE)
+        {
+            return Err(ApiError::Decode("image too large".into()));
+        }
+        let bytes = response.bytes().await.map_err(ApiError::from_transport)?;
+        if bytes.len() as u64 > MAX_OUTSIDE_IMAGE {
+            return Err(ApiError::Decode("image too large".into()));
+        }
+        Ok(Fetched::Fresh {
+            bytes: bytes.to_vec(),
+            etag: None,
             content_type,
         })
     }

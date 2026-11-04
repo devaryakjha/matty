@@ -40,6 +40,22 @@ pub fn file_key(file_id: &str, variant: FileVariant) -> String {
     format!("file/{file_id}/{variant}")
 }
 
+/// The key for an image from outside the server, such as a link preview's.
+/// URLs can be longer than a file name allows, so the key is a 128-bit hash
+/// of the URL: two FNV-1a passes with different offsets.
+pub fn remote_key(url: &str) -> String {
+    let fnv = |offset: u64| {
+        url.bytes().fold(offset, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    };
+    format!(
+        "remote/{:016x}{:016x}",
+        fnv(0xcbf2_9ce4_8422_2325),
+        fnv(0x6c62_272e_07bb_0142)
+    )
+}
+
 /// The key for a custom emoji's image.
 pub fn emoji_key(emoji_id: &str) -> String {
     format!("emoji/{emoji_id}")
@@ -198,7 +214,7 @@ fn relative_path(key: &str) -> String {
     let kind = key
         .split('/')
         .next()
-        .filter(|kind| matches!(*kind, "avatar" | "file" | "emoji"))
+        .filter(|kind| matches!(*kind, "avatar" | "file" | "emoji" | "remote"))
         .unwrap_or("other");
     let mut name = String::with_capacity(key.len() * 2);
     for byte in key.bytes() {

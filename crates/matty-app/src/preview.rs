@@ -234,6 +234,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                         },
                     ],
                     footer: "matty / ci.yml".into(),
+                    image: None,
                 },
             )],
             ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
@@ -244,6 +245,14 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 site_name: "GitHub".into(),
                 title: "Releases · devaryakjha/matty".into(),
                 description: "A native desktop client for Mattermost, built with GPUI.".into(),
+                image: Some(crate::embeds::EmbedImage {
+                    url: "https://opengraph.githubassets.com/matty/releases".into(),
+                    width: 600,
+                    height: 315,
+                    loaded: Some(attachments::png(include_bytes!(
+                        "../assets/preview/og-releases.png"
+                    ))),
+                }),
             })],
             ..post(
                 "p3c",

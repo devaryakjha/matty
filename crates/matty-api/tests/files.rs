@@ -278,3 +278,58 @@ async fn redirects_stay_on_the_server() {
         .unwrap_err();
     assert_eq!(error, ApiError::Redirected { location: outside });
 }
+
+#[tokio::test]
+async fn an_outside_image_goes_without_the_session_token() {
+    let outside = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/a.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(b"png".to_vec()),
+        )
+        .mount(&outside)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<html>"),
+        )
+        .mount(&outside)
+        .await;
+    let client = Client::new("https://chat.example.com")
+        .unwrap()
+        .with_token("secret");
+
+    let Fetched::Fresh {
+        bytes,
+        content_type,
+        ..
+    } = client
+        .outside_image(&format!("{}/a.png", outside.uri()))
+        .await
+        .unwrap()
+    else {
+        panic!("not modified")
+    };
+    assert_eq!(
+        (bytes.as_slice(), content_type.as_deref()),
+        (&b"png"[..], Some("image/png"))
+    );
+    let requests = outside.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.headers.contains_key("authorization"))
+    );
+
+    let page = client
+        .outside_image(&format!("{}/page", outside.uri()))
+        .await;
+    assert!(matches!(page, Err(ApiError::Decode(_))), "{page:?}");
+    let script = client.outside_image("javascript:alert(1)").await;
+    assert!(matches!(script, Err(ApiError::InvalidUrl(_))), "{script:?}");
+}

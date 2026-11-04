@@ -175,3 +175,58 @@ async fn a_download_lands_in_the_folder_with_the_servers_bytes() {
         b"older"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outside_image_is_fetched_directly_once_then_cached() {
+    use matty_sync::Connection;
+
+    let server = server().await;
+    let outside = wiremock::MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/og.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(b"png".to_vec()),
+        )
+        .mount(&outside)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let sync =
+        matty_sync::spawn_at(dir.path().join("db.sqlite"), Some(dir.path().join("media"))).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("token"),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Connection(Connection::Loaded))
+    })
+    .await;
+
+    let url = format!("{}/og.png", outside.uri());
+    for _ in 0..2 {
+        sync.send(Command::LoadRemoteImage { url: url.clone() });
+        let ChangeSet::RemoteImage {
+            url: answered,
+            bytes,
+            content_type,
+        } = next(&changes, |c| matches!(c, ChangeSet::RemoteImage { .. })).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (answered.as_str(), &*bytes, content_type.as_str()),
+            (url.as_str(), &b"png"[..], "image/png")
+        );
+    }
+    // The server has no image proxy, so it never saw the request.
+    assert_eq!(outside.received_requests().await.unwrap().len(), 1);
+    assert!(
+        !common::requested(&server)
+            .await
+            .iter()
+            .any(|path| path.contains("/image"))
+    );
+}
