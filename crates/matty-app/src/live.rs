@@ -774,6 +774,15 @@ impl Live {
         });
     }
 
+    /// Asks the server to remind the user of a post; the system bot posts
+    /// the reminder in a DM when it is due.
+    pub fn remind(&self, post_id: &str, at: crate::channel::RemindAt) {
+        self.send(Command::SetReminder {
+            post_id: post_id.to_owned(),
+            target_time: at.target(jiff::Timestamp::now(), &self.zone),
+        });
+    }
+
     /// Pins or unpins a post; the edited post comes back over the socket.
     pub fn set_pinned(&mut self, post_id: &str, pinned: bool) {
         self.send(Command::SetPinned {

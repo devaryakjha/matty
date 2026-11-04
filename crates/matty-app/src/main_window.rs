@@ -662,7 +662,12 @@ impl MainWindow {
                         live.set_pinned(post, pinned);
                     }
                 }
-                ChannelEvent::ToggleFollow { .. } => {}
+                ChannelEvent::ToggleFollow { post, following } => {
+                    if let Some(live) = &this.live {
+                        live.follow_thread(post, *following);
+                    }
+                }
+                ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
             },
         )
         .detach();
@@ -1002,6 +1007,37 @@ impl MainWindow {
     }
 
     /// Puts a post's permalink on the clipboard and says so (#133).
+    /// Asks the server to remind the user of a post, and says when.
+    fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            if !crate::preview::enabled() {
+                self.push_error(
+                    "Couldn't set the reminder. Try again once you're connected.",
+                    cx,
+                );
+                return;
+            }
+            return self.reminder_set(at, cx);
+        };
+        live.remind(post_id, at);
+        self.reminder_set(at, cx);
+    }
+
+    fn reminder_set(&mut self, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        let when = match at {
+            crate::channel::RemindAt::Tomorrow => "tomorrow at 9:00".to_string(),
+            other => other.label().to_lowercase(),
+        };
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                "reminder",
+                Notice::new(format!("Reminder set for {when}"))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
+    }
+
     fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
         let link = self.live.as_ref().and_then(|live| {
             let channel = self.selected_channel.as_ref()?;

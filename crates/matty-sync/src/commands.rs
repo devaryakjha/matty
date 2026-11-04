@@ -75,6 +75,10 @@ pub(crate) enum Write {
         query: Box<SearchQuery>,
     },
     Listing(crate::Listing),
+    Reminder {
+        post_id: String,
+        target_time: i64,
+    },
     Pin {
         post_id: String,
         pinned: bool,
@@ -139,6 +143,7 @@ impl Write {
             Self::Pin { pinned: true, .. } => "pin message",
             Self::Pin { pinned: false, .. } => "unpin message",
             Self::DeletePreferences(_) => "delete preferences",
+            Self::Reminder { .. } => "set reminder",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -156,6 +161,7 @@ impl Write {
         match self {
             Self::Edit { post_id, .. }
             | Self::Pin { post_id, .. }
+            | Self::Reminder { post_id, .. }
             | Self::Delete { post_id }
             | Self::Unread { post_id, .. } => post_id.clone(),
             Self::React { reaction, .. } => reaction.post_id.clone(),
@@ -431,6 +437,15 @@ pub(crate) async fn run(
             }
             Write::DeletePreferences(preferences) => {
                 client.delete_preferences(&user_id, &preferences).await?;
+                None
+            }
+            Write::Reminder {
+                post_id,
+                target_time,
+            } => {
+                client
+                    .set_post_reminder(&user_id, &post_id, target_time)
+                    .await?;
                 None
             }
             Write::Pin { post_id, pinned } => {

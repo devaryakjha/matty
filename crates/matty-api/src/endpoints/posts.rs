@@ -374,6 +374,22 @@ impl Client {
         .map(|_| ())
     }
 
+    /// `POST users/{user_id}/posts/{post_id}/reminder`: the system bot
+    /// reminds the user of the post at `target_time`, in Unix seconds.
+    pub async fn set_post_reminder(
+        &self,
+        user_id: &str,
+        post_id: &str,
+        target_time: i64,
+    ) -> Result<(), ApiError> {
+        self.post::<_, Value>(
+            &format!("users/{user_id}/posts/{post_id}/reminder"),
+            &json!({ "target_time": target_time }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// `PUT users/{user_id}/teams/{team_id}/threads/{thread_id}/following`.
     pub async fn follow_thread(
         &self,

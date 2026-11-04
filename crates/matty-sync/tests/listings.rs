@@ -141,3 +141,28 @@ async fn saving_shows_at_once_and_tells_the_server() {
     }
     server.verify().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reminder_reaches_the_server() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v4/users/{ME}/posts/p1/reminder")))
+        .and(body_partial_json(json!({"target_time": 1_800_000_000})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (sync, _changes) = connected(&server).await;
+    sync.send(Command::SetReminder {
+        post_id: "p1".into(),
+        target_time: 1_800_000_000,
+    });
+    for _ in 0..100 {
+        let requests = server.received_requests().await.unwrap_or_default();
+        if requests.iter().any(|r| r.url.path().ends_with("/reminder")) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    server.verify().await;
+}

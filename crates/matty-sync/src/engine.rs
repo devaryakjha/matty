@@ -391,6 +391,14 @@ pub enum Command {
         /// The user's offset from UTC in seconds, for `on:` and the like.
         time_zone_offset: i32,
     },
+    /// Asks the server to remind the user of a post at `target_time`
+    /// (Unix seconds); only a failure answers.
+    SetReminder {
+        /// The post.
+        post_id: String,
+        /// When, in Unix seconds.
+        target_time: i64,
+    },
     /// Loads a listing; [`ChangeSet::Listing`](crate::ChangeSet::Listing)
     /// answers.
     LoadListing(crate::Listing),
@@ -649,6 +657,14 @@ impl std::fmt::Debug for Command {
                 .debug_struct("Search")
                 .field("team_id", team_id)
                 .finish_non_exhaustive(),
+            Self::SetReminder {
+                post_id,
+                target_time,
+            } => f
+                .debug_struct("SetReminder")
+                .field("post_id", post_id)
+                .field("target_time", target_time)
+                .finish(),
             Self::LoadListing(listing) => f.debug_tuple("LoadListing").field(listing).finish(),
             Self::SetSaved { post_id, saved } => f
                 .debug_struct("SetSaved")
@@ -1314,6 +1330,13 @@ impl Engine {
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
                 }
+                Message::Command(Command::SetReminder {
+                    post_id,
+                    target_time,
+                }) => writes.push(Write::Reminder {
+                    post_id,
+                    target_time,
+                }),
                 Message::Command(Command::LoadListing(listing)) => {
                     writes.push(Write::Listing(listing));
                 }
