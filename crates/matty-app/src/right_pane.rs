@@ -5,23 +5,27 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
-use crate::actions::{self, CloseRightPane};
-use crate::attachments::post_files;
+use crate::actions::{self, CloseRightPane, UploadFiles};
+use crate::attachments::{
+    AttachmentStatus, PostFile, SendGate, UploadSource, UploadTray, post_files,
+};
 use crate::channel::{
     ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, plain_text, post_markers,
     reaction_tooltip,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
-use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
+    attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
@@ -32,8 +36,13 @@ use crate::ui::{
     message::{Message, MessageHighlight, MessageStatus, Reaction},
     message_list::{MessageList, MessageListState},
     popover::popover,
+    spinner::Spinner,
     theme::UiTheme,
 };
+
+/// The reply tray's upload ids start with this, so the window can tell
+/// them from the channel tray's.
+pub const UPLOAD_PREFIX: &str = "thread-upload";
 
 /// A thread: its root post and the replies loaded for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,9 +99,22 @@ pub enum RightPaneEvent {
     Reply {
         root: SharedString,
         text: SharedString,
+        /// Tray ids of the reply's files, all uploaded.
+        files: Vec<SharedString>,
         /// False when the user removed the link's preview while replying.
         unfurl: bool,
     },
+    /// A file went into the reply tray; sync uploads it to the thread's
+    /// channel and reports back through `set_upload_status`.
+    Upload {
+        id: SharedString,
+        name: SharedString,
+        source: UploadSource,
+    },
+    /// A file left the reply tray; sync stops its upload.
+    CancelUpload(SharedString),
+    /// The user asked to upload a failed reply file again.
+    RetryUpload(SharedString),
     /// The reply draft has this link; sync asks the server for its
     /// preview and calls `set_link_preview` (#188).
     PreviewLink(SharedString),
@@ -164,6 +186,8 @@ pub struct RightPaneView {
     draft_len: usize,
     /// The preview above the reply composer (#188).
     link: crate::draft_link::DraftLink,
+    /// Files waiting to go with the reply, and a reply waiting on them.
+    tray: UploadTray,
     _link_task: Option<gpui_kit::Task<()>>,
     pending_seq: usize,
     /// The search field at the top of the Search listing.
@@ -191,9 +215,7 @@ impl RightPaneView {
             &SettingsStore::global(cx),
             |this, store, _: &SettingsChanged, cx| {
                 let send_on = store.read(cx).get().send_on;
-                this.composer.update(cx, |composer, _| {
-                    composer.set_submit_on_enter(send_on == SendKey::Enter)
-                });
+                crate::channel::follow_send_key(&this.composer, send_on, cx);
                 this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
             },
@@ -202,10 +224,11 @@ impl RightPaneView {
         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
         let list = cx.new(|cx| MessageListState::new(0, cx));
         let keys = cx.weak_entity();
+        let paste = cx.weak_entity();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
-            state.set_submit_on_enter(send_on == SendKey::Enter);
+            state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
                 if let Some(composer) = keys.upgrade().map(|view| view.read(cx).composer.clone())
@@ -235,6 +258,32 @@ impl RightPaneView {
                 })
                 .unwrap_or(false)
             });
+            // Images and files on the clipboard go to the tray, as in the
+            // channel composer.
+            state.set_on_paste(move |item, _, cx| {
+                let sources: Vec<UploadSource> = item
+                    .entries()
+                    .iter()
+                    .flat_map(|entry| match entry {
+                        ClipboardEntry::Image(image) => {
+                            vec![UploadSource::Image(std::sync::Arc::new(image.clone()))]
+                        }
+                        ClipboardEntry::ExternalPaths(paths) => paths
+                            .paths()
+                            .iter()
+                            .cloned()
+                            .map(UploadSource::Path)
+                            .collect(),
+                        ClipboardEntry::String(_) => vec![],
+                    })
+                    .collect();
+                if sources.is_empty() {
+                    return false;
+                }
+                paste
+                    .update(cx, |this, cx| this.add_sources(sources, cx))
+                    .is_ok()
+            });
             state
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
@@ -244,6 +293,8 @@ impl RightPaneView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                        crate::channel::follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
@@ -271,6 +322,7 @@ impl RightPaneView {
             me: me.into(),
             draft_len: 0,
             link: Default::default(),
+            tray: UploadTray::new(UPLOAD_PREFIX),
             _link_task: None,
             pending_seq: 0,
             search,
@@ -380,13 +432,25 @@ impl RightPaneView {
         }
     }
 
-    /// Appends the text as a pending reply by the current user, clears the
-    /// composer and tells sync. Blank text stays in the composer.
+    /// Appends the text and the tray's files as a pending reply by the
+    /// current user, clears the composer and tells sync. Blank text with no
+    /// files stays in the composer; Enter while files upload waits for them.
     fn reply(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let body: SharedString = text.trim().to_string().into();
-        if body.is_empty() {
+        if self.thread_mut().is_none() {
             return;
         }
+        if self.tray.request_send(!body.is_empty()) != SendGate::Now {
+            cx.notify();
+            return;
+        }
+        let files: Vec<PostFile> = self
+            .tray
+            .take()
+            .into_iter()
+            .map(PostFile::from_upload)
+            .collect();
+        let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
         self.pending_seq += 1;
         let (me, seq) = (self.me.clone(), self.pending_seq);
         let Some(thread) = self.thread_mut() else {
@@ -416,7 +480,7 @@ impl RightPaneView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
-            files: vec![],
+            files,
             embeds: vec![],
         };
         thread.replies.push(reply);
@@ -430,8 +494,117 @@ impl RightPaneView {
         cx.emit(RightPaneEvent::Reply {
             root,
             text: body,
+            files: file_ids,
             unfurl,
         });
+    }
+
+    /// The server's `MaxFileSize`, for checking files before they upload.
+    pub fn set_max_file_size(&mut self, bytes: u64) {
+        self.tray.set_max_file_size(bytes);
+    }
+
+    /// Whether a thread is open, so files can go into its reply.
+    pub fn has_thread(&self) -> bool {
+        matches!(self.content, Some(RightPaneContent::Thread(_)))
+    }
+
+    /// Opens the file picker for the reply; in preview it fills the tray
+    /// with fixtures, as the channel composer does.
+    pub fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_thread() {
+            return;
+        }
+        if crate::preview::enabled() {
+            self.tray.extend(crate::preview::uploads());
+            self.tray.admit(vec![crate::preview::oversize_upload()]);
+            cx.notify();
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                this.update(cx, |this, cx| {
+                    this.add_sources(paths.into_iter().map(UploadSource::Path), cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Adds what passes the size and count checks to the reply tray and
+    /// asks sync to upload it.
+    fn add_sources(
+        &mut self,
+        sources: impl IntoIterator<Item = UploadSource>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_thread() {
+            return;
+        }
+        for upload in self.tray.add(sources) {
+            cx.emit(RightPaneEvent::Upload {
+                id: upload.id,
+                name: upload.name,
+                source: upload.source,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Sync reports progress for a reply file; a reply that waited on it
+    /// goes once the last one is up. Ids from another tray are ignored.
+    pub fn set_upload_status(
+        &mut self,
+        id: &str,
+        status: AttachmentStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tray.set_status(id, status) {
+            self.send_queued(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let due = self.tray.remove(id);
+        cx.emit(RightPaneEvent::CancelUpload(id.clone()));
+        if due {
+            self.send_queued(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn retry_upload(&mut self, id: &SharedString, cx: &mut Context<Self>) {
+        self.tray.set_status(id, AttachmentStatus::Uploading(0.));
+        cx.emit(RightPaneEvent::RetryUpload(id.clone()));
+        cx.notify();
+    }
+
+    fn send_queued(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value(cx);
+        self.reply(text, window, cx);
+    }
+
+    /// A reply tray chip with its remove and Retry wired to this pane.
+    fn upload_chip(
+        &self,
+        upload: &crate::attachments::Upload,
+        cx: &mut Context<Self>,
+    ) -> Attachment {
+        let (remove, retry) = (upload.id.clone(), upload.id.clone());
+        upload.chip(
+            "right-pane.upload",
+            cx.listener(move |this, _, window, cx| this.remove_upload(&remove, window, cx)),
+            cx.listener(move |this, _, _, cx| this.retry_upload(&retry, cx)),
+        )
     }
 
     /// Follows the reply draft's first link, asked about after a pause in
@@ -590,6 +763,10 @@ impl RightPaneView {
         if !same_thread {
             self.link = Default::default();
             self._link_task = None;
+            // The files were for the other thread's channel.
+            for upload in self.tray.take() {
+                cx.emit(RightPaneEvent::CancelUpload(upload.id));
+            }
         }
         self.content = content;
         self.selection = None;
@@ -1011,16 +1188,36 @@ impl RightPaneView {
             .variant(ButtonVariant::Default)
             .size(ButtonSize::IconSm)
             .aria_label("Reply")
-            .disabled(self.draft_len == 0)
+            .disabled(self.tray.gate(self.draft_len > 0) != SendGate::Now)
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.composer.read(cx).value(cx);
                 this.reply(text, window, cx)
             }))
-            .child(
+            .child(if self.tray.is_queued() {
+                Spinner::new("right-pane.send.spinner")
+                    .color(theme.colors.primary_foreground)
+                    .into_any_element()
+            } else {
                 lucide(LucideIcon::SendHorizontal)
                     .size(scaled(&theme, metrics::ICON))
-                    .text_color(theme.colors.primary_foreground),
-            );
+                    .text_color(theme.colors.primary_foreground)
+                    .into_any_element()
+            });
+        let chips: Vec<Attachment> = self
+            .tray
+            .uploads()
+            .iter()
+            .map(|upload| self.upload_chip(upload, cx))
+            .collect();
+        let tray = crate::attachments::upload_tray("right-pane", &self.tray, chips, cx);
+        // Files dropped anywhere on the thread go into the reply (#150).
+        let overlay = crate::attachments::drop_overlay(
+            "right-pane.drop",
+            crate::attachments::drop_title(&thread.channel_name),
+            "Files go into your reply.",
+            crate::attachments::preview_drop(),
+            cx,
+        );
         let tool = |id: &'static str, label: &'static str, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
@@ -1034,12 +1231,19 @@ impl RightPaneView {
         };
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.add_sources(paths.paths().iter().cloned().map(UploadSource::Path), cx)
+            }))
             .child(div().flex_1().min_h_0().child(transcript))
             .child(
                 div()
                     .flex_shrink_0()
+                    .on_action(cx.listener(|this, _: &UploadFiles, window, cx| {
+                        this.choose_files(window, cx)
+                    }))
                     .px(theme.space(4.))
                     .pt(theme.space(1.))
                     .pb(theme.space(4.))
@@ -1051,6 +1255,7 @@ impl RightPaneView {
                             cx.notify();
                         }),
                     ))
+                    .children(tray)
                     .child(
                         Composer::new(&self.composer)
                             .max_height(self.composer_cap)
@@ -1058,7 +1263,10 @@ impl RightPaneView {
                             .child(style::tipped(
                                 "right-pane.attach.tip",
                                 actions::tooltip_text("Attach files", "Upload files"),
-                                tool("right-pane.attach", "Attach files", LucideIcon::Plus),
+                                tool("right-pane.attach", "Attach files", LucideIcon::Plus)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_files(window, cx)
+                                    })),
                             ))
                             .child(style::tipped(
                                 "right-pane.emoji.tip",
@@ -1079,6 +1287,7 @@ impl RightPaneView {
                             )),
                     ),
             )
+            .children(overlay)
     }
 
     /// Nothing open: one line on how to get a thread here.

@@ -1,19 +1,15 @@
 //! Preferences' notification sound (#142): gpuicn's select over the web
 //! app's sound names, saved to the user's `desktop_notification_sound` so
-//! the web app and Matty agree. Choosing one plays it.
+//! the web app and Matty agree. Choosing one plays it. Preferences'
+//! Notifications section shows it under the Sound switch.
 
 use std::collections::HashMap;
 
-use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement as _, ParentElement as _, SharedString,
-    Styled as _, Window, div,
-};
+use gpui_kit::{AppContext as _, Context, Entity, SharedString, Window};
 use matty_notify::Sound;
 
 use super::MainWindow;
-use crate::style::{metrics, scaled};
-use crate::ui::select::{Select, SelectEvent, SelectItem, SelectState};
-use crate::ui::theme::UiTheme;
+use crate::ui::select::{SelectEvent, SelectItem, SelectState};
 
 /// The prop that names the sound.
 const PROP: &str = "desktop_notification_sound";
@@ -62,28 +58,5 @@ impl MainWindow {
                 state.set_value(Some(value), window, cx);
             }
         });
-    }
-
-    /// The row under the Sound switch; off while sounds are.
-    pub(super) fn sound_row(
-        &self,
-        sounds_on: bool,
-        labelled_row: &dyn Fn(SharedString, SharedString, gpui_kit::AnyElement) -> gpui_kit::Div,
-        cx: &gpui_kit::App,
-    ) -> gpui_kit::Div {
-        let theme = UiTheme::read(cx);
-        labelled_row(
-            "Notification sound".into(),
-            "Choosing one plays it.".into(),
-            div()
-                .flex_shrink_0()
-                .w(scaled(theme, metrics::FIELD_NARROW_WIDTH))
-                .child(
-                    Select::new(&self.sound)
-                        .aria_label("Notification sound")
-                        .disabled(!sounds_on),
-                )
-                .into_any_element(),
-        )
     }
 }

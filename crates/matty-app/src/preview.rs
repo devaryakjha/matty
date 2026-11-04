@@ -592,6 +592,7 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
+        names: crate::settings::NameFormat::default(),
     };
     crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None).posts
 }
@@ -907,6 +908,18 @@ pub fn uploads() -> Vec<Upload> {
             status: AttachmentStatus::Failed,
         },
     ]
+}
+
+/// A screen recording over the default 100 MB limit, which the tray
+/// refuses when the fixtures go in.
+pub fn oversize_upload() -> Upload {
+    Upload {
+        id: "u-recording".into(),
+        name: "screen-recording.mov".into(),
+        size: 251_658_240,
+        source: UploadSource::Path("screen-recording.mov".into()),
+        status: AttachmentStatus::Uploading(0.),
+    }
 }
 
 /// The preview user's notification preferences, with two keywords.
