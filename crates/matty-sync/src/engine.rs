@@ -2258,11 +2258,8 @@ impl Engine {
         let client = session.client.clone();
         let results = self.loaded.clone();
         matty_api::rt::spawn(async move {
-            let fetched = if proxy {
-                client.proxied_image(&url).await
-            } else {
-                client.outside_image(&url).await
-            };
+            // Through the server's image proxy when it has one (#159).
+            let fetched = client.remote_image(&url, proxy).await;
             let image = match fetched {
                 Ok(matty_api::Fetched::Fresh {
                     bytes,
