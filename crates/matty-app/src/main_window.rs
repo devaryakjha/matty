@@ -843,6 +843,17 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.jump_to(post, cx));
                 }
+                ChannelEvent::PostAction(choice) => {
+                    if let Some(live) = &mut this.live {
+                        let update = live.run_post_action(choice);
+                        this.apply_update(update, window, cx);
+                    }
+                }
+                ChannelEvent::DismissEphemeral(post) => {
+                    if let Some(live) = &mut this.live {
+                        live.dismiss_ephemeral(post);
+                    }
+                }
                 ChannelEvent::Forward(post) => {
                     // After the menu has closed and handed focus back, so
                     // the switcher's field keeps it.
@@ -1991,6 +2002,9 @@ impl MainWindow {
         }
         if let Some(action) = update.offline_refused {
             self.say_offline(action, cx);
+        }
+        if let Some(error) = update.action_refused {
+            self.push_error(format!("The integration couldn't take that: {error}"), cx);
         }
         if let Some(id) = update.ready {
             self.open_channel(id, window, cx);

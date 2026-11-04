@@ -90,8 +90,21 @@ pub enum ChangeSet {
     /// A command could not be carried out.
     Failed(CommandError),
     /// A post only this user sees, such as a slash command's reply. It is
-    /// never stored; the view shows it until the channel is left.
+    /// never stored; the view shows it until the channel is left. The
+    /// server changes one with `post_edited` and removes one with
+    /// `post_deleted`, which come here too, the removal with `delete_at`
+    /// set.
     Ephemeral(Arc<Post>),
+    /// The server took an interactive message's button press or menu
+    /// choice: the answer to
+    /// [`Command::RunPostAction`](crate::Command::RunPostAction). A refusal
+    /// comes as [`ChangeSet::Failed`] with the action `run action`.
+    PostActionDone {
+        /// The post.
+        post_id: String,
+        /// The button or menu.
+        action_id: String,
+    },
     /// Unread or mention counts changed somewhere: the team rail with its
     /// badges, in rail order.
     Unreads {

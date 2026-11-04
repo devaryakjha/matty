@@ -78,6 +78,8 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
+    /// Ephemeral messages and interactive messages' waiting actions (#211).
+    interactive: crate::interactive::Session,
     /// The open channel's sends that failed and wait for Retry or Delete;
     /// their rows read "Not sent".
     failed: std::collections::HashSet<String>,
@@ -235,6 +237,9 @@ pub struct Update {
     /// An action that could not reach the server, as sync names it, for
     /// the window to say the user is offline (#163).
     pub offline_refused: Option<&'static str>,
+    /// The server refused an interactive message's action, in its words
+    /// (#211).
+    pub action_refused: Option<SharedString>,
     /// The open channel's mute and notification preferences.
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
@@ -556,6 +561,7 @@ impl Live {
                 offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
+                interactive: Default::default(),
                 failed: Default::default(),
                 queued: HashMap::new(),
                 channel: None,
@@ -755,9 +761,14 @@ impl Live {
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
         };
+        let with_ephemeral = crate::interactive::with_ephemeral(
+            self.posts.as_deref(),
+            self.interactive.ephemeral(),
+            &row.id,
+        );
         let mut model = crate::transcript::channel_model(
             row,
-            self.posts.as_deref(),
+            with_ephemeral.as_deref().or(self.posts.as_deref()),
             &self.users,
             &viewer,
             self.max_post_size,
@@ -793,10 +804,16 @@ impl Live {
             .posts
             .iter_mut()
             .flat_map(|post| &mut post.embeds)
-            .filter_map(crate::embeds::Embed::image_mut)
+            .flat_map(crate::embeds::Embed::images_mut)
         {
             image.loaded = self.remote_images.image(&image.url);
         }
+        self.interactive.fill(
+            &mut model.posts,
+            &self.users,
+            self.names,
+            self.sections.values().flat_map(|sections| sections.iter()),
+        );
         Some(model)
     }
 
@@ -840,7 +857,7 @@ impl Live {
         for image in posts
             .iter()
             .flat_map(|post| &post.embeds)
-            .filter_map(crate::embeds::Embed::image)
+            .flat_map(crate::embeds::Embed::images)
         {
             self.remote_images.want(&image.url);
         }
@@ -1080,6 +1097,32 @@ impl Live {
             post_id: post_id.to_owned(),
             target_time: at.target(jiff::Timestamp::now(), &self.zone),
         });
+    }
+
+    /// Presses an interactive message's button or picks from its menu
+    /// (#211): the control waits until the server answers.
+    pub fn run_post_action(&mut self, choice: &crate::interactive::ActionChoice) -> Update {
+        self.interactive.sent(choice);
+        self.send(Command::RunPostAction {
+            post_id: choice.post_id.to_string(),
+            action_id: choice.action_id.to_string(),
+            selected_option: choice.selected.as_ref().map(ToString::to_string),
+            cookie: choice.cookie.to_string(),
+        });
+        Update {
+            channel: self.channel_update(),
+            ..Update::default()
+        }
+    }
+
+    /// Forgets an ephemeral message the user dismissed; the view has
+    /// already removed it.
+    pub fn dismiss_ephemeral(&mut self, post_id: &str) {
+        if self.interactive.dismiss(post_id)
+            && let Some(shown) = &mut self.shown
+        {
+            shown.retain(|post| post.id.as_ref() != post_id);
+        }
     }
 
     /// Pins or unpins a post; the edited post comes back over the socket.
@@ -1671,7 +1714,7 @@ impl Live {
                     posts
                         .iter()
                         .flat_map(|post| &post.embeds)
-                        .filter_map(crate::embeds::Embed::image)
+                        .flat_map(crate::embeds::Embed::images)
                         .any(|image| image.url.as_ref() == url)
                 });
                 if shown {
@@ -1812,6 +1855,27 @@ impl Live {
                     }
                     self.search_page = (self.search_page.0, false, false);
                     update.search = self.search_model();
+                }
+            }
+            ChangeSet::Ephemeral(_)
+            | ChangeSet::PostActionDone { .. }
+            | ChangeSet::Failed(
+                matty_sync::CommandError::Server {
+                    action: "run action",
+                    ..
+                }
+                | matty_sync::CommandError::Offline {
+                    action: "run action",
+                },
+            ) => {
+                let open = self.open.as_ref().map(|row| row.id.to_string());
+                let applied = self.interactive.apply(change, open.as_deref());
+                if applied.redraw {
+                    update.channel = self.channel_update();
+                }
+                update.action_refused = applied.refused;
+                if applied.offline {
+                    update.offline_refused = Some("run action");
                 }
             }
             ChangeSet::Failed(matty_sync::CommandError::Offline { action }) => {

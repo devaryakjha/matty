@@ -1,0 +1,91 @@
+{
+  "id": "9xq3wz4h1pd5mrc8ke7tyn6bfa",
+  "create_at": 1793729001234,
+  "update_at": 1793729001234,
+  "edit_at": 0,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "kq8y3h5zyfbz8xzr7t1dd4ojyh",
+  "channel_id": "r7w6egqkajd8byosc158i4famw",
+  "root_id": "",
+  "original_id": "",
+  "message": "",
+  "type": "slack_attachment",
+  "props": {
+    "from_bot": "true",
+    "attachments": [
+      {
+        "id": 0,
+        "fallback": "Deploy matty 1.4.0 to production?",
+        "color": "warning",
+        "pretext": "A deploy is waiting for approval.",
+        "author_name": "deploy-bot",
+        "author_link": "https://deploy.example.com",
+        "author_icon": "https://deploy.example.com/icon.png",
+        "title": "matty 1.4.0 → production",
+        "title_link": "https://deploy.example.com/runs/812",
+        "text": "Requested by @ada. **3** services change.",
+        "fields": [
+          { "title": "Environment", "value": "production", "short": true },
+          { "title": "Commits", "value": 14, "short": true },
+          { "title": "Changelog", "value": "- Faster sync\n- New emoji picker", "short": false }
+        ],
+        "image_url": "",
+        "thumb_url": "https://deploy.example.com/thumb.png",
+        "footer": "deploy-bot",
+        "footer_icon": "https://deploy.example.com/footer.png",
+        "ts": null,
+        "actions": [
+          {
+            "id": "approve",
+            "type": "button",
+            "name": "Approve",
+            "style": "primary",
+            "cookie": "Q2t3Yk1hdHR5Q29va2llRm9yQXBwcm92ZQ=="
+          },
+          {
+            "id": "reject",
+            "type": "button",
+            "name": "Reject",
+            "style": "danger",
+            "disabled": true,
+            "cookie": "Q2t3Yk1hdHR5Q29va2llRm9yUmVqZWN0"
+          },
+          {
+            "id": "region",
+            "type": "select",
+            "name": "Pick a region",
+            "options": [
+              { "text": "Europe (Frankfurt)", "value": "eu-central-1" },
+              { "text": "US East", "value": "us-east-1" }
+            ],
+            "default_option": "eu-central-1",
+            "cookie": "Q2t3Yk1hdHR5Q29va2llRm9yUmVnaW9u"
+          },
+          {
+            "id": "reviewer",
+            "type": "select",
+            "name": "Ask a reviewer",
+            "data_source": "users",
+            "options": null,
+            "cookie": "Q2t3Yk1hdHR5Q29va2llRm9yUmV2aWV3ZXI="
+          }
+        ]
+      }
+    ]
+  },
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "remote_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [{ "type": "message_attachment" }],
+    "images": {
+      "https://deploy.example.com/icon.png": { "width": 64, "height": 64, "format": "png", "frame_count": 0 },
+      "https://deploy.example.com/thumb.png": { "width": 160, "height": 160, "format": "png", "frame_count": 0 }
+    }
+  }
+}

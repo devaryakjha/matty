@@ -2077,7 +2077,7 @@ impl RightPaneView {
         let (react_view, react_id) = (view.clone(), id.clone());
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
             .status(match post.status {
-                PostStatus::Sent => MessageStatus::Sent,
+                PostStatus::Sent | PostStatus::Ephemeral => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
                 PostStatus::Failed => MessageStatus::Failed,
             })

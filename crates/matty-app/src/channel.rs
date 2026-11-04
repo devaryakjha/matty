@@ -116,6 +116,9 @@ pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
             .into_any_element()
     };
     let mut markers = Vec::new();
+    if post.status == PostStatus::Ephemeral {
+        markers.extend([icon(LucideIcon::EyeOff), label("Only visible to you")]);
+    }
     if post.pinned {
         markers.extend([icon(LucideIcon::Pin), label("Pinned")]);
     }
@@ -135,7 +138,7 @@ pub fn waiting_to_send(post: &Post, away: bool) -> bool {
     post.mine
         && post.kind == PostKind::Regular
         && match post.status {
-            PostStatus::Sent => false,
+            PostStatus::Sent | PostStatus::Ephemeral => false,
             PostStatus::Pending => away,
             PostStatus::Failed => true,
         }
@@ -167,7 +170,9 @@ pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
 /// A post's header time, or where it is on its way to the server.
 pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
     match post.status {
-        PostStatus::Sent => ClockFormat::current(cx).format(post.time).into(),
+        PostStatus::Sent | PostStatus::Ephemeral => {
+            ClockFormat::current(cx).format(post.time).into()
+        }
         PostStatus::Pending if away => "Will send when back online".into(),
         PostStatus::Pending => "Sending…".into(),
         PostStatus::Failed => "Not sent".into(),
@@ -376,6 +381,9 @@ pub enum PostStatus {
     Pending,
     /// The send failed; the row offers Retry and Delete.
     Failed,
+    /// Only the viewer sees it and the server does not keep it (#211):
+    /// marked "Only visible to you", it can only be copied or dismissed.
+    Ephemeral,
 }
 
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
@@ -1013,6 +1021,11 @@ pub enum ChannelEvent {
     },
     /// The user wants to forward `post` to another channel (#213).
     Forward(SharedString),
+    /// The user pressed an interactive message's button or picked from its
+    /// menu (#211).
+    PostAction(crate::interactive::ActionChoice),
+    /// The user dismissed an ephemeral message (#211); the row is gone.
+    DismissEphemeral(SharedString),
     /// The user asked to be reminded of `post` (#213).
     Remind { post: SharedString, at: RemindAt },
     /// The user renamed the channel from its header menu; the view already
@@ -1157,6 +1170,8 @@ pub struct ChannelView {
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
+    /// Interactive messages' menus (#211).
+    action_menus: crate::interactive::Menus,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1439,6 +1454,7 @@ impl ChannelView {
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             profile_cards: 0,
+            action_menus: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -2887,6 +2903,7 @@ impl ChannelView {
         match status {
             PostStatus::Sent => cx.emit(ChannelEvent::Delete(id)),
             PostStatus::Pending | PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
+            PostStatus::Ephemeral => cx.emit(ChannelEvent::DismissEphemeral(id)),
         }
     }
 
@@ -2977,6 +2994,22 @@ impl ChannelView {
                 }),
             ),
         ];
+        if post.status == PostStatus::Ephemeral {
+            let dismiss_view = view.clone();
+            let dismiss_id = id.clone();
+            items.push(MenuItem::separator());
+            items.push(
+                MenuItem::new("post.menu.dismiss", "Dismiss message").on_click(
+                    move |_, window, cx| {
+                        let id = dismiss_id.clone();
+                        dismiss_view
+                            .update(cx, |this, cx| this.delete_post(id, window, cx))
+                            .ok();
+                    },
+                ),
+            );
+            return items;
+        }
         if post.status != PostStatus::Sent {
             let (edit_view, edit_id) = (view.clone(), id.clone());
             let (discard_view, discard_id) = (view.clone(), id.clone());
@@ -3764,6 +3797,7 @@ impl ChannelView {
             bool,
             usize,
         ),
+        menus: &crate::interactive::Menus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -3777,7 +3811,24 @@ impl ChannelView {
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
         let sent = post.status == PostStatus::Sent;
+        let dismiss_id = id.clone();
         let actions = message_actions(cx)
+            .when(post.status == PostStatus::Ephemeral, |actions| {
+                actions.child(style::tipped_when(
+                    !menu_open,
+                    gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
+                    "Dismiss message",
+                    message_action(
+                        gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
+                        LucideIcon::X,
+                        "Dismiss message",
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.delete_post(dismiss_id.clone(), window, cx)
+                    })),
+                ))
+            })
             .when(sent, |actions| {
                 actions
                     .child(style::tipped_when(
@@ -3858,7 +3909,8 @@ impl ChannelView {
             .timestamp(time.clone())
             .gutter_time(time.clone())
             .when(
-                post.status == PostStatus::Sent && !post.date.is_empty(),
+                matches!(post.status, PostStatus::Sent | PostStatus::Ephemeral)
+                    && !post.date.is_empty(),
                 |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
             )
             .on_gutter_click({
@@ -3881,7 +3933,7 @@ impl ChannelView {
                     .ok();
             })
             .status(match post.status {
-                PostStatus::Sent => MessageStatus::Sent,
+                PostStatus::Sent | PostStatus::Ephemeral => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
                 PostStatus::Failed => MessageStatus::Failed,
             })
@@ -3971,6 +4023,13 @@ impl ChannelView {
                         .ok();
                 }),
                 on_jump,
+                (menus, {
+                    let view = cx.entity().downgrade();
+                    std::rc::Rc::new(move |choice, _, cx| {
+                        view.update(cx, |_, cx| cx.emit(ChannelEvent::PostAction(choice)))
+                            .ok();
+                    })
+                }),
                 cx,
             ));
         }
@@ -4331,6 +4390,7 @@ impl ChannelView {
                                 delete_others,
                                 this.profile_cards,
                             ),
+                            &this.action_menus,
                             cx,
                         )
                         .into_any_element()
@@ -4822,6 +4882,12 @@ impl ChannelView {
 impl Render for ChannelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.composer_cap = style::composer_cap(window);
+        if let Some(model) = &self.model {
+            self.action_menus
+                .sync(&model.posts, window, cx, |_, choice, cx| {
+                    cx.emit(ChannelEvent::PostAction(choice))
+                });
+        }
         let theme = UiTheme::read(cx).clone();
         let root = div()
             .key_context(actions::CHANNEL_VIEW)
