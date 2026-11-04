@@ -16,7 +16,9 @@ use rusqlite::Connection as Db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
+use crate::change::{
+    ChangeSet, CommandError, Connection, DownloadState, POSTS_WINDOW, UploadState,
+};
 use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
@@ -209,6 +211,41 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Uploads a file into a channel for the next post; progress, the
+    /// server's file id or the failure come back in
+    /// [`ChangeSet::Upload`](crate::ChangeSet::Upload).
+    Upload {
+        /// The caller's id for the upload, echoed in the change sets.
+        upload_id: String,
+        /// The channel.
+        channel_id: String,
+        /// The file name the server stores.
+        file_name: String,
+        /// The contents.
+        bytes: Vec<u8>,
+    },
+    /// Fetches a file's thumbnail, from the media cache or the server;
+    /// [`ChangeSet::Thumbnail`](crate::ChangeSet::Thumbnail) answers. A
+    /// file without one gets no answer.
+    LoadThumbnail {
+        /// The file.
+        file_id: String,
+    },
+    /// Saves a file into `folder` under `name`, numbered when the name is
+    /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
+    Download {
+        /// The file.
+        file_id: String,
+        /// The folder to save into.
+        folder: std::path::PathBuf,
+        /// The name it was posted with.
+        name: String,
+    },
+    /// Stops an upload that is still sending.
+    CancelUpload {
+        /// The caller's id for it.
+        upload_id: String,
+    },
     /// Renames a channel or changes its header or purpose; `None` leaves
     /// a field alone. The channel comes back in
     /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
@@ -377,6 +414,30 @@ impl std::fmt::Debug for Command {
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
+            Self::Upload {
+                upload_id,
+                channel_id,
+                file_name,
+                bytes,
+            } => f
+                .debug_struct("Upload")
+                .field("upload_id", upload_id)
+                .field("channel_id", channel_id)
+                .field("file_name", file_name)
+                .field("bytes", &bytes.len())
+                .finish(),
+            Self::LoadThumbnail { file_id } => f
+                .debug_struct("LoadThumbnail")
+                .field("file_id", file_id)
+                .finish(),
+            Self::Download { file_id, .. } => f
+                .debug_struct("Download")
+                .field("file_id", file_id)
+                .finish_non_exhaustive(),
+            Self::CancelUpload { upload_id } => f
+                .debug_struct("CancelUpload")
+                .field("upload_id", upload_id)
+                .finish(),
             Self::PatchChannel { channel_id, .. } => f
                 .debug_struct("PatchChannel")
                 .field("channel_id", channel_id)
@@ -487,6 +548,13 @@ pub(crate) struct Engine {
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
     typing: TypingThrottle,
+    /// Uploads still sending, by the caller's id; aborting one cancels it.
+    uploads: std::collections::HashMap<String, JoinHandle<()>>,
+    /// Where images are kept between runs; without it they are fetched
+    /// each time.
+    media: Option<matty_store::media::MediaCache>,
+    /// Thumbnails on their way from the server.
+    fetching: BTreeSet<String>,
 }
 
 impl Engine {
@@ -508,7 +576,15 @@ impl Engine {
             loaded,
             loaded_inbox: Some(loaded_inbox),
             typing: TypingThrottle::default(),
+            uploads: std::collections::HashMap::new(),
+            media: None,
+            fetching: BTreeSet::new(),
         }
+    }
+
+    pub(crate) fn with_media(mut self, media: Option<matty_store::media::MediaCache>) -> Self {
+        self.media = media;
+        self
     }
 
     /// Runs until every [`SyncHandle`](crate::SyncHandle) is dropped.
@@ -550,6 +626,9 @@ impl Engine {
         dirty: &mut Dirty,
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
+        let mut uploads = Vec::new();
+        let mut thumbnails = Vec::new();
+        let mut downloads = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
         let mut writes = Vec::new();
@@ -812,6 +891,30 @@ impl Engine {
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
+                Message::Command(Command::Upload {
+                    upload_id,
+                    channel_id,
+                    file_name,
+                    bytes,
+                }) => uploads.push(matty_api::Upload {
+                    channel_id,
+                    client_id: upload_id,
+                    file_name,
+                    bytes,
+                }),
+                Message::Command(Command::LoadThumbnail { file_id }) => {
+                    thumbnails.push(file_id);
+                }
+                Message::Command(Command::Download {
+                    file_id,
+                    folder,
+                    name,
+                }) => downloads.push((file_id, folder, name)),
+                Message::Command(Command::CancelUpload { upload_id }) => {
+                    if let Some(task) = self.uploads.remove(&upload_id) {
+                        task.abort();
+                    }
+                }
                 Message::Command(Command::PatchChannel {
                     channel_id,
                     display_name,
@@ -876,6 +979,15 @@ impl Engine {
         for what in fetches {
             self.fetch(what);
         }
+        for (file_id, folder, name) in downloads {
+            self.download(file_id, folder, name, dirty);
+        }
+        for file_id in thumbnails {
+            self.thumbnail(file_id, dirty);
+        }
+        for upload in uploads {
+            self.upload(upload, dirty);
+        }
         for pending_post_id in sends {
             self.send(&pending_post_id, dirty)?;
         }
@@ -902,6 +1014,94 @@ impl Engine {
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// Starts saving a file; it reports back as [`Loaded::Download`].
+    fn download(
+        &self,
+        file_id: String,
+        folder: std::path::PathBuf,
+        name: String,
+        dirty: &mut Dirty,
+    ) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Download {
+                file_id,
+                state: DownloadState::Failed("not connected".into()),
+            });
+            return;
+        };
+        tokio::spawn(crate::download::download(
+            session.client.clone(),
+            file_id,
+            folder,
+            name,
+            self.loaded.clone(),
+        ));
+    }
+
+    /// Answers from the media cache, or fetches the thumbnail; it comes
+    /// back as [`Loaded::Thumbnail`].
+    fn thumbnail(&mut self, file_id: String, dirty: &mut Dirty) {
+        let key = matty_store::media::file_key(&file_id, matty_store::media::FileVariant::Thumb);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::Thumbnail {
+                        file_id,
+                        bytes: Arc::from(cached.bytes),
+                        content_type: cached.content_type,
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(file_id.clone()) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let image = match client.file_thumbnail(&file_id, None).await {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type,
+                    ..
+                }) => Some((bytes, content_type.unwrap_or_else(|| "image/jpeg".into()))),
+                Ok(matty_api::Fetched::NotModified) => None,
+                Err(error) => {
+                    tracing::debug!(%error, file_id, "no thumbnail");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::Thumbnail { file_id, image });
+        });
+    }
+
+    /// Starts sending a file; it reports back as [`Loaded::Upload`].
+    fn upload(&mut self, upload: matty_api::Upload, dirty: &mut Dirty) {
+        let upload_id = upload.client_id.clone();
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Upload {
+                upload_id,
+                state: UploadState::Failed("not connected".into()),
+            });
+            return;
+        };
+        if let Some(old) = self.uploads.remove(&upload_id) {
+            old.abort();
+        }
+        let task = tokio::spawn(outbox::upload(
+            session.client.clone(),
+            upload,
+            self.loaded.clone(),
+        ));
+        self.uploads.insert(upload_id, task);
     }
 
     /// Calls the server for a command; the result comes back as a
@@ -1174,6 +1374,36 @@ impl Engine {
                 channels: Arc::from(channels),
                 members: Arc::new(members),
             }),
+            Loaded::Upload { upload_id, state } => {
+                if !matches!(state, UploadState::Sending(_)) {
+                    self.uploads.remove(&upload_id);
+                }
+                dirty.direct.push(ChangeSet::Upload { upload_id, state });
+            }
+            Loaded::Download { file_id, state } => {
+                dirty.direct.push(ChangeSet::Download { file_id, state });
+            }
+            Loaded::Thumbnail { file_id, image } => {
+                self.fetching.remove(&file_id);
+                if let Some((bytes, content_type)) = image {
+                    if let Some(media) = &self.media {
+                        let key = matty_store::media::file_key(
+                            &file_id,
+                            matty_store::media::FileVariant::Thumb,
+                        );
+                        if let Err(error) =
+                            media.put(self.store.conn(), &key, &bytes, &content_type)
+                        {
+                            tracing::warn!(%error, "could not keep a thumbnail");
+                        }
+                    }
+                    dirty.direct.push(ChangeSet::Thumbnail {
+                        file_id,
+                        bytes: Arc::from(bytes),
+                        content_type,
+                    });
+                }
+            }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
                 posts: Arc::from(posts),

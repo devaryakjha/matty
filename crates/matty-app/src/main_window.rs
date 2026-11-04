@@ -309,13 +309,14 @@ impl MainWindow {
                     this.open_direct(display_name.clone(), window, cx)
                 }
                 ChannelEvent::Send { text, files } => {
-                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                    if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
+                        let file_ids = live.take_file_ids(files);
                         live.send(matty_sync::Command::SendPost {
                             pending_post_id: String::new(),
                             channel_id: channel.to_string(),
                             root_id: String::new(),
                             message: text.to_string(),
-                            file_ids: files.iter().map(ToString::to_string).collect(),
+                            file_ids,
                         });
                     }
                 }
@@ -399,11 +400,28 @@ impl MainWindow {
                 }
                 // Sync picks these up in later changes; the view already
                 // shows the change.
-                ChannelEvent::Upload { .. }
-                | ChannelEvent::CancelUpload(_)
-                | ChannelEvent::RetryUpload(_)
-                | ChannelEvent::OpenFile(_)
-                | ChannelEvent::ToggleSave(_)
+                ChannelEvent::Upload { id, name, source } => {
+                    if let Some(channel) = this.selected_channel.clone() {
+                        let job = crate::live::UploadJob::new(
+                            channel.to_string(),
+                            name.to_string(),
+                            source.clone(),
+                        );
+                        this.start_upload(id.clone(), job, cx);
+                    }
+                }
+                ChannelEvent::CancelUpload(id) => {
+                    if let Some(live) = &mut this.live {
+                        live.cancel_upload(id);
+                    }
+                }
+                ChannelEvent::RetryUpload(id) => {
+                    if let Some(job) = this.live.as_ref().and_then(|live| live.upload_job(id)) {
+                        this.start_upload(id.clone(), job, cx);
+                    }
+                }
+                ChannelEvent::OpenFile(id) => this.download_file(id, cx),
+                ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
@@ -452,6 +470,7 @@ impl MainWindow {
                     this.open_channel(channel.clone(), window, cx)
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
+                RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -566,6 +585,86 @@ impl MainWindow {
 
     /// Clears typing notices once they run out, checking again while
     /// anyone is left.
+    /// Reads a tray file off the UI thread and hands its bytes to sync,
+    /// which reports progress back through [`Live`].
+    fn start_upload(
+        &mut self,
+        id: SharedString,
+        job: crate::live::UploadJob,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(live) = &mut self.live else {
+            return;
+        };
+        live.track_upload(&id, job.clone());
+        cx.spawn(async move |this, cx| {
+            let bytes = cx
+                .background_spawn(async move {
+                    match job.source {
+                        crate::attachments::UploadSource::Path(path) => std::fs::read(path),
+                        crate::attachments::UploadSource::Image(image) => Ok(image.bytes.clone()),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                // Removed from the tray while it was being read.
+                let Some(live) = this
+                    .live
+                    .as_ref()
+                    .filter(|live| live.upload_job(&id).is_some())
+                else {
+                    return;
+                };
+                match bytes {
+                    Ok(bytes) => live.send(matty_sync::Command::Upload {
+                        upload_id: id.to_string(),
+                        channel_id: job.channel_id,
+                        file_name: job.name,
+                        bytes,
+                    }),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not read a file to upload");
+                        this.channel.update(cx, |view, cx| {
+                            view.set_upload_status(
+                                &id,
+                                crate::attachments::AttachmentStatus::Failed,
+                                cx,
+                            );
+                        });
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Saves a post's file to the download folder; it opens once saved
+    /// (see [`open_download`]).
+    fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(name) = live.file_name(file_id) else {
+            tracing::warn!(%file_id, "no such file on screen");
+            return;
+        };
+        let folder = self
+            .settings
+            .read(cx)
+            .get()
+            .download_folder
+            .clone()
+            .or_else(dirs::download_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        live.send(matty_sync::Command::Download {
+            file_id: file_id.to_string(),
+            folder,
+            name,
+        });
+    }
+
     fn expire_typing_later(&mut self, cx: &mut Context<Self>) {
         self._typing_task = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -690,6 +789,18 @@ impl MainWindow {
         if let Some(profiles) = update.profiles {
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
+        }
+        if let Some(download) = update.download {
+            match download {
+                matty_sync::DownloadState::Done(path) => open_download(&path, cx),
+                matty_sync::DownloadState::Failed(error) => {
+                    tracing::warn!(%error, "download failed");
+                }
+            }
+        }
+        if let Some((id, status)) = update.upload {
+            self.channel
+                .update(cx, |view, cx| view.set_upload_status(&id, status, cx));
         }
         if let Some(names) = update.typing {
             let someone = !names.is_empty();
@@ -2136,5 +2247,44 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(switcher_element)
+    }
+}
+
+/// Opens a saved file in its app when it is a kind that only shows
+/// content; anything else, such as a program or a script, is shown in its
+/// folder for the user to decide (PLAN §4.6 Files).
+fn open_download(path: &std::path::Path, cx: &mut gpui_kit::App) {
+    if opens_safely(path) {
+        cx.open_with_system(path);
+    } else {
+        cx.reveal_path(path);
+    }
+}
+
+/// Whether a file of this kind is safe to open without asking.
+fn opens_safely(path: &std::path::Path) -> bool {
+    const SAFE: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "pdf", "txt", "md", "csv",
+        "json", "log", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf",
+        "mp3", "m4a", "wav", "ogg", "mp4", "mov", "webm", "zip",
+    ];
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| SAFE.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::opens_safely;
+
+    #[test]
+    fn only_content_opens_without_asking() {
+        assert!(opens_safely(Path::new("/d/menu.PNG")));
+        assert!(opens_safely(Path::new("/d/notes (1).pdf")));
+        assert!(!opens_safely(Path::new("/d/setup.exe")));
+        assert!(!opens_safely(Path::new("/d/run.sh")));
+        assert!(!opens_safely(Path::new("/d/Makefile")));
     }
 }
