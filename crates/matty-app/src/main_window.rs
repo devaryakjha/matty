@@ -97,11 +97,18 @@ struct Seen {
     at_newest: bool,
     /// The sidebar marks the channel unread.
     unread: bool,
+    /// The user marked it unread and has not left it since.
+    kept_unread: bool,
 }
 
 impl Seen {
     fn views(self) -> bool {
-        self.unread && self.focused && self.channel_shown && !self.covered && self.at_newest
+        self.unread
+            && !self.kept_unread
+            && self.focused
+            && self.channel_shown
+            && !self.covered
+            && self.at_newest
     }
 }
 
@@ -202,6 +209,9 @@ pub struct MainWindow {
     /// Views the open channel a moment after a post arrives in it, if the
     /// user can see it then (#145).
     _view_task: Option<gpui_kit::Task<()>>,
+    /// The open channel the user marked unread: it is not viewed again
+    /// until they switch away and back (#146).
+    kept_unread: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     sidebar_shown: bool,
@@ -520,6 +530,8 @@ impl MainWindow {
                     if let Some(id) = this.selected_channel.clone() {
                         this.sidebar
                             .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+                        // Stays unread until the user leaves and comes back.
+                        this.kept_unread = Some(id);
                     }
                 }
                 ChannelEvent::Leave => {
@@ -748,6 +760,7 @@ impl MainWindow {
             _live_task: None,
             _typing_task: None,
             _view_task: None,
+            kept_unread: None,
             login_server: None,
             sidebar_shown: false,
         };
@@ -1428,6 +1441,9 @@ impl MainWindow {
         self.threads_open = false;
         self.drafts_open = false;
         let previous = self.selected_channel.replace(id.clone());
+        if previous.as_ref() != Some(&id) {
+            self.kept_unread = None;
+        }
         self.notifier.withdraw(&id);
         if let Some(live) = &self.live
             && previous.as_ref() != Some(&id)
@@ -2454,6 +2470,7 @@ impl MainWindow {
         let Some(id) = self.selected_channel.clone() else {
             return;
         };
+        self.kept_unread = None;
         self.view_channels(std::slice::from_ref(&id));
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
@@ -2491,6 +2508,7 @@ impl MainWindow {
             covered: self.right_drawer_shown || self.sidebar_drawer_shown,
             at_newest: self.channel.read(cx).at_newest(cx),
             unread: self.sidebar.read(cx).is_unread(&id),
+            kept_unread: self.kept_unread.as_ref() == Some(&id),
         };
         if seen.views() {
             self.view_channels(std::slice::from_ref(&id));
@@ -3134,6 +3152,7 @@ mod tests {
             covered: false,
             at_newest: true,
             unread: true,
+            kept_unread: false,
         };
         assert!(seen.views(), "focused and at the newest post");
         assert!(
@@ -3175,6 +3194,14 @@ mod tests {
             }
             .views(),
             "nothing to view"
+        );
+        assert!(
+            !Seen {
+                kept_unread: true,
+                ..seen
+            }
+            .views(),
+            "marked unread and not left since"
         );
     }
 
