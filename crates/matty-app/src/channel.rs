@@ -459,6 +459,13 @@ pub struct ChannelView {
     /// Posts that arrived while the reader was scrolled up; the jump pill
     /// counts them until the list is back at the end.
     unseen: usize,
+    /// The post the reader jumped to from a listing or a link, tinted as
+    /// a permalink target until the timer below clears it.
+    permalink: Option<SharedString>,
+    _permalink_task: Option<gpui_kit::Task<()>>,
+    /// A jump whose post is not in the transcript yet; applied when it
+    /// arrives with the channel or a later page.
+    pending_jump: Option<SharedString>,
     delete: DialogHandle,
     /// The post the delete dialog asks about.
     deleting: Option<SharedString>,
@@ -672,6 +679,9 @@ impl ChannelView {
             lightbox_files: Vec::new(),
             editing: None,
             unseen: 0,
+            permalink: None,
+            _permalink_task: None,
+            pending_jump: None,
             delete: DialogHandle::new(false),
             deleting: None,
             me: me.into(),
@@ -707,6 +717,7 @@ impl ChannelView {
                 list.scroll_to_item(divider, cx);
             });
         }
+        self.permalink = None;
         if crate::preview::enabled() {
             self.schedule_preview_arrivals(model.as_ref(), cx);
         }
@@ -723,12 +734,48 @@ impl ChannelView {
             composer.set_placeholder(placeholder, window, cx);
         });
         self.model = model;
+        self.apply_pending_jump(cx);
         cx.notify();
     }
 
     /// Adds posts that arrived from the server to the end of the transcript
     /// without disturbing the scroll position. While the reader is scrolled
     /// up, the jump pill counts them as "N new messages".
+    /// Scrolls to `post` and tints it as a permalink target for a few
+    /// seconds (PLAN §4.2). When the post is not on screen yet, the jump
+    /// waits for the channel or page that carries it.
+    pub fn jump_to(&mut self, post: SharedString, cx: &mut Context<Self>) {
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if self.model.as_ref().is_some_and(|m| m.posts[*index].id == post))
+        });
+        let Some(row) = row else {
+            self.pending_jump = Some(post);
+            return;
+        };
+        self.pending_jump = None;
+        self.list
+            .update(cx, |list, cx| list.scroll_to_item(row, cx));
+        self.permalink = Some(post);
+        self._permalink_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(4))
+                .await;
+            this.update(cx, |this, cx| {
+                this.permalink = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn apply_pending_jump(&mut self, cx: &mut Context<Self>) {
+        if let Some(post) = self.pending_jump.clone() {
+            self.jump_to(post, cx);
+        }
+    }
+
     pub fn append_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
         if posts.is_empty() {
             return;
@@ -748,6 +795,7 @@ impl ChannelView {
         if scrolled_up {
             self.unseen += arrived;
         }
+        self.apply_pending_jump(cx);
         cx.notify();
     }
 
@@ -2075,6 +2123,7 @@ impl ChannelView {
         post: &Post,
         profile: Option<&UserProfile>,
         editor: Option<&Entity<ComposerState>>,
+        highlight: MessageHighlight,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2151,11 +2200,7 @@ impl ChannelView {
             .timestamp(time.clone())
             .gutter_time(time)
             .continuation(post.continues)
-            .highlight(if post.mentions_me {
-                MessageHighlight::Mention
-            } else {
-                MessageHighlight::None
-            })
+            .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
@@ -2385,7 +2430,9 @@ impl ChannelView {
                             .as_ref()
                             .filter(|editing| editing.post == post.id)
                             .map(|editing| editing.composer.clone());
-                        Self::post_row(&post, profile, editor.as_ref(), cx).into_any_element()
+                        let highlight = this.row_highlight(index, &post);
+                        Self::post_row(&post, profile, editor.as_ref(), highlight, cx)
+                            .into_any_element()
                     })
                 }
                 None => div().into_any_element(),
@@ -2395,6 +2442,17 @@ impl ChannelView {
         .size_full()
         .pt(theme.space(2.))
         .pb(theme.space(1.))
+    }
+
+    /// Permalink wins over mention: the reader asked for that row.
+    fn row_highlight(&self, _row: usize, post: &Post) -> MessageHighlight {
+        if self.permalink.as_ref() == Some(&post.id) {
+            MessageHighlight::Permalink
+        } else if post.mentions_me {
+            MessageHighlight::Mention
+        } else {
+            MessageHighlight::None
+        }
     }
 
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {

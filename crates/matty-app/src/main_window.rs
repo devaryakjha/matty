@@ -471,9 +471,11 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.set_muted(muted, cx));
                 }
-                // The post itself scrolls into view once sync can page to it.
-                RightPaneEvent::Jump { channel, .. } => {
-                    this.open_channel(channel.clone(), window, cx)
+                RightPaneEvent::Jump { channel, post } => {
+                    this.open_channel(channel.clone(), window, cx);
+                    let post = post.clone();
+                    this.channel
+                        .update(cx, |channel, cx| channel.jump_to(post, cx));
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
                 RightPaneEvent::OpenFile(id) => this.download_file(id, cx),

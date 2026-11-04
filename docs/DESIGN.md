@@ -383,6 +383,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   star follows; muting dims the row as before. The button stops its click
   so the row beneath does not open the channel.
 
+- **Jump to a post** (PLAN §4.2): "Jump" in Saved, Pinned, mentions and
+  search results opens the channel, scrolls the post into view and tints
+  it with gpuicn's permalink highlight, amber with a gutter bar, for four
+  seconds (`design-39`). The tint wins over the mention tint because the
+  reader asked for that row. A jump to a post that is not loaded yet waits
+  for the channel or page that carries it (`ChannelView::jump_to`).
+
 ## 5. Components
 
 - Every control is a gpuicn component with default styling; Matty passes
