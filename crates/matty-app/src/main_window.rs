@@ -403,9 +403,15 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
-                // Sync answers with `Command::LoadOlder` (#352); until then
-                // the transcript stays at its loaded head.
-                ChannelEvent::NearTop => {}
+                // The page comes back through Live as a prepend and a
+                // `ChangeSet::History` (#352).
+                ChannelEvent::NearTop => {
+                    if let (Some(live), Some(id)) = (&this.live, this.selected_channel.clone()) {
+                        live.send(matty_sync::Command::LoadOlder {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
