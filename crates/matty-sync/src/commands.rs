@@ -84,6 +84,8 @@ pub(crate) enum Write {
         channel_id: String,
         user_ids: Vec<String>,
     },
+    /// Saves preferences already applied to the store.
+    Preferences(Vec<matty_api::models::Preference>),
 }
 
 impl Write {
@@ -109,6 +111,7 @@ impl Write {
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
             Self::AddMembers { .. } => "add members",
+            Self::Preferences(_) => "save preferences",
         }
     }
 
@@ -134,6 +137,11 @@ impl Write {
                 team_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
+            Self::Preferences(preferences) => preferences
+                .iter()
+                .map(|preference| preference.name.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
         }
     }
 }
@@ -242,6 +250,25 @@ pub(crate) async fn run(
                         client.group_channel(&everyone).await?
                     }
                 };
+                // A conversation the user closed shows again.
+                if let Some((category, name)) = matty_store::sidebar::show_preference(
+                    &channel.kind,
+                    &channel.id,
+                    &channel.name,
+                    &user_id,
+                ) {
+                    client
+                        .save_preferences(
+                            &user_id,
+                            &[matty_api::models::Preference {
+                                user_id: user_id.clone(),
+                                category: category.to_owned(),
+                                name,
+                                value: "true".to_owned(),
+                            }],
+                        )
+                        .await?;
+                }
                 let member = client.my_channel_member(&channel.id).await?;
                 Some(Loaded::Ready {
                     channel: Box::new(channel),
@@ -318,6 +345,10 @@ pub(crate) async fn run(
                     channel: Box::new(channel),
                     member: Some(Box::new(member)),
                 })
+            }
+            Write::Preferences(preferences) => {
+                client.save_preferences(&user_id, &preferences).await?;
+                None
             }
             Write::AddMembers {
                 channel_id,
