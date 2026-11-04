@@ -136,6 +136,9 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// The open channel's older history: whether its first post is
+    /// loaded, and whether the last page failed.
+    pub history: Option<(bool, bool)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -148,6 +151,8 @@ pub enum ChannelUpdate {
     /// Patch the posts on screen and keep the scroll.
     Patch {
         removed: Vec<SharedString>,
+        /// Older posts, to go above the first one shown.
+        prepended: Vec<Post>,
         updated: Vec<Post>,
         appended: Vec<Post>,
     },
@@ -242,7 +247,8 @@ fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageForma
 
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
-/// the order changed.
+/// the order changed. Posts before the first shown one are older history
+/// and go on top.
 fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
     let kept: HashMap<&str, &Post> = old.iter().map(|post| (post.id.as_ref(), post)).collect();
     let present: std::collections::HashSet<&str> =
@@ -257,6 +263,11 @@ fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
         .map(|post| post.id.as_ref())
         .filter(|id| present.contains(id))
         .collect();
+    let start = remaining
+        .first()
+        .and_then(|first| new.iter().position(|post| post.id.as_ref() == *first))
+        .unwrap_or(0);
+    let (prepended, new) = new.split_at(start);
     let (head, tail) = new.split_at(remaining.len().min(new.len()));
     if head
         .iter()
@@ -272,6 +283,7 @@ fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
         .collect();
     Some(ChannelUpdate::Patch {
         removed,
+        prepended: prepended.to_vec(),
         updated,
         appended: tail.to_vec(),
     })
@@ -766,6 +778,13 @@ impl Live {
                     }
                 }
             }
+            ChangeSet::History {
+                channel_id,
+                at_start,
+                failed,
+            } if self.is_open(channel_id) => {
+                update.history = Some((*at_start, *failed));
+            }
             ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
                 self.stats = Some(stats.clone());
                 update.details = self.shown_details();
@@ -1240,8 +1259,29 @@ mod tests {
             patch(&old, &new),
             Some(ChannelUpdate::Patch {
                 removed: vec!["b".into()],
+                prepended: vec![],
                 updated: vec![shown("c", "3")],
                 appended: vec![shown("d", "four")],
+            })
+        );
+    }
+
+    #[test]
+    fn older_history_goes_on_top() {
+        let old = [shown("c", "three"), shown("d", "four")];
+        let new = [
+            shown("a", "one"),
+            shown("b", "two"),
+            shown("c", "three"),
+            shown("d", "four"),
+        ];
+        assert_eq!(
+            patch(&old, &new),
+            Some(ChannelUpdate::Patch {
+                removed: vec![],
+                prepended: vec![shown("a", "one"), shown("b", "two")],
+                updated: vec![],
+                appended: vec![],
             })
         );
     }
