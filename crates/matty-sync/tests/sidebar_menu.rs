@@ -350,3 +350,65 @@ async fn editing_the_profile_patches_only_the_changed_fields() {
     let body: Value = serde_json::from_slice(&patch.body).unwrap();
     assert_eq!(body, json!({"first_name": "Ada", "position": "Engineer"}));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn categories_and_channels_move_up_and_down() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "categories": [
+                {"id": "cat", "team_id": "t1", "type": "channels", "display_name": "Channels",
+                 "sorting": "alpha", "channel_ids": ["c1", "c2", "c3"]},
+                {"id": "mine", "team_id": "t1", "type": "custom", "display_name": "Mine", "channel_ids": []}
+            ],
+            "order": ["cat", "mine"]
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories/order"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(["mine", "cat"])))
+        .mount(&server)
+        .await;
+    let (sync, _changes) = connected(&server).await;
+
+    // Already at the top: nothing is sent.
+    sync.send(Command::MoveCategory {
+        category_id: "cat".into(),
+        up: true,
+    });
+    sync.send(Command::MoveCategory {
+        category_id: "mine".into(),
+        up: true,
+    });
+    sync.send(Command::MoveChannel {
+        category_id: "cat".into(),
+        channel_id: "c3".into(),
+        up: true,
+    });
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = category_requests(&server).await;
+        if sent.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    let order = sent.iter().find(|(_, p, _)| p.ends_with("/order")).unwrap();
+    assert_eq!(order.2, json!(["mine", "cat"]));
+    let moved = &sent
+        .iter()
+        .find(|(_, p, _)| !p.ends_with("/order"))
+        .unwrap()
+        .2[0];
+    assert_eq!(moved["channel_ids"], json!(["c1", "c3", "c2"]));
+    assert_eq!(moved["sorting"], "manual");
+}

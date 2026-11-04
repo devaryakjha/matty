@@ -23,5 +23,8 @@ Add the `macos` label to run it on any other pull request.
 When the macOS job fails on master it opens an issue titled "macOS CI is
 failing on master", or comments on the open one. Fix it before merging more.
 
-A new push cancels the older run of the same pull request, and a new merge
-to master cancels the older master run.
+A new push cancels the older run of the same pull request. Every master run
+goes ahead, but each macOS job on master runs one at a time: a running one
+finishes, and only the newest waiting one is kept. A master macOS job
+dropped that way shows as cancelled, and `ci` still passes because the newer
+run checks the same code.
