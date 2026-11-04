@@ -21,7 +21,7 @@ mod outbox;
 mod typing;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
-pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
+pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW, UploadState};
 pub use engine::Command;
 /// Where an account's database lives.
 pub use matty_store::default_path as database_path;

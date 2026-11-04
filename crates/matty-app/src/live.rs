@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
-use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
+use matty_sync::{
+    ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads, UploadState,
+};
 
 use crate::channel::{ChannelModel, Post};
 use crate::login::{SignInMethods, SsoProvider};
@@ -51,6 +53,33 @@ pub struct Live {
     ready: Option<String>,
     /// The search on screen and its results once they come.
     search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The composer's files, by the tray's id: where each goes and its
+    /// server id once up.
+    uploads: HashMap<String, UploadJob>,
+}
+
+/// One tray file on its way to the server.
+#[derive(Clone, Debug)]
+pub struct UploadJob {
+    pub channel_id: String,
+    pub name: String,
+    pub source: crate::attachments::UploadSource,
+    file_id: Option<String>,
+}
+
+impl UploadJob {
+    pub fn new(
+        channel_id: impl Into<String>,
+        name: impl Into<String>,
+        source: crate::attachments::UploadSource,
+    ) -> Self {
+        Self {
+            channel_id: channel_id.into(),
+            name: name.into(),
+            source,
+            file_id: None,
+        }
+    }
 }
 
 /// How long a typing notice lasts without another.
@@ -95,6 +124,8 @@ pub struct Update {
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
+    /// A tray file's progress, by the tray's id.
+    pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -237,6 +268,7 @@ impl Live {
                 typing: Vec::new(),
                 ready: None,
                 search: None,
+                uploads: HashMap::new(),
             },
             changes,
         ))
@@ -244,6 +276,33 @@ impl Live {
 
     pub fn send(&self, command: Command) {
         self.sync.send(command);
+    }
+
+    /// Remembers a tray file so its progress reaches the tray.
+    pub fn track_upload(&mut self, id: &str, job: UploadJob) {
+        self.uploads.insert(id.to_owned(), job);
+    }
+
+    /// The tray file `id`, to send again after a failure.
+    pub fn upload_job(&self, id: &str) -> Option<UploadJob> {
+        self.uploads.get(id).cloned()
+    }
+
+    /// Forgets a tray file and stops it if it is still sending.
+    pub fn cancel_upload(&mut self, id: &str) {
+        if self.uploads.remove(id).is_some() {
+            self.sync.send(Command::CancelUpload {
+                upload_id: id.to_owned(),
+            });
+        }
+    }
+
+    /// The server ids for the tray files a post carries; they leave the
+    /// tray with it.
+    pub fn take_file_ids(&mut self, ids: &[SharedString]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.uploads.remove(id.as_ref())?.file_id)
+            .collect()
     }
 
     /// Shows `row`'s channel: sync publishes its posts now and as they
@@ -537,6 +596,23 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
+            ChangeSet::Upload { upload_id, state } => {
+                if let Some(job) = self.uploads.get_mut(upload_id) {
+                    use crate::attachments::AttachmentStatus;
+                    let status = match state {
+                        UploadState::Sending(fraction) => AttachmentStatus::Uploading(*fraction),
+                        UploadState::Done { file_id } => {
+                            job.file_id = Some(file_id.clone());
+                            AttachmentStatus::Ready
+                        }
+                        UploadState::Failed(error) => {
+                            tracing::warn!(%error, "upload failed");
+                            AttachmentStatus::Failed
+                        }
+                    };
+                    update.upload = Some((upload_id.as_str().into(), status));
+                }
+            }
             ChangeSet::Search { terms, posts } => {
                 if let Some((asked, results)) = self.search.as_mut()
                     && asked == terms
@@ -1293,5 +1369,49 @@ mod tests {
         let (muted, prefs) = notifications(&ChannelMember::default());
         assert!(!muted);
         assert_eq!(prefs, ChannelNotifications::default());
+    }
+
+    #[test]
+    fn upload_progress_reaches_the_tray_and_the_file_id_the_post() {
+        use crate::attachments::{AttachmentStatus, UploadSource};
+        let mut live = live();
+        let job = UploadJob::new("c1", "notes.txt", UploadSource::Path("notes.txt".into()));
+        live.track_upload("upload-1", job);
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Sending(0.5),
+        });
+        assert_eq!(
+            update.upload,
+            Some(("upload-1".into(), AttachmentStatus::Uploading(0.5)))
+        );
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Done {
+                file_id: "f1".into(),
+            },
+        });
+        assert_eq!(
+            update.upload,
+            Some(("upload-1".into(), AttachmentStatus::Ready))
+        );
+        assert_eq!(live.take_file_ids(&["upload-1".into()]), vec!["f1"]);
+        // It left with the post; a late report changes nothing.
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Failed("gone".into()),
+        });
+        assert_eq!(update.upload, None);
+    }
+
+    #[test]
+    fn a_removed_upload_is_forgotten() {
+        use crate::attachments::UploadSource;
+        let mut live = live();
+        let job = UploadJob::new("c1", "notes.txt", UploadSource::Path("notes.txt".into()));
+        live.track_upload("upload-1", job);
+        live.cancel_upload("upload-1");
+        assert!(live.upload_job("upload-1").is_none());
+        assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
     }
 }

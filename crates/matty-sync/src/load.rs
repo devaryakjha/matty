@@ -67,6 +67,11 @@ pub(crate) enum Loaded {
         channels: Vec<Channel>,
         members: std::collections::HashMap<String, i64>,
     },
+    /// An upload's progress, file id or failure.
+    Upload {
+        upload_id: String,
+        state: crate::change::UploadState,
+    },
     /// Search results, best first.
     Search {
         terms: String,

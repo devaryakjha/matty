@@ -16,7 +16,7 @@ use rusqlite::Connection as Db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW};
+use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW, UploadState};
 use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
@@ -209,6 +209,24 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Uploads a file into a channel for the next post; progress, the
+    /// server's file id or the failure come back in
+    /// [`ChangeSet::Upload`](crate::ChangeSet::Upload).
+    Upload {
+        /// The caller's id for the upload, echoed in the change sets.
+        upload_id: String,
+        /// The channel.
+        channel_id: String,
+        /// The file name the server stores.
+        file_name: String,
+        /// The contents.
+        bytes: Vec<u8>,
+    },
+    /// Stops an upload that is still sending.
+    CancelUpload {
+        /// The caller's id for it.
+        upload_id: String,
+    },
     /// Renames a channel or changes its header or purpose; `None` leaves
     /// a field alone. The channel comes back in
     /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
@@ -377,6 +395,22 @@ impl std::fmt::Debug for Command {
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
+            Self::Upload {
+                upload_id,
+                channel_id,
+                file_name,
+                bytes,
+            } => f
+                .debug_struct("Upload")
+                .field("upload_id", upload_id)
+                .field("channel_id", channel_id)
+                .field("file_name", file_name)
+                .field("bytes", &bytes.len())
+                .finish(),
+            Self::CancelUpload { upload_id } => f
+                .debug_struct("CancelUpload")
+                .field("upload_id", upload_id)
+                .finish(),
             Self::PatchChannel { channel_id, .. } => f
                 .debug_struct("PatchChannel")
                 .field("channel_id", channel_id)
@@ -487,6 +521,8 @@ pub(crate) struct Engine {
     loaded: mpsc::UnboundedSender<Loaded>,
     loaded_inbox: Option<mpsc::UnboundedReceiver<Loaded>>,
     typing: TypingThrottle,
+    /// Uploads still sending, by the caller's id; aborting one cancels it.
+    uploads: std::collections::HashMap<String, JoinHandle<()>>,
 }
 
 impl Engine {
@@ -508,6 +544,7 @@ impl Engine {
             loaded,
             loaded_inbox: Some(loaded_inbox),
             typing: TypingThrottle::default(),
+            uploads: std::collections::HashMap::new(),
         }
     }
 
@@ -550,6 +587,7 @@ impl Engine {
         dirty: &mut Dirty,
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
+        let mut uploads = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
         let mut writes = Vec::new();
@@ -812,6 +850,22 @@ impl Engine {
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
+                Message::Command(Command::Upload {
+                    upload_id,
+                    channel_id,
+                    file_name,
+                    bytes,
+                }) => uploads.push(matty_api::Upload {
+                    channel_id,
+                    client_id: upload_id,
+                    file_name,
+                    bytes,
+                }),
+                Message::Command(Command::CancelUpload { upload_id }) => {
+                    if let Some(task) = self.uploads.remove(&upload_id) {
+                        task.abort();
+                    }
+                }
                 Message::Command(Command::PatchChannel {
                     channel_id,
                     display_name,
@@ -876,6 +930,9 @@ impl Engine {
         for what in fetches {
             self.fetch(what);
         }
+        for upload in uploads {
+            self.upload(upload, dirty);
+        }
         for pending_post_id in sends {
             self.send(&pending_post_id, dirty)?;
         }
@@ -902,6 +959,27 @@ impl Engine {
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// Starts sending a file; it reports back as [`Loaded::Upload`].
+    fn upload(&mut self, upload: matty_api::Upload, dirty: &mut Dirty) {
+        let upload_id = upload.client_id.clone();
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Upload {
+                upload_id,
+                state: UploadState::Failed("not connected".into()),
+            });
+            return;
+        };
+        if let Some(old) = self.uploads.remove(&upload_id) {
+            old.abort();
+        }
+        let task = tokio::spawn(outbox::upload(
+            session.client.clone(),
+            upload,
+            self.loaded.clone(),
+        ));
+        self.uploads.insert(upload_id, task);
     }
 
     /// Calls the server for a command; the result comes back as a
@@ -1174,6 +1252,12 @@ impl Engine {
                 channels: Arc::from(channels),
                 members: Arc::new(members),
             }),
+            Loaded::Upload { upload_id, state } => {
+                if !matches!(state, UploadState::Sending(_)) {
+                    self.uploads.remove(&upload_id);
+                }
+                dirty.direct.push(ChangeSet::Upload { upload_id, state });
+            }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
                 posts: Arc::from(posts),

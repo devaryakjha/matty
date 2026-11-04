@@ -98,6 +98,13 @@ pub enum ChangeSet {
         /// Members by channel id.
         members: Arc<std::collections::HashMap<String, i64>>,
     },
+    /// An upload moved on.
+    Upload {
+        /// The caller's id for it.
+        upload_id: String,
+        /// Where it is.
+        state: UploadState,
+    },
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].
@@ -176,6 +183,20 @@ pub enum Connection {
         /// What went wrong.
         error: String,
     },
+}
+
+/// Where an upload is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UploadState {
+    /// Sending, from 0.0 to 1.0.
+    Sending(f32),
+    /// On the server; the id goes in the post's `file_ids`.
+    Done {
+        /// The server's file id.
+        file_id: String,
+    },
+    /// The server refused it or the connection failed.
+    Failed(String),
 }
 
 /// Why a command was not carried out.
