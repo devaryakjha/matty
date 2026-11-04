@@ -14,6 +14,7 @@ pub mod channel_settings;
 pub mod directory;
 pub mod dnd;
 pub mod drafts;
+pub mod embeds;
 pub mod emoji;
 pub mod live;
 pub mod logging;
