@@ -740,6 +740,19 @@ impl MainWindow {
         })
         .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
+        // A click on a notification opens its channel at its post (#139).
+        let (clicked_tx, clicked) = async_channel::bounded(8);
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(clicked) = clicked.recv().await {
+                let opened = this.update_in(cx, |this, window, cx| {
+                    this.open_notification(clicked, window, cx)
+                });
+                if opened.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut this = Self {
             settings,
             login,
@@ -755,7 +768,7 @@ impl MainWindow {
             preferences: DialogHandle::new(false),
             keywords,
             log_level,
-            notifier: matty_notify::backend::platform(),
+            notifier: matty_notify::backend::platform(clicked_tx),
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
             browse,
@@ -1478,6 +1491,24 @@ impl MainWindow {
 
     /// Shows `id` in the channel view and marks it in the sidebar. Until
     /// sync lands only the preview fixtures have content.
+    /// Brings Matty forward on the channel a notification was about, at
+    /// its post.
+    fn open_notification(
+        &mut self,
+        clicked: matty_notify::Clicked,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.activate(true);
+        window.activate_window();
+        self.open_channel(clicked.channel_id.into(), window, cx);
+        if !clicked.post_id.is_empty() {
+            let post = clicked.post_id.into();
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(post, cx));
+        }
+    }
+
     fn open_channel(
         &mut self,
         id: gpui_kit::SharedString,
