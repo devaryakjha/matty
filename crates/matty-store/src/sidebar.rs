@@ -111,7 +111,8 @@ pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<()> {
 }
 
 /// Inserts or replaces channel memberships, keeping both the root and the
-/// non-root counts.
+/// non-root counts. A scheme admin is stored with `channel_admin` in its
+/// roles, so the store needs no column for the flag.
 pub fn upsert_channel_members(conn: &Connection, members: &[ChannelMember]) -> Result<()> {
     let mut statement = conn.prepare_cached(
         "INSERT INTO channel_members (channel_id, user_id, roles, last_viewed_at, msg_count,
@@ -127,10 +128,20 @@ pub fn upsert_channel_members(conn: &Connection, members: &[ChannelMember]) -> R
              notify_props = excluded.notify_props, last_update_at = excluded.last_update_at",
     )?;
     for member in members {
+        let admin = member.scheme_admin
+            && !member
+                .roles
+                .split_whitespace()
+                .any(|r| r == "channel_admin");
+        let roles = if admin {
+            format!("{} channel_admin", member.roles).trim().to_owned()
+        } else {
+            member.roles.clone()
+        };
         statement.execute(params![
             member.channel_id,
             member.user_id,
-            member.roles,
+            roles,
             member.last_viewed_at,
             member.msg_count,
             member.mention_count,
@@ -682,6 +693,8 @@ pub fn channel_member(
                 urgent_mention_count: row.get(6)?,
                 notify_props: serde_json::from_str(&notify_props).unwrap_or_default(),
                 last_update_at: row.get(8)?,
+                // Stored as `channel_admin` in `roles`.
+                scheme_admin: false,
             })
         })
         .optional()?;

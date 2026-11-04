@@ -235,3 +235,51 @@ async fn categories_are_created_renamed_moved_into_and_deleted_on_the_server() {
         "/api/v4/users/me/teams/t1/channels/categories/mine"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_and_making_private_reach_the_server() {
+    let server = server().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/channels/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/channels/c2/privacy"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id": "c2", "team_id": "t1", "type": "P", "name": "c2", "display_name": "C2"}),
+        ))
+        .mount(&server)
+        .await;
+    let (sync, _changes) = connected(&server).await;
+
+    sync.send(Command::ConvertToPrivate {
+        channel_id: "c2".into(),
+    });
+    sync.send(Command::ArchiveChannel {
+        channel_id: "c1".into(),
+    });
+    let sent = |requests: &[wiremock::Request]| {
+        let archived = requests
+            .iter()
+            .any(|r| r.method.as_str() == "DELETE" && r.url.path() == "/api/v4/channels/c1");
+        let private = requests
+            .iter()
+            .any(|r| r.url.path() == "/api/v4/channels/c2/privacy");
+        archived && private
+    };
+    for _ in 0..100 {
+        if sent(&server.received_requests().await.unwrap_or_default()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(sent(&server.received_requests().await.unwrap_or_default()));
+    let requests = server.received_requests().await.unwrap_or_default();
+    let privacy = requests
+        .iter()
+        .find(|r| r.url.path() == "/api/v4/channels/c2/privacy")
+        .unwrap();
+    let body: Value = serde_json::from_slice(&privacy.body).unwrap();
+    assert_eq!(body, json!({"privacy": "P"}));
+}

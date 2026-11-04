@@ -60,6 +60,13 @@ pub(crate) enum Write {
     Leave {
         channel_id: String,
     },
+    Archive {
+        channel_id: String,
+    },
+    Privacy {
+        channel_id: String,
+        private: bool,
+    },
     /// Reads, not writes, but likewise asked for by a view and answered
     /// once.
     Browse {
@@ -136,6 +143,8 @@ impl Write {
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
+            Self::Archive { .. } => "archive channel",
+            Self::Privacy { .. } => "change channel privacy",
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
             Self::Search { .. } => "search",
@@ -169,6 +178,8 @@ impl Write {
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
+            | Self::Archive { channel_id }
+            | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
@@ -368,6 +379,20 @@ pub(crate) async fn run(
             Write::Leave { channel_id } => {
                 client.remove_channel_member(&channel_id, &user_id).await?;
                 Some(Loaded::Left { channel_id })
+            }
+            Write::Archive { channel_id } => {
+                client.archive_channel(&channel_id).await?;
+                Some(Loaded::Left { channel_id })
+            }
+            Write::Privacy {
+                channel_id,
+                private,
+            } => {
+                let channel = client.set_channel_privacy(&channel_id, private).await?;
+                Some(Loaded::Channel {
+                    channel: Box::new(channel),
+                    member: None,
+                })
             }
             Write::Browse { team_id } => {
                 let mut channels = Vec::new();

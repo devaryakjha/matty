@@ -440,6 +440,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         } else {
             DEFAULT_MAX_POST_SIZE
         },
+        can_manage: true,
         profiles: profiles(),
         notifications: Default::default(),
         typing: match id {
@@ -728,6 +729,7 @@ pub fn empty_channel(
         posts: vec![],
         first_unread: None,
         max_post_size: DEFAULT_MAX_POST_SIZE,
+        can_manage: true,
         profiles: profiles(),
         notifications: Default::default(),
         typing: vec![],

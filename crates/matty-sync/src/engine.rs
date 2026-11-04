@@ -262,6 +262,18 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Archives a channel (#208); it leaves the sidebar as a left channel
+    /// does.
+    ArchiveChannel {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Makes a public channel private (#208); the channel comes back in
+    /// [`ChangeSet::Channel`](crate::ChangeSet::Channel).
+    ConvertToPrivate {
+        /// The channel.
+        channel_id: String,
+    },
     /// Lists the team's public channels with their member counts, for
     /// Browse channels; [`ChangeSet::Directory`](crate::ChangeSet::Directory)
     /// answers.
@@ -607,6 +619,14 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::ArchiveChannel { channel_id } => f
+                .debug_struct("ArchiveChannel")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::ConvertToPrivate { channel_id } => f
+                .debug_struct("ConvertToPrivate")
                 .field("channel_id", channel_id)
                 .finish(),
             Self::Browse { team_id } => f.debug_struct("Browse").field("team_id", team_id).finish(),
@@ -1269,6 +1289,15 @@ impl Engine {
                 }
                 Message::Command(Command::LeaveChannel { channel_id }) => {
                     writes.push(Write::Leave { channel_id });
+                }
+                Message::Command(Command::ArchiveChannel { channel_id }) => {
+                    writes.push(Write::Archive { channel_id });
+                }
+                Message::Command(Command::ConvertToPrivate { channel_id }) => {
+                    writes.push(Write::Privacy {
+                        channel_id,
+                        private: true,
+                    });
                 }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });

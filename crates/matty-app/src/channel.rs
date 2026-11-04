@@ -232,6 +232,9 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
+    /// The user may archive the channel or make it private: a channel or
+    /// system admin (#208). The server has the last word.
+    pub can_manage: bool,
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
@@ -540,6 +543,10 @@ pub enum ChannelEvent {
     SetPurpose(SharedString),
     /// The user confirmed leaving the channel from its header menu.
     Leave,
+    /// "Archive channel" was confirmed (#208).
+    Archive,
+    /// "Convert to private channel" was confirmed (#208).
+    ConvertToPrivate,
     /// The user saved the channel's notification preferences; `muted`
     /// is the mute switch from the same dialog.
     SetNotifications {
@@ -585,6 +592,9 @@ pub struct ChannelView {
     notifications: Entity<NotificationsView>,
     add_members: Entity<AddMembersView>,
     leave: DialogHandle,
+    /// Confirmations for archiving the channel and making it private.
+    archive: DialogHandle,
+    convert: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
     picker_open: bool,
@@ -858,6 +868,8 @@ impl ChannelView {
             notifications,
             add_members,
             leave: DialogHandle::new(false),
+            archive: DialogHandle::new(false),
+            convert: DialogHandle::new(false),
             picker,
             picker_open: false,
             picker_target: None,
@@ -1311,6 +1323,7 @@ impl ChannelView {
         purpose: Option<SharedString>,
         members: usize,
         pinned: usize,
+        can_manage: bool,
         cx: &mut Context<Self>,
     ) {
         if let Some(model) = self.model.as_mut() {
@@ -1318,6 +1331,12 @@ impl ChannelView {
             model.purpose = purpose;
             model.members = members;
             model.pinned = pinned;
+            let menu_changed = model.can_manage != can_manage;
+            model.can_manage = can_manage;
+            if menu_changed {
+                let model = self.model.clone();
+                self.refresh_header_menu(model.as_ref(), cx);
+            }
             cx.notify();
         }
     }
@@ -2354,6 +2373,21 @@ impl ChannelView {
                 MenuItem::new("channel.menu.leave", "Leave channel…")
                     .on_click(move |_, window, cx| leave.open(window, cx)),
             );
+            if model.is_some_and(|m| m.can_manage) {
+                items.push(MenuItem::separator());
+                if model.is_some_and(|m| m.kind == ChannelKind::Public) {
+                    let convert = self.convert.clone();
+                    items.push(
+                        MenuItem::new("channel.menu.convert", "Convert to private channel…")
+                            .on_click(move |_, window, cx| convert.open(window, cx)),
+                    );
+                }
+                let archive = self.archive.clone();
+                items.push(
+                    MenuItem::new("channel.menu.archive", "Archive channel…")
+                        .on_click(move |_, window, cx| archive.open(window, cx)),
+                );
+            }
         }
         self.header_menu
             .update(cx, |menu, cx| menu.set_items(items, cx));
@@ -2459,6 +2493,87 @@ impl ChannelView {
         let title = self.edit.read(cx).field().title();
         let popup = dialog_popup("channel.edit.popup", title, cx).child(self.edit.clone());
         dialog("channel.edit", &handle, popup, window, cx)
+    }
+
+    /// A confirmation for a channel action: `title` over `description`,
+    /// with Cancel and a destructive `action` that emits `event`.
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_dialog(
+        &self,
+        id: &'static str,
+        handle: &DialogHandle,
+        title: String,
+        description: &'static str,
+        action: &'static str,
+        event: ChannelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let element_id = |part: &str| gpui_kit::ElementId::Name(format!("{id}.{part}").into());
+        let popup = dialog_popup(element_id("popup"), title.clone(), cx)
+            .child(dialog_title(element_id("title"), cx).child(title))
+            .child(dialog_description(element_id("description"), cx).child(description))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel(element_id("cancel"))
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action(element_id("confirm"))
+                            .variant(ButtonVariant::Destructive)
+                            .label(action),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog(id, handle, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            true
+        })
+    }
+
+    fn archive_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.archive",
+            &self.archive.clone(),
+            format!("Archive {name}?"),
+            "Nobody can post in it any more and it leaves everyone's sidebar. \
+             Its messages and files stay on the server.",
+            "Archive",
+            ChannelEvent::Archive,
+            window,
+            cx,
+        )
+    }
+
+    fn convert_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.convert",
+            &self.convert.clone(),
+            format!("Make {name} private?"),
+            "Only its members will see it, and people join by invitation. \
+             Its history stays. This can't be undone from Matty.",
+            "Make private",
+            ChannelEvent::ConvertToPrivate,
+            window,
+            cx,
+        )
+    }
+
+    /// "#name", or "this channel" before the model arrives.
+    fn channel_label(&self) -> SharedString {
+        match self.model.as_ref() {
+            Some(channel) => format!("#{}", channel.name).into(),
+            None => "this channel".into(),
+        }
     }
 
     fn leave_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3604,6 +3719,8 @@ impl Render for ChannelView {
             .child(self.notifications_dialog(window, cx))
             .child(self.add_members_dialog(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(self.archive_dialog(window, cx))
+            .child(self.convert_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
 }
@@ -3706,6 +3823,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -3761,6 +3879,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),

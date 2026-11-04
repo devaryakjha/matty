@@ -155,6 +155,9 @@ pub struct ChannelMember {
     pub user_id: String,
     /// Space-separated role names.
     pub roles: String,
+    /// Admin of the channel through its permission scheme; `roles` then
+    /// leaves `channel_admin` out.
+    pub scheme_admin: bool,
     /// Milliseconds since the epoch when the user last viewed the channel.
     pub last_viewed_at: i64,
     /// Messages the user has seen, counting replies.

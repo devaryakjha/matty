@@ -604,6 +604,18 @@ impl MainWindow {
                         this.leave_channel(id, window, cx);
                     }
                 }
+                ChannelEvent::Archive => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.archive_channel(id, window, cx);
+                    }
+                }
+                ChannelEvent::ConvertToPrivate => {
+                    if let (Some(live), Some(id)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::ConvertToPrivate {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
                 // Sync picks these up in later changes; the view already
                 // shows the change.
                 ChannelEvent::Upload { id, name, source } => {
@@ -1214,6 +1226,7 @@ impl MainWindow {
                     details.purpose,
                     details.members,
                     details.pinned,
+                    details.can_manage,
                     cx,
                 );
             });
@@ -1851,6 +1864,23 @@ impl MainWindow {
                 channel_id: id.to_string(),
             });
         }
+        self.drop_channel(id, window, cx);
+    }
+
+    /// Archives the channel (#208); like leaving, it goes from the sidebar
+    /// at once.
+    fn archive_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::ArchiveChannel {
+                channel_id: id.to_string(),
+            });
+        }
+        self.drop_channel(id, window, cx);
+    }
+
+    /// Takes a channel the user left or archived off the sidebar and opens
+    /// the first public channel instead.
+    fn drop_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let mut model = self.sidebar.read(cx).model().clone();
         for category in model.categories.iter_mut() {
             category.rows.retain(|row| row.id != id);

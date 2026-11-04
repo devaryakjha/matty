@@ -129,6 +129,8 @@ pub struct Details {
     pub purpose: Option<SharedString>,
     pub members: usize,
     pub pinned: usize,
+    /// See [`crate::channel::ChannelModel::can_manage`].
+    pub can_manage: bool,
 }
 
 /// What a change set means for the window.
@@ -668,7 +670,23 @@ impl Live {
                 .stats
                 .as_ref()
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
+            can_manage: self.can_manage(),
         }
+    }
+
+    /// Whether the user administers the open channel: its admin, or the
+    /// system's. Team admins pass on the server, but their role is not kept.
+    fn can_manage(&self) -> bool {
+        let has = |roles: &str, role: &str| roles.split_whitespace().any(|r| r == role);
+        let channel_admin = self
+            .member
+            .as_ref()
+            .is_some_and(|member| member.scheme_admin || has(&member.roles, "channel_admin"));
+        let system_admin = self
+            .users
+            .get(&self.me.0)
+            .is_some_and(|me| has(&me.roles, "system_admin"));
+        channel_admin || system_admin
     }
 
     fn typing_names(&self) -> Vec<SharedString> {
@@ -1124,13 +1142,14 @@ impl Live {
             }
             ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
-                update.details = self.shown_details();
                 if let Some(member) = member {
                     self.member = Some(member.clone());
                     if self.shown.is_some() {
                         update.notifications = Some(notifications(member));
                     }
                 }
+                // After the member: whether the user may manage it follows.
+                update.details = self.shown_details();
             }
             ChangeSet::History {
                 channel_id,
@@ -2088,6 +2107,39 @@ mod tests {
     }
 
     #[test]
+    fn only_channel_and_system_admins_may_manage_the_channel() {
+        let mut live = live();
+        opened(&mut live);
+        let member = |roles: &str, scheme_admin: bool| ChangeSet::Channel {
+            channel: Arc::new(Channel {
+                id: "c1".into(),
+                ..Channel::default()
+            }),
+            member: Some(Arc::new(ChannelMember {
+                channel_id: "c1".into(),
+                user_id: "me".into(),
+                roles: roles.into(),
+                scheme_admin,
+                ..ChannelMember::default()
+            })),
+        };
+        let manage = |update: Update| update.details.map(|d| d.can_manage);
+        assert_eq!(manage(live.apply(&member("channel_user", false))), Some(false));
+        assert_eq!(
+            manage(live.apply(&member("channel_user channel_admin", false))),
+            Some(true)
+        );
+        assert_eq!(manage(live.apply(&member("channel_user", true))), Some(true));
+        live.apply(&member("channel_user", false));
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "me".into(),
+            roles: "system_user system_admin".into(),
+            ..User::default()
+        }])));
+        assert!(live.details(0).can_manage);
+    }
+
+    #[test]
     fn the_banner_counts_waiting_sends_across_channels() {
         let mut live = live();
         let outbox = |channel: &str, errors: &[Option<&str>]| ChangeSet::Outbox {
@@ -2169,6 +2221,7 @@ mod tests {
                 purpose: None,
                 members: 0,
                 pinned: 1,
+                can_manage: false,
             })
         );
         let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {

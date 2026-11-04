@@ -165,6 +165,29 @@ impl Client {
             .await
     }
 
+    /// `DELETE channels/{channel_id}`: archives the channel. Its posts stay
+    /// on the server.
+    pub async fn archive_channel(&self, channel_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("channels/{channel_id}"))
+            .await
+            .map(|_| ())
+    }
+
+    /// `PUT channels/{channel_id}/privacy`: makes a public channel private
+    /// (`private`) or a private one public.
+    pub async fn set_channel_privacy(
+        &self,
+        channel_id: &str,
+        private: bool,
+    ) -> Result<Channel, ApiError> {
+        let privacy = if private { "P" } else { "O" };
+        self.put(
+            &format!("channels/{channel_id}/privacy"),
+            &json!({ "privacy": privacy }),
+        )
+        .await
+    }
+
     /// `PUT channels/{channel_id}/members/{user_id}/notify_props`: changes
     /// these of the user's notification properties for the channel.
     pub async fn update_channel_notify_props(
