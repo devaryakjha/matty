@@ -44,6 +44,7 @@ use crate::ui::{
     kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
+    scroll_area::ScrollArea,
     switch::Switch,
     theme::{UiTheme, transition_value},
     title_bar::TitleBar,
@@ -2637,33 +2638,40 @@ impl MainWindow {
                             }),
                     )
             };
-        // Taller than gpuicn's default so every section shows at once.
+        // The sections scroll inside the popup, which stays within the
+        // window: the title and Done above them take about space(24.).
+        let body_height = theme
+            .space(158.)
+            .min(window.viewport_size().height - theme.space(40.));
         let popup = dialog_popup("preferences.popup", "Preferences", cx)
-            .max_h(theme.space(182.))
             .child(dialog_title("preferences.title", cx).child("Preferences"))
             .child(
                 dialog_description("preferences.description", cx)
                     .child("Changes apply right away and are saved for next time."),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(5.))
-                    .pt(theme.space(1.))
-                    .child(section("Theme", theme_group.into_any_element()))
-                    .child(section("Text size", size_group.into_any_element()))
-                    .child(section("Clock", clock_group.into_any_element()))
-                    .child(section(
-                        "Send message with",
-                        send_section.into_any_element(),
-                    ))
-                    .child(section(
-                        "Message display",
-                        display_section.into_any_element(),
-                    ))
-                    .when(self.notify_props.is_some(), |list| {
-                        list.child(section(
+                ScrollArea::new("preferences.body")
+                    .aria_label("Preferences")
+                    .h(body_height)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(theme.space(5.))
+                            .pt(theme.space(1.))
+                            .child(section("Theme", theme_group.into_any_element()))
+                            .child(section("Text size", size_group.into_any_element()))
+                            .child(section("Clock", clock_group.into_any_element()))
+                            .child(section(
+                                "Send message with",
+                                send_section.into_any_element(),
+                            ))
+                            .child(section(
+                                "Message display",
+                                display_section.into_any_element(),
+                            ))
+                            .when(self.notify_props.is_some(), |list| {
+                                list.child(section(
                             "Notifications",
                             Field::new("preferences.keywords", &self.keywords)
                                 .label("Mention keywords")
@@ -2673,36 +2681,37 @@ impl MainWindow {
                                 )
                                 .into_any_element(),
                         ))
-                    })
-                    .child(section(
-                        "Window",
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(3.))
-                            .child(switch_row(
-                                "preferences.close-to-tray",
-                                "Keep running when closed",
-                                "Closing the window leaves Matty in the tray.",
-                                settings.close_to_tray,
-                                |s, v| s.close_to_tray = v,
-                            ))
-                            .child(switch_row(
-                                "preferences.launch-at-login",
-                                "Open at login",
-                                "Start Matty when you sign in.",
-                                settings.launch_at_login,
-                                |s, v| s.launch_at_login = v,
-                            ))
-                            .child(switch_row(
-                                "preferences.reduce-motion",
-                                "Reduce motion",
-                                "Panes and banners change without sliding.",
-                                settings.reduce_motion,
-                                |s, v| s.reduce_motion = v,
-                            ))
-                            .into_any_element(),
-                    )),
+                            })
+                            .child(section(
+                                "Window",
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(theme.space(3.))
+                                    .child(switch_row(
+                                        "preferences.close-to-tray",
+                                        "Keep running when closed",
+                                        "Closing the window leaves Matty in the tray.",
+                                        settings.close_to_tray,
+                                        |s, v| s.close_to_tray = v,
+                                    ))
+                                    .child(switch_row(
+                                        "preferences.launch-at-login",
+                                        "Open at login",
+                                        "Start Matty when you sign in.",
+                                        settings.launch_at_login,
+                                        |s, v| s.launch_at_login = v,
+                                    ))
+                                    .child(switch_row(
+                                        "preferences.reduce-motion",
+                                        "Reduce motion",
+                                        "Panes and banners change without sliding.",
+                                        settings.reduce_motion,
+                                        |s, v| s.reduce_motion = v,
+                                    ))
+                                    .into_any_element(),
+                            )),
+                    ),
             )
             .child(dialog_close("preferences.close", cx).label("Done"));
         dialog("preferences", &self.preferences, popup, window, cx)
