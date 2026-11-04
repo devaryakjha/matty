@@ -415,6 +415,20 @@ pub fn thread(conn: &Connection, root_id: &str) -> Result<Vec<Post>> {
     Ok(posts)
 }
 
+/// A channel's live pinned posts as cached, with reactions and files, in
+/// no particular order: the Pinned pane offline (#163).
+pub fn pinned(conn: &Connection, channel_id: &str) -> Result<Vec<Post>> {
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT {POST_COLUMNS} FROM posts
+         WHERE channel_id = ?1 AND is_pinned AND delete_at = 0"
+    ))?;
+    let mut posts: Vec<Post> = statement
+        .query_map([channel_id], post_from_row)?
+        .collect::<rusqlite::Result<_>>()?;
+    attach(conn, &mut posts)?;
+    Ok(posts)
+}
+
 /// Records a reaction (`reaction_added`); repeating it changes nothing.
 /// Ignored when the post is not cached.
 pub fn add_reaction(conn: &Connection, reaction: &Reaction) -> Result<()> {

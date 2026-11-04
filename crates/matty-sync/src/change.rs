@@ -460,8 +460,13 @@ pub enum CommandError {
         /// The post's pending id.
         post_id: String,
     },
-    /// The command needs a connection and there is none.
-    Offline,
+    /// The command needs the server and Matty could not reach it: it is
+    /// offline (`matty --offline`, or the network dropped). Nothing changed
+    /// here or on the server, so the user can try again once back (#163).
+    Offline {
+        /// What was asked, as in [`CommandError::Server`].
+        action: &'static str,
+    },
     /// The server refused or failed.
     Server {
         /// What was asked, such as `edit`.
