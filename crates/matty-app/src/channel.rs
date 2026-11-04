@@ -295,6 +295,10 @@ enum Row {
     Day(SharedString),
     NewMessages,
     Post(usize),
+    /// The bottom row: loading newer messages after a jump into the past,
+    /// or a failed page with Retry. Empty while the transcript runs to the
+    /// newest post.
+    Newer,
 }
 
 /// Where the transcript stands in the channel's history.
@@ -304,8 +308,15 @@ pub struct History {
     pub at_start: bool,
     /// An older page is on its way.
     pub loading: bool,
-    /// The last page failed; the top row offers Retry.
+    /// The last older page failed; the top row offers Retry.
     pub failed: bool,
+    /// The newest post is loaded. False after a jump into the past, until
+    /// newer pages reach the end.
+    pub at_end: bool,
+    /// A newer page is on its way.
+    pub loading_newer: bool,
+    /// The last newer page failed; the bottom row offers Retry.
+    pub failed_newer: bool,
 }
 
 impl ReplySummary {
@@ -334,6 +345,7 @@ impl ChannelModel {
             }
             rows.push(Row::Post(index));
         }
+        rows.push(Row::Newer);
         rows
     }
 
@@ -354,6 +366,11 @@ impl ChannelModel {
         }
         added
     }
+}
+
+/// A post's words without the Markdown, for "Copy text" (PLAN §4.2).
+pub fn plain_text(body: &str) -> String {
+    matty_markdown::to_plain(&matty_markdown::parse(body))
 }
 
 /// The row density from Preferences (PLAN §4.2 display).
@@ -401,6 +418,14 @@ pub enum ChannelEvent {
     /// answers with `prepend_posts` and `set_history`. Fired once per page:
     /// the view marks itself loading until one of those arrives.
     NearTop,
+    /// The transcript showed its bottom row while it stops short of the
+    /// newest post (after a jump into the past) and wants a newer page;
+    /// sync answers with `append_posts` and `set_history`. Fired once per
+    /// page.
+    NearBottom,
+    /// A jump named a post the loaded channel does not hold; sync loads the
+    /// posts around it and the jump lands when the new snapshot arrives.
+    JumpMissing(SharedString),
     /// The user asked for the channel's pinned messages.
     OpenPinned,
     /// The user asked for the channel info pane (header info button or the
@@ -523,9 +548,12 @@ pub struct ChannelView {
     /// A jump whose post is not in the transcript yet; applied when it
     /// arrives with the channel or a later page.
     pending_jump: Option<SharedString>,
+    /// The post sync was asked to load for a jump, so a snapshot that still
+    /// lacks it does not ask again.
+    jump_asked: Option<SharedString>,
     /// The row chosen with the keyboard (PLAN §4.2); single keys act on it.
     selection: Option<usize>,
-    /// The top row's state: loading, at the start, or failed.
+    /// The top and bottom rows' state: loading, at an edge, or failed.
     history: History,
     list_focus: gpui_kit::FocusHandle,
     delete: DialogHandle,
@@ -758,6 +786,7 @@ impl ChannelView {
             permalink: None,
             _permalink_task: None,
             pending_jump: None,
+            jump_asked: None,
             selection: None,
             history: History::default(),
             list_focus: cx.focus_handle(),
@@ -801,6 +830,7 @@ impl ChannelView {
         // Preview has no server to page from, so it starts at the beginning.
         self.history = History {
             at_start: crate::preview::enabled(),
+            at_end: true,
             ..History::default()
         };
         if crate::preview::enabled() {
@@ -827,18 +857,26 @@ impl ChannelView {
     /// without disturbing the scroll position. While the reader is scrolled
     /// up, the jump pill counts them as "N new messages".
     /// Scrolls to `post` and tints it as a permalink target for a few
-    /// seconds (PLAN §4.2). When the post is not on screen yet, the jump
-    /// waits for the channel or page that carries it.
+    /// seconds (PLAN §4.2). When the post is not in the transcript, the
+    /// jump waits for the channel or page that carries it; once the channel
+    /// is loaded without it, `ChannelEvent::JumpMissing` asks sync for the
+    /// posts around it.
     pub fn jump_to(&mut self, post: SharedString, cx: &mut Context<Self>) {
         let row = self.rows.iter().position(|row| {
             matches!(row, Row::Post(index)
                 if self.model.as_ref().is_some_and(|m| m.posts[*index].id == post))
         });
         let Some(row) = row else {
+            let loaded = self.model.as_ref().is_some_and(|model| !model.loading);
+            if loaded && self.jump_asked.as_ref() != Some(&post) {
+                self.jump_asked = Some(post.clone());
+                cx.emit(ChannelEvent::JumpMissing(post.clone()));
+            }
             self.pending_jump = Some(post);
             return;
         };
         self.pending_jump = None;
+        self.jump_asked = None;
         self.list
             .update(cx, |list, cx| list.scroll_to_item(row, cx));
         self.permalink = Some(post);
@@ -871,11 +909,15 @@ impl ChannelView {
         let arrived = posts.iter().filter(|post| !post.mine).count();
         model.posts.extend(posts);
         let rows = model.rows();
-        let added = rows.len().saturating_sub(self.rows.len());
+        let before = self.rows.len();
+        let added = rows.len().saturating_sub(before);
         self.rows = rows;
+        self.history.loading_newer = false;
         let scrolled_up = self.list.read(cx).is_scrolled_up();
         self.list.update(cx, |list, cx| {
             list.append(added, cx);
+            // The old bottom row was the Newer row; it is a post now.
+            list.remeasure_items(before.saturating_sub(1)..before, cx);
         });
         if scrolled_up {
             self.unseen += arrived;
@@ -911,17 +953,99 @@ impl ChannelView {
         cx.notify();
     }
 
-    /// Sync reports where the history stands after a page: at the start, or
-    /// failed. Either clears the loading state.
-    pub fn set_history(&mut self, at_start: bool, failed: bool, cx: &mut Context<Self>) {
+    /// Sync reports where the history stands after a page: at the start,
+    /// at the end, or failed. A failure lands on the edge that was loading;
+    /// either way both edges stop loading.
+    pub fn set_history(
+        &mut self,
+        at_start: bool,
+        at_end: bool,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let newer = self.history.loading_newer && !self.history.loading;
         self.history = History {
             at_start,
+            at_end,
             loading: false,
-            failed,
+            loading_newer: false,
+            failed: failed && !newer,
+            failed_newer: failed && newer,
         };
-        self.list
-            .update(cx, |list, cx| list.remeasure_items(0..1, cx));
+        let last = self.rows.len();
+        self.list.update(cx, |list, cx| {
+            list.remeasure_items(0..1, cx);
+            list.remeasure_items(last.saturating_sub(1)..last, cx);
+        });
         cx.notify();
+    }
+
+    /// Asks for a newer page when the bottom row shows after a jump into
+    /// the past and nothing stops it.
+    fn request_newer(&mut self, cx: &mut Context<Self>) {
+        if self.model.is_none()
+            || self.history.at_end
+            || self.history.loading_newer
+            || self.history.failed_newer
+        {
+            return;
+        }
+        self.history.loading_newer = true;
+        cx.emit(ChannelEvent::NearBottom);
+        let last = self.rows.len();
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                this.list.update(cx, |list, cx| {
+                    list.remeasure_items(last.saturating_sub(1)..last, cx)
+                });
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The bottom row of the transcript: nothing while it runs to the newest
+    /// post, otherwise the newer page's progress.
+    fn newer_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        if self.history.at_end {
+            return div().into_any_element();
+        }
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .px(scaled(&theme, metrics::GUTTER))
+            .py(theme.space(3.))
+            .text_size(theme.text(12.))
+            .text_color(theme.colors.muted_foreground);
+        if self.history.loading_newer {
+            row.child(
+                Spinner::new("channel.newer.spinner")
+                    .label("Loading newer messages")
+                    .size(gpui_kit::px(14.)),
+            )
+            .child("Loading newer messages…")
+            .into_any_element()
+        } else if self.history.failed_newer {
+            row.child("Couldn't load newer messages.")
+                .child(
+                    Button::new("channel.newer.retry")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.history.failed_newer = false;
+                            this.request_newer(cx);
+                        })),
+                )
+                .into_any_element()
+        } else {
+            // The request goes out as the row renders.
+            div().h(theme.space(2.)).into_any_element()
+        }
     }
 
     /// Asks for an older page when the top row shows and nothing stops it.
@@ -1843,12 +1967,22 @@ impl ChannelView {
             })
         };
         let body = post.body.clone();
+        let markdown_body = post.body.clone();
         let mut items = vec![
             act(
                 "copy",
                 "Copy text".into(),
                 Box::new(move |_, _, cx| {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
+                }),
+            ),
+            act(
+                "copy-markdown",
+                "Copy as Markdown".into(),
+                Box::new(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        markdown_body.to_string(),
+                    ))
                 }),
             ),
             {
@@ -1926,8 +2060,9 @@ impl ChannelView {
             MenuItem::separator(),
         ];
         let more = Self::more_items_for(post, cx);
-        // `more` is copy, pin, save, then the owner's edit and delete.
-        let (keep, own) = more.split_at(3.min(more.len()));
+        // `more` is copy, copy as Markdown, pin, save, then the owner's
+        // edit and delete.
+        let (keep, own) = more.split_at(4.min(more.len()));
         items.extend(keep.iter().cloned());
         items.push(act(
             "unread",
@@ -2720,6 +2855,10 @@ impl ChannelView {
                     this.request_older(cx);
                     this.history_row(cx).into_any_element()
                 }),
+                Some(Row::Newer) => view.update(cx, |this, cx| {
+                    this.request_newer(cx);
+                    this.newer_row(cx).into_any_element()
+                }),
                 Some(Row::Day(label)) => day_divider(
                     gpui_kit::ElementId::Name(format!("day.{label}").into()),
                     label.clone(),
@@ -3342,6 +3481,7 @@ mod tests {
                 Row::Day("Today".into()),
                 Row::NewMessages,
                 Row::Post(2),
+                Row::Newer,
             ]
         );
     }

@@ -413,6 +413,21 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::NearBottom => {
+                    if let (Some(live), Some(id)) = (&this.live, this.selected_channel.clone()) {
+                        live.send(matty_sync::Command::LoadNewer {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::JumpMissing(post) => {
+                    if let (Some(live), Some(id)) = (&this.live, this.selected_channel.clone()) {
+                        live.send(matty_sync::Command::LoadAround {
+                            channel_id: id.to_string(),
+                            post_id: post.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -908,9 +923,11 @@ impl MainWindow {
             }),
             None => {}
         }
+        // Live reports (at_start, failed) for now; at_end follows once it
+        // carries `ChangeSet::History::at_end` through.
         if let Some((at_start, failed)) = update.history {
             self.channel
-                .update(cx, |view, cx| view.set_history(at_start, failed, cx));
+                .update(cx, |view, cx| view.set_history(at_start, true, failed, cx));
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {

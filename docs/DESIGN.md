@@ -439,6 +439,19 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Cmd/Ctrl+C copies it as plain text in reading order; a focused text field
   keeps its own copy (`design-45`). "Copy as Markdown" on a single post is
   the context menu's job.
+- **Copy a message** (PLAN §4.2): the context menu and the "…" menu offer
+  "Copy text", the post rendered as plain text (links become their labels,
+  lists keep their markers, code stays as typed), and "Copy as Markdown",
+  the Mattermost source verbatim, for pasting into another editor. Both
+  live in the thread pane too, and they sit before Pin and Save because
+  copying is the common case (`design-46`).
+- **Newer messages after a jump** (PLAN §4.2): a jump to a post the
+  loaded channel does not hold asks sync for the posts around it, and the
+  transcript then stops short of the newest post. Its bottom row mirrors
+  the top one: showing it asks for the next newer page with "Loading newer
+  messages…", a failed page offers Retry, and the row is empty once the
+  transcript runs to the end, so the usual view is unchanged
+  (`design-47`).
 
 ## 5. Components
 
