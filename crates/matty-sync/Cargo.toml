@@ -18,8 +18,12 @@ matty-store.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+futures-util.workspace = true
 tracing.workspace = true
 web-time.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+if-watch.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen = "0.2"
@@ -29,7 +33,7 @@ web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true
 

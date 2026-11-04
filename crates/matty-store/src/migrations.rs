@@ -11,6 +11,7 @@ use crate::{Result, StoreError};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_media.sql"),
+    include_str!("../migrations/0003_post_threads.sql"),
 ];
 
 /// The schema version a fresh database migrates to.

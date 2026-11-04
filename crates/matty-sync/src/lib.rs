@@ -18,6 +18,8 @@ mod engine;
 mod events;
 pub mod io;
 mod load;
+#[cfg(not(target_family = "wasm"))]
+mod netwatch;
 mod outbox;
 mod typing;
 #[cfg(target_family = "wasm")]
@@ -25,8 +27,8 @@ mod web;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{
-    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW,
-    UploadState,
+    Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, LinkAnswer, LinkQuery,
+    POSTS_WINDOW, UploadState,
 };
 pub use engine::Command;
 /// Where an account's database lives.

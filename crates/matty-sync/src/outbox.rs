@@ -114,7 +114,9 @@ pub(crate) fn discard(
     Ok(true)
 }
 
-fn touch(outgoing: &Outgoing, dirty: &mut Dirty) {
+/// Marks what a change to `outgoing` redraws: its channel, the channel's
+/// outbox and its thread.
+pub(crate) fn touch(outgoing: &Outgoing, dirty: &mut Dirty) {
     dirty.channels.insert(outgoing.channel_id.clone());
     dirty.outbox.insert(outgoing.channel_id.clone());
     if !outgoing.root_id.is_empty() {
@@ -220,27 +222,29 @@ mod tests {
     fn setup() -> Store {
         let store = Store::open_in_memory().unwrap();
         let conn = store.conn();
-        sidebar::upsert_channels(
-            conn,
-            &[Channel {
-                id: "c".into(),
-                team_id: "t".into(),
-                kind: "O".into(),
-                name: "c".into(),
-                display_name: "c".into(),
-                ..Channel::default()
-            }],
-        )
-        .unwrap();
-        sidebar::upsert_channel_members(
-            conn,
-            &[ChannelMember {
-                channel_id: "c".into(),
-                user_id: ME.into(),
-                ..ChannelMember::default()
-            }],
-        )
-        .unwrap();
+        for id in ["c", "d"] {
+            sidebar::upsert_channels(
+                conn,
+                &[Channel {
+                    id: id.into(),
+                    team_id: "t".into(),
+                    kind: "O".into(),
+                    name: id.into(),
+                    display_name: id.into(),
+                    ..Channel::default()
+                }],
+            )
+            .unwrap();
+            sidebar::upsert_channel_members(
+                conn,
+                &[ChannelMember {
+                    channel_id: id.into(),
+                    user_id: ME.into(),
+                    ..ChannelMember::default()
+                }],
+            )
+            .unwrap();
+        }
         store
     }
 
@@ -299,6 +303,293 @@ mod tests {
             let member = sidebar::channel_member(conn, "c", ME).unwrap().unwrap();
             prop_assert_eq!((channel.total_msg_count, member.msg_count), (1, 1));
         }
+    }
+
+    /// One step of a drain with the connection coming and going (#194).
+    #[derive(Clone, Debug)]
+    enum Step {
+        /// The user writes a post in channel 0 or 1.
+        Write(usize),
+        /// The engine starts the channel's next send, unless one is out.
+        Start(usize),
+        /// The send out comes back created.
+        Created(usize),
+        /// The server created it but the answer was lost on the way back:
+        /// a transient failure, so it goes again.
+        Lost(usize),
+        /// The connection dropped before the server saw it.
+        Dropped(usize),
+        /// The server refused it (4xx): it waits for Retry.
+        Refused(usize),
+        /// The `posted` echo of the channel's newest post on the server.
+        Echo(usize),
+        /// The user edits the channel's nth waiting send.
+        Edit(usize, usize),
+        /// The user discards the channel's nth waiting send.
+        Discard(usize, usize),
+        /// The user retries the channel's failed sends.
+        Retry(usize),
+    }
+
+    fn step() -> impl Strategy<Value = Step> {
+        let channel = 0usize..2;
+        prop_oneof![
+            3 => channel.clone().prop_map(Step::Write),
+            3 => channel.clone().prop_map(Step::Start),
+            2 => channel.clone().prop_map(Step::Created),
+            1 => channel.clone().prop_map(Step::Lost),
+            1 => channel.clone().prop_map(Step::Dropped),
+            1 => channel.clone().prop_map(Step::Refused),
+            1 => channel.clone().prop_map(Step::Echo),
+            1 => (channel.clone(), 0usize..4).prop_map(|(c, n)| Step::Edit(c, n)),
+            1 => (channel.clone(), 0usize..4).prop_map(|(c, n)| Step::Discard(c, n)),
+            1 => channel.prop_map(Step::Retry),
+        ]
+    }
+
+    /// The engine's side of a drain, over the same store calls it makes,
+    /// and a server that, like Mattermost, answers a repeated
+    /// `pending_post_id` with the post it already made.
+    #[derive(Default)]
+    struct Drain {
+        written: Vec<Vec<String>>,
+        out: [Option<String>; 2],
+        server: Vec<Vec<Post>>,
+        /// Sends the server refused at least once; Retry sends them after
+        /// later ones, by design.
+        refused: std::collections::BTreeSet<String>,
+        discarded: std::collections::BTreeSet<String>,
+        clock: i64,
+    }
+
+    const CHANNELS: [&str; 2] = ["c", "d"];
+
+    impl Drain {
+        fn new() -> Self {
+            Self {
+                written: vec![Vec::new(); 2],
+                server: vec![Vec::new(); 2],
+                ..Self::default()
+            }
+        }
+
+        fn accept(&mut self, channel: usize, outgoing: &Outgoing) -> Post {
+            if let Some(post) = self.server[channel]
+                .iter()
+                .find(|post| post.pending_post_id == outgoing.pending_post_id)
+            {
+                return post.clone();
+            }
+            self.clock += 1;
+            let post = Post {
+                id: format!("s-{}", outgoing.pending_post_id),
+                pending_post_id: outgoing.pending_post_id.clone(),
+                channel_id: outgoing.channel_id.clone(),
+                user_id: ME.into(),
+                message: outgoing.message.clone(),
+                create_at: 1_000 + self.clock,
+                update_at: 1_000 + self.clock,
+                ..Post::default()
+            };
+            self.server[channel].push(post.clone());
+            post
+        }
+
+        fn run(&mut self, conn: &Connection, step: &Step) {
+            let mut dirty = Dirty::default();
+            let in_flight =
+                |out: &[Option<String>; 2], id: &str| out.iter().flatten().any(|out| out == id);
+            match *step {
+                Step::Write(channel) => {
+                    self.clock += 1;
+                    let id = format!("{ME}:{}", self.clock);
+                    let outgoing = Outgoing {
+                        pending_post_id: id.clone(),
+                        channel_id: CHANNELS[channel].into(),
+                        message: format!("message {}", self.clock),
+                        created_at: self.clock,
+                        ..Outgoing::default()
+                    };
+                    queue(conn, &outgoing, ME, &mut dirty).unwrap();
+                    self.written[channel].push(id);
+                }
+                Step::Start(channel) => {
+                    if self.out[channel].is_none()
+                        && let Some(next) = outbox::next(conn, CHANNELS[channel]).unwrap()
+                    {
+                        outbox::attempt(conn, &next.pending_post_id).unwrap();
+                        self.out[channel] = Some(next.pending_post_id);
+                    }
+                }
+                Step::Created(channel) => {
+                    if let Some(id) = self.out[channel].take()
+                        && let Some(outgoing) = outbox::get(conn, &id).unwrap()
+                    {
+                        let post = self.accept(channel, &outgoing);
+                        confirm(conn, &id, &post, Some(ME), &mut dirty).unwrap();
+                    }
+                }
+                Step::Lost(channel) => {
+                    if let Some(id) = self.out[channel].take()
+                        && let Some(outgoing) = outbox::get(conn, &id).unwrap()
+                    {
+                        self.accept(channel, &outgoing);
+                    }
+                }
+                Step::Dropped(channel) => self.out[channel] = None,
+                Step::Refused(channel) => {
+                    if let Some(id) = self.out[channel].take() {
+                        fail(conn, &id, "refused", &mut dirty).unwrap();
+                        self.refused.insert(id);
+                    }
+                }
+                Step::Echo(channel) => {
+                    if let Some(post) = self.server[channel].last() {
+                        let event = WsEvent::Posted(Box::new(Posted {
+                            post: post.clone(),
+                            ..Posted::default()
+                        }));
+                        events::apply(conn, event, Some(ME), &mut dirty, &mut Vec::new()).unwrap();
+                    }
+                }
+                Step::Edit(channel, n) => {
+                    let waiting = outbox::for_channel(conn, CHANNELS[channel]).unwrap();
+                    if let Some(outgoing) = waiting.get(n)
+                        && !in_flight(&self.out, &outgoing.pending_post_id)
+                    {
+                        let message = format!("{} (edited)", outgoing.message);
+                        assert!(outbox::edit(conn, &outgoing.pending_post_id, &message).unwrap());
+                        let row = posts::post(conn, &outgoing.pending_post_id).unwrap();
+                        assert_eq!(row.map(|row| row.message), Some(message));
+                    }
+                }
+                Step::Discard(channel, n) => {
+                    let waiting = outbox::for_channel(conn, CHANNELS[channel]).unwrap();
+                    if let Some(outgoing) = waiting.get(n)
+                        && !in_flight(&self.out, &outgoing.pending_post_id)
+                    {
+                        assert!(discard(conn, &outgoing.pending_post_id, &mut dirty).unwrap());
+                        self.discarded.insert(outgoing.pending_post_id.clone());
+                    }
+                }
+                Step::Retry(channel) => {
+                    for outgoing in outbox::for_channel(conn, CHANNELS[channel]).unwrap() {
+                        outbox::unfail(conn, &outgoing.pending_post_id).unwrap();
+                    }
+                }
+            }
+        }
+
+        /// The connection stays up until every channel has sent all it can.
+        fn finish(&mut self, conn: &Connection) {
+            for (channel, id) in CHANNELS.iter().enumerate() {
+                self.run(conn, &Step::Retry(channel));
+                while self.out[channel].is_some() || outbox::next(conn, id).unwrap().is_some() {
+                    self.run(conn, &Step::Start(channel));
+                    self.run(conn, &Step::Created(channel));
+                }
+            }
+        }
+    }
+
+    proptest! {
+        /// However sends, failures, lost answers, echoes, edits and
+        /// discards interleave, each channel's posts reach the server once
+        /// each, in the order they were written (#194), and every
+        /// optimistic row ends up replaced by the server's post or gone.
+        #[test]
+        fn a_drain_never_duplicates_or_reorders_within_a_channel(
+            steps in proptest::collection::vec(step(), 0..80)
+        ) {
+            let store = setup();
+            let conn = store.conn();
+            let mut drain = Drain::new();
+            for step in &steps {
+                drain.run(conn, step);
+                // While it runs, too: what reached the server never repeats
+                // and never overtakes, refused sends aside.
+                for channel in 0..2 {
+                    let sent: Vec<&str> = drain.server[channel]
+                        .iter()
+                        .map(|post| post.pending_post_id.as_str())
+                        .filter(|id| !drain.refused.contains(*id))
+                        .collect();
+                    let mut unique = sent.clone();
+                    unique.sort_unstable();
+                    unique.dedup();
+                    prop_assert_eq!(unique.len(), sent.len());
+                    let written: Vec<&str> = drain.written[channel]
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|id| sent.contains(id))
+                        .collect();
+                    prop_assert_eq!(&sent, &written);
+                }
+            }
+            drain.finish(conn);
+            for (channel, channel_id) in CHANNELS.iter().enumerate() {
+                let on_server: Vec<&str> = drain.server[channel]
+                    .iter()
+                    .map(|post| post.pending_post_id.as_str())
+                    .collect();
+                // Everything not discarded arrived, and once.
+                for id in &drain.written[channel] {
+                    let times = on_server.iter().filter(|sent| **sent == id).count();
+                    if drain.discarded.contains(id) {
+                        prop_assert!(times <= 1);
+                    } else {
+                        prop_assert_eq!(times, 1, "{} arrived {} times", id, times);
+                    }
+                }
+                prop_assert!(outbox::for_channel(conn, channel_id).unwrap().is_empty());
+            }
+            // No optimistic row is left, and no post shows twice.
+            let rows: Vec<(String, String)> = conn
+                .prepare("SELECT id, pending_post_id FROM posts")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            prop_assert!(rows.iter().all(|(id, pending)| id != pending));
+            let mut pending: Vec<&str> = rows.iter().map(|(_, p)| p.as_str()).collect();
+            pending.sort_unstable();
+            let before = pending.len();
+            pending.dedup();
+            prop_assert_eq!(before, pending.len());
+        }
+    }
+
+    #[test]
+    fn an_edit_keeps_the_send_in_its_place() {
+        let store = setup();
+        let conn = store.conn();
+        let mut dirty = Dirty::default();
+        for (id, message) in [("me:1", "first"), ("me:2", "second")] {
+            let outgoing = Outgoing {
+                pending_post_id: id.into(),
+                channel_id: "c".into(),
+                message: message.into(),
+                ..Outgoing::default()
+            };
+            queue(conn, &outgoing, ME, &mut dirty).unwrap();
+        }
+        assert!(outbox::edit(conn, "me:1", "first, fixed").unwrap());
+        let queued: Vec<(String, String)> = outbox::for_channel(conn, "c")
+            .unwrap()
+            .into_iter()
+            .map(|outgoing| (outgoing.pending_post_id, outgoing.message))
+            .collect();
+        assert_eq!(
+            queued,
+            [
+                ("me:1".to_owned(), "first, fixed".to_owned()),
+                ("me:2".to_owned(), "second".to_owned())
+            ]
+        );
+        let row = posts::post(conn, "me:1").unwrap().unwrap();
+        assert_eq!((row.message.as_str(), row.edit_at), ("first, fixed", 0));
+        assert!(!outbox::edit(conn, "me:9", "nothing").unwrap());
     }
 
     #[test]

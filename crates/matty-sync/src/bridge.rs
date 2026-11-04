@@ -94,10 +94,14 @@ fn start(
         .build()?;
     std::thread::Builder::new()
         .name("matty-sync".into())
-        .spawn(move || {
-            runtime.block_on(Engine::new(open()).with_media(media).run(inbox));
-            runtime.shutdown_timeout(SHUTDOWN_GRACE);
-            tracing::debug!("sync engine stopped");
+        .spawn({
+            let messages = messages.downgrade();
+            move || {
+                runtime.spawn(crate::netwatch::watch(messages));
+                runtime.block_on(Engine::new(open()).with_media(media).run(inbox));
+                runtime.shutdown_timeout(SHUTDOWN_GRACE);
+                tracing::debug!("sync engine stopped");
+            }
         })?;
     Ok(SyncHandle { messages })
 }

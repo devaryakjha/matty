@@ -31,22 +31,70 @@ pub fn enabled() -> bool {
 /// A sidebar with every row state DESIGN.md §4 describes.
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
+/// `login-ldap` offers AD/LDAP beside passwords, `login-mfa` and
+/// `login-mfa-error` show the code step, and `login-version` the server step
+/// refusing a server below the version floor. `sso-waiting` shows the card
+/// waiting for the browser after GitLab, and `sso-expired` the same after
+/// the three minutes ran out.
 pub fn login() -> Option<LoginModel> {
     let value = value()?;
-    let error = match value.as_str() {
-        "login" => None,
-        "login-error" => Some("That password is not right. Check it and try again.".into()),
+    let methods = SignInMethods {
+        password: true,
+        ldap: value == "login-ldap",
+        sso: vec![SsoProvider::GitLab, SsoProvider::Google],
+    };
+    let server_name: gpui_kit::SharedString = "chat.example.com".into();
+    let wrong_code = "That code is not right. Enter the current code from your authenticator app.";
+    let (step, error) = match value.as_str() {
+        "login" | "login-ldap" => (
+            LoginStep::Methods {
+                server_name,
+                methods,
+            },
+            None,
+        ),
+        "login-error" => (
+            LoginStep::Methods {
+                server_name,
+                methods,
+            },
+            Some("That password is not right. Check it and try again.".into()),
+        ),
+        "login-mfa" => (
+            LoginStep::Mfa {
+                server_name,
+                methods,
+            },
+            None,
+        ),
+        "login-mfa-error" => (
+            LoginStep::Mfa {
+                server_name,
+                methods,
+            },
+            Some(wrong_code.into()),
+        ),
+        "sso-waiting" | "sso-expired" => (
+            LoginStep::Methods {
+                server_name,
+                methods,
+            }
+            .to_browser(SsoProvider::GitLab),
+            (value == "sso-expired").then(|| {
+                "Sign-in timed out: the browser did not finish within three minutes.".into()
+            }),
+        ),
+        "login-version" => {
+            let old = matty_api::UnsupportedVersion {
+                found: matty_api::Version::new(9, 3, 2),
+                minimum: matty_api::capabilities::MINIMUM_VERSION,
+            };
+            (LoginStep::Server, Some(old.to_string().into()))
+        }
         _ => return None,
     };
     Some(LoginModel {
-        step: LoginStep::Methods {
-            server_name: "chat.example.com".into(),
-            methods: SignInMethods {
-                password: true,
-                ldap: false,
-                sso: vec![SsoProvider::GitLab, SsoProvider::Google],
-            },
-        },
+        step,
         busy: false,
         error,
     })
@@ -79,7 +127,7 @@ pub fn teams() -> Vec<Team> {
 pub fn sidebar() -> SidebarModel {
     let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
     let dm = |id: &str, name: &str, presence| {
-        ChannelRow::new(id, name, ChannelKind::Direct { presence })
+        ChannelRow::new(id, name, ChannelKind::Direct { presence }).person(format!("u-{id}"))
     };
     SidebarModel {
         loading: false,
@@ -158,8 +206,10 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         .flat_map(|category| category.rows)
         .find(|row| row.id.as_ref() == id)?;
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
+        kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: day.into(),
         date: full_date(day),
@@ -173,6 +223,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -205,6 +257,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 last_time: hm("10:02"),
                 last_day: "Today".into(),
                 participants: vec!["Lena Fischer".into()],
+                participant_ids: vec![person("Lena Fischer")],
                 following: false,
                 unread: true,
             }),
@@ -289,11 +342,30 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             )
         },
         Post {
+            embeds: vec![crate::embeds::Embed::Image(crate::embeds::EmbedImage {
+                url: "https://matty.example.com/shots/sidebar-unread.png".into(),
+                width: 640,
+                height: 400,
+                loaded: Some(attachments::png(include_bytes!(
+                    "../assets/preview/mockup.png"
+                ))),
+            })],
+            continues: true,
+            ..post(
+                "p4b",
+                "Lena Fischer",
+                "16:41",
+                "Yesterday",
+                "For reference, how it looks here: https://matty.example.com/shots/sidebar-unread.png",
+            )
+        },
+        Post {
             replies: Some(ReplySummary {
                 count: 3,
                 last_time: hm("08:13"),
                 last_day: "Today".into(),
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
+                participant_ids: vec![person("Arya"), person("Jonas Weber")],
                 following: true,
                 unread: false,
             }),
@@ -411,17 +483,25 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
     });
     // Two channels show the states PLAN §4.5 asks for: one still loading,
     // one with nothing posted yet.
+    // #town-square runs sync's own transcript over server posts, so it
+    // shows what system and plugin posts become (#104).
     let (posts, loading, first_unread) = match id {
+        "town-square" => (activity(&row), false, None),
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
-        _ => (posts, false, Some(6)),
+        _ => (posts, false, Some(7)),
     };
     Some(ChannelModel {
+        // `MATTY_PREVIEW=offline` shows the empty channel as not saved here.
+        offline: connection() == crate::main_window::ConnectionState::Offline,
         id: row.id.clone(),
         name: row.name.clone(),
         kind: row.kind.clone(),
-        header: (id == "general")
-            .then(|| "Announcements and anything that does not fit elsewhere".into()),
+        header: match id {
+            "general" => Some("Announcements and anything that does not fit elsewhere".into()),
+            "town-square" => Some("Company-wide chat. Be kind, stay on topic.".into()),
+            _ => None,
+        },
         members: 42,
         pinned: 3,
         favorite: id == "design",
@@ -446,6 +526,129 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
             _ => vec![],
         },
     })
+}
+
+/// #town-square's posts as the server sends them, through
+/// `transcript::channel_model`: people joining around a few messages, a
+/// header change, and a poll from a plugin Matty does not draw (#104).
+fn activity(row: &ChannelRow) -> Vec<Post> {
+    use matty_api::models::{Post as ApiPost, User};
+    use std::collections::HashMap;
+    let people = [
+        ("priya", "Priya", "Nair"),
+        ("sam", "Sam", "Okafor"),
+        ("lena", "Lena", "Fischer"),
+        ("jonas", "Jonas", "Weber"),
+        ("mei", "Mei", "Tanaka"),
+        ("tomas", "Tomás", "Silva"),
+        ("ola", "Ola", "Berg"),
+    ];
+    let users: HashMap<String, User> = people
+        .iter()
+        .map(|(id, first, last)| {
+            let user = User {
+                id: (*id).into(),
+                username: (*id).into(),
+                first_name: (*first).into(),
+                last_name: (*last).into(),
+                ..User::default()
+            };
+            ((*id).to_string(), user)
+        })
+        .collect();
+    // 2026-11-04, minutes after 08:00 UTC; "now" is noon that day.
+    let at = |minute: i64| 1_793_779_200_000 + minute * 60_000;
+    let post = |id: &str, user: &str, minute: i64, kind: &str, message: &str| ApiPost {
+        id: id.into(),
+        user_id: user.into(),
+        create_at: at(minute),
+        kind: kind.into(),
+        message: message.into(),
+        ..ApiPost::default()
+    };
+    let user = |id: &str| User {
+        id: id.into(),
+        ..User::default()
+    };
+    let reply = |post: ApiPost, root: &str| ApiPost {
+        root_id: root.into(),
+        ..post
+    };
+    let mut header = post("t6", "priya", 12, "system_header_change", "");
+    header.props = [
+        ("old_header", "Company-wide chat"),
+        ("new_header", "Company-wide chat. Be kind, stay on topic."),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), serde_json::Value::from(value)))
+    .collect();
+    let posts = [
+        ApiPost {
+            reply_count: 1,
+            last_reply_at: at(32),
+            participants: vec![user("tomas")],
+            ..post(
+                "t1",
+                "priya",
+                0,
+                "",
+                "Welcome to town-square! Say hi when you get a minute.",
+            )
+        },
+        post("t2", "sam", 1, "system_join_channel", ""),
+        post("t2b", "lena", 2, "system_join_channel", ""),
+        post("t2c", "jonas", 3, "system_join_channel", ""),
+        post("t2d", "mei", 4, "system_join_channel", ""),
+        post("t2e", "tomas", 5, "system_join_channel", ""),
+        post("t2f", "ola", 6, "system_leave_channel", ""),
+        post("t3", "sam", 10, "", "Hi all, Sam from the desktop team."),
+        post("t4", "sam", 11, "", "Glad to be here."),
+        header,
+        // Replies (#123): with collapsed reply threads on they leave the
+        // channel and their roots get the reply footer; with
+        // `MATTY_PREVIEW=crt-off` they show inline.
+        ApiPost {
+            reply_count: 2,
+            last_reply_at: at(21),
+            participants: vec![user("jonas"), user("lena")],
+            ..post("t7", "sam", 13, "", "Is lunch at 12 today?")
+        },
+        post(
+            "t8",
+            "lena",
+            15,
+            "custom_matterpoll",
+            "Lunch: pizza or ramen?",
+        ),
+        reply(post("t9", "jonas", 20, "", "Ramen, obviously."), "t7"),
+        reply(
+            post("t10", "lena", 21, "", "Ramen it is. I'll book for six."),
+            "t7",
+        ),
+        post("t11", "mei", 30, "", "Has anyone seen the new desk plan?"),
+        reply(
+            post(
+                "t12",
+                "tomas",
+                32,
+                "",
+                "Hi Priya! Tomas from support, glad to be here.",
+            ),
+            "t1",
+        ),
+    ];
+    let keys = matty_notify::MentionKeys::username("arya");
+    let zone = jiff::tz::TimeZone::UTC;
+    let viewer = crate::transcript::Viewer {
+        user_id: "arya",
+        keys: &keys,
+        zone: &zone,
+        now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
+        link_previews: true,
+        collapsed_threads: value().as_deref() != Some("crt-off"),
+        names: crate::settings::NameFormat::default(),
+    };
+    crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None, &[]).posts
 }
 
 fn listed(channel_id: &str, post_id: &str) -> Option<ListedPost> {
@@ -586,8 +789,10 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         return vec![];
     }
     let post = |id: &str, author: &str, time: &str, body: &str| Post {
+        kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: "Today".into(),
         date: full_date("Today"),
@@ -601,6 +806,8 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -713,6 +920,7 @@ pub fn empty_channel(
         _ => 1,
     };
     ChannelModel {
+        offline: false,
         id,
         name,
         kind,
@@ -758,6 +966,18 @@ pub fn uploads() -> Vec<Upload> {
     ]
 }
 
+/// A screen recording over the default 100 MB limit, which the tray
+/// refuses when the fixtures go in.
+pub fn oversize_upload() -> Upload {
+    Upload {
+        id: "u-recording".into(),
+        name: "screen-recording.mov".into(),
+        size: 251_658_240,
+        source: UploadSource::Path("screen-recording.mov".into()),
+        status: AttachmentStatus::Uploading(0.),
+    }
+}
+
 /// The preview user's notification preferences, with two keywords.
 /// A link preview for a draft's link: GitHub links have one, others none.
 pub fn link_card(url: &str) -> Option<crate::embeds::LinkCard> {
@@ -783,12 +1003,54 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
 
 pub fn account() -> Account {
     Account {
+        user_id: "u-arya".into(),
         display_name: "Arya".into(),
         username: "arya".into(),
         presence: Presence::Online,
         status_text: None,
         dnd_end: None,
     }
+}
+
+/// A fixture person's user id from their display name: `u-` and the first
+/// name, as in [`profiles`]. Bots and strangers get none.
+fn person(name: &str) -> SharedString {
+    let first = name.split(' ').next().unwrap_or_default().to_lowercase();
+    if profiles()
+        .iter()
+        .any(|profile| profile.username.as_ref() == first)
+    {
+        format!("u-{first}").into()
+    } else {
+        SharedString::default()
+    }
+}
+
+/// Profile pictures for the fixture people. Jonas has none, so his
+/// avatar shows the initials as it does when a picture fails to load.
+pub fn avatars() -> crate::avatars::Avatars {
+    let avatars = crate::avatars::Avatars::default();
+    let pictures: [(&str, &[u8]); 4] = [
+        (
+            "u-priya",
+            include_bytes!("../assets/preview/avatar-priya.png"),
+        ),
+        ("u-sam", include_bytes!("../assets/preview/avatar-sam.png")),
+        (
+            "u-lena",
+            include_bytes!("../assets/preview/avatar-lena.png"),
+        ),
+        (
+            "u-arya",
+            include_bytes!("../assets/preview/avatar-arya.png"),
+        ),
+    ];
+    for (user_id, bytes) in pictures {
+        if let Some(picture) = crate::avatars::picture(bytes, "image/png") {
+            avatars.insert(user_id, picture);
+        }
+    }
+    avatars
 }
 
 /// Everyone who posts in the fixtures, for the profile card.
@@ -891,6 +1153,7 @@ pub fn threads() -> ThreadsModel {
             last.into()
         },
         participants: participants.iter().map(|name| (*name).into()).collect(),
+        participant_ids: participants.iter().map(|name| person(name)).collect(),
         following: true,
         unread,
     };
@@ -909,7 +1172,7 @@ pub fn threads() -> ThreadsModel {
             row(
                 "general",
                 "p5",
-                summary(3, "08:13", &["Arya", "Jonas Weber"], false),
+                summary(12, "08:13", &["Arya", "Jonas Weber"], false),
             ),
             row(
                 "help-desk",
@@ -921,6 +1184,9 @@ pub fn threads() -> ThreadsModel {
         .flatten()
         .collect(),
         loading: false,
+        // The list's last row shows the next page on its way (#122).
+        more: true,
+        failed: false,
     }
 }
 
@@ -934,8 +1200,10 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         .find(|post| post.id.as_ref() == post_id)?
         .clone();
     let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
+        kind: crate::channel::PostKind::Regular,
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
+        author_id: person(author),
         time: hm(time),
         day: root.day.clone(),
         date: root.date.clone(),
@@ -949,6 +1217,8 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         pinned: false,
         status: PostStatus::Sent,
         replies: None,
+        root_id: "".into(),
+        reply_to: None,
         files: vec![],
         embeds: vec![],
     };
@@ -969,13 +1239,27 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
                 "Thanks. The pill should give way first; I'll cap it at the remaining width and let it shrink to the icon.",
                 false,
             ),
-            reply("r3", "Arya", "08:13", "Tracking it in #79.", true),
+            // Offline, Arya's last reply waits to send under the one
+            // before it (#195).
+            Post {
+                status: if queued() > 0 {
+                    PostStatus::Pending
+                } else {
+                    PostStatus::Sent
+                },
+                ..reply("r3", "Arya", "08:13", "Tracking it in #79.", true)
+            },
         ],
         root: Post {
             continues: false,
             ..root
         },
         following: true,
+        // #5 is a long thread whose older replies are still on their way
+        // (#122).
+        reply_count: if post_id == "p5" { 12 } else { 3 },
+        older: post_id == "p5",
+        failed_older: false,
     })
 }
 

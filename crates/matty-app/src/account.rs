@@ -29,6 +29,8 @@ use crate::ui::{
 /// session and keeps presence current.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
+    /// The user's id, for their profile picture.
+    pub user_id: SharedString,
     pub display_name: SharedString,
     pub username: SharedString,
     pub presence: Presence,
@@ -434,11 +436,13 @@ impl AccountView {
         let avatar = div()
             .relative()
             .flex_shrink_0()
-            .child(
+            .child(crate::avatars::with_picture(
                 Avatar::new("account.avatar")
                     .size(AvatarSize::Sm)
                     .fallback(initial),
-            )
+                &self.account.user_id,
+                cx,
+            ))
             .child(
                 div()
                     .absolute()
@@ -587,6 +591,7 @@ mod tests {
 
     fn shown(presence: Presence, dnd_end: Option<i64>) -> Account {
         Account {
+            user_id: "u-arya".into(),
             display_name: "Arya".into(),
             username: "arya".into(),
             presence,
