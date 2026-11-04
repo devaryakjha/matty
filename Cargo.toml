@@ -29,6 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "time", "macros", "sync", "net"] }
+if-watch = { version = "3.2", features = ["tokio"] }
 url = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }
 wiremock = "0.6.5"
@@ -50,7 +51,7 @@ keyring = "4.2"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSString"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }
