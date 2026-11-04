@@ -209,6 +209,17 @@ impl MainWindow {
         );
     }
 
+    /// Saves the rail's new order after a drag; the preview's rail keeps
+    /// its own.
+    fn move_server(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if crate::preview::enabled() {
+            return;
+        }
+        self.settings.update(cx, |settings, cx| {
+            settings.update(cx, |s| s.move_server(from, to))
+        });
+    }
+
     /// After signing out of the shown server, opens the next saved one;
     /// `false` when there is none, or none with a session.
     pub(super) fn open_next_server(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -238,7 +249,7 @@ impl MainWindow {
                 .iter()
                 .enumerate()
                 .map(|(index, server)| {
-                    let rail = Server::new(server.label().to_owned());
+                    let rail = Server::new(server.label().to_owned()).key(server.data_key());
                     match self.watches.unreads(&server.data_key()) {
                         Some((mentions, unread)) if current != Some(index) => {
                             rail.unread(unread).mentions(mentions)
@@ -264,6 +275,7 @@ impl MainWindow {
             RailEvent::SelectServer(index) => self.switch_server(*index, window, cx),
             RailEvent::AddServer => self.add_server(None, window, cx),
             RailEvent::RemoveServer(index) => self.remove_server(*index, window, cx),
+            RailEvent::MoveServer { from, to } => self.move_server(*from, *to, cx),
             // Switching teams and joining one are sync's (PLAN §3 M2); the
             // rail already shows the pick.
             RailEvent::Select(_) | RailEvent::Join => cx.notify(),

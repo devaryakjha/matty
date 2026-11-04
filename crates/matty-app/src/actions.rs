@@ -232,8 +232,9 @@ pub fn tooltip_text(label: &str, binding: &str) -> gpui_kit::SharedString {
 
 /// Key contexts set by views.
 pub const MAIN_WINDOW: &str = "MainWindow";
-/// The sidebar's reorderable list. With focus in it, Alt+Shift+Up and
-/// Down move the focused row or category instead of walking unreads.
+/// A reorderable list: the sidebar's, or the rail's servers (#206). With
+/// focus in it, Alt+Shift+Up and Down move the focused row or category
+/// instead of walking unreads.
 pub const SIDEBAR_SORTABLE: &str = "SidebarSortable";
 pub const CHANNEL_VIEW: &str = "ChannelView";
 pub const RIGHT_PANE: &str = "RightPane";
