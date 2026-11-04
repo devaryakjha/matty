@@ -18,13 +18,16 @@ def chains(lines, start):
     first = lines[start]
     indent = len(first) - len(first.lstrip())
     out = [first]
+    depth = first.count("(") - first.count(")")
     for line in lines[start + 1 : start + 60]:
-        if not line.strip():
+        if not line.strip() or line.lstrip().startswith("//"):
             continue
         deeper = len(line) - len(line.lstrip()) > indent
-        if not deeper and not line.lstrip().startswith("."):
+        # A `Button::new(` whose id spans lines closes its parentheses first.
+        if depth <= 0 and not deeper and not line.lstrip().startswith("."):
             break
         out.append(line)
+        depth += line.count("(") - line.count(")")
     return "\n".join(out)
 
 
