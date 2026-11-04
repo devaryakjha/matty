@@ -225,6 +225,22 @@ pub mod test_support {
         cx.new(|cx| crate::main_window::MainWindow::new(window, cx))
             .into()
     }
+
+    /// Whether the main window's sidebar marks `id` unread.
+    pub fn is_unread(view: &AnyView, id: &str, cx: &App) -> bool {
+        view.clone()
+            .downcast::<crate::main_window::MainWindow>()
+            .is_ok_and(|main| main.read(cx).is_unread_for_tests(id, cx))
+    }
+
+    /// Split view's second channel and the bodies of its posts (#222).
+    pub fn split(view: &AnyView, cx: &App) -> Option<(String, Vec<String>)> {
+        let main = view
+            .clone()
+            .downcast::<crate::main_window::MainWindow>()
+            .ok()?;
+        main.read(cx).split_for_tests(cx)
+    }
 }
 
 /// Keeps the logger's level in step with the `log_level` setting.

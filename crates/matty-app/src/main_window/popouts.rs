@@ -87,7 +87,13 @@ impl MainWindow {
             cx.activate(true);
             window.activate_window();
         }
-        match request.ask.clone() {
+        self.answer_ask(request.ask.clone(), window, cx);
+    }
+
+    /// Does what a pop-out or split view's second pane asks of the main
+    /// window.
+    pub(super) fn answer_ask(&mut self, ask: Ask, window: &mut Window, cx: &mut Context<Self>) {
+        match ask {
             Ask::Show { channel, post } => {
                 self.open_channel(channel, window, cx);
                 if let Some(post) = post {

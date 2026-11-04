@@ -16,6 +16,11 @@
 //! What only the main window can do (open a link, show a profile, the
 //! pinned list or channel info, forward, leave) goes there as a
 //! [`Request`].
+//!
+//! The same view is the second pane of split view, inside the main window
+//! ([`Host::Split`]): no title bar or window of its own, and what it would
+//! ask of the main window, or decide about the window, goes to that window
+//! as a [`PaneEvent`] instead.
 
 use std::collections::HashSet;
 
@@ -116,6 +121,35 @@ pub enum Ask {
     Archive(SharedString),
     /// Offline, the user asked for this action (as sync names it).
     Offline(&'static str),
+}
+
+/// Where a [`PopOutView`] lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    /// A window of its own.
+    Window,
+    /// The second pane of the main window's split view.
+    Split,
+}
+
+/// What a split pane tells the main window it sits in.
+#[derive(Clone, Debug)]
+pub enum PaneEvent {
+    /// What a pop-out would ask of the main window.
+    Ask(Ask),
+    /// Open the thread under this root in the right pane.
+    OpenThread(SharedString),
+    /// A post landed or the list moved: check whether the channel now
+    /// counts as viewed, which only the main window knows.
+    CheckSeen,
+    /// The header's "Swap panes".
+    Swap,
+    /// The header's "Close pane".
+    ClosePane,
+    /// Sync signed out: the pane goes, its place stays saved.
+    Closed,
+    /// Escape in the channel: mark it read.
+    MarkRead,
 }
 
 /// Where pop-outs send their [`Request`]s; the main window subscribes.
@@ -342,7 +376,7 @@ fn open_window(
     let shown = target.clone();
     let opened = cx.open_window(options, |window, cx| {
         crate::apply_theme(window, cx);
-        cx.new(|cx| PopOutView::new(shown, server, live, window, cx))
+        cx.new(|cx| PopOutView::new(shown, server, live, Host::Window, window, cx))
     });
     match opened {
         Ok(handle) => {
@@ -369,6 +403,7 @@ enum Content {
 /// A channel or thread in a window of its own.
 pub struct PopOutView {
     target: Target,
+    host: Host,
     /// The server it is on; empty in the preview.
     server: String,
     /// Its own view of sync; `None` in the preview.
@@ -388,11 +423,33 @@ pub struct PopOutView {
     _view_task: Option<Task<()>>,
 }
 
+impl EventEmitter<PaneEvent> for PopOutView {}
+
 impl PopOutView {
+    /// `channel` as the second pane of split view, in the main window.
+    /// `live` is a fork of the main window's sync; `None` in the preview.
+    pub fn in_split(
+        channel: SharedString,
+        server: String,
+        live: Option<(Live, async_channel::Receiver<matty_sync::ChangeSet>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new(
+            Target::Channel(channel),
+            server,
+            live,
+            Host::Split,
+            window,
+            cx,
+        )
+    }
+
     fn new(
         target: Target,
         server: String,
         live: Option<(Live, async_channel::Receiver<matty_sync::ChangeSet>)>,
+        host: Host,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -444,29 +501,33 @@ impl PopOutView {
                 Content::Thread(pane)
             }
         };
-        cx.observe_window_appearance(window, |_, window, cx| crate::apply_theme(window, cx))
-            .detach();
         cx.subscribe(
             &SettingsStore::global(cx),
             |_, _, _: &SettingsChanged, cx| cx.notify(),
         )
         .detach();
-        cx.observe_window_bounds(window, |this, window, cx| this.remember_place(window, cx))
+        // In split view the main window owns the window: its theme, place,
+        // focus and close.
+        if host == Host::Window {
+            cx.observe_window_appearance(window, |_, window, cx| crate::apply_theme(window, cx))
+                .detach();
+            cx.observe_window_bounds(window, |this, window, cx| this.remember_place(window, cx))
+                .detach();
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.view_if_seen(window, cx);
+                }
+            })
             .detach();
-        cx.observe_window_activation(window, |this, window, cx| {
-            if window.is_window_active() {
-                this.view_if_seen(window, cx);
-            }
-        })
-        .detach();
-        // The OS's close button; the window's own forget their place too.
-        window.on_window_should_close(cx, {
-            let view = cx.weak_entity();
-            move |_, cx| {
-                view.update(cx, |this, cx| this.forget_place(cx)).ok();
-                true
-            }
-        });
+            // The OS's close button; the window's own forget their place too.
+            window.on_window_should_close(cx, {
+                let view = cx.weak_entity();
+                move |_, cx| {
+                    view.update(cx, |this, cx| this.forget_place(cx)).ok();
+                    true
+                }
+            });
+        }
         // Closing stops what this window held open with sync.
         cx.on_release(|this, _| {
             if let Some(live) = this.live.as_mut() {
@@ -478,6 +539,7 @@ impl PopOutView {
         let focus = cx.focus_handle();
         let mut this = Self {
             target,
+            host,
             server,
             live,
             content,
@@ -568,12 +630,14 @@ impl PopOutView {
     }
 
     fn set_title(&self, window: &mut Window, cx: &App) {
-        window.set_window_title(&self.title(cx));
+        if self.host == Host::Window {
+            window.set_window_title(&self.title(cx));
+        }
     }
 
     /// Saves where this pop-out is, so it opens there at the next launch.
     fn remember_place(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.live.is_none() || window.is_fullscreen() {
+        if self.host == Host::Split || self.live.is_none() || window.is_fullscreen() {
             return;
         }
         let bounds = window.window_bounds().get_bounds();
@@ -614,14 +678,60 @@ impl PopOutView {
         });
     }
 
-    /// Closes the window from Cmd/Ctrl+W, the title bar or sign-out.
+    /// Closes the window from Cmd/Ctrl+W, the title bar or sign-out. A
+    /// split pane only says so: the main window takes it away.
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.host == Host::Split {
+            return cx.emit(PaneEvent::Closed);
+        }
         self.forget_place(cx);
         window.remove_window();
     }
 
+    /// Whether focus is somewhere in this view.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+    }
+
+    /// The server it is on; empty in the preview.
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// The channel it shows.
+    pub fn channel_id(&self) -> &SharedString {
+        self.target.channel()
+    }
+
+    /// Whether the channel's list shows its newest post.
+    pub fn at_newest(&self, cx: &App) -> bool {
+        match &self.content {
+            Content::Channel(view) => view.read(cx).at_newest(cx),
+            Content::Thread(_) => false,
+        }
+    }
+
+    /// The user marked the channel unread here (#146).
+    pub fn kept_unread(&self) -> bool {
+        self.kept_unread
+    }
+
+    /// Puts the caret in the composer.
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Content::Channel(view) = &self.content {
+            view.update(cx, |view, cx| view.focus_composer(window, cx));
+        }
+    }
+
+    /// Shows or hides the header's split view buttons.
+    pub fn set_split_controls(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Content::Channel(view) = &self.content {
+            view.update(cx, |view, cx| view.set_split_controls(shown, cx));
+        }
+    }
+
     /// Scrolls to `post` and tints it, as a notification's click asks.
-    fn jump_to(&mut self, post: SharedString, cx: &mut Context<Self>) {
+    pub fn jump_to(&mut self, post: SharedString, cx: &mut Context<Self>) {
         match (&self.content, &self.target) {
             (Content::Channel(view), _) => view.update(cx, |view, cx| view.jump_to(post, cx)),
             (Content::Thread(pane), Target::Thread { root, .. }) => {
@@ -877,8 +987,12 @@ impl PopOutView {
 
     /// Views the channel on the server when this window has focus and
     /// shows its newest post, so a channel only counts as read while the
-    /// user can see it (#145).
+    /// user can see it (#145). In split view the main window decides,
+    /// since only it knows which pane has focus.
     fn view_if_seen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.host == Host::Split {
+            return cx.emit(PaneEvent::CheckSeen);
+        }
         let (Target::Channel(id), Content::Channel(view)) = (&self.target, &self.content) else {
             return;
         };
@@ -896,6 +1010,9 @@ impl PopOutView {
 
     /// Hands `ask` to the main window.
     fn ask(&self, ask: Ask, cx: &mut Context<Self>) {
+        if self.host == Host::Split {
+            return cx.emit(PaneEvent::Ask(ask));
+        }
         let request = Request {
             server: self.server.clone(),
             ask,
@@ -1097,8 +1214,18 @@ impl PopOutView {
         cx: &mut Context<Self>,
     ) {
         let channel = self.target.channel().clone();
-        if let ChannelEvent::OpenThread(root) | ChannelEvent::OpenThreadWindow(root) = event {
-            return self.pop_out_thread(root.clone(), cx);
+        match event {
+            // A split pane's threads open in the right pane, as the main
+            // pane's do.
+            ChannelEvent::OpenThread(root) if self.host == Host::Split => {
+                return cx.emit(PaneEvent::OpenThread(root.clone()));
+            }
+            ChannelEvent::OpenThread(root) | ChannelEvent::OpenThreadWindow(root) => {
+                return self.pop_out_thread(root.clone(), cx);
+            }
+            ChannelEvent::SwapPanes => return cx.emit(PaneEvent::Swap),
+            ChannelEvent::ClosePane => return cx.emit(PaneEvent::ClosePane),
+            _ => {}
         }
         let ask = match event {
             ChannelEvent::Offline(action) => Some(Ask::Offline(action)),
@@ -1413,9 +1540,8 @@ impl PopOutView {
         live.send(command);
     }
 
-    /// The channel view, for tests.
-    #[cfg(test)]
-    fn channel_view(&self) -> Option<&Entity<ChannelView>> {
+    /// The channel view.
+    pub fn channel_view(&self) -> Option<&Entity<ChannelView>> {
         match &self.content {
             Content::Channel(view) => Some(view),
             Content::Thread(_) => None,
@@ -1426,6 +1552,27 @@ impl PopOutView {
 impl Render for PopOutView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
+        if self.host == Host::Split {
+            // The main window's selection root and toasts are around it.
+            let content = match &self.content {
+                Content::Channel(view) => view.clone().into_any_element(),
+                Content::Thread(pane) => pane.clone().into_any_element(),
+            };
+            return div()
+                .key_context(actions::SPLIT_PANE)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|this, _: &actions::MarkChannelRead, _, cx| {
+                    this.kept_unread = false;
+                    cx.emit(PaneEvent::MarkRead);
+                }))
+                .size_full()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(content)
+                .child(self.toasts.clone())
+                .into_any_element();
+        }
         let title = self.title(cx);
         let view = cx.weak_entity();
         let content = match &self.content {
@@ -1468,6 +1615,7 @@ impl Render for PopOutView {
                 ),
             )
             .child(self.toasts.clone())
+            .into_any_element()
     }
 }
 
@@ -1527,6 +1675,7 @@ mod tests {
                 Target::Channel("c".into()),
                 server,
                 Some((fork, quiet)),
+                Host::Window,
                 window,
                 cx,
             )

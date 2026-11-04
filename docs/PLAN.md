@@ -417,6 +417,10 @@ conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 | Preferences | Cmd+, |
 | Open channel or thread in new window (M3) | Cmd+Shift+O (Matty) |
 | Close a channel or thread window | Cmd+W (Matty) |
+| Open in split view (M3) | Cmd+\ (Matty) |
+| Focus the other split pane | F6 (Matty) |
+| Swap split panes | Cmd+Alt+\ (Matty) |
+| Close the focused split pane | Cmd+Alt+W (Matty) |
 
 "Just start typing" focuses the composer when focus is anywhere in the
 channel view and no message is selected, as in Slack and Telegram.

@@ -206,6 +206,20 @@ pub struct PopOutPlace {
     pub bounds: WindowGeometry,
 }
 
+/// Split view's second channel on a server, to open again at launch
+/// (#222), and where the divider was: the first pane's share of the two.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SplitPlace {
+    pub server: String,
+    pub channel_id: String,
+    #[serde(default = "half")]
+    pub ratio: f32,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
 /// A server the user signed in to, so its cache can open at launch. Holds
 /// no secret: the session token belongs in the keychain (#77). The fields
 /// after `display_name` came with multiple servers (#206); a file without
@@ -288,6 +302,8 @@ pub struct Settings {
     pub recent_searches: Vec<String>,
     /// Channels and threads in their own windows (#222).
     pub popouts: Vec<PopOutPlace>,
+    /// Split view's second pane, one per server (#222).
+    pub splits: Vec<SplitPlace>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -323,6 +339,7 @@ impl Default for Settings {
             recent_servers: Vec::new(),
             recent_searches: Vec::new(),
             popouts: Vec::new(),
+            splits: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }
@@ -382,6 +399,9 @@ impl Settings {
         );
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
+        for split in &mut self.splits {
+            split.ratio = clamp(split.ratio, 0.1, 0.9, 0.5);
+        }
         self.recent_servers.truncate(RECENT_SERVERS);
         self.migrate_servers();
         let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
@@ -635,6 +655,23 @@ mod tests {
         // An older file without the key still loads.
         let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
         assert!(old.recent_servers.is_empty());
+    }
+
+    #[test]
+    fn a_saved_split_loads_with_its_divider_in_range() {
+        let saved: Settings = serde_json::from_str(
+            r#"{"splits": [
+                {"server": "https://a", "channel_id": "c", "ratio": 4.0},
+                {"server": "https://b", "channel_id": "d"}
+            ]}"#,
+        )
+        .unwrap();
+        let splits = saved.sanitize().splits;
+        assert_eq!(splits[0].channel_id, "c");
+        assert_eq!(splits[0].ratio, 0.9);
+        assert_eq!(splits[1].ratio, 0.5, "a split without a ratio halves");
+        let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
+        assert!(old.splits.is_empty());
     }
 
     #[test]

@@ -184,6 +184,7 @@ mod preferences;
 mod quick_switch;
 mod servers;
 mod sounds;
+mod split;
 mod sso;
 mod teams;
 
@@ -296,6 +297,8 @@ pub struct MainWindow {
     login_server: Option<String>,
     /// The browser sign-in the card waits on (#75).
     sso: Option<sso::PendingSso>,
+    /// Split view's second pane and which pane has focus (#222).
+    split: split::Split,
     /// The link sync is finding, with the permalink's post (#85, #103).
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
     /// The join prompt for a link to a public channel the user is not in.
@@ -581,6 +584,8 @@ impl MainWindow {
                 ChannelEvent::OpenThreadWindow(root) => this.pop_out_thread(root.clone(), None, cx),
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
                 ChannelEvent::OpenInfo => this.show_channel_info(cx),
+                ChannelEvent::SwapPanes => this.swap_panes(window, cx),
+                ChannelEvent::ClosePane => this.close_main_pane(window, cx),
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
@@ -894,6 +899,9 @@ impl MainWindow {
                     }
                     SidebarEvent::Leave(id) => return this.leave_channel(id.clone(), window, cx),
                     SidebarEvent::PopOut(id) => return this.pop_out_channel(id.clone(), cx),
+                    SidebarEvent::OpenInSplit(id) => {
+                        return this.open_in_split(id.clone(), window, cx);
+                    }
                     SidebarEvent::Close(id) => return this.close_direct(id.clone(), window, cx),
                     SidebarEvent::NewCategory { channel_id } => {
                         let channel_id = channel_id.clone();
@@ -972,7 +980,7 @@ impl MainWindow {
                         return;
                     }
                 };
-                this.open_channel(id, window, cx);
+                this.open_in_focused_pane(id, window, cx);
             },
         )
         .detach();
@@ -1107,12 +1115,14 @@ impl MainWindow {
             login_server: None,
             sso: None,
             sidebar_shown: false,
+            split: split::Split::new(window, cx),
         };
         cx.observe(&this.sidebar, |this, _, cx| this.update_badge(cx))
             .detach();
         cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
             .detach();
         this.follow_links(window, cx);
+        this.restore_split(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this
@@ -1795,6 +1805,7 @@ impl MainWindow {
             if let Some(live) = &self.live {
                 crate::popout::restore(live, cx);
             }
+            self.restore_split(window, cx);
             let selected = self.selected_channel.clone();
             let model = self.sidebar.update(cx, |sidebar, cx| {
                 let mut model = sidebar.model().clone();
@@ -3150,7 +3161,7 @@ impl MainWindow {
             return self.drafts.clone().into_any_element();
         }
         if !self.right_pane_open || Self::narrow_right_pane(window) {
-            return self.channel.clone().into_any_element();
+            return self.channel_area(window, cx);
         }
         let settings = self.settings.read(cx).get().clone();
         let theme = UiTheme::read(cx);
@@ -3168,7 +3179,7 @@ impl MainWindow {
         let channel_width = (extent - settings.right_pane_width).max(CONTENT_MIN);
         let store = self.settings.clone();
         Resizable::new("main.right-split", "Resize right pane", px(channel_width))
-            .first(self.channel.clone())
+            .first(self.channel_area(window, cx))
             .second(self.right_pane.clone())
             .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
             .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
@@ -3750,7 +3761,8 @@ impl MainWindow {
             return;
         };
         let seen = Seen {
-            focused: window.is_window_active(),
+            // In split view, only while the main pane has focus (#222).
+            focused: window.is_window_active() && self.split.main_focused(),
             channel_shown: !self.threads_open && !self.drafts_open,
             covered: self.right_drawer_shown || self.sidebar_drawer_shown,
             at_newest: self.channel.read(cx).at_newest(cx),
@@ -3762,6 +3774,7 @@ impl MainWindow {
             self.sidebar
                 .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
         }
+        self.view_split_if_seen(window, cx);
     }
 
     /// Tells the server the user viewed `ids`, one request each.
@@ -3802,6 +3815,7 @@ impl MainWindow {
             ..matty_notify::AppState::default()
         };
         // A pop-out with focus shows its own channel or thread (#222).
+        let app = self.split_seen(app, cx);
         let app = crate::popout::seen_by_focused(app, cx);
         if let Some(notification) = arrival.decide(app) {
             self.notifier.show(&notification);
@@ -4242,6 +4256,7 @@ impl Render for MainWindow {
             .track_focus(&self.focus)
             .map(|root| Self::on_server_actions(root, cx))
             .map(|root| Self::on_team_actions(root, cx))
+            .map(|root| Self::on_split_actions(root, cx))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 if Self::narrow_sidebar(window) {
                     this.sidebar_drawer_open = !this.sidebar_drawer_open;
@@ -4323,8 +4338,7 @@ impl Render for MainWindow {
             // From anywhere outside the channel view, such as the sidebar
             // or right after sign-in.
             .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
-                this.channel
-                    .update(cx, |channel, cx| channel.focus_composer(window, cx))
+                this.focus_composer_in_pane(window, cx)
             }))
             .size_full()
             .relative()

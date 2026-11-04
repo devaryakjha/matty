@@ -415,6 +415,8 @@ pub enum SidebarEvent {
     SetMuted { id: SharedString, muted: bool },
     /// "Open in new window" from a row's menu (#222).
     PopOut(SharedString),
+    /// "Open in split view" from a row's menu (#222).
+    OpenInSplit(SharedString),
     /// "Leave channel" from a channel row's menu.
     Leave(SharedString),
     /// "Close conversation" from a direct or group message row's menu.
@@ -614,6 +616,11 @@ impl SidebarView {
             },
         ));
         items.push(self.move_to(row, cx));
+        items.push(emit(
+            "sidebar.row.split",
+            "Open in split view",
+            SidebarEvent::OpenInSplit(row.id.clone()),
+        ));
         items.push(emit(
             "sidebar.row.pop-out",
             "Open in new window",
@@ -844,6 +851,15 @@ impl SidebarView {
         }
         self.model.selected = id;
         cx.notify();
+    }
+
+    /// Marks `id` as the one shown, leaving its unread mark: split view's
+    /// focus moved to a pane that already shows it (#222).
+    pub fn highlight(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.model.selected != id {
+            self.model.selected = id;
+            cx.notify();
+        }
     }
 
     /// Marks one row unread, as U on a selected post does.
