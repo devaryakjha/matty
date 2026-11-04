@@ -4763,6 +4763,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "matty-demo"
+version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "matty-api",
+ "matty-sync",
+ "rusqlite",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "matty-markdown"
 version = "0.0.1"
 dependencies = [

@@ -1,6 +1,7 @@
 //! The browser SSO flow and incoming links (#75, #84): the window opens the
 //! browser with a fresh client token, waits up to three minutes for the
 //! `mattermost://` hand-off, and finishes sign-in with its server token.
+//! Other links open their channel or post, as a link in a message would.
 
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ impl MainWindow {
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(link) = links.recv().await {
                 let handled = this.update_in(cx, |this, window, cx| {
+                    cx.activate(true);
                     window.activate_window();
                     this.open_link(&link, window, cx);
                 });
@@ -42,11 +44,30 @@ impl MainWindow {
     }
 
     fn open_link(&mut self, link: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A second launch without a link only brings the window forward.
+        if link.is_empty() {
+            return;
+        }
         let Some(parsed) = DeepLink::parse(link) else {
             tracing::info!(link = %deeplink::redacted(link), "ignored a link Matty does not handle");
             return;
         };
         match parsed {
+            DeepLink::Page { host, path } => {
+                let server = match &self.live {
+                    Some(live) => Some(live.server().to_owned()),
+                    None => crate::preview::enabled().then(|| super::PREVIEW_SERVER.to_owned()),
+                };
+                match server.and_then(|server| deeplink::page_url(&host, &path, &server)) {
+                    Some(url) => self.go_to_link(&url, false, window, cx),
+                    None => tracing::info!(
+                        %host,
+                        signed_in = self.live.is_some(),
+                        "ignored a link to a server Matty is not signed in to"
+                    ),
+                }
+            }
+            DeepLink::Entity(url) => self.go_to_link(&url, false, window, cx),
             DeepLink::SsoCallback {
                 client_token,
                 server_token,

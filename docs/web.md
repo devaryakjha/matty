@@ -40,6 +40,37 @@ atomics (`-Z build-std`). The page must be cross-origin isolated (the
 `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers in
 `crates/matty-web/web/_headers`) for the browser to allow that memory.
 
+## The demo workspace
+
+With no account signed in, the page opens a sample workspace instead of the
+sign-in card: Lumen Labs, a made-up company of twelve people a few weeks
+before a launch, with 22 channels, direct and group messages, threads,
+reactions, pinned and saved posts, images and files, a CI bot's message
+attachments, unread channels and mentions, and a **Formatting Tour**
+channel with one post per kind of message. A banner says it is a demo and
+offers **Connect your server**, which goes to the sign-in card. `?demo=0`
+skips it.
+
+Nothing in the demo talks to a server. It is a snapshot of the cache the
+desktop app would have after signing in to a seeded server: one SQLite file,
+`crates/matty-web/demo/demo.sqlite` (under 1 MB), with the avatars and
+images inside it. The page bakes it in, opens it in memory and moves every
+timestamp forward so the story always reads as the last three weeks. What
+you send stays in the outbox, since there is no server to take it.
+
+To change it, edit `scripts/demo/content.py` (people, channels and every
+post), then rebuild the snapshot and commit it:
+
+```sh
+scripts/demo/run   # fresh dev server, scripts/demo/seed.py, then matty-demo snapshots it
+```
+
+It needs Docker (for `scripts/dev-server`) and Pillow (`pip install pillow`)
+for the generated avatars and images. `matty-demo` (`crates/matty-demo`) is
+the snapshot tool: it signs in as the demo user and has the sync engine load
+every channel, thread, avatar and image the way the app would. A snapshot
+from an older schema still opens, because the store migrates it on load.
+
 ## Deploying to matty.jha.sh (manual, for now)
 
 The site is a Cloudflare Worker that only serves static assets

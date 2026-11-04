@@ -59,7 +59,7 @@ impl Notifier for Logged {
             channel = %notification.channel_id,
             post = %notification.post_id,
             mention = notification.mention,
-            sound = notification.sound,
+            sound = ?notification.sound,
             "notification"
         );
     }
@@ -188,7 +188,7 @@ mod tests {
             title: "town".into(),
             body: "Ada: on it".into(),
             mention: false,
-            sound: false,
+            sound: None,
         };
         assert_eq!(Clicked::identifier_of(&notification), id);
     }

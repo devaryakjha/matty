@@ -101,6 +101,28 @@ pub fn until_label(end: i64, now: &Zoned, clock: ClockFormat) -> Option<String> 
     })
 }
 
+/// Whether Do not disturb is on now: set, and its end (if any) still ahead.
+/// The server restores the status at the end; until its event arrives the
+/// end already counts.
+pub fn is_on(dnd: bool, end: Option<i64>, now: &Zoned) -> bool {
+    dnd && matty_notify::dnd_active(end, now.timestamp().as_second())
+}
+
+/// The line under Do not disturb in Preferences → Notifications (#158):
+/// whether notifications are paused, and until when.
+pub fn preferences_detail(dnd: bool, end: Option<i64>, now: &Zoned, clock: ClockFormat) -> String {
+    if !is_on(dnd, end, now) {
+        return "Pause desktop notifications. For a set time, use the status menu.".to_owned();
+    }
+    match end.and_then(|end| until_label(end, now, clock)) {
+        Some(until) => format!(
+            "Desktop notifications are paused {}.",
+            until.replacen("Until", "until", 1)
+        ),
+        None => "Desktop notifications are paused until you turn this off.".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +234,35 @@ mod tests {
             label("2026-11-06T09:00:00Z", ClockFormat::TwentyFourHour),
             "Until Friday, November 6 at 09:00"
         );
+    }
+
+    #[test]
+    fn preferences_say_whether_and_until_when() {
+        let now = at("2026-11-04T08:00:00Z", "UTC");
+        let clock = ClockFormat::TwentyFourHour;
+        let soon = "2026-11-04T14:30:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        let past = now.timestamp().as_second() - 60;
+        assert_eq!(
+            preferences_detail(true, Some(soon), &now, clock),
+            "Desktop notifications are paused until 14:30."
+        );
+        assert_eq!(
+            preferences_detail(true, Some(soon + 86_400), &now, clock),
+            "Desktop notifications are paused until tomorrow 14:30."
+        );
+        assert_eq!(
+            preferences_detail(true, None, &now, clock),
+            "Desktop notifications are paused until you turn this off."
+        );
+        let off = "Pause desktop notifications. For a set time, use the status menu.";
+        assert_eq!(preferences_detail(false, None, &now, clock), off);
+        // Ended, before the server's status change arrives.
+        assert_eq!(preferences_detail(true, Some(past), &now, clock), off);
+        assert!(is_on(true, Some(soon), &now));
+        assert!(!is_on(true, Some(past), &now));
+        assert!(!is_on(false, Some(soon), &now));
     }
 }
