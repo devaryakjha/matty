@@ -304,6 +304,8 @@ pub enum RightPaneEvent {
     /// The thread transcript reached its oldest loaded reply under `root`;
     /// sync pages in the replies before it (#122).
     LoadOlderReplies(SharedString),
+    /// "Open in new window" on the thread under `root` (#222).
+    PopOut(SharedString),
 }
 
 /// Rows of the thread transcript before the replies: the root, the
@@ -381,6 +383,9 @@ pub struct RightPaneView {
     _permalink_task: Option<gpui_kit::Task<()>>,
     /// A jump waiting for its thread to arrive: the root and the post.
     pending_jump: Option<(SharedString, SharedString)>,
+    /// The pane is a pop-out window's whole content (#222): its header
+    /// offers neither Expand nor another window.
+    popped_out: bool,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -574,6 +579,7 @@ impl RightPaneView {
             discard: DialogHandle::new(false),
             discarding: None,
             permalink: None,
+            popped_out: false,
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -1522,6 +1528,12 @@ impl RightPaneView {
         cx.notify();
     }
 
+    /// Makes the pane a pop-out window's content (#222).
+    pub fn set_popped_out(&mut self, popped_out: bool, cx: &mut Context<Self>) {
+        self.popped_out = popped_out;
+        cx.notify();
+    }
+
     /// The post a notification opened the thread at, while it is tinted.
     pub fn permalink(&self) -> Option<&SharedString> {
         self.permalink.as_ref()
@@ -1918,6 +1930,13 @@ impl RightPaneView {
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
+        // A thread can move to its own window, unless it is in one (#222).
+        let thread_root = match &self.content {
+            Some(RightPaneContent::Thread(thread)) if !self.popped_out => {
+                Some(thread.root.id.clone())
+            }
+            _ => None,
+        };
         let action = |id: &'static str, label: &'static str, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
@@ -1967,11 +1986,27 @@ impl RightPaneView {
                     .items_center()
                     .flex_shrink_0()
                     .gap(theme.space(0.5))
-                    .child(style::tipped(
-                        "right-pane.expand.tip",
-                        actions::tooltip_text("Expand", "Expand right pane"),
-                        action("right-pane.expand", "Expand", LucideIcon::Maximize2),
-                    ))
+                    .when_some(thread_root, |row, root| {
+                        row.child(style::tipped(
+                            "right-pane.pop-out.tip",
+                            actions::tooltip_text("Open in new window", "Open in new window"),
+                            action(
+                                "right-pane.pop-out",
+                                "Open in new window",
+                                LucideIcon::SquareArrowOutUpRight,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| cx.emit(RightPaneEvent::PopOut(root.clone())),
+                            )),
+                        ))
+                    })
+                    .when(!self.popped_out, |row| {
+                        row.child(style::tipped(
+                            "right-pane.expand.tip",
+                            actions::tooltip_text("Expand", "Expand right pane"),
+                            action("right-pane.expand", "Expand", LucideIcon::Maximize2),
+                        ))
+                    })
                     .child(style::tipped(
                         "right-pane.close.tip",
                         actions::tooltip_text("Close", "Close right pane"),

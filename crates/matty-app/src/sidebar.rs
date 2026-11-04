@@ -413,6 +413,8 @@ pub enum SidebarEvent {
     SetFavorite { id: SharedString, favorite: bool },
     /// Mute or unmute a channel from its row menu; the row already shows it.
     SetMuted { id: SharedString, muted: bool },
+    /// "Open in new window" from a row's menu (#222).
+    PopOut(SharedString),
     /// "Leave channel" from a channel row's menu.
     Leave(SharedString),
     /// "Close conversation" from a direct or group message row's menu.
@@ -564,7 +566,7 @@ impl SidebarView {
     }
 
     /// The row menu's items for `row`: mark read while unread, favorite,
-    /// mute, then leave or close.
+    /// mute, move, open in a new window, then leave or close.
     fn row_items(&self, row: &ChannelRow, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.weak_entity();
         let emit = |id: &'static str, label: &str, event: SidebarEvent| {
@@ -612,6 +614,11 @@ impl SidebarView {
             },
         ));
         items.push(self.move_to(row, cx));
+        items.push(emit(
+            "sidebar.row.pop-out",
+            "Open in new window",
+            SidebarEvent::PopOut(row.id.clone()),
+        ));
         items.push(MenuItem::separator());
         items.push(if direct {
             emit(

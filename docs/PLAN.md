@@ -415,6 +415,8 @@ conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 | Close right pane | Escape |
 | Zoom in / out / reset | Cmd+= / Cmd+- / Cmd+0 |
 | Preferences | Cmd+, |
+| Open channel or thread in new window (M3) | Cmd+Shift+O (Matty) |
+| Close a channel or thread window | Cmd+W (Matty) |
 
 "Just start typing" focuses the composer when focus is anywhere in the
 channel view and no message is selected, as in Slack and Telegram.

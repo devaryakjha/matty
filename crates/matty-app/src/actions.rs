@@ -90,6 +90,11 @@ gpui_kit::actions!(
         OpenPreferences,
         /// Show the keyboard shortcut sheet. (MM)
         ShowShortcuts,
+        /// Open the current channel, or the thread in the right pane, in a
+        /// window of its own. (Matty, #222)
+        OpenInNewWindow,
+        /// Close a channel or thread window. (Matty, #222)
+        CloseWindow,
     ]
 );
 
@@ -312,6 +317,8 @@ pub const CHANNEL_VIEW: &str = "ChannelView";
 pub const RIGHT_PANE: &str = "RightPane";
 pub const COMPOSER: &str = "Composer";
 pub const COMPOSER_EMPTY: &str = "Composer && empty";
+/// A channel or thread in a window of its own (#222).
+pub const POP_OUT: &str = "PopOut";
 
 macro_rules! row {
     ($label:literal, $action:ident, $context:expr, $mac:literal, $other:literal) => {
@@ -519,6 +526,20 @@ pub fn bindings() -> Vec<Binding> {
         row!("Reset zoom", ResetZoom, main, "cmd-0", "ctrl-0"),
         row!("Preferences", OpenPreferences, main, "cmd-,", "ctrl-,"),
         row!("Keyboard shortcuts", ShowShortcuts, main, "cmd-/", "ctrl-/"),
+        row!(
+            "Open in new window",
+            OpenInNewWindow,
+            main,
+            "cmd-shift-o",
+            "ctrl-shift-o"
+        ),
+        row!(
+            "Close window",
+            CloseWindow,
+            Some(POP_OUT),
+            "cmd-w",
+            "ctrl-w"
+        ),
     ]
 }
 
@@ -643,6 +664,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 39);
+        assert_eq!(count, 41);
     }
 }

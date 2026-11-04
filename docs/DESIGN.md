@@ -591,6 +591,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   saved width; picking a channel, Threads or Drafts closes it, as do
   Escape and the backdrop. The team rail stays put, so switching teams
   never needs the drawer (`design-50`).
+- **Pop-out windows** (#222): "Open in new window" on a sidebar row, a
+  post's menu ("Open thread in new window"), the thread pane's header, or
+  Cmd/Ctrl+Shift+O opens the channel or thread alone in its own window:
+  a 34px title bar naming it in `muted-foreground`, then the same channel
+  view or thread pane as the main window, with its own composer. It
+  shares the main window's sync, closes with Cmd/Ctrl+W, and opens again
+  where it was at the next launch. A thread moved out of the right pane
+  closes the pane.
 - **Tooltips on icon-only buttons** (PLAN §5 visual direction, §8): every
   icon-only button shows a tooltip naming it, with the shortcut after two
   spaces when the keymap has one: the channel header's favorite,

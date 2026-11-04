@@ -940,6 +940,9 @@ pub enum ChannelEvent {
     ViewImages(Vec<SharedString>),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
+    /// "Open thread in new window" on a post: the thread under this root
+    /// gets a window of its own (#222).
+    OpenThreadWindow(SharedString),
     /// U on a selected post: unread from this post on (PLAN §4.2); sync
     /// tells the server.
     MarkUnread(SharedString),
@@ -3117,6 +3120,7 @@ impl ChannelView {
             })
         };
         let reply_id = post.thread_root();
+        let window_id = post.thread_root();
         let react_id = id.clone();
         let unread_id = id.clone();
         let mut items = vec![
@@ -3124,6 +3128,13 @@ impl ChannelView {
                 "reply",
                 "Reply in thread",
                 Box::new(move |_, _, cx| cx.emit(ChannelEvent::OpenThread(reply_id.clone()))),
+            ),
+            act(
+                "thread-window",
+                "Open thread in new window",
+                Box::new(move |_, _, cx| {
+                    cx.emit(ChannelEvent::OpenThreadWindow(window_id.clone()))
+                }),
             ),
             act(
                 "react",
