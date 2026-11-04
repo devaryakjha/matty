@@ -882,6 +882,16 @@ pub fn category_sort_order(conn: &Connection, category_id: &str) -> Result<Optio
         .optional()?)
 }
 
+/// A team's category ids in sidebar order.
+pub fn category_order(conn: &Connection, team_id: &str) -> Result<Vec<String>> {
+    let mut statement =
+        conn.prepare_cached("SELECT id FROM categories WHERE team_id = ?1 ORDER BY sort_order")?;
+    let ids = statement
+        .query_map([team_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
+}
+
 /// Reorders a team's categories (`sidebar_category_order_updated`).
 /// Categories not listed keep their relative order after the listed ones.
 pub fn set_category_order(conn: &Connection, team_id: &str, order: &[String]) -> Result<()> {
