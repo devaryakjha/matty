@@ -244,6 +244,25 @@ pub enum Command {
         /// Every key, changed or not: the server replaces the map.
         notify_props: std::collections::HashMap<String, String>,
     },
+    /// Moves a category one place up or down in its team's sidebar;
+    /// [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar) follows.
+    MoveCategory {
+        /// The category to move.
+        category_id: String,
+        /// Up (towards the top) or down.
+        up: bool,
+    },
+    /// Moves a channel one place up or down within its category, which then
+    /// sorts by hand; [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar)
+    /// follows.
+    MoveChannel {
+        /// The category the channel is in.
+        category_id: String,
+        /// The channel to move.
+        channel_id: String,
+        /// Up (towards the top) or down.
+        up: bool,
+    },
     /// Changes the user's own names, nickname, position or username;
     /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
     UpdateProfile {
@@ -624,6 +643,8 @@ impl std::fmt::Debug for Command {
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
             Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
+            Self::MoveCategory { .. } => f.write_str("MoveCategory"),
+            Self::MoveChannel { .. } => f.write_str("MoveChannel"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -1389,6 +1410,29 @@ impl Engine {
                     if let Some(mut category) = sidebar::category(&tx, &category_id)? {
                         category.channel_ids.retain(|id| *id != channel_id);
                         category.channel_ids.insert(0, channel_id);
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
+                Message::Command(Command::MoveCategory { category_id, up }) => {
+                    if let Some(category) = sidebar::category(&tx, &category_id)? {
+                        let mut order = sidebar::category_order(&tx, &category.team_id)?;
+                        if step(&mut order, &category_id, up) {
+                            writes.push(Write::CategoryOrder {
+                                team_id: category.team_id,
+                                order,
+                            });
+                        }
+                    }
+                }
+                Message::Command(Command::MoveChannel {
+                    category_id,
+                    channel_id,
+                    up,
+                }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)?
+                        && step(&mut category.channel_ids, &channel_id, up)
+                    {
+                        category.sorting = "manual".into();
                         writes.push(category_write(self.me.as_deref(), category));
                     }
                 }
@@ -3135,6 +3179,22 @@ fn snapshot(
 }
 
 /// Saves `category` back to the server as the user's (`me`).
+/// Swaps `id` with its neighbor above (`up`) or below; false when it is
+/// missing or already at that end.
+fn step(ids: &mut [String], id: &str, up: bool) -> bool {
+    let Some(at) = ids.iter().position(|other| other == id) else {
+        return false;
+    };
+    let to = if up { at.checked_sub(1) } else { Some(at + 1) };
+    match to {
+        Some(to) if to < ids.len() => {
+            ids.swap(at, to);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCategory) -> Write {
     category.user_id = me.unwrap_or_default().to_owned();
     Write::UpdateCategory {

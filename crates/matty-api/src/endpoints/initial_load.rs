@@ -66,6 +66,20 @@ impl Client {
         .await
     }
 
+    /// `PUT users/me/teams/{team_id}/channels/categories/order`: the team's
+    /// categories in this order; returns the order the server kept.
+    pub async fn set_category_order(
+        &self,
+        team_id: &str,
+        order: &[String],
+    ) -> Result<Vec<String>, ApiError> {
+        self.put(
+            &format!("users/me/teams/{team_id}/channels/categories/order"),
+            order,
+        )
+        .await
+    }
+
     /// `PUT users/me/teams/{team_id}/channels/categories`: saves
     /// `categories` whole. A channel listed in one leaves the category it
     /// was in.

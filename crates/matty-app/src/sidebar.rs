@@ -386,6 +386,15 @@ pub enum SidebarEvent {
         id: SharedString,
         name: SharedString,
     },
+    /// "Move category up" or "down" from a category's menu.
+    MoveCategory { id: SharedString, up: bool },
+    /// "Move up" or "Move down" in a row's Move to menu: within its
+    /// category, which then sorts by hand.
+    MoveChannel {
+        category_id: SharedString,
+        channel_id: SharedString,
+        up: bool,
+    },
 }
 
 pub struct SidebarView {
@@ -570,26 +579,58 @@ impl SidebarView {
                 view.update(cx, |_, cx| cx.emit(event.clone())).ok();
             })
         };
-        let mut items: Vec<MenuItem> = self
+        let mut items: Vec<MenuItem> = Vec::new();
+        if let Some(category) = self
             .model
             .categories
             .iter()
-            .filter(|category| {
-                category.kind.takes(&row.kind)
-                    && !category.rows.iter().any(|other| other.id == row.id)
-            })
-            .map(|category| {
-                emit(
-                    format!("sidebar.row.move.{}", category.id),
-                    category.name.clone(),
-                    SidebarEvent::MoveToCategory {
-                        channel_id: row.id.clone(),
-                        category_id: category.id.clone(),
-                    },
-                )
-            })
-            .collect();
-        if !items.is_empty() {
+            .find(|category| category.rows.iter().any(|other| other.id == row.id))
+        {
+            let at = category
+                .rows
+                .iter()
+                .position(|other| other.id == row.id)
+                .unwrap_or_default();
+            for (up, label, end) in [
+                (true, "Move up", at == 0),
+                (false, "Move down", at + 1 >= category.rows.len()),
+            ] {
+                items.push(
+                    emit(
+                        format!("sidebar.row.move.{}", if up { "up" } else { "down" }),
+                        label.into(),
+                        SidebarEvent::MoveChannel {
+                            category_id: category.id.clone(),
+                            channel_id: row.id.clone(),
+                            up,
+                        },
+                    )
+                    .disabled(end),
+                );
+            }
+            items.push(MenuItem::separator());
+        }
+        let before = items.len();
+        items.extend(
+            self.model
+                .categories
+                .iter()
+                .filter(|category| {
+                    category.kind.takes(&row.kind)
+                        && !category.rows.iter().any(|other| other.id == row.id)
+                })
+                .map(|category| {
+                    emit(
+                        format!("sidebar.row.move.{}", category.id),
+                        category.name.clone(),
+                        SidebarEvent::MoveToCategory {
+                            channel_id: row.id.clone(),
+                            category_id: category.id.clone(),
+                        },
+                    )
+                }),
+        );
+        if items.len() > before {
             items.push(MenuItem::separator());
         }
         items.push(emit(
@@ -602,7 +643,7 @@ impl SidebarView {
         MenuItem::submenu("sidebar.row.move", "Move to", items)
     }
 
-    /// A custom category's menu: rename or delete it.
+    /// A category's menu: move it, and for a custom one rename or delete it.
     fn open_category_menu(
         &mut self,
         id: &SharedString,
@@ -610,14 +651,12 @@ impl SidebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(category) = self
-            .model
-            .categories
-            .iter()
-            .find(|category| &category.id == id && category.kind == CategoryKind::Custom)
-        else {
+        let categories = &self.model.categories;
+        let Some(index) = categories.iter().position(|category| &category.id == id) else {
             return;
         };
+        let category = &categories[index];
+        let custom = category.kind == CategoryKind::Custom;
         let view = cx.weak_entity();
         let emit = |id: &'static str, label: &'static str, event: SidebarEvent| {
             let view = view.clone();
@@ -626,27 +665,53 @@ impl SidebarView {
             })
         };
         let (id, name) = (category.id.clone(), category.name.clone());
-        let items = vec![
-            emit(
+        let mut items = Vec::new();
+        if custom {
+            items.push(emit(
                 "sidebar.category.rename",
                 "Rename category",
                 SidebarEvent::RenameCategory {
                     id: id.clone(),
                     name: name.clone(),
                 },
-            ),
+            ));
+        }
+        items.push(emit(
+            "sidebar.category.new",
+            "Create new category",
+            SidebarEvent::NewCategory { channel_id: None },
+        ));
+        items.push(MenuItem::separator());
+        items.push(
             emit(
-                "sidebar.category.new",
-                "Create new category",
-                SidebarEvent::NewCategory { channel_id: None },
-            ),
-            MenuItem::separator(),
+                "sidebar.category.up",
+                "Move category up",
+                SidebarEvent::MoveCategory {
+                    id: id.clone(),
+                    up: true,
+                },
+            )
+            .disabled(index == 0),
+        );
+        items.push(
             emit(
+                "sidebar.category.down",
+                "Move category down",
+                SidebarEvent::MoveCategory {
+                    id: id.clone(),
+                    up: false,
+                },
+            )
+            .disabled(index + 1 >= categories.len()),
+        );
+        if custom {
+            items.push(MenuItem::separator());
+            items.push(emit(
                 "sidebar.category.delete",
                 "Delete category",
                 SidebarEvent::DeleteCategory { id, name },
-            ),
-        ];
+            ));
+        }
         self.row_menu.update(cx, |menu, cx| {
             menu.set_items(items, cx);
             menu.open_at(Some(at), window, cx);
