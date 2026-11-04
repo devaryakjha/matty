@@ -424,6 +424,7 @@ impl MainWindow {
             match event {
                 ThreadsEvent::MarkAllRead => live.read_all_threads(),
                 ThreadsEvent::Unfollow(root) => live.follow_thread(root, false),
+                ThreadsEvent::LoadMore => live.load_more_threads(),
                 ThreadsEvent::Open { root, unread } => {
                     // Only while on screen: the view keeps its selection
                     // when the user goes back to a channel.
@@ -2066,7 +2067,10 @@ impl MainWindow {
             .then(|| crate::preview::thread(&channel_id, &post_id))
             .flatten();
         self.right_pane.update(cx, |pane, cx| {
-            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+            pane.set_content(
+                thread.map(|thread| RightPaneContent::Thread(Box::new(thread))),
+                cx,
+            )
         });
         self.right_pane_open = true;
         cx.notify();
@@ -2234,6 +2238,11 @@ impl MainWindow {
             RightPaneEvent::ToggleFollow { root, following } => {
                 if let Some(live) = &self.live {
                     live.follow_thread(root, *following);
+                }
+            }
+            RightPaneEvent::LoadOlderReplies(root) => {
+                if let Some(live) = &self.live {
+                    live.load_older_replies(root);
                 }
             }
             // Sync owns the rest (PLAN §4.3); the pane already shows them.

@@ -52,6 +52,13 @@ pub struct ThreadModel {
     pub root: Post,
     pub replies: Vec<Post>,
     pub following: bool,
+    /// The thread's replies on the server, loaded or not.
+    pub reply_count: usize,
+    /// Older replies than the first in `replies` are on the server; the
+    /// row above the replies pages them in (#122).
+    pub older: bool,
+    /// The last older page failed; that row offers Retry.
+    pub failed_older: bool,
 }
 
 /// A post listed outside its channel: saved, pinned or a mention.
@@ -74,7 +81,7 @@ pub struct SearchModel {
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
-    Thread(ThreadModel),
+    Thread(Box<ThreadModel>),
     ChannelInfo(ChannelModel),
     /// The current channel's pinned posts, newest first.
     Pinned {
@@ -176,7 +183,14 @@ pub enum RightPaneEvent {
     Leave(SharedString),
     /// The pane lists only the loaded profiles; sync fetches the rest.
     LoadMembers(SharedString),
+    /// The thread transcript reached its oldest loaded reply under `root`;
+    /// sync pages in the replies before it (#122).
+    LoadOlderReplies(SharedString),
 }
+
+/// Rows of the thread transcript before the replies: the root, the
+/// replies divider, and the row that pages in older replies (#122).
+const THREAD_HEAD: usize = 3;
 
 pub struct RightPaneView {
     /// `style::composer_cap` as of the last render.
@@ -189,6 +203,8 @@ pub struct RightPaneView {
     thread_focus: FocusHandle,
     /// The keyboard-selected row of the thread transcript (PLAN §4.2).
     selection: Option<usize>,
+    /// An older page of the thread's replies is on its way (#122).
+    loading_older: bool,
     /// The shared right-click menu over thread rows.
     menu: Entity<MenuState>,
     /// The current user's display name, for optimistic rows.
@@ -345,6 +361,7 @@ impl RightPaneView {
             focus: cx.focus_handle(),
             thread_focus: cx.focus_handle(),
             selection: None,
+            loading_older: false,
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             draft_len: 0,
@@ -511,6 +528,8 @@ impl RightPaneView {
             pinned: false,
             status: PostStatus::Pending,
             replies: None,
+            root_id: root.clone(),
+            reply_to: None,
             files,
             embeds: vec![],
         };
@@ -893,8 +912,7 @@ impl RightPaneView {
 
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
         let rows = match &content {
-            // Root, the replies divider, then replies.
-            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
         };
         self.list = cx.new(|cx| MessageListState::new(rows, cx));
@@ -915,36 +933,141 @@ impl RightPaneView {
         }
         self.content = content;
         self.selection = None;
+        self.loading_older = false;
         cx.notify();
     }
 
     /// Sync's latest of the open thread. The same thread keeps its scroll
-    /// and its composer; new replies join the end of the list.
+    /// and its composer; new replies join the end of the list, and an
+    /// older page goes in above the first reply without moving what the
+    /// reader sees (#122).
     pub fn set_thread(&mut self, thread: ThreadModel, cx: &mut Context<Self>) {
-        let same = matches!(
-            &self.content,
-            Some(RightPaneContent::Thread(shown)) if shown.root.id == thread.root.id
-        );
-        let before = self.thread_rows();
-        if !same || thread.replies.len() + 2 < before {
-            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+        let Some(RightPaneContent::Thread(shown)) = &self.content else {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+            return;
+        };
+        if shown.root.id != thread.root.id {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
             return;
         }
-        self.content = Some(RightPaneContent::Thread(thread));
-        let added = self.thread_rows() - before;
+        // Replies before the one that was first came from an older page.
+        let older = match shown.replies.first() {
+            Some(first) => thread.replies.iter().position(|reply| reply.id == first.id),
+            None => Some(0),
+        };
+        let Some(older) = older.filter(|older| shown.replies.len() + older <= thread.replies.len())
+        else {
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+            return;
+        };
+        let newer = thread.replies.len() - shown.replies.len() - older;
+        let paged = older > 0 || !thread.older || thread.failed_older;
+        self.content = Some(RightPaneContent::Thread(Box::new(thread)));
+        if paged {
+            self.loading_older = false;
+        }
+        if older > 0 {
+            self.selection = self
+                .selection
+                .map(|row| if row >= THREAD_HEAD { row + older } else { row });
+        }
         self.list.update(cx, |list, cx| {
-            if added > 0 {
-                list.append(added, cx);
+            if older > 0 {
+                // The list keeps the row at the top of the viewport where
+                // it was, so the reader's place holds.
+                list.splice(THREAD_HEAD..THREAD_HEAD, older, cx);
+                list.remeasure_items(0..THREAD_HEAD, cx);
+            } else {
+                list.remeasure(cx);
             }
-            list.remeasure(cx);
+            if newer > 0 {
+                list.append(newer, cx);
+            }
         });
         cx.notify();
+    }
+
+    /// Asks for the replies before the oldest loaded one when the row
+    /// above the replies shows and nothing stops it.
+    fn request_older(&mut self, cx: &mut Context<Self>) {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return;
+        };
+        if !thread.older || thread.failed_older || self.loading_older {
+            return;
+        }
+        self.loading_older = true;
+        cx.emit(RightPaneEvent::LoadOlderReplies(thread.root.id.clone()));
+        // This runs while the list lays out the row, so the remeasure
+        // waits until the list has let go of its state.
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                this.list.update(cx, |list, cx| {
+                    list.remeasure_items(THREAD_HEAD - 1..THREAD_HEAD, cx)
+                });
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// The row between the divider and the replies: nothing once every
+    /// reply is loaded, otherwise the older page's progress.
+    fn older_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return div().into_any_element();
+        };
+        if !thread.older {
+            return div().into_any_element();
+        }
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(theme.space(2.))
+            .px(theme.space(4.))
+            .py(theme.space(3.))
+            .text_size(theme.text(12.))
+            .text_color(theme.colors.muted_foreground)
+            .debug_selector(|| "right-pane.older".into());
+        if thread.failed_older {
+            row.child("Couldn't load older replies.")
+                .child(
+                    div()
+                        .debug_selector(|| "right-pane.older.retry".into())
+                        .child(
+                            Button::new("right-pane.older.retry")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Sm)
+                                .label("Retry")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(RightPaneContent::Thread(thread)) =
+                                        &mut this.content
+                                    {
+                                        thread.failed_older = false;
+                                    }
+                                    this.request_older(cx);
+                                })),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            row.child(
+                Spinner::new("right-pane.older.spinner")
+                    .label("Loading older replies")
+                    .size(gpui_kit::px(14.)),
+            )
+            .child("Loading older replies…")
+            .into_any_element()
+        }
     }
 
     /// Rows of the thread transcript: the root, the divider, then replies.
     fn thread_rows(&self) -> usize {
         match &self.content {
-            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + 2,
+            Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
         }
     }
@@ -964,7 +1087,7 @@ impl RightPaneView {
         if rows == 0 {
             return;
         }
-        self.selection = Some(if rows > 2 { rows - 1 } else { 0 });
+        self.selection = Some(if rows > THREAD_HEAD { rows - 1 } else { 0 });
         window.focus(&self.thread_focus, cx);
         cx.notify();
     }
@@ -981,7 +1104,7 @@ impl RightPaneView {
                 .replies
                 .iter()
                 .position(|post| post.id == *id)
-                .map(|index| index + 2)
+                .map(|index| index + THREAD_HEAD)
         };
         if row.is_some() {
             self.selection = row;
@@ -1300,7 +1423,8 @@ impl RightPaneView {
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let view = view.clone();
-        let count = thread.replies.len();
+        // Older replies may not be loaded yet; the server's count holds.
+        let count = thread.reply_count.max(thread.replies.len());
         let label = match count {
             1 => "1 reply".to_string(),
             n => format!("{n} replies"),
@@ -1364,7 +1488,13 @@ impl RightPaneView {
                     0 => Self::post_row(&view, &model.root, true, highlight(0), (away, None), cx)
                         .into_any_element(),
                     1 => Self::replies_divider(&view, &model, cx).into_any_element(),
-                    index => match model.replies.get(index - 2) {
+                    2 => view
+                        .update(cx, |this, cx| {
+                            this.request_older(cx);
+                            this.older_row(cx).into_any_element()
+                        })
+                        .unwrap_or_else(|_| div().into_any_element()),
+                    index => match model.replies.get(index - THREAD_HEAD) {
                         Some(reply) => {
                             let editor = editing
                                 .as_ref()
@@ -1388,7 +1518,7 @@ impl RightPaneView {
             .pt(theme.space(2.))
             .track_focus(&self.thread_focus)
             .selected(self.selection)
-            .selectable(|index, _| index != 1)
+            .selectable(|index, _| index == 0 || index >= THREAD_HEAD)
             .on_select({
                 let view = cx.entity().downgrade();
                 move |index, window, cx| {
@@ -2117,17 +2247,19 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn post(id: &str) -> Post {
         Post {
-            id: id.into(),
-            author: "a".into(),
+            id: id.to_string().into(),
+            author: "Ada".into(),
             author_id: SharedString::default(),
-            kind: PostKind::Regular,
+            kind: crate::channel::PostKind::Regular,
             time: 600,
             day: "Today".into(),
             date: SharedString::default(),
-            body: "hi".into(),
+            body: format!("Reply {id}").into(),
             reactions: vec![],
             mentions_me: false,
             edited: false,
@@ -2137,9 +2269,146 @@ mod tests {
             pinned: false,
             status: PostStatus::Sent,
             replies: None,
+            root_id: "root".into(),
+            reply_to: None,
             files: vec![],
             embeds: vec![],
         }
+    }
+
+    /// The thread with replies `r{from}` to `r{to - 1}` of 500 loaded.
+    fn thread(replies: std::ops::Range<usize>, older: bool, failed: bool) -> ThreadModel {
+        ThreadModel {
+            channel_name: "town".into(),
+            root: Post {
+                root_id: SharedString::default(),
+                ..post("root")
+            },
+            replies: replies.map(|i| post(&format!("r{i}"))).collect(),
+            following: false,
+            reply_count: 500,
+            older,
+            failed_older: failed,
+        }
+    }
+
+    fn pane(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (
+        Entity<RightPaneView>,
+        Rc<RefCell<Vec<RightPaneEvent>>>,
+        gpui_kit::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        let cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        (view, events, cx)
+    }
+
+    fn draw(cx: &mut gpui_kit::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// #122, with S1's measurement: a 500-reply thread opens on its newest
+    /// 50, and the 450 older ones go in above without moving the reply the
+    /// reader is looking at.
+    #[gpui_kit::test]
+    fn an_older_page_goes_in_without_moving_the_reader(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(450..500, true, false), cx)
+            })
+        });
+        draw(&mut cx);
+        // Opened at the newest reply, far from the oldest loaded one.
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+
+        let list = view.read_with(&cx, |pane, _| pane.list.clone());
+        cx.update(|_, cx| list.update(cx, |list, cx| list.scroll_to_item(THREAD_HEAD + 20, cx)));
+        draw(&mut cx);
+        let before = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(before.item_ix, THREAD_HEAD + 20);
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..500, false, false), cx)
+            })
+        });
+        draw(&mut cx);
+        let after = list.read_with(&cx, |list, _| list.logical_scroll_top());
+        assert_eq!(after.item_ix, before.item_ix + 450);
+        assert_eq!(after.offset_in_item, before.offset_in_item);
+        let shown = view.read_with(&cx, |pane, _| match &pane.content {
+            Some(RightPaneContent::Thread(thread)) => {
+                thread.replies[after.item_ix - THREAD_HEAD].id.clone()
+            }
+            _ => SharedString::default(),
+        });
+        assert_eq!(shown.as_ref(), "r470", "the same reply is at the top");
+        assert_eq!(list.read_with(&cx, |list, _| list.item_count()), 503);
+    }
+
+    /// Reaching the oldest loaded reply asks once for the page before it;
+    /// a failed page offers Retry instead of asking again.
+    #[gpui_kit::test]
+    fn the_oldest_reply_asks_for_the_page_before_it(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(498..500, true, false), cx)
+            })
+        });
+        draw(&mut cx);
+        draw(&mut cx);
+        let asked = |events: &[RightPaneEvent]| {
+            events
+                .iter()
+                .filter(|event| matches!(event, RightPaneEvent::LoadOlderReplies(root) if root == "root"))
+                .count()
+        };
+        assert_eq!(asked(&events.borrow()), 1);
+        assert!(view.read_with(&cx, |pane, _| pane.loading_older));
+        assert!(cx.debug_bounds("right-pane.older").is_some());
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(498..500, true, true), cx)
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(asked(&events.borrow()), 1, "a failed page waits for Retry");
+        let retry = cx
+            .debug_bounds("right-pane.older.retry")
+            .expect("Retry shows");
+        cx.simulate_click(retry.center(), Default::default());
+        draw(&mut cx);
+        assert_eq!(asked(&events.borrow()), 2);
+
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..500, false, false), cx)
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            asked(&events.borrow()),
+            2,
+            "at the root: nothing more to ask"
+        );
+        assert!(cx.debug_bounds("right-pane.older").is_none());
     }
 
     /// #195: a reply queued while offline is edited in place or discarded
@@ -2166,6 +2435,9 @@ mod tests {
                 waiting("me:2", "Pushing the fix now."),
             ],
             following: true,
+            reply_count: 2,
+            older: false,
+            failed_older: false,
         };
         let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
         let view = window.root(cx).unwrap();
@@ -2189,7 +2461,7 @@ mod tests {
         };
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.set_content(Some(RightPaneContent::Thread(thread)), cx);
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
                 // Online, it is on its way: no menu items, no editor.
                 view.set_away(false, cx);
                 let reply = view.reply_post(&"me:2".into()).unwrap().clone();
