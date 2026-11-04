@@ -13,6 +13,11 @@ use crate::{
 /// detects MFA by this id, not by the HTTP status.
 pub const MFA_REQUIRED_ID: &str = "mfa.validate_token.authenticate.app_error";
 
+/// The error id Mattermost uses when the MFA code was checked and is wrong.
+/// It also maps to [`ApiError::MfaRequired`]: the caller knows whether it
+/// sent a code.
+pub const MFA_BAD_CODE_ID: &str = "api.user.check_user_mfa.bad_code.app_error";
+
 /// What to sign in with.
 #[derive(Clone, Default)]
 pub struct Credentials {
@@ -148,7 +153,7 @@ impl Client {
 }
 
 fn mfa(error: ApiError) -> ApiError {
-    if error.id() == Some(MFA_REQUIRED_ID) {
+    if matches!(error.id(), Some(MFA_REQUIRED_ID | MFA_BAD_CODE_ID)) {
         ApiError::MfaRequired
     } else {
         error
