@@ -1363,14 +1363,13 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 this.login_server = None;
             }
-            LoginEvent::SignIn { login_id, password } => {
+            LoginEvent::SignIn(sign_in) => {
                 let Some(server) = this.login_server.clone() else {
                     model.step = LoginStep::Server;
                     return view.update(cx, |view, cx| view.set_model(model, window, cx));
                 };
                 model.busy = true;
-                let signing_in =
-                    crate::live::sign_in(server.clone(), login_id.clone(), password.clone());
+                let signing_in = crate::live::sign_in(server.clone(), sign_in.clone());
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Token(token) => {
@@ -1401,7 +1400,9 @@ impl MainWindow {
     fn finish_sign_in(
         &mut self,
         server: String,
-        signing_in: impl std::future::Future<Output = Result<crate::live::Session, String>> + 'static,
+        signing_in: impl std::future::Future<
+            Output = Result<crate::live::Session, crate::login::SignInFailure>,
+        > + 'static,
         view: &Entity<LoginView>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1428,11 +1429,10 @@ impl MainWindow {
                     this.login_server = None;
                     cx.notify();
                 }
-                Err(error) => {
+                Err(failure) => {
                     let _ = view.update(cx, |view, cx| {
                         let mut model = view.model().clone();
-                        model.busy = false;
-                        model.error = Some(error.into());
+                        model.sign_in_failed(failure);
                         view.set_model(model, window, cx);
                     });
                 }
@@ -1466,7 +1466,11 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 model.error = None;
             }
-            LoginEvent::SignIn { .. } | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
+            // The preview asks for a code once, to show the MFA step.
+            LoginEvent::SignIn(sign_in) if sign_in.mfa_token.is_none() => {
+                model.sign_in_failed(crate::login::SignInFailure::MfaRequired);
+            }
+            LoginEvent::SignIn(_) | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());
             }
         }

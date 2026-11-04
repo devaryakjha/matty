@@ -145,7 +145,10 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   and assumes `https`. Step two shows the server as a muted chip with
   Change, then the password form, an OR rule, outline buttons for each SSO
   provider the server enables, and a personal access token behind a text
-  link. Errors are one `meta` sentence in `destructive` with an icon, placed
+  link. Where the server offers both its own accounts and AD/LDAP, a joined
+  toggle group above the fields picks one. An account with MFA gets a third
+  view in the same card: six code cells that submit when full, Verify, and
+  Back to the password form; a wrong code clears the cells. Errors are one `meta` sentence in `destructive` with an icon, placed
   above the button they concern; a request in flight puts a spinner in the
   primary button and never blocks the window.
 - **Post actions** live in the hover toolbar: add reaction, reply in
