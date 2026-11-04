@@ -16,7 +16,9 @@ use rusqlite::Connection as Db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::change::{ChangeSet, CommandError, Connection, POSTS_WINDOW, UploadState};
+use crate::change::{
+    ChangeSet, CommandError, Connection, DownloadState, POSTS_WINDOW, UploadState,
+};
 use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
 use crate::load::{self, Loaded};
@@ -229,6 +231,16 @@ pub enum Command {
         /// The file.
         file_id: String,
     },
+    /// Saves a file into `folder` under `name`, numbered when the name is
+    /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
+    Download {
+        /// The file.
+        file_id: String,
+        /// The folder to save into.
+        folder: std::path::PathBuf,
+        /// The name it was posted with.
+        name: String,
+    },
     /// Stops an upload that is still sending.
     CancelUpload {
         /// The caller's id for it.
@@ -418,6 +430,10 @@ impl std::fmt::Debug for Command {
                 .debug_struct("LoadThumbnail")
                 .field("file_id", file_id)
                 .finish(),
+            Self::Download { file_id, .. } => f
+                .debug_struct("Download")
+                .field("file_id", file_id)
+                .finish_non_exhaustive(),
             Self::CancelUpload { upload_id } => f
                 .debug_struct("CancelUpload")
                 .field("upload_id", upload_id)
@@ -612,6 +628,7 @@ impl Engine {
         let mut to_fetch = Vec::new();
         let mut uploads = Vec::new();
         let mut thumbnails = Vec::new();
+        let mut downloads = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
         let mut writes = Vec::new();
@@ -888,6 +905,11 @@ impl Engine {
                 Message::Command(Command::LoadThumbnail { file_id }) => {
                     thumbnails.push(file_id);
                 }
+                Message::Command(Command::Download {
+                    file_id,
+                    folder,
+                    name,
+                }) => downloads.push((file_id, folder, name)),
                 Message::Command(Command::CancelUpload { upload_id }) => {
                     if let Some(task) = self.uploads.remove(&upload_id) {
                         task.abort();
@@ -957,6 +979,9 @@ impl Engine {
         for what in fetches {
             self.fetch(what);
         }
+        for (file_id, folder, name) in downloads {
+            self.download(file_id, folder, name, dirty);
+        }
         for file_id in thumbnails {
             self.thumbnail(file_id, dirty);
         }
@@ -989,6 +1014,30 @@ impl Engine {
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// Starts saving a file; it reports back as [`Loaded::Download`].
+    fn download(
+        &self,
+        file_id: String,
+        folder: std::path::PathBuf,
+        name: String,
+        dirty: &mut Dirty,
+    ) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Download {
+                file_id,
+                state: DownloadState::Failed("not connected".into()),
+            });
+            return;
+        };
+        tokio::spawn(crate::download::download(
+            session.client.clone(),
+            file_id,
+            folder,
+            name,
+            self.loaded.clone(),
+        ));
     }
 
     /// Answers from the media cache, or fetches the thumbnail; it comes
@@ -1330,6 +1379,9 @@ impl Engine {
                     self.uploads.remove(&upload_id);
                 }
                 dirty.direct.push(ChangeSet::Upload { upload_id, state });
+            }
+            Loaded::Download { file_id, state } => {
+                dirty.direct.push(ChangeSet::Download { file_id, state });
             }
             Loaded::Thumbnail { file_id, image } => {
                 self.fetching.remove(&file_id);

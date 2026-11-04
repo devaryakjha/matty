@@ -13,6 +13,7 @@
 mod bridge;
 mod change;
 mod commands;
+mod download;
 mod engine;
 mod events;
 pub mod io;
@@ -21,7 +22,7 @@ mod outbox;
 mod typing;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};
-pub use change::{ChangeSet, CommandError, Connection, POSTS_WINDOW, UploadState};
+pub use change::{ChangeSet, CommandError, Connection, DownloadState, POSTS_WINDOW, UploadState};
 pub use engine::Command;
 /// Where an account's database lives.
 pub use matty_store::default_path as database_path;

@@ -127,6 +127,8 @@ pub struct Update {
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
+    /// A file saved to the download folder, or the failure.
+    pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
     /// The session ended; the window returns to sign-in.
@@ -413,6 +415,20 @@ impl Live {
         Some(model)
     }
 
+    /// The name a file was posted with, when its post is in the open
+    /// channel or the search results.
+    pub fn file_name(&self, file_id: &str) -> Option<String> {
+        let searched = self.search.as_ref().and_then(|(_, posts)| posts.as_deref());
+        self.posts
+            .as_deref()
+            .into_iter()
+            .chain(searched)
+            .flatten()
+            .flat_map(|post| &post.metadata.files)
+            .find(|file| file.id == file_id)
+            .map(|file| file.name.clone())
+    }
+
     /// Asks sync for the thumbnails of image files not yet asked for.
     fn ask_thumbnails(&mut self, posts: &[Post]) {
         for file in posts.iter().flat_map(|post| &post.files) {
@@ -651,6 +667,7 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
+            ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
             ChangeSet::Thumbnail {
                 file_id,
                 bytes,
@@ -1531,5 +1548,26 @@ mod tests {
         );
         assert_eq!(image_format(b"??", "image/gif"), Some(ImageFormat::Gif));
         assert_eq!(image_format(b"??", "text/plain"), None);
+    }
+
+    #[test]
+    fn a_file_on_screen_has_its_posted_name() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let mut post = matty_api::models::Post {
+            id: "p1".into(),
+            ..Default::default()
+        };
+        post.metadata.files.push(matty_api::models::FileInfo {
+            id: "f1".into(),
+            name: "notes.pdf".into(),
+            ..Default::default()
+        });
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        assert_eq!(live.file_name("f1").as_deref(), Some("notes.pdf"));
+        assert_eq!(live.file_name("f2"), None);
     }
 }

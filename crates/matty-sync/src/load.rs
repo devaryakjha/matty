@@ -72,6 +72,11 @@ pub(crate) enum Loaded {
         upload_id: String,
         state: crate::change::UploadState,
     },
+    /// A file saved to the download folder, or the failure.
+    Download {
+        file_id: String,
+        state: crate::change::DownloadState,
+    },
     /// A file's thumbnail from the server; `None` when it has none.
     Thumbnail {
         file_id: String,

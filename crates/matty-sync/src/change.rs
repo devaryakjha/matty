@@ -105,6 +105,14 @@ pub enum ChangeSet {
         /// Where it is.
         state: UploadState,
     },
+    /// A download finished: the answer to
+    /// [`Command::Download`](crate::Command::Download).
+    Download {
+        /// The file.
+        file_id: String,
+        /// Where it went, or why not.
+        state: DownloadState,
+    },
     /// A file's thumbnail: the answer to
     /// [`Command::LoadThumbnail`](crate::Command::LoadThumbnail).
     Thumbnail {
@@ -193,6 +201,15 @@ pub enum Connection {
         /// What went wrong.
         error: String,
     },
+}
+
+/// How a download ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DownloadState {
+    /// Saved here.
+    Done(std::path::PathBuf),
+    /// Not saved, and why.
+    Failed(String),
 }
 
 /// Where an upload is.

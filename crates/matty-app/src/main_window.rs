@@ -404,8 +404,8 @@ impl MainWindow {
                         this.start_upload(id.clone(), job, cx);
                     }
                 }
-                ChannelEvent::OpenFile(_)
-                | ChannelEvent::ToggleSave(_)
+                ChannelEvent::OpenFile(id) => this.download_file(id, cx),
+                ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
                 | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
@@ -454,6 +454,7 @@ impl MainWindow {
                     this.open_channel(channel.clone(), window, cx)
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
+                RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -622,6 +623,32 @@ impl MainWindow {
         .detach();
     }
 
+    /// Saves a post's file to the download folder; it opens once saved
+    /// (see [`open_download`]).
+    fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(name) = live.file_name(file_id) else {
+            tracing::warn!(%file_id, "no such file on screen");
+            return;
+        };
+        let folder = self
+            .settings
+            .read(cx)
+            .get()
+            .download_folder
+            .clone()
+            .or_else(dirs::download_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        live.send(matty_sync::Command::Download {
+            file_id: file_id.to_string(),
+            folder,
+            name,
+        });
+    }
+
     fn expire_typing_later(&mut self, cx: &mut Context<Self>) {
         self._typing_task = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -746,6 +773,14 @@ impl MainWindow {
         if let Some(profiles) = update.profiles {
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
+        }
+        if let Some(download) = update.download {
+            match download {
+                matty_sync::DownloadState::Done(path) => open_download(&path, cx),
+                matty_sync::DownloadState::Failed(error) => {
+                    tracing::warn!(%error, "download failed");
+                }
+            }
         }
         if let Some((id, status)) = update.upload {
             self.channel
@@ -2294,5 +2329,44 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(switcher_element)
+    }
+}
+
+/// Opens a saved file in its app when it is a kind that only shows
+/// content; anything else, such as a program or a script, is shown in its
+/// folder for the user to decide (PLAN §4.6 Files).
+fn open_download(path: &std::path::Path, cx: &mut gpui_kit::App) {
+    if opens_safely(path) {
+        cx.open_with_system(path);
+    } else {
+        cx.reveal_path(path);
+    }
+}
+
+/// Whether a file of this kind is safe to open without asking.
+fn opens_safely(path: &std::path::Path) -> bool {
+    const SAFE: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "pdf", "txt", "md", "csv",
+        "json", "log", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf",
+        "mp3", "m4a", "wav", "ogg", "mp4", "mov", "webm", "zip",
+    ];
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| SAFE.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::opens_safely;
+
+    #[test]
+    fn only_content_opens_without_asking() {
+        assert!(opens_safely(Path::new("/d/menu.PNG")));
+        assert!(opens_safely(Path::new("/d/notes (1).pdf")));
+        assert!(!opens_safely(Path::new("/d/setup.exe")));
+        assert!(!opens_safely(Path::new("/d/run.sh")));
+        assert!(!opens_safely(Path::new("/d/Makefile")));
     }
 }

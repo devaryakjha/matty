@@ -138,3 +138,37 @@ async fn a_thumbnail_comes_from_the_server_once_then_the_cache() {
         .count();
     assert_eq!(fetched, 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_lands_in_the_folder_with_the_servers_bytes() {
+    use matty_sync::DownloadState;
+
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/files/f1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"%PDF-1.7 notes".to_vec()))
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("notes.pdf"), b"older").unwrap();
+
+    sync.send(Command::Download {
+        file_id: "f1".into(),
+        folder: folder.path().to_path_buf(),
+        name: "notes.pdf".into(),
+    });
+    let ChangeSet::Download { file_id, state } =
+        next(&changes, |c| matches!(c, ChangeSet::Download { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(file_id, "f1");
+    let saved = folder.path().join("notes (1).pdf");
+    assert_eq!(state, DownloadState::Done(saved.clone()));
+    assert_eq!(std::fs::read(saved).unwrap(), b"%PDF-1.7 notes");
+    assert_eq!(
+        std::fs::read(folder.path().join("notes.pdf")).unwrap(),
+        b"older"
+    );
+}
