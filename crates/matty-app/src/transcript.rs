@@ -1,5 +1,6 @@
 //! Turns a channel's posts snapshot from sync into the channel view's
-//! model: author names, local times and day labels, grouping, reactions.
+//! model: author names, local times and day labels, grouping, reactions,
+//! and the wording of system messages (#104).
 
 use std::collections::HashMap;
 
@@ -10,7 +11,9 @@ use matty_api::models::{Post as ApiPost, User};
 use matty_notify::MentionKeys;
 
 use crate::attachments::PostFile;
-use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
+use crate::channel::{
+    ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostKind, PostReaction, PostStatus,
+};
 use crate::sidebar::ChannelRow;
 
 /// Posts by one person within this many milliseconds share a header.
@@ -50,13 +53,43 @@ pub fn channel_model(
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
     let mut previous: Option<(&str, i64, SharedString)> = None;
+    // Joins and leaves since the last other row, combined into one row.
+    let mut activity: Vec<Activity> = Vec::new();
     let mention = viewer.keys;
     for post in posts.unwrap_or_default() {
-        if post.delete_at != 0 || !post.kind.is_empty() && post.kind.starts_with("system_") {
+        if post.delete_at != 0 {
             continue;
         }
         let stamp = when(post.create_at, viewer.zone, today);
         let day = stamp.1.clone();
+        if let Some(entry) = Activity::of(post, users, viewer.user_id) {
+            let last = rows.last_mut().filter(|last| {
+                last.kind == (PostKind::System { activity: true })
+                    && last.day == day
+                    && !activity.is_empty()
+            });
+            match last {
+                Some(last) => {
+                    activity.push(entry);
+                    last.body = activity_text(&activity).into();
+                }
+                None => {
+                    activity = vec![entry];
+                    rows.push(system_post(post, activity_text(&activity), true, stamp));
+                }
+            }
+            previous = None;
+            continue;
+        }
+        activity.clear();
+        if is_system(&post.kind) {
+            // A system row breaks the run of one author's posts.
+            previous = None;
+            if let Some(text) = system_text(post, users, viewer.user_id) {
+                rows.push(system_post(post, text, false, stamp));
+            }
+            continue;
+        }
         let continues = previous.as_ref().is_some_and(|(user, at, last_day)| {
             *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
         });
@@ -97,13 +130,27 @@ fn display_post(
         .get(&post.user_id)
         .map(display_name)
         .unwrap_or_else(|| "Someone".into());
+    let kind = if is_regular(&post.kind) {
+        PostKind::Regular
+    } else if is_system(&post.kind) {
+        PostKind::System { activity: false }
+    } else {
+        PostKind::Unsupported(post.kind.clone().into())
+    };
+    let body = match kind {
+        PostKind::System { .. } => system_text(post, users, viewer.user_id)
+            .unwrap_or_else(|| post.message.clone())
+            .into(),
+        _ => post.message.clone().into(),
+    };
     Post {
         id: post.id.clone().into(),
         author: author.into(),
+        kind,
         time,
         day,
         date,
-        body: post.message.clone().into(),
+        body,
         reactions: reactions(post, viewer.user_id, users),
         mentions_me: mention.mentioned(&post.message),
         edited: post.edit_at != 0,
@@ -137,6 +184,235 @@ fn display_post(
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
             .collect(),
+    }
+}
+
+/// Post types drawn as ordinary messages: a normal post, a webhook's
+/// attachments, and `/me`.
+fn is_regular(kind: &str) -> bool {
+    matches!(kind, "" | "slack_attachment" | "me")
+}
+
+fn is_system(kind: &str) -> bool {
+    kind.starts_with("system_")
+}
+
+/// A system row: no author header, no reactions or actions, never the
+/// viewer's own (so Up never edits it).
+fn system_post(
+    post: &ApiPost,
+    text: String,
+    activity: bool,
+    (time, day, date): (u16, SharedString, SharedString),
+) -> Post {
+    Post {
+        id: post.id.clone().into(),
+        author: SharedString::default(),
+        kind: PostKind::System { activity },
+        time,
+        day,
+        date,
+        body: text.into(),
+        reactions: Vec::new(),
+        mentions_me: false,
+        edited: false,
+        continues: false,
+        mine: false,
+        saved: false,
+        pinned: false,
+        status: PostStatus::Sent,
+        replies: None,
+        files: Vec::new(),
+        embeds: Vec::new(),
+    }
+}
+
+/// A string prop, or empty.
+fn prop<'a>(post: &'a ApiPost, key: &str) -> &'a str {
+    post.props
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+}
+
+/// How a system message names someone: "You" for the viewer, then their
+/// display name, then the username the post carries, then "Someone".
+fn person(id: &str, username: &str, users: &HashMap<String, User>, me: &str) -> String {
+    if !id.is_empty() && id == me {
+        return "You".into();
+    }
+    match users.get(id) {
+        Some(user) => display_name(user),
+        None if !username.is_empty() => format!("@{username}"),
+        None => "Someone".into(),
+    }
+}
+
+/// What a join, leave, add or remove did, worded as the web app does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verb {
+    JoinChannel,
+    JoinChannelAsGuest,
+    LeaveChannel,
+    AddToChannel,
+    AddGuestToChannel,
+    RemoveFromChannel,
+    JoinTeam,
+    LeaveTeam,
+    AddToTeam,
+    RemoveFromTeam,
+}
+
+impl Verb {
+    fn of(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "system_join_channel" => Self::JoinChannel,
+            "system_guest_join_channel" => Self::JoinChannelAsGuest,
+            "system_leave_channel" => Self::LeaveChannel,
+            "system_add_to_channel" => Self::AddToChannel,
+            "system_add_guest_to_chan" => Self::AddGuestToChannel,
+            "system_remove_from_channel" => Self::RemoveFromChannel,
+            "system_join_team" => Self::JoinTeam,
+            "system_leave_team" => Self::LeaveTeam,
+            "system_add_to_team" => Self::AddToTeam,
+            "system_remove_from_team" => Self::RemoveFromTeam,
+            _ => return None,
+        })
+    }
+
+    /// The predicate after the names, without the actor of an add.
+    fn words(self, many: bool) -> &'static str {
+        match self {
+            Self::JoinChannel => "joined the channel",
+            Self::JoinChannelAsGuest => "joined the channel as a guest",
+            Self::LeaveChannel => "left the channel",
+            Self::AddToChannel => "added to the channel by",
+            Self::AddGuestToChannel => "added to the channel as a guest by",
+            Self::RemoveFromChannel if many => "were removed from the channel",
+            Self::RemoveFromChannel => "was removed from the channel",
+            Self::JoinTeam => "joined the team",
+            Self::LeaveTeam => "left the team",
+            Self::AddToTeam => "added to the team by",
+            Self::RemoveFromTeam if many => "were removed from the team",
+            Self::RemoveFromTeam => "was removed from the team",
+        }
+    }
+}
+
+/// One join, leave, add or remove: who it happened to and, for an add,
+/// who did it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Activity {
+    verb: Verb,
+    who: String,
+    by: Option<String>,
+}
+
+impl Activity {
+    fn of(post: &ApiPost, users: &HashMap<String, User>, me: &str) -> Option<Self> {
+        let verb = Verb::of(&post.kind)?;
+        let name = |id_key: &str, name_key: &str, fallback_id: &str| {
+            let id = Some(prop(post, id_key))
+                .filter(|id| !id.is_empty())
+                .unwrap_or(fallback_id);
+            person(id, prop(post, name_key), users, me)
+        };
+        let actor = || person(&post.user_id, prop(post, "username"), users, me);
+        Some(match verb {
+            Verb::AddToChannel | Verb::AddGuestToChannel | Verb::AddToTeam => Self {
+                verb,
+                who: name("addedUserId", "addedUsername", ""),
+                by: Some(actor()),
+            },
+            Verb::RemoveFromChannel | Verb::RemoveFromTeam => Self {
+                verb,
+                who: name("removedUserId", "removedUsername", &post.user_id),
+                by: None,
+            },
+            _ => Self {
+                verb,
+                who: actor(),
+                by: None,
+            },
+        })
+    }
+}
+
+/// "Ada", "Ada and Sam", "Ada, Sam and Lena", "Ada, Sam and 3 others".
+fn name_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [first, second, third] => format!("{first}, {second} and {third}"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} others", rest.len()),
+    }
+}
+
+/// One sentence per kind of change, in the order they first happened:
+/// "Ada, Sam and 3 others joined the channel. Lena left the channel."
+fn activity_text(entries: &[Activity]) -> String {
+    let mut groups: Vec<(Verb, Option<&str>, Vec<String>)> = Vec::new();
+    for entry in entries {
+        let by = entry.by.as_deref();
+        let group = match groups
+            .iter_mut()
+            .position(|(verb, actor, _)| *verb == entry.verb && *actor == by)
+        {
+            Some(index) => &mut groups[index],
+            None => {
+                groups.push((entry.verb, by, Vec::new()));
+                groups.last_mut().expect("just pushed")
+            }
+        };
+        if !group.2.contains(&entry.who) {
+            group.2.push(entry.who.clone());
+        }
+    }
+    groups
+        .iter()
+        .map(|(verb, by, names)| {
+            let words = verb.words(names.len() > 1);
+            match by {
+                Some(by) => format!("{} {words} {by}.", name_list(names)),
+                None => format!("{} {words}.", name_list(names)),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The sentence for a system post other than a join or leave, in the web
+/// app's wording; the server's own text for types Matty does not word
+/// itself. `None` when there is nothing to say.
+fn system_text(post: &ApiPost, users: &HashMap<String, User>, me: &str) -> Option<String> {
+    if let Some(activity) = Activity::of(post, users, me) {
+        return Some(activity_text(&[activity]));
+    }
+    let actor = || person(&post.user_id, prop(post, "username"), users, me);
+    let server_text = || Some(post.message.trim().to_string()).filter(|text| !text.is_empty());
+    let change = |what: &str, old: &str, new: &str| {
+        let (old, new) = (prop(post, old).trim(), prop(post, new).trim());
+        match (old.is_empty(), new.is_empty()) {
+            (true, true) => server_text(),
+            (false, true) => Some(format!(
+                "{} removed the channel {what} (was: {old})",
+                actor()
+            )),
+            (true, false) => Some(format!("{} updated the channel {what} to: {new}", actor())),
+            (false, false) => Some(format!(
+                "{} updated the channel {what} from: {old} to: {new}",
+                actor()
+            )),
+        }
+    };
+    match post.kind.as_str() {
+        "system_header_change" => change("header", "old_header", "new_header"),
+        "system_purpose_change" => change("purpose", "old_purpose", "new_purpose"),
+        "system_displayname_change" => change("display name", "old_displayname", "new_displayname"),
+        "system_channel_deleted" => Some(format!("{} archived the channel", actor())),
+        "system_channel_restored" => Some(format!("{} unarchived the channel", actor())),
+        _ => server_text(),
     }
 }
 
@@ -427,6 +703,276 @@ mod tests {
         );
         assert_eq!(chips[0].users, ["ada"]);
         assert_eq!(chips[1].emoji.as_ref(), ":partyparrot:");
+    }
+
+    fn system(id: &str, kind: &str, user: &str, at: i64, props: &[(&str, &str)]) -> ApiPost {
+        ApiPost {
+            kind: kind.into(),
+            props: props
+                .iter()
+                .map(|(key, value)| (key.to_string(), serde_json::Value::from(*value)))
+                .collect(),
+            ..post(id, user, at, "")
+        }
+    }
+
+    fn person(id: &str, first: &str) -> (String, User) {
+        (
+            id.to_string(),
+            User {
+                id: id.into(),
+                username: id.into(),
+                first_name: first.into(),
+                ..User::default()
+            },
+        )
+    }
+
+    fn shown(model: &ChannelModel) -> Vec<(PostKind, &str, bool)> {
+        model
+            .posts
+            .iter()
+            .map(|p| (p.kind.clone(), p.body.as_ref(), p.continues))
+            .collect()
+    }
+
+    const ACTIVITY: PostKind = PostKind::System { activity: true };
+    const CHANGE: PostKind = PostKind::System { activity: false };
+
+    #[test]
+    fn a_channel_of_only_system_posts_is_not_empty() {
+        let zone = TimeZone::UTC;
+        let users = HashMap::from([person("ada", "Ada")]);
+        let posts = [system("s1", "system_join_channel", "ada", NOON, &[])];
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        assert_eq!(
+            shown(&model),
+            [(ACTIVITY, "Ada joined the channel.", false)]
+        );
+        let post = &model.posts[0];
+        assert!(!post.mine && post.reactions.is_empty() && post.author.is_empty());
+    }
+
+    #[test]
+    fn joins_and_leaves_in_a_row_combine() {
+        let zone = TimeZone::UTC;
+        let users = HashMap::from([
+            person("ada", "Ada"),
+            person("sam", "Sam"),
+            person("lena", "Lena"),
+            person("jonas", "Jonas"),
+            person("priya", "Priya"),
+        ]);
+        let mut posts: Vec<ApiPost> = ["ada", "sam", "lena", "jonas", "priya"]
+            .iter()
+            .enumerate()
+            .map(|(index, user)| {
+                let at = NOON + index as i64 * 60_000;
+                system(&format!("j{index}"), "system_join_channel", user, at, &[])
+            })
+            .collect();
+        // Someone the client has not loaded yet is named from the post.
+        posts.push(system(
+            "l1",
+            "system_leave_channel",
+            "zed",
+            NOON + 400_000,
+            &[("username", "zed")],
+        ));
+        posts.push(system(
+            "a1",
+            "system_add_to_channel",
+            "ada",
+            NOON + 500_000,
+            &[("addedUserId", "me"), ("addedUsername", "arya")],
+        ));
+        // The same person joining twice is named once.
+        posts.push(system(
+            "j9",
+            "system_join_channel",
+            "sam",
+            NOON + 600_000,
+            &[],
+        ));
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        assert_eq!(
+            shown(&model),
+            [(
+                ACTIVITY,
+                "Ada, Sam and 3 others joined the channel. @zed left the channel. \
+                 You added to the channel by Ada.",
+                false
+            )]
+        );
+        // The row sits where the first change happened.
+        assert_eq!(model.posts[0].id, "j0");
+        assert_eq!(model.posts[0].time, 12 * 60);
+    }
+
+    #[test]
+    fn name_lists_shorten_past_three() {
+        let names = |n: usize| -> Vec<String> {
+            ["A", "B", "C", "D", "E"][..n]
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
+        };
+        assert_eq!(name_list(&names(1)), "A");
+        assert_eq!(name_list(&names(2)), "A and B");
+        assert_eq!(name_list(&names(3)), "A, B and C");
+        assert_eq!(name_list(&names(5)), "A, B and 3 others");
+    }
+
+    #[test]
+    fn removals_agree_with_their_count() {
+        let zone = TimeZone::UTC;
+        let users = HashMap::from([person("ada", "Ada"), person("sam", "Sam")]);
+        let remove = |id: &str, who: &str, at: i64| {
+            system(
+                id,
+                "system_remove_from_channel",
+                "me",
+                at,
+                &[("removedUserId", who)],
+            )
+        };
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let one = [remove("r1", "ada", NOON)];
+        let model = channel_model(&row, Some(&one), &users, &viewer(&zone), None);
+        assert_eq!(model.posts[0].body, "Ada was removed from the channel.");
+        let two = [remove("r1", "ada", NOON), remove("r2", "sam", NOON + 1)];
+        let model = channel_model(&row, Some(&two), &users, &viewer(&zone), None);
+        assert_eq!(
+            model.posts[0].body,
+            "Ada and Sam were removed from the channel."
+        );
+    }
+
+    #[test]
+    fn other_system_posts_are_worded_and_break_runs() {
+        let zone = TimeZone::UTC;
+        let users = HashMap::from([person("ada", "Ada"), person("sam", "Sam")]);
+        let posts = [
+            post("p1", "ada", NOON, "one"),
+            system("s1", "system_join_channel", "sam", NOON + 1_000, &[]),
+            // A message ends the run of joins; the next join starts a row.
+            post("p2", "ada", NOON + 2_000, "two"),
+            system(
+                "s2",
+                "system_header_change",
+                "sam",
+                NOON + 3_000,
+                &[("old_header", "Old"), ("new_header", "New")],
+            ),
+            post("p3", "ada", NOON + 4_000, "three"),
+            system(
+                "s3",
+                "system_purpose_change",
+                "sam",
+                NOON + 5_000,
+                &[("old_purpose", "Ship it")],
+            ),
+            system(
+                "s4",
+                "system_displayname_change",
+                "ada",
+                NOON + 6_000,
+                &[("old_displayname", ""), ("new_displayname", "Town")],
+            ),
+            system("s5", "system_join_channel", "ada", NOON + 7_000, &[]),
+            post("p4", "ada", NOON + 8_000, "four"),
+            post("p5", "ada", NOON + 9_000, "five"),
+        ];
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        assert_eq!(
+            shown(&model),
+            [
+                (PostKind::Regular, "one", false),
+                (ACTIVITY, "Sam joined the channel.", false),
+                (PostKind::Regular, "two", false),
+                (
+                    CHANGE,
+                    "Sam updated the channel header from: Old to: New",
+                    false
+                ),
+                (PostKind::Regular, "three", false),
+                (
+                    CHANGE,
+                    "Sam removed the channel purpose (was: Ship it)",
+                    false
+                ),
+                (
+                    CHANGE,
+                    "Ada updated the channel display name to: Town",
+                    false
+                ),
+                (ACTIVITY, "Ada joined the channel.", false),
+                (PostKind::Regular, "four", false),
+                (PostKind::Regular, "five", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_change_splits_combined_activity() {
+        let zone = TimeZone::UTC;
+        let users = HashMap::from([person("ada", "Ada"), person("sam", "Sam")]);
+        let posts = [
+            system("s1", "system_join_channel", "ada", NOON - 86_400_000, &[]),
+            system("s2", "system_join_channel", "sam", NOON, &[]),
+        ];
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let model = channel_model(&row, Some(&posts), &users, &viewer(&zone), None);
+        let days: Vec<_> = model.posts.iter().map(|p| p.day.as_ref()).collect();
+        assert_eq!(days, ["Yesterday", "Today"]);
+    }
+
+    #[test]
+    fn unknown_system_types_use_the_servers_text() {
+        let zone = TimeZone::UTC;
+        let mut known = system("s1", "system_change_chan_privacy", "ada", NOON, &[]);
+        known.message = "This channel has been converted to a Private Channel.".into();
+        let silent = system("s2", "system_ephemeral", "ada", NOON + 1, &[]);
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let posts = [known, silent];
+        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        assert_eq!(
+            shown(&model),
+            [(
+                CHANGE,
+                "This channel has been converted to a Private Channel.",
+                false
+            )]
+        );
+    }
+
+    #[test]
+    fn plugin_posts_are_unsupported_and_others_are_regular() {
+        let zone = TimeZone::UTC;
+        let mut poll = post("p1", "ada", NOON, "Poll: lunch?");
+        poll.kind = "custom_matterpoll".into();
+        let mut hook = post("p2", "ada", NOON + 1, "");
+        hook.kind = "slack_attachment".into();
+        let mut me = post("p3", "ada", NOON + 2, "waves");
+        me.kind = "me".into();
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let posts = [poll, hook, me];
+        let model = channel_model(&row, Some(&posts), &HashMap::new(), &viewer(&zone), None);
+        let kinds: Vec<_> = model.posts.iter().map(|p| p.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                PostKind::Unsupported("custom_matterpoll".into()),
+                PostKind::Regular,
+                PostKind::Regular,
+            ]
+        );
+        // An unsupported post still has its author and groups like any other.
+        assert_eq!(model.posts[0].author, "Someone");
+        assert!(model.posts[1].continues);
     }
 
     #[test]

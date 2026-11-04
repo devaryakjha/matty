@@ -396,6 +396,7 @@ impl RightPaneView {
         let reply = Post {
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
+            kind: crate::channel::PostKind::Regular,
             time: last.time,
             day: last.day.clone(),
             date: SharedString::default(),
