@@ -60,6 +60,8 @@ pub(crate) enum Loaded {
     /// The user's drafts on the server, for one team and its direct
     /// messages (only when the server syncs drafts).
     Drafts(Vec<matty_api::models::Draft>),
+    /// The status batch window closed (#135).
+    StatusesDue,
     /// Every team has been tried.
     Done,
     /// An opened channel's posts around the first unread.

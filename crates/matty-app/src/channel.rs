@@ -481,6 +481,9 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
+    /// The user may archive the channel or make it private: a channel or
+    /// system admin (#208). The server has the last word.
+    pub can_manage: bool,
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
@@ -861,6 +864,10 @@ pub enum ChannelEvent {
     SetPurpose(SharedString),
     /// The user confirmed leaving the channel from its header menu.
     Leave,
+    /// "Archive channel" was confirmed (#208).
+    Archive,
+    /// "Convert to private channel" was confirmed (#208).
+    ConvertToPrivate,
     /// The user saved the channel's notification preferences; `muted`
     /// is the mute switch from the same dialog.
     SetNotifications {
@@ -906,6 +913,9 @@ pub struct ChannelView {
     notifications: Entity<NotificationsView>,
     add_members: Entity<AddMembersView>,
     leave: DialogHandle,
+    /// Confirmations for archiving the channel and making it private.
+    archive: DialogHandle,
+    convert: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
     picker_open: bool,
@@ -1169,6 +1179,7 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        crate::perf::composer_changed();
                         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
                         follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
@@ -1213,6 +1224,8 @@ impl ChannelView {
             notifications,
             add_members,
             leave: DialogHandle::new(false),
+            archive: DialogHandle::new(false),
+            convert: DialogHandle::new(false),
             picker,
             picker_open: false,
             picker_target: None,
@@ -1256,6 +1269,12 @@ impl ChannelView {
         self.model.as_ref()
     }
 
+    /// Puts the caret in the composer (Ctrl+Shift+L).
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx))
+    }
+
     /// Replaces the channel and resets the transcript to its end.
     pub fn set_model(
         &mut self,
@@ -1263,6 +1282,11 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::perf::channel_shown(
+            model.as_ref().map(|model| model.id.as_ref()),
+            model.as_ref().is_some_and(|model| model.loading),
+            model.as_ref().map_or(0, |model| model.posts.len()),
+        );
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         self.refresh_header_menu(model.as_ref(), cx);
         let count = self.rows.len();
@@ -1371,6 +1395,8 @@ impl ChannelView {
             .filter(|post| !post.mine && !matches!(post.kind, PostKind::System { .. }))
             .count();
         model.posts.extend(posts);
+        // Sync's first posts for a channel it had none of come as a patch.
+        crate::perf::channel_shown(Some(&model.id), model.loading, model.posts.len());
         let rows = model.rows();
         let before = self.rows.len();
         let added = rows.len().saturating_sub(before);
@@ -1698,6 +1724,7 @@ impl ChannelView {
         purpose: Option<SharedString>,
         members: usize,
         pinned: usize,
+        can_manage: bool,
         cx: &mut Context<Self>,
     ) {
         if let Some(model) = self.model.as_mut() {
@@ -1705,6 +1732,12 @@ impl ChannelView {
             model.purpose = purpose;
             model.members = members;
             model.pinned = pinned;
+            let menu_changed = model.can_manage != can_manage;
+            model.can_manage = can_manage;
+            if menu_changed {
+                let model = self.model.clone();
+                self.refresh_header_menu(model.as_ref(), cx);
+            }
             cx.notify();
         }
     }
@@ -2353,24 +2386,8 @@ impl ChannelView {
         }
     }
 
-    /// "Priya is typing…" under the transcript; the row keeps its height
-    /// when nobody is, so the transcript does not jump.
     fn typing_line(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
-        let text = match channel.typing.as_slice() {
-            [] => String::new(),
-            [one] => format!("{} is typing\u{2026}", first(one)),
-            [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
-            _ => "Several people are typing\u{2026}".to_string(),
-        };
-        div()
-            .flex_shrink_0()
-            .h(scaled(&theme, metrics::TYPING_LINE))
-            .px(theme.space(4.))
-            .type_style(style::META, &theme)
-            .text_color(theme.colors.muted_foreground)
-            .child(text)
+        typing_line(&channel.typing, cx)
     }
 
     /// Opens the picker for `target` (a post to react to, or the composer).
@@ -2818,6 +2835,21 @@ impl ChannelView {
                 MenuItem::new("channel.menu.leave", "Leave channel…")
                     .on_click(move |_, window, cx| leave.open(window, cx)),
             );
+            if model.is_some_and(|m| m.can_manage) {
+                items.push(MenuItem::separator());
+                if model.is_some_and(|m| m.kind == ChannelKind::Public) {
+                    let convert = self.convert.clone();
+                    items.push(
+                        MenuItem::new("channel.menu.convert", "Convert to private channel…")
+                            .on_click(move |_, window, cx| convert.open(window, cx)),
+                    );
+                }
+                let archive = self.archive.clone();
+                items.push(
+                    MenuItem::new("channel.menu.archive", "Archive channel…")
+                        .on_click(move |_, window, cx| archive.open(window, cx)),
+                );
+            }
         }
         self.header_menu
             .update(cx, |menu, cx| menu.set_items(items, cx));
@@ -2923,6 +2955,87 @@ impl ChannelView {
         let title = self.edit.read(cx).field().title();
         let popup = dialog_popup("channel.edit.popup", title, cx).child(self.edit.clone());
         dialog("channel.edit", &handle, popup, window, cx)
+    }
+
+    /// A confirmation for a channel action: `title` over `description`,
+    /// with Cancel and a destructive `action` that emits `event`.
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_dialog(
+        &self,
+        id: &'static str,
+        handle: &DialogHandle,
+        title: String,
+        description: &'static str,
+        action: &'static str,
+        event: ChannelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let element_id = |part: &str| gpui_kit::ElementId::Name(format!("{id}.{part}").into());
+        let popup = dialog_popup(element_id("popup"), title.clone(), cx)
+            .child(dialog_title(element_id("title"), cx).child(title))
+            .child(dialog_description(element_id("description"), cx).child(description))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel(element_id("cancel"))
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action(element_id("confirm"))
+                            .variant(ButtonVariant::Destructive)
+                            .label(action),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog(id, handle, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            true
+        })
+    }
+
+    fn archive_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.archive",
+            &self.archive.clone(),
+            format!("Archive {name}?"),
+            "Nobody can post in it any more and it leaves everyone's sidebar. \
+             Its messages and files stay on the server.",
+            "Archive",
+            ChannelEvent::Archive,
+            window,
+            cx,
+        )
+    }
+
+    fn convert_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.convert",
+            &self.convert.clone(),
+            format!("Make {name} private?"),
+            "Only its members will see it, and people join by invitation. \
+             Its history stays. This can't be undone from Matty.",
+            "Make private",
+            ChannelEvent::ConvertToPrivate,
+            window,
+            cx,
+        )
+    }
+
+    /// "#name", or "this channel" before the model arrives.
+    fn channel_label(&self) -> SharedString {
+        match self.model.as_ref() {
+            Some(channel) => format!("#{}", channel.name).into(),
+            None => "this channel".into(),
+        }
     }
 
     fn leave_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3132,14 +3245,25 @@ impl ChannelView {
                 format!("post.{id}.avatar").into(),
             ))
             .size(AvatarSize::Default)
-            .fallback(initial)
-            .aria_label(post.author.clone()),
+            .fallback(initial),
             &post.author_id,
             cx,
         );
         let Some(profile) = profile.cloned() else {
-            return avatar.into_any_element();
+            return avatar.aria_label(post.author.clone()).into_any_element();
         };
+        // The author's presence on the avatar (#135).
+        let theme = UiTheme::read(cx);
+        let avatar = div()
+            .relative()
+            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
+            .child(crate::style::presence_dot(
+                profile.presence,
+                scaled(theme, 10.),
+                theme.colors.background,
+                theme,
+                &crate::style::Palette::read(cx),
+            ));
         let view = cx.entity().downgrade();
         let card_id = id.clone();
         popover(gpui_kit::ElementId::Name(
@@ -4221,10 +4345,9 @@ impl Render for ChannelView {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
-                this.composer
-                    .update(cx, |composer, cx| composer.focus(window, cx))
-            }));
+            .on_action(
+                cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
+            );
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };
@@ -4270,6 +4393,8 @@ impl Render for ChannelView {
             .child(self.notifications_dialog(window, cx))
             .child(self.add_members_dialog(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(self.archive_dialog(window, cx))
+            .child(self.convert_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
 }
@@ -4286,6 +4411,31 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .shadow(theme.shadows.md.to_vec())
         .overflow_hidden()
         .child(picker)
+}
+
+/// What the typing line says for `names`: "Ana is typing…", "Ana and Ben
+/// are typing…", "Several people are typing…", or nothing.
+pub(crate) fn typing_text(names: &[SharedString]) -> String {
+    let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
+    match names {
+        [] => String::new(),
+        [one] => format!("{} is typing\u{2026}", first(one)),
+        [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
+        _ => "Several people are typing\u{2026}".to_string(),
+    }
+}
+
+/// The typing line under a transcript (#137); it keeps its height when
+/// nobody is typing, so the transcript does not jump.
+pub(crate) fn typing_line(names: &[SharedString], cx: &App) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx);
+    div()
+        .flex_shrink_0()
+        .h(scaled(theme, metrics::TYPING_LINE))
+        .px(theme.space(4.))
+        .type_style(style::META, theme)
+        .text_color(theme.colors.muted_foreground)
+        .child(typing_text(names))
 }
 
 /// `@` suggestions from `profiles` for `query` (lowercase): a person
@@ -4339,7 +4489,7 @@ mod tests {
             position: None,
             presence: crate::sidebar::Presence::Offline,
             status_text: None,
-            local_time: None,
+            time_zone: None,
         };
         let shown = |format, query: &str| {
             people_suggestions(std::iter::once(&profile(format)), query, 8)
@@ -4468,6 +4618,7 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
+            can_manage: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -4546,6 +4697,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4586,6 +4738,7 @@ mod tests {
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4645,6 +4798,7 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
+            can_manage: false,
         };
         assert_eq!(
             channel.rows(),
@@ -4686,6 +4840,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4711,6 +4866,25 @@ mod tests {
         assert_eq!(channel.first_unread, Some(3));
         assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
         assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
+    }
+
+    #[test]
+    fn typing_text_names_one_two_or_several() {
+        let names = |list: &[&str]| -> Vec<SharedString> {
+            list.iter()
+                .map(|name| SharedString::from(name.to_string()))
+                .collect()
+        };
+        assert_eq!(typing_text(&[]), "");
+        assert_eq!(typing_text(&names(&["Ana Lopez"])), "Ana is typing\u{2026}");
+        assert_eq!(
+            typing_text(&names(&["Ana Lopez", "Ben Ode"])),
+            "Ana and Ben are typing\u{2026}"
+        );
+        assert_eq!(
+            typing_text(&names(&["Ana", "Ben", "Cy"])),
+            "Several people are typing\u{2026}"
+        );
     }
 
     #[gpui_kit::test]

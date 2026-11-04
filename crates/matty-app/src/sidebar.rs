@@ -6,7 +6,7 @@ use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    div, px,
 };
 
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -103,11 +103,49 @@ impl ChannelRow {
 }
 
 /// A server-side category (Favorites, Channels, Direct messages, custom).
+/// Mattermost's category types: which channels each may hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CategoryKind {
+    Favorites,
+    /// Public and private channels only.
+    #[default]
+    Channels,
+    /// Direct and group messages only.
+    Direct,
+    /// Made by the user; holds anything.
+    Custom,
+}
+
+impl CategoryKind {
+    /// The kind for the server's `type`.
+    pub fn from_server(kind: &str) -> Self {
+        match kind {
+            "favorites" => Self::Favorites,
+            "direct_messages" => Self::Direct,
+            "custom" => Self::Custom,
+            _ => Self::Channels,
+        }
+    }
+
+    /// Whether a row of `kind` may move into a category of this kind.
+    pub fn takes(self, kind: &ChannelKind) -> bool {
+        let direct = matches!(kind, ChannelKind::Direct { .. } | ChannelKind::Group { .. });
+        match self {
+            Self::Favorites | Self::Custom => true,
+            Self::Channels => !direct,
+            Self::Direct => direct,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Category {
     pub id: SharedString,
     pub name: SharedString,
     pub collapsed: bool,
+    /// Which of Mattermost's kinds it is; only custom ones can be renamed
+    /// and deleted (#208).
+    pub kind: CategoryKind,
     pub rows: Vec<ChannelRow>,
 }
 
@@ -121,6 +159,7 @@ impl Category {
             id: id.into(),
             name: name.into(),
             collapsed: false,
+            kind: CategoryKind::Channels,
             rows,
         }
     }
@@ -350,6 +389,24 @@ pub enum SidebarEvent {
     Leave(SharedString),
     /// "Close conversation" from a direct or group message row's menu.
     Close(SharedString),
+    /// "Create new category" from the plus menu, or "New category…" in a
+    /// row's Move to menu, which moves that channel into it (#208).
+    NewCategory { channel_id: Option<SharedString> },
+    /// "Move to" a category from a row's menu.
+    MoveToCategory {
+        channel_id: SharedString,
+        category_id: SharedString,
+    },
+    /// "Rename category" from a custom category's menu.
+    RenameCategory {
+        id: SharedString,
+        name: SharedString,
+    },
+    /// "Delete category" from a custom category's menu.
+    DeleteCategory {
+        id: SharedString,
+        name: SharedString,
+    },
 }
 
 pub struct SidebarView {
@@ -396,6 +453,12 @@ impl SidebarView {
                         "sidebar.create-channel",
                         "Create channel",
                         SidebarEvent::CreateChannel,
+                    ),
+                    MenuItem::separator(),
+                    item(
+                        "sidebar.create-category",
+                        "Create new category",
+                        SidebarEvent::NewCategory { channel_id: None },
                     ),
                 ],
                 cx,
@@ -501,6 +564,7 @@ impl SidebarView {
                 muted: !row.muted,
             },
         ));
+        items.push(self.move_to(row, cx));
         items.push(MenuItem::separator());
         items.push(if direct {
             emit(
@@ -516,6 +580,98 @@ impl SidebarView {
             )
         });
         items
+    }
+
+    /// "Move to": every other category, then a new one.
+    fn move_to(&self, row: &ChannelRow, cx: &Context<Self>) -> MenuItem {
+        let view = cx.weak_entity();
+        let emit = |id: String, label: SharedString, event: SidebarEvent| {
+            let view = view.clone();
+            MenuItem::new(SharedString::from(id), label).on_click(move |_, _, cx| {
+                view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            })
+        };
+        let mut items: Vec<MenuItem> = self
+            .model
+            .categories
+            .iter()
+            .filter(|category| {
+                category.kind.takes(&row.kind)
+                    && !category.rows.iter().any(|other| other.id == row.id)
+            })
+            .map(|category| {
+                emit(
+                    format!("sidebar.row.move.{}", category.id),
+                    category.name.clone(),
+                    SidebarEvent::MoveToCategory {
+                        channel_id: row.id.clone(),
+                        category_id: category.id.clone(),
+                    },
+                )
+            })
+            .collect();
+        if !items.is_empty() {
+            items.push(MenuItem::separator());
+        }
+        items.push(emit(
+            "sidebar.row.move.new".into(),
+            "New category\u{2026}".into(),
+            SidebarEvent::NewCategory {
+                channel_id: Some(row.id.clone()),
+            },
+        ));
+        MenuItem::submenu("sidebar.row.move", "Move to", items)
+    }
+
+    /// A custom category's menu: rename or delete it.
+    fn open_category_menu(
+        &mut self,
+        id: &SharedString,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(category) = self
+            .model
+            .categories
+            .iter()
+            .find(|category| &category.id == id && category.kind == CategoryKind::Custom)
+        else {
+            return;
+        };
+        let view = cx.weak_entity();
+        let emit = |id: &'static str, label: &'static str, event: SidebarEvent| {
+            let view = view.clone();
+            MenuItem::new(id, label).on_click(move |_, _, cx| {
+                view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            })
+        };
+        let (id, name) = (category.id.clone(), category.name.clone());
+        let items = vec![
+            emit(
+                "sidebar.category.rename",
+                "Rename category",
+                SidebarEvent::RenameCategory {
+                    id: id.clone(),
+                    name: name.clone(),
+                },
+            ),
+            emit(
+                "sidebar.category.new",
+                "Create new category",
+                SidebarEvent::NewCategory { channel_id: None },
+            ),
+            MenuItem::separator(),
+            emit(
+                "sidebar.category.delete",
+                "Delete category",
+                SidebarEvent::DeleteCategory { id, name },
+            ),
+        ];
+        self.row_menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.open_at(Some(at), window, cx);
+        });
     }
 
     fn open_row_menu(
@@ -750,12 +906,6 @@ impl SidebarView {
                     .into_any_element(),
             ),
             ChannelKind::Direct { presence } => {
-                let dot = match presence {
-                    Presence::Online => Some(palette.online),
-                    Presence::Away => Some(palette.away),
-                    Presence::Dnd => Some(palette.dnd),
-                    Presence::Offline => None,
-                };
                 let initial: String = row.name.chars().take(1).collect();
                 div()
                     .relative()
@@ -765,7 +915,7 @@ impl SidebarView {
                             Avatar::new(element_id("sidebar.avatar", &row.id))
                                 .size(AvatarSize::Sm)
                                 .fallback(initial)
-                                .aria_label(row.name.clone()),
+                                .aria_label(crate::style::presence_name(&row.name, *presence)),
                             row.person.as_deref().unwrap_or_default(),
                             cx,
                         )
@@ -773,26 +923,13 @@ impl SidebarView {
                         .h(slot)
                         .text_size(theme.text(9.)),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom(px(-2.))
-                            .right(px(-2.))
-                            .size(scaled(theme, 8.))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(theme.colors.sidebar)
-                            .map(|dot_el| match dot {
-                                Some(color) => dot_el.bg(color),
-                                None => dot_el.bg(theme.colors.sidebar).child(
-                                    div()
-                                        .size_full()
-                                        .rounded_full()
-                                        .border_1()
-                                        .border_color(theme.colors.muted_foreground),
-                                ),
-                            }),
-                    )
+                    .child(crate::style::presence_dot(
+                        *presence,
+                        scaled(theme, 8.),
+                        theme.colors.sidebar,
+                        theme,
+                        palette,
+                    ))
                     .into_any_element()
             }
         }
@@ -974,6 +1111,7 @@ impl SidebarView {
         let theme = UiTheme::read(cx).clone();
         let open = !category.collapsed;
         let id = category.id.clone();
+        let menu_id = category.id.clone();
         let turn = transition_value(
             element_id("sidebar.category.chevron", &category.id),
             if open { 1. } else { 0. },
@@ -993,6 +1131,12 @@ impl SidebarView {
             .type_style(style::LABEL, &theme)
             .text_color(theme.colors.muted_foreground)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_category(&id, cx)))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Right,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    this.open_category_menu(&menu_id, event.position, window, cx)
+                }),
+            )
             .child(
                 // The chevron turns from right to down as the category opens
                 // (DESIGN.md §1 motion), snapping under reduced motion.
@@ -1245,5 +1389,26 @@ mod tests {
             }
         }
         assert!(next.categories[0].collapsed);
+    }
+
+    #[test]
+    fn categories_take_only_the_rows_mattermost_allows() {
+        let channel = ChannelKind::Public;
+        let direct = ChannelKind::Direct {
+            presence: Presence::Online,
+        };
+        let group = ChannelKind::Group { members: 3 };
+        assert!(CategoryKind::Channels.takes(&channel));
+        assert!(!CategoryKind::Channels.takes(&direct));
+        assert!(CategoryKind::Direct.takes(&group));
+        assert!(!CategoryKind::Direct.takes(&ChannelKind::Private));
+        for any in [CategoryKind::Favorites, CategoryKind::Custom] {
+            assert!(any.takes(&channel) && any.takes(&direct));
+        }
+        assert_eq!(CategoryKind::from_server("custom"), CategoryKind::Custom);
+        assert_eq!(
+            CategoryKind::from_server("direct_messages"),
+            CategoryKind::Direct
+        );
     }
 }

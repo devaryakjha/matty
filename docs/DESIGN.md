@@ -144,7 +144,11 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 
 - **Sign in** (PLAN §4.5) is one 400px card on the `sidebar` surface under
   the wordmark, never a wizard. Step one asks only for the server address
-  and assumes `https`. Step two shows the server as a muted chip with
+  and assumes `https`; leaving the field says what is wrong with an address
+  that cannot work, and typing clears it. Below Continue, up to three
+  servers checked before sit under a `RECENT SERVERS` label as outline
+  rows (the server's name, its host in `meta` when it differs) that check
+  that server again in one press. Step two shows the server as a muted chip with
   Change, then the password form, an OR rule, outline buttons for each SSO
   provider the server enables, and a personal access token behind a text
   link. Where the server offers both its own accounts and AD/LDAP, a joined
