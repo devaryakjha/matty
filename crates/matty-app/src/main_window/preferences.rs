@@ -146,6 +146,9 @@ pub(crate) fn mirror(preferences: &[Preference], settings: &mut Settings) {
             _ => ClockFormat::TwelveHour,
         };
     }
+    if let Some(value) = find(preferences, DISPLAY, "collapse_previews") {
+        settings.collapse_previews = value == "true";
+    }
     if let Some(value) = find(preferences, DISPLAY, "name_format") {
         settings.name_format = match value {
             "username" => NameFormat::Username,
@@ -181,6 +184,15 @@ pub(crate) fn display_preference(display: MessageDisplay) -> Vec<Preference> {
         MessageDisplay::Compact => "compact",
     };
     vec![preference(DISPLAY, "message_display", value)]
+}
+
+/// The server preference for whether link previews start collapsed.
+pub(crate) fn collapse_previews_preference(collapsed: bool) -> Vec<Preference> {
+    vec![preference(
+        DISPLAY,
+        "collapse_previews",
+        if collapsed { "true" } else { "false" },
+    )]
 }
 
 /// The server preference for a clock.
@@ -769,6 +781,33 @@ impl MainWindow {
             )
             .into(),
         };
+        let previews = {
+            let view = view.clone();
+            group(
+                "Link previews",
+                labelled_row(
+                    "Collapse link previews".into(),
+                    "Previews start closed. Each message's toggle still opens them.".into(),
+                    Switch::new("preferences.collapse-previews")
+                        .checked(settings.collapse_previews)
+                        .aria_label("Collapse link previews")
+                        .on_change(move |next, _, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.set_synced(
+                                    |s| s.collapse_previews = next,
+                                    |s| collapse_previews_preference(s.collapse_previews),
+                                    cx,
+                                )
+                            })
+                            .ok();
+                        })
+                        .into_any_element(),
+                    &theme,
+                ),
+                true,
+                &theme,
+            )
+        };
         let threads = self
             .collapsed_threads
             .filter(|(choice, _)| *choice)
@@ -799,6 +838,7 @@ impl MainWindow {
                 true,
                 &theme,
             ))
+            .child(previews)
             .children(threads)
             .into_any_element()
     }
@@ -1182,6 +1222,7 @@ mod tests {
                 (DISPLAY, "message_display", "compact"),
                 (DISPLAY, "use_military_time", "false"),
                 (DISPLAY, "name_format", "username"),
+                (DISPLAY, "collapse_previews", "true"),
                 (ADVANCED, "send_on_ctrl_enter", "true"),
             ]),
             &mut settings,
@@ -1190,6 +1231,12 @@ mod tests {
         assert_eq!(settings.clock, ClockFormat::TwelveHour);
         assert_eq!(settings.name_format, NameFormat::Username);
         assert_eq!(settings.send_on, SendKey::ModEnter);
+        assert!(settings.collapse_previews);
+        assert_eq!(
+            collapse_previews_preference(false)[0].value,
+            "false",
+            "the switch writes the same preference back"
+        );
 
         mirror(
             &server(&[
