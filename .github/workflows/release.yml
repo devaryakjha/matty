@@ -12,6 +12,7 @@ name: Release
 #   APPLE_NOTARY_KEY_P8         contents of an App Store Connect API key (.p8)
 #   APPLE_NOTARY_KEY_ID         that key's id
 #   APPLE_NOTARY_ISSUER         its issuer id
+#   HOMEBREW_TAP_TOKEN          lets the homebrew job open the cask bump PR
 on:
   push:
     tags: ["v*"]
@@ -177,3 +178,46 @@ jobs:
             notes="This build is not signed with a Developer ID or notarized. macOS will refuse to open it at first: right-click Matty.app, choose Open, then confirm, or run \`xattr -dr com.apple.quarantine /Applications/Matty.app\`."
           fi
           gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
+
+  homebrew:
+    # Opens a pull request on the tap that bumps the cask (#203). Stable
+    # releases only, and only once HOMEBREW_TAP_TOKEN (a token that can push
+    # to devaryakjha/homebrew-matty and open pull requests there) is set.
+    name: Homebrew cask bump
+    needs: [build, publish]
+    if: needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - if: env.HAS_TAP_TOKEN != 'true'
+        run: echo "HOMEBREW_TAP_TOKEN is not set; skipping the cask bump"
+      - if: env.HAS_TAP_TOKEN == 'true'
+        uses: actions/checkout@v4
+      - name: Open the bump pull request
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAP: devaryakjha/homebrew-matty
+        run: |
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          gh auth setup-git
+          gh repo clone "$TAP" "$RUNNER_TEMP/tap" -- --depth 1
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          scripts/homebrew-cask "$VERSION" "$RUNNER_TEMP/SHA256SUMS" >"$RUNNER_TEMP/tap/Casks/matty.rb"
+          cd "$RUNNER_TEMP/tap"
+          if [[ -z "$(git status --porcelain -- Casks/matty.rb)" ]]; then
+            echo "The cask is already at $VERSION"
+            exit 0
+          fi
+          branch="matty-$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add Casks/matty.rb
+          git commit -m "matty $VERSION"
+          git push origin "$branch"
+          gh pr create --repo "$TAP" --head "$branch" --title "matty $VERSION" \
+            --body "Bumps the cask to [Matty $VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION)."
