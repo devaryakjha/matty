@@ -460,6 +460,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   gpuicn#95 (action buttons on a notice); until then the file opens on its
   own and the error says what to do. In preview, clicking a file card shows
   the download toast.
+- **Restart to update** (PLAN §10, #180) is the same toast, persistent:
+  "Update ready" over "Matty 0.2.0 has downloaded. Restart to finish
+  updating.", a primary "Restart to update" and an outline "Later". It
+  never appears while a composer has unsent text and focus; it waits until
+  every composer has been free for three seconds. "Later" holds it until
+  the next six-hourly check. `MATTY_PREVIEW=update` shows it.
 - **Jump to a post** (PLAN §4.2): "Jump" in Saved, Pinned, mentions and
   search results opens the channel, scrolls the post into view and tints
   it with gpuicn's permalink highlight, amber with a gutter bar, for four

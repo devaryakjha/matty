@@ -24,3 +24,4 @@ pub use endpoints::files::{Progress, Upload, Uploaded};
 pub use endpoints::posts::{Direction, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery};
 pub use endpoints::users::{Credentials, MFA_BAD_CODE_ID, MFA_REQUIRED_ID, SignedIn};
 pub use error::ApiError;
+pub use tls::https_config;

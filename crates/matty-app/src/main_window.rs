@@ -207,6 +207,8 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
+    /// Update checks and the "Restart to update" toast (#180).
+    _updater: Entity<crate::updater::UpdatePrompt>,
     /// Files asked for and not yet saved, oldest first, so a failed
     /// download can offer Retry when only one was in flight.
     downloads: std::collections::VecDeque<SharedString>,
@@ -381,6 +383,7 @@ impl MainWindow {
         };
         let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
         let toasts = cx.new(ToastState::new);
+        let _updater = crate::updater::UpdatePrompt::start(toasts.clone(), window, cx);
         let drafts_model = if crate::preview::enabled() {
             crate::preview::drafts()
         } else {
@@ -809,6 +812,7 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
+            _updater,
             downloads: Default::default(),
             threads_open: false,
             drafts,
