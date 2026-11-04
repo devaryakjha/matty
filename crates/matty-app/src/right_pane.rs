@@ -62,6 +62,63 @@ pub struct SearchModel {
     pub searching: bool,
 }
 
+/// What search's `in:` and `from:` suggest: (handle, shown name) pairs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchHints {
+    pub channels: Vec<(SharedString, SharedString)>,
+    pub people: Vec<(SharedString, SharedString)>,
+}
+
+/// One suggestion under the search field: what replaces the word being
+/// typed, and how it reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Suggestion {
+    insert: SharedString,
+    label: SharedString,
+    detail: SharedString,
+}
+
+/// At most this many suggestions show at once.
+const SUGGESTIONS: usize = 6;
+
+/// The suggestions for `query`'s last word when it starts with `from:` or
+/// `in:` (#129).
+fn suggestions(query: &str, hints: &SearchHints) -> Vec<Suggestion> {
+    if query.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let word = query.rsplit(char::is_whitespace).next().unwrap_or("");
+    let (prefix, typed, options) = if let Some(typed) = word.strip_prefix("from:") {
+        ("from:", typed.trim_start_matches('@'), &hints.people)
+    } else if let Some(typed) = word.strip_prefix("in:") {
+        ("in:", typed.trim_start_matches('~'), &hints.channels)
+    } else {
+        return Vec::new();
+    };
+    let typed = typed.to_lowercase();
+    options
+        .iter()
+        .filter(|(handle, shown)| {
+            handle.to_lowercase().starts_with(&typed)
+                || shown
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|part| part.starts_with(&typed))
+        })
+        .filter(|(handle, _)| handle.as_ref() != typed)
+        .take(SUGGESTIONS)
+        .map(|(handle, shown)| Suggestion {
+            insert: format!("{prefix}{handle}").into(),
+            label: shown.clone(),
+            detail: if prefix == "from:" {
+                format!("@{handle}").into()
+            } else {
+                format!("~{handle}").into()
+            },
+        })
+        .collect()
+}
+
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
@@ -169,6 +226,9 @@ pub struct RightPaneView {
     search: Entity<InputState>,
     /// The saved, pinned or mentions listing has yet to come from sync.
     loading: bool,
+    /// What `from:` and `in:` can suggest, and what they suggest now.
+    hints: SearchHints,
+    suggestions: Vec<Suggestion>,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -239,27 +299,37 @@ impl RightPaneView {
             state
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &composer,
-                window,
-                |this, composer, event: &ComposerEvent, window, cx| match event {
-                    ComposerEvent::Change => {
-                        let text = composer.read(cx).value(cx);
-                        this.draft_len = text.chars().count();
-                        this.draft_changed(&text, cx);
-                        cx.notify();
+        let subscriptions =
+            vec![
+                cx.subscribe_in(
+                    &composer,
+                    window,
+                    |this, composer, event: &ComposerEvent, window, cx| match event {
+                        ComposerEvent::Change => {
+                            let text = composer.read(cx).value(cx);
+                            this.draft_len = text.chars().count();
+                            this.draft_changed(&text, cx);
+                            cx.notify();
+                        }
+                        ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                        _ => {}
+                    },
+                ),
+                cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            this.suggestions.clear();
+                            this.submit_search(cx);
+                        }
+                        InputEvent::Change => {
+                            let query = input.read(cx).value().to_string();
+                            this.suggestions = suggestions(&query, &this.hints);
+                            cx.notify();
+                        }
+                        _ => {}
                     }
-                    ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
-                    _ => {}
-                },
-            ),
-            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_search(cx);
-                }
-            }),
-        ];
+                }),
+            ];
         Self {
             composer_cap: px(320.),
             content: None,
@@ -276,6 +346,8 @@ impl RightPaneView {
             pending_seq: 0,
             search,
             loading: false,
+            hints: SearchHints::default(),
+            suggestions: Vec::new(),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -542,6 +614,30 @@ impl RightPaneView {
     }
 
     /// Replaces what the pane shows and resets the transcript to its end.
+    /// Sets what search's `from:` and `in:` suggest.
+    pub fn set_search_hints(&mut self, hints: SearchHints) {
+        self.hints = hints;
+    }
+
+    /// Puts a suggestion in place of the word being typed.
+    fn accept_suggestion(
+        &mut self,
+        insert: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search.update(cx, |input, cx| {
+            let value = input.value().to_string();
+            let keep = value
+                .rfind(char::is_whitespace)
+                .map_or("", |at| &value[..=at]);
+            input.set_value(format!("{keep}{insert} "), window, cx);
+            input.focus(window, cx);
+        });
+        self.suggestions.clear();
+        cx.notify();
+    }
+
     /// Marks the listing on screen as still loading, so an empty one reads
     /// "Loading…" rather than its empty state.
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
@@ -1252,6 +1348,9 @@ impl RightPaneView {
                     .border_b(style::hairline())
                     .border_color(theme.colors.border)
                     .child(Input::new(&self.search).aria_label("Search messages"))
+                    .when(!self.suggestions.is_empty(), |field| {
+                        field.child(self.suggestion_list(cx))
+                    })
                     .child(
                         div()
                             .type_style(style::META, &theme)
@@ -1260,6 +1359,49 @@ impl RightPaneView {
                     ),
             )
             .child(body)
+    }
+
+    /// The people or channels the word being typed could name.
+    fn suggestion_list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                self.suggestions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, suggestion)| {
+                        let insert = suggestion.insert.clone();
+                        Button::new(gpui_kit::ElementId::Name(
+                            format!("right-pane.search.suggestion.{index}").into(),
+                        ))
+                        .variant(ButtonVariant::Ghost)
+                        .w_full()
+                        .justify_start()
+                        .aria_label(format!("Search {}", suggestion.insert))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme.space(2.))
+                                .min_w_0()
+                                .child(div().truncate().child(suggestion.label.clone()))
+                                .child(
+                                    div()
+                                        .type_style(style::META, &theme)
+                                        .text_color(muted)
+                                        .child(suggestion.detail.clone()),
+                                ),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.accept_suggestion(insert.clone(), window, cx)
+                            },
+                        ))
+                    }),
+            )
     }
 
     /// The last searches, newest first, each one click from running again.
@@ -1769,5 +1911,38 @@ impl Render for RightPaneView {
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_and_in_suggest_people_and_channels_for_the_last_word() {
+        let hints = SearchHints {
+            channels: vec![
+                ("town-square".into(), "Town Square".into()),
+                ("random".into(), "Random".into()),
+            ],
+            people: vec![
+                ("ada".into(), "Ada Lovelace".into()),
+                ("alan".into(), "Alan Turing".into()),
+            ],
+        };
+        let inserts = |query: &str| {
+            suggestions(query, &hints)
+                .into_iter()
+                .map(|s| s.insert.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inserts("deploy from:a"), ["from:ada", "from:alan"]);
+        assert_eq!(inserts("from:@tur"), ["from:alan"]);
+        assert_eq!(inserts("in:squ"), ["in:town-square"]);
+        assert_eq!(inserts("in:"), ["in:town-square", "in:random"]);
+        // A finished word, a plain word and an exact match suggest nothing.
+        assert!(inserts("from:ada ").is_empty());
+        assert!(inserts("lunch").is_empty());
+        assert!(inserts("in:random").is_empty());
     }
 }

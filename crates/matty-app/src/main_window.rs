@@ -2247,8 +2247,15 @@ impl MainWindow {
         };
         self.threads_open = false;
         self.drafts_open = false;
-        self.right_pane
-            .update(cx, |pane, cx| pane.set_search(model, window, cx));
+        let hints = self
+            .live
+            .as_ref()
+            .map(|live| live.search_hints())
+            .unwrap_or_default();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_search_hints(hints);
+            pane.set_search(model, window, cx)
+        });
         self.right_pane_open = true;
         cx.notify();
     }

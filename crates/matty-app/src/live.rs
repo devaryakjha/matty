@@ -726,6 +726,39 @@ impl Live {
         });
     }
 
+    /// What search's `in:` and `from:` can suggest: the shown team's
+    /// public and private channels, and the people Matty has seen.
+    pub fn search_hints(&self) -> crate::right_pane::SearchHints {
+        let channels = self
+            .team
+            .as_ref()
+            .and_then(|team| self.sections.get(team))
+            .into_iter()
+            .flat_map(|sections| sections.iter())
+            .flat_map(|section| section.channels.iter())
+            .filter(|channel| matches!(channel.kind.as_str(), "O" | "P"))
+            .map(|channel| {
+                (
+                    channel.name.clone().into(),
+                    channel.display_name.clone().into(),
+                )
+            })
+            .collect();
+        let mut people: Vec<_> = self
+            .users
+            .values()
+            .filter(|user| user.delete_at == 0 && !user.username.is_empty())
+            .map(|user| {
+                (
+                    user.username.clone().into(),
+                    crate::transcript::display_name(user).into(),
+                )
+            })
+            .collect();
+        people.sort();
+        crate::right_pane::SearchHints { channels, people }
+    }
+
     /// Loads the user's saved posts; they come as [`Update::listing`].
     pub fn show_saved(&mut self) {
         self.show_listing(matty_sync::Listing::Saved);
@@ -1743,6 +1776,7 @@ mod tests {
         SidebarChannel {
             id: id.into(),
             kind: kind.into(),
+            name: id.into(),
             display_name: id.into(),
             dm_user_id: (kind == "D").then(|| format!("{id}-user")),
             unreads: Unreads {
