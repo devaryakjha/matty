@@ -362,7 +362,9 @@ fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageForma
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
 /// the order changed. Posts before the first shown one are older history
-/// and go on top.
+/// and go on top. Unsent rows at the bottom may be passed by posts that
+/// arrive under them, as after a reconnect's backfill (#164): they are
+/// taken out and appended again in their new place.
 fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
     let kept: HashMap<&str, &Post> = old.iter().map(|post| (post.id.as_ref(), post)).collect();
     let present: std::collections::HashSet<&str> =
@@ -382,14 +384,26 @@ fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
         .and_then(|first| new.iter().position(|post| post.id.as_ref() == *first))
         .unwrap_or(0);
     let (prepended, new) = new.split_at(start);
-    let (head, tail) = new.split_at(remaining.len().min(new.len()));
-    if head
+    let matched = new
         .iter()
-        .map(|post| post.id.as_ref())
-        .ne(remaining.iter().copied())
-    {
+        .zip(&remaining)
+        .take_while(|(post, id)| post.id.as_ref() == **id)
+        .count();
+    // The shown posts after the matching run must all be unsent ones.
+    let unsent = |id: &&str| {
+        kept.get(id)
+            .is_some_and(|post| post.status != crate::channel::PostStatus::Sent)
+    };
+    if !remaining[matched..].iter().all(unsent) {
         return None;
     }
+    let mut removed = removed;
+    removed.extend(
+        remaining[matched..]
+            .iter()
+            .map(|id| SharedString::from(id.to_string())),
+    );
+    let (head, tail) = new.split_at(matched);
     let updated = head
         .iter()
         .filter(|post| kept.get(post.id.as_ref()) != Some(post))
@@ -2149,6 +2163,29 @@ mod tests {
                 prepended: vec![shown("a", "one"), shown("b", "two")],
                 updated: vec![],
                 appended: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn posts_arriving_under_an_unsent_row_keep_the_scroll() {
+        let mut failed = shown("me:1", "not sent");
+        failed.status = crate::channel::PostStatus::Failed;
+        let old = [shown("a", "one"), failed.clone()];
+        // A backfill brings posts written before the failed send.
+        let new = [
+            shown("a", "one"),
+            shown("b", "two"),
+            shown("c", "three"),
+            failed.clone(),
+        ];
+        assert_eq!(
+            patch(&old, &new),
+            Some(ChannelUpdate::Patch {
+                removed: vec!["me:1".into()],
+                prepended: vec![],
+                updated: vec![],
+                appended: vec![shown("b", "two"), shown("c", "three"), failed],
             })
         );
     }
