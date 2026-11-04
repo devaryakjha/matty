@@ -851,7 +851,7 @@ impl RightPaneView {
                         ButtonVariant::Outline
                     })
                     .size(ButtonSize::Xs)
-                    .child(if thread.following {
+                    .label(if thread.following {
                         "Following"
                     } else {
                         "Follow"
@@ -1028,7 +1028,7 @@ impl RightPaneView {
                                 ))
                                 .variant(ButtonVariant::Link)
                                 .size(ButtonSize::Xs)
-                                .child("Jump")
+                                .label("Jump")
                                 .on_click(move |_, _, cx| {
                                     let event = RightPaneEvent::Jump {
                                         channel: jump_channel.clone(),
@@ -1163,6 +1163,7 @@ impl RightPaneView {
                     ButtonVariant::Outline
                 })
                 .size(ButtonSize::Sm)
+                .aria_label(text.clone())
                 .child(
                     div()
                         .flex()
@@ -1271,6 +1272,7 @@ impl RightPaneView {
                     Button::new("info.leave")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
+                        .aria_label("Leave channel")
                         .child(
                             div()
                                 .flex()

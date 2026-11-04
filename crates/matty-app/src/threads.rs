@@ -193,7 +193,7 @@ impl ThreadsView {
                     Button::new("threads.mark-all-read")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .child("Mark all as read")
+                        .label("Mark all as read")
                         .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
                 )
             })
@@ -218,6 +218,8 @@ impl ThreadsView {
         };
         div()
             .id(gpui_kit::ElementId::Name(format!("threads.{id}").into()))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!("{}, {replies}, in {channel}", root.author))
             .mx(theme.space(2.))
             .px(theme.space(3.))
             .py(theme.space(2.5))

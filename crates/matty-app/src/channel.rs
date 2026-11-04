@@ -2816,6 +2816,8 @@ impl ChannelView {
             .id(gpui_kit::ElementId::Name(
                 format!("post.{id}.thread").into(),
             ))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!("Open thread, {label}"))
             .mt(theme.space(1.))
             .ml(px(-6.))
             .px(theme.space(1.5))
@@ -2879,7 +2881,7 @@ impl ChannelView {
                 ))
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Xs)
-                .child(if summary.following {
+                .label(if summary.following {
                     "Following"
                 } else {
                     "Follow"

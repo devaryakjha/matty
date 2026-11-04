@@ -212,7 +212,7 @@ impl Render for ChannelEditView {
                             .child(
                                 Button::new("channel.edit.cancel")
                                     .variant(ButtonVariant::Outline)
-                                    .child("Cancel")
+                                    .label("Cancel")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.handle.close(window, cx);
                                     })),
@@ -221,7 +221,7 @@ impl Render for ChannelEditView {
                                 Button::new("channel.edit.save")
                                     .variant(ButtonVariant::Default)
                                     .disabled(!self.can_save(cx))
-                                    .child("Save")
+                                    .label("Save")
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.save(window, cx)),
                                     ),
@@ -454,7 +454,7 @@ impl Render for NotificationsView {
                     .child(
                         Button::new("channel.notifications.cancel")
                             .variant(ButtonVariant::Outline)
-                            .child("Cancel")
+                            .label("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -462,7 +462,7 @@ impl Render for NotificationsView {
                     .child(
                         Button::new("channel.notifications.save")
                             .variant(ButtonVariant::Default)
-                            .child("Save")
+                            .label("Save")
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
             )

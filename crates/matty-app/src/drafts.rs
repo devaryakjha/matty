@@ -122,7 +122,7 @@ impl DraftsView {
             Button::new(gpui_kit::ElementId::Name(id.into()))
                 .variant(variant)
                 .size(ButtonSize::Sm)
-                .child(label)
+                .label(label)
         };
         let (open, send, delete) = (draft.clone(), draft.clone(), draft.clone());
         div()

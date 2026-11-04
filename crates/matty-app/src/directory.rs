@@ -159,6 +159,12 @@ impl BrowseView {
         };
         div()
             .id(gpui_kit::ElementId::Name(format!("browse.{id}").into()))
+            .role(gpui_kit::Role::Button)
+            .aria_label(if joined {
+                format!("Open {}", channel.name)
+            } else {
+                format!("Join {}", channel.name)
+            })
             .px(theme.space(2.))
             .py(theme.space(1.5))
             .mx(theme.space(-2.))
@@ -348,6 +354,8 @@ impl NewMessageView {
             .id(gpui_kit::ElementId::Name(
                 format!("new-message.{username}").into(),
             ))
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!("Message {}", profile.display_name))
             .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
             .px(theme.space(2.))
             .mx(theme.space(-2.))
@@ -640,7 +648,7 @@ impl Render for CreateChannelView {
                     .child(
                         Button::new("create-channel.cancel")
                             .variant(ButtonVariant::Outline)
-                            .child("Cancel")
+                            .label("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -649,7 +657,7 @@ impl Render for CreateChannelView {
                         Button::new("create-channel.create")
                             .variant(ButtonVariant::Default)
                             .disabled(!can_create)
-                            .child("Create")
+                            .label("Create")
                             .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
                     ),
             )
@@ -881,7 +889,7 @@ impl Render for AddMembersView {
                     .child(
                         Button::new("add-members.cancel")
                             .variant(ButtonVariant::Outline)
-                            .child("Cancel")
+                            .label("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -890,7 +898,7 @@ impl Render for AddMembersView {
                         Button::new("add-members.add")
                             .variant(ButtonVariant::Default)
                             .disabled(count == 0)
-                            .child(add_label)
+                            .label(add_label)
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     ),
             )

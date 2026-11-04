@@ -190,6 +190,7 @@ pub fn profile_card(
                 ))
                 .variant(ButtonVariant::Default)
                 .size(ButtonSize::Sm)
+                .aria_label("Message")
                 .flex_1()
                 .child(
                     lucide(LucideIcon::MessageSquare)
@@ -205,6 +206,7 @@ pub fn profile_card(
                 ))
                 .variant(ButtonVariant::Outline)
                 .size(ButtonSize::Sm)
+                .aria_label("Mention")
                 .flex_1()
                 .child(
                     lucide(LucideIcon::AtSign)
