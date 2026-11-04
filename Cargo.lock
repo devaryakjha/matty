@@ -3373,9 +3373,9 @@ checksum = "99b18b06f5026b3d312488eacfdddbe78f82b4bf32bb2d2bc3186e31e552b797"
 
 [[package]]
 name = "gpuicn"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8875026a6d6f6736d09621c32a5df7dedf7bc4d7d404968c653b11130032001b"
+checksum = "a712ac8c834c32393257b428a5b295645899cbac75de595f6dca8af3e54bbd54"
 dependencies = [
  "gpui-icons",
  "gpui-kit",
