@@ -118,6 +118,27 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// The user read a followed thread (#124).
+    ReadThread {
+        /// The team whose Threads view lists it.
+        team_id: String,
+        /// The root post's id.
+        root_id: String,
+    },
+    /// "Mark all as read" in a team's Threads view.
+    ReadAllThreads {
+        /// The team.
+        team_id: String,
+    },
+    /// Follow or unfollow a thread.
+    FollowThread {
+        /// The team whose Threads view lists it.
+        team_id: String,
+        /// The root post's id.
+        root_id: String,
+        /// True to follow, false to stop.
+        follow: bool,
+    },
     /// Catch up with the server now, as after a reconnect: memberships,
     /// each cached channel since its cursor, and thread lists.
     Resync,
@@ -453,6 +474,25 @@ impl std::fmt::Debug for Command {
                 .debug_struct("CloseThreadList")
                 .field("team_id", team_id)
                 .finish(),
+            Self::ReadThread { team_id, root_id } => f
+                .debug_struct("ReadThread")
+                .field("team_id", team_id)
+                .field("root_id", root_id)
+                .finish(),
+            Self::ReadAllThreads { team_id } => f
+                .debug_struct("ReadAllThreads")
+                .field("team_id", team_id)
+                .finish(),
+            Self::FollowThread {
+                team_id,
+                root_id,
+                follow,
+            } => f
+                .debug_struct("FollowThread")
+                .field("team_id", team_id)
+                .field("root_id", root_id)
+                .field("follow", follow)
+                .finish(),
             Self::Resync => f.write_str("Resync"),
             Self::Reconnect => f.write_str("Reconnect"),
             Self::SendPost {
@@ -782,6 +822,7 @@ impl Engine {
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
         let mut threads_to_fetch = Vec::new();
+        let mut thread_lists_to_fetch = Vec::new();
         let mut link_previews = Vec::new();
         let mut pages = Vec::new();
         let mut downloads = Vec::new();
@@ -908,7 +949,38 @@ impl Engine {
                 }
                 Message::Command(Command::OpenThreadList { team_id }) => {
                     self.open_thread_lists.insert(team_id.clone());
+                    let since = posts::cursor(&tx, &posts::threads_since_key(&team_id))?
+                        .and_then(|value| value.parse().ok());
+                    thread_lists_to_fetch.push((team_id.clone(), since));
                     dirty.thread_lists.insert(team_id);
+                }
+                Message::Command(Command::ReadThread { team_id, root_id }) => {
+                    let at = posts::now_ms();
+                    posts::mark_thread_read(&tx, &root_id, at, 0, 0)?;
+                    dirty.thread_lists.insert(team_id.clone());
+                    writes.push(Write::ReadThread {
+                        team_id,
+                        thread_id: root_id,
+                        at,
+                    });
+                }
+                Message::Command(Command::ReadAllThreads { team_id }) => {
+                    posts::mark_team_threads_read(&tx, &team_id, posts::now_ms())?;
+                    dirty.thread_lists.insert(team_id.clone());
+                    writes.push(Write::ReadAllThreads { team_id });
+                }
+                Message::Command(Command::FollowThread {
+                    team_id,
+                    root_id,
+                    follow,
+                }) => {
+                    posts::set_following(&tx, &root_id, follow)?;
+                    dirty.thread_lists.insert(team_id.clone());
+                    writes.push(Write::Follow {
+                        team_id,
+                        thread_id: root_id,
+                        follow,
+                    });
                 }
                 Message::Command(Command::CloseThreadList { team_id }) => {
                     self.open_thread_lists.remove(&team_id);
@@ -1246,6 +1318,9 @@ impl Engine {
         for url in remote_images {
             self.remote_image(url, dirty);
         }
+        for (team_id, since) in thread_lists_to_fetch {
+            self.fetch_thread_list(team_id, since);
+        }
         for root_id in threads_to_fetch {
             self.fetch_thread(root_id);
         }
@@ -1559,6 +1634,36 @@ impl Engine {
                 }
             };
             let _ = results.send(Loaded::Thread { root_id, posts });
+        });
+    }
+
+    /// Reads a team's followed threads from the server when its Threads
+    /// view opens, since the last time it did; they come back as
+    /// [`Loaded::Threads`]. Offline, the view shows what is cached.
+    fn fetch_thread_list(&mut self, team_id: String, since: Option<i64>) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(format!("threads/{team_id}")) {
+            return;
+        }
+        let client = session.client.clone();
+        let user_id = session.user_id.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let query = matty_api::ThreadsQuery {
+                since,
+                deleted: since.is_some(),
+                ..matty_api::ThreadsQuery::default()
+            };
+            let threads = match client.user_threads(&user_id, &team_id, &query).await {
+                Ok(threads) => threads.threads,
+                Err(error) => {
+                    tracing::debug!(%error, "could not read the thread list");
+                    Vec::new()
+                }
+            };
+            let _ = results.send(Loaded::Threads { team_id, threads });
         });
     }
 
@@ -2269,6 +2374,7 @@ impl Engine {
                 dirty.threads.extend(self.open_threads.iter().cloned());
             }
             Loaded::Threads { team_id, threads } => {
+                self.fetching.remove(&format!("threads/{team_id}"));
                 let tx = self.store.conn_mut().transaction()?;
                 posts::upsert_threads(&tx, &team_id, &threads)?;
                 let newest = threads
@@ -2465,10 +2571,18 @@ impl Engine {
             if !self.open_thread_lists.contains(&team_id) {
                 continue;
             }
-            match posts::threads(conn, &team_id, false, THREAD_LIST) {
-                Ok(threads) => changes.push(ChangeSet::ThreadList {
+            let list = posts::threads(conn, &team_id, false, THREAD_LIST).and_then(|threads| {
+                let roots = threads
+                    .iter()
+                    .filter_map(|thread| posts::post(conn, &thread.id).transpose())
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((threads, roots))
+            });
+            match list {
+                Ok((threads, roots)) => changes.push(ChangeSet::ThreadList {
                     team_id,
                     threads: Arc::from(threads),
+                    roots: Arc::from(roots),
                 }),
                 Err(error) => tracing::error!(%error, "could not read a thread list"),
             }
@@ -2538,17 +2652,23 @@ impl Engine {
     /// The not yet sent authors of the posts in `changes`: those the cache
     /// has as a change set, and the rest asked of the server once.
     fn authors(&mut self, changes: &[ChangeSet]) -> Option<ChangeSet> {
-        let ids: BTreeSet<String> = changes
-            .iter()
-            .flat_map(|change| match change {
+        let mut ids = BTreeSet::new();
+        for change in changes {
+            match change {
                 ChangeSet::Posts { posts, .. }
                 | ChangeSet::Thread { posts, .. }
-                | ChangeSet::Search { posts, .. } => &posts[..],
-                _ => &[],
-            })
-            .map(|post| post.user_id.clone())
-            .filter(|id| !id.is_empty() && !self.sent_users.contains(id))
-            .collect();
+                | ChangeSet::Search { posts, .. } => {
+                    ids.extend(posts.iter().map(|post| post.user_id.clone()));
+                }
+                // The Threads view names each root's author and who replied.
+                ChangeSet::ThreadList { threads, roots, .. } => {
+                    ids.extend(roots.iter().map(|post| post.user_id.clone()));
+                    ids.extend(threads.iter().flat_map(|t| t.participants.iter().cloned()));
+                }
+                _ => {}
+            }
+        }
+        ids.retain(|id| !id.is_empty() && !self.sent_users.contains(id));
         if ids.is_empty() {
             return None;
         }

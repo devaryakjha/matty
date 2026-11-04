@@ -43,6 +43,8 @@ pub enum ChangeSet {
         team_id: String,
         /// Followed threads, latest reply first.
         threads: Arc<[ThreadSummary]>,
+        /// The threads' root posts, where cached, for their excerpts.
+        roots: Arc<[Post]>,
     },
     /// A draft changed on this or another device; `None` when deleted.
     Draft {

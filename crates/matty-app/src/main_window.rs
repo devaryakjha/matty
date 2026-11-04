@@ -383,17 +383,35 @@ impl MainWindow {
             },
         )
         .detach();
-        cx.subscribe(&threads, |this, _, event: &ThreadsEvent, cx| {
+        cx.subscribe(&threads, |this, threads, event: &ThreadsEvent, cx| {
             // Sync owns the server side; the sidebar count follows at once.
-            if let ThreadsEvent::MarkAllRead = event {
-                this.sidebar.update(cx, |sidebar, cx| {
-                    let mut model = sidebar.model().clone();
-                    model.unread_threads = 0;
-                    sidebar.set_model(model, cx);
-                });
+            let unread = threads.read(cx).model().unread();
+            this.sidebar.update(cx, |sidebar, cx| {
+                let mut model = sidebar.model().clone();
+                model.unread_threads = unread;
+                sidebar.set_model(model, cx);
+            });
+            let Some(live) = &mut this.live else {
+                return;
+            };
+            match event {
+                ThreadsEvent::MarkAllRead => live.read_all_threads(),
+                ThreadsEvent::Unfollow(root) => live.follow_thread(root, false),
+                ThreadsEvent::Open { root, unread } => {
+                    // Only while on screen: the view keeps its selection
+                    // when the user goes back to a channel.
+                    if this.threads_open {
+                        live.open_thread(root);
+                        if *unread {
+                            live.read_thread(root);
+                        }
+                    }
+                }
             }
         })
         .detach();
+        let detail = threads.read(cx).detail().clone();
+        cx.subscribe_in(&detail, window, Self::pane_event).detach();
         // No session store yet: the sign-in card shows unless the preview
         // fixtures stand in for a signed-in workspace.
         let login_model = match crate::preview::login() {
@@ -630,101 +648,8 @@ impl MainWindow {
             },
         )
         .detach();
-        cx.subscribe_in(
-            &right_pane,
-            window,
-            |this, _, event: &RightPaneEvent, window, cx| match event {
-                RightPaneEvent::Close => {
-                    this.leave_thread();
-                    this.right_pane_open = false;
-                    cx.notify();
-                }
-                RightPaneEvent::Search(query) => this.search(query.clone(), window, cx),
-                RightPaneEvent::OpenPinned => this.show_pinned(cx),
-                RightPaneEvent::OpenDirect { display_name, .. } => {
-                    this.open_direct(display_name.clone(), window, cx)
-                }
-                RightPaneEvent::Mention(username) => {
-                    let text = format!("@{username} ");
-                    this.channel
-                        .update(cx, |channel, cx| channel.insert_text(text, window, cx));
-                }
-                RightPaneEvent::ToggleFavorite { channel, favorite } => {
-                    this.set_favorite(channel.clone(), *favorite, cx);
-                }
-                RightPaneEvent::ToggleMute { channel, muted } => {
-                    let muted = *muted;
-                    if let Some(live) = &this.live {
-                        live.send(matty_sync::Command::SetChannelNotifications {
-                            channel_id: channel.to_string(),
-                            props: std::collections::HashMap::from([(
-                                "mark_unread".to_string(),
-                                if muted { "mention" } else { "all" }.to_string(),
-                            )]),
-                        });
-                    }
-                    this.channel
-                        .update(cx, |channel, cx| channel.set_muted(muted, cx));
-                }
-                RightPaneEvent::Jump { channel, post } => {
-                    this.open_channel(channel.clone(), window, cx);
-                    let post = post.clone();
-                    this.channel
-                        .update(cx, |channel, cx| channel.jump_to(post, cx));
-                }
-                RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
-                RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
-                RightPaneEvent::ViewImages(ids) => {
-                    let here = this
-                        .live
-                        .as_ref()
-                        .map(|live| live.full_images(ids))
-                        .unwrap_or_default();
-                    for (id, image) in here {
-                        this.right_pane
-                            .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
-                    }
-                }
-                RightPaneEvent::PreviewLink(url) => {
-                    if let Some(live) = &this.live {
-                        if !live.link_previews() {
-                            return;
-                        }
-                        live.send(matty_sync::Command::LoadLinkPreview {
-                            url: url.to_string(),
-                        });
-                    } else if crate::preview::enabled() {
-                        let card = crate::preview::link_card(url);
-                        this.right_pane
-                            .update(cx, |view, cx| view.set_link_preview(url, card, cx));
-                    }
-                }
-                RightPaneEvent::Reply { root, text, unfurl } => {
-                    if let Some(live) = &this.live
-                        && let Some(channel_id) = live.thread_channel()
-                    {
-                        live.send(matty_sync::Command::SendPost {
-                            pending_post_id: String::new(),
-                            channel_id,
-                            root_id: root.to_string(),
-                            message: text.to_string(),
-                            file_ids: Vec::new(),
-                            props: crate::embeds::send_props(*unfurl),
-                        });
-                    }
-                }
-                RightPaneEvent::Retry(post) => {
-                    if let Some(live) = &this.live {
-                        live.send(matty_sync::Command::Retry {
-                            pending_post_id: post.to_string(),
-                        });
-                    }
-                }
-                // Sync owns the rest (PLAN §4.3); the pane already shows them.
-                _ => {}
-            },
-        )
-        .detach();
+        cx.subscribe_in(&right_pane, window, Self::pane_event)
+            .detach();
         cx.subscribe_in(
             &sidebar,
             window,
@@ -1247,6 +1172,11 @@ impl MainWindow {
         if let Some((id, image)) = update.full_image {
             self.right_pane
                 .update(cx, |pane, cx| pane.set_full_image(&id, image.clone(), cx));
+            self.threads
+                .read(cx)
+                .detail()
+                .clone()
+                .update(cx, |pane, cx| pane.set_full_image(&id, image.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
@@ -1315,10 +1245,30 @@ impl MainWindow {
             cx.notify();
         }
         if let Some(thread) = update.thread {
-            self.right_pane
-                .update(cx, |pane, cx| pane.set_thread(thread, cx));
+            if self.threads_open {
+                self.threads
+                    .update(cx, |view, cx| view.set_thread(thread, cx));
+            } else {
+                self.right_pane
+                    .update(cx, |pane, cx| pane.set_thread(thread, cx));
+            }
+        }
+        if let Some(model) = update.threads {
+            let unread = model.unread();
+            self.threads
+                .update(cx, |view, cx| view.set_model(model, cx));
+            self.sidebar.update(cx, |sidebar, cx| {
+                let mut model = sidebar.model().clone();
+                model.unread_threads = unread;
+                sidebar.set_model(model, cx);
+            });
         }
         if let Some((url, card)) = update.link_preview {
+            self.threads
+                .read(cx)
+                .detail()
+                .clone()
+                .update(cx, |view, cx| view.set_link_preview(&url, card.clone(), cx));
             self.right_pane
                 .update(cx, |view, cx| view.set_link_preview(&url, card.clone(), cx));
             self.channel
@@ -1530,7 +1480,9 @@ impl MainWindow {
     /// Shows the unsent messages in place of the channel.
     fn show_drafts(&mut self, cx: &mut Context<Self>) {
         self.drafts_open = true;
-        self.threads_open = false;
+        if std::mem::take(&mut self.threads_open) {
+            self.leave_thread();
+        }
         self.right_pane_open = false;
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.select(Some(crate::sidebar::DRAFTS_ID.into()), cx)
@@ -1541,6 +1493,14 @@ impl MainWindow {
     /// Shows the followed threads in place of the channel.
     fn show_threads(&mut self, cx: &mut Context<Self>) {
         self.threads_open = true;
+        // The thread beside the list is the one sync follows now.
+        let selected = self.threads.read(cx).selected().cloned();
+        if let Some(live) = &mut self.live {
+            live.close_thread();
+            if let Some(root) = selected {
+                live.open_thread(&root);
+            }
+        }
         self.drafts_open = false;
         self.right_pane_open = false;
         self.sidebar.update(cx, |sidebar, cx| {
@@ -1555,7 +1515,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.threads_open = false;
+        if std::mem::take(&mut self.threads_open) {
+            self.leave_thread();
+        }
         self.drafts_open = false;
         let previous = self.selected_channel.replace(id.clone());
         if previous.as_ref() != Some(&id) {
@@ -1984,6 +1946,110 @@ impl MainWindow {
     }
 
     /// The right pane moves on from a thread: sync stops publishing it.
+    /// What the right pane, or the Threads view's thread beside its list,
+    /// asks for.
+    fn pane_event(
+        &mut self,
+        pane: &Entity<RightPaneView>,
+        event: &RightPaneEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            RightPaneEvent::Close => {
+                self.leave_thread();
+                self.right_pane_open = false;
+                cx.notify();
+            }
+            RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::OpenPinned => self.show_pinned(cx),
+            RightPaneEvent::OpenDirect { display_name, .. } => {
+                self.open_direct(display_name.clone(), window, cx)
+            }
+            RightPaneEvent::Mention(username) => {
+                let text = format!("@{username} ");
+                self.channel
+                    .update(cx, |channel, cx| channel.insert_text(text, window, cx));
+            }
+            RightPaneEvent::ToggleFavorite { channel, favorite } => {
+                self.set_favorite(channel.clone(), *favorite, cx);
+            }
+            RightPaneEvent::ToggleMute { channel, muted } => {
+                let muted = *muted;
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::SetChannelNotifications {
+                        channel_id: channel.to_string(),
+                        props: std::collections::HashMap::from([(
+                            "mark_unread".to_string(),
+                            if muted { "mention" } else { "all" }.to_string(),
+                        )]),
+                    });
+                }
+                self.channel
+                    .update(cx, |channel, cx| channel.set_muted(muted, cx));
+            }
+            RightPaneEvent::Jump { channel, post } => {
+                self.open_channel(channel.clone(), window, cx);
+                let post = post.clone();
+                self.channel
+                    .update(cx, |channel, cx| channel.jump_to(post, cx));
+            }
+            RightPaneEvent::Leave(channel) => self.leave_channel(channel.clone(), window, cx),
+            RightPaneEvent::OpenFile(id) => self.download_file(id, cx),
+            RightPaneEvent::ViewImages(ids) => {
+                let here = self
+                    .live
+                    .as_ref()
+                    .map(|live| live.full_images(ids))
+                    .unwrap_or_default();
+                for (id, image) in here {
+                    pane.update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
+                }
+            }
+            RightPaneEvent::PreviewLink(url) => {
+                if let Some(live) = &self.live {
+                    if !live.link_previews() {
+                        return;
+                    }
+                    live.send(matty_sync::Command::LoadLinkPreview {
+                        url: url.to_string(),
+                    });
+                } else if crate::preview::enabled() {
+                    let card = crate::preview::link_card(url);
+                    pane.update(cx, |view, cx| view.set_link_preview(url, card, cx));
+                }
+            }
+            RightPaneEvent::Reply { root, text, unfurl } => {
+                if let Some(live) = &self.live
+                    && let Some(channel_id) = live.thread_channel()
+                {
+                    live.send(matty_sync::Command::SendPost {
+                        pending_post_id: String::new(),
+                        channel_id,
+                        root_id: root.to_string(),
+                        message: text.to_string(),
+                        file_ids: Vec::new(),
+                        props: crate::embeds::send_props(*unfurl),
+                    });
+                }
+            }
+            RightPaneEvent::Retry(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::Retry {
+                        pending_post_id: post.to_string(),
+                    });
+                }
+            }
+            RightPaneEvent::ToggleFollow { root, following } => {
+                if let Some(live) = &self.live {
+                    live.follow_thread(root, *following);
+                }
+            }
+            // Sync owns the rest (PLAN §4.3); the pane already shows them.
+            _ => {}
+        }
+    }
+
     fn leave_thread(&mut self) {
         if let Some(live) = &mut self.live {
             live.close_thread();
