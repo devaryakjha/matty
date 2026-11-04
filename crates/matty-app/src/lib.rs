@@ -166,6 +166,28 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     cx.activate(true);
 }
 
+/// Hooks for the crate's integration tests: the app set up as `launch` does
+/// it, without logging, menus or a real window. Not part of Matty's API.
+#[doc(hidden)]
+pub mod test_support {
+    use gpui_kit::{AnyView, App, AppContext as _, Window};
+
+    /// Themes, fonts, settings (in memory) and key bindings.
+    pub fn init(cx: &mut App) {
+        crate::ui::theme::init(cx);
+        crate::style::install(crate::ui::theme::ThemeMode::Light, cx);
+        crate::load_fonts(cx);
+        crate::settings::SettingsStore::init(None, cx);
+        crate::actions::bind(cx);
+    }
+
+    /// The main window's root view, for a test window to draw.
+    pub fn main_window(window: &mut Window, cx: &mut App) -> AnyView {
+        cx.new(|cx| crate::main_window::MainWindow::new(window, cx))
+            .into()
+    }
+}
+
 /// Keeps the logger's level in step with the `log_level` setting.
 fn follow_log_level(settings: &Entity<SettingsStore>, logs: logging::LevelHandle, cx: &mut App) {
     logs.set(settings.read(cx).get().log_level);
