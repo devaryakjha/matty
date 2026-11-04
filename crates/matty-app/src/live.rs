@@ -387,9 +387,7 @@ impl Live {
         path: PathBuf,
         account: &SavedAccount,
     ) -> std::io::Result<(Self, async_channel::Receiver<ChangeSet>)> {
-        let media = url::Url::parse(&account.server)
-            .ok()
-            .and_then(|server| matty_sync::media_dir(&server, &account.user_id));
+        let media = media_dir(account);
         let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
         Ok((
@@ -1283,6 +1281,13 @@ pub fn saved_account(server: &str, user: &User) -> SavedAccount {
 }
 
 /// Where `account`'s database lives: one file per server and user.
+/// Where `account`'s media cache lives, if the system has a cache folder.
+pub fn media_dir(account: &SavedAccount) -> Option<PathBuf> {
+    url::Url::parse(&account.server)
+        .ok()
+        .and_then(|server| matty_sync::media_dir(&server, &account.user_id))
+}
+
 pub fn database_path(account: &SavedAccount) -> PathBuf {
     url::Url::parse(&account.server)
         .ok()

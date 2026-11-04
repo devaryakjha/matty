@@ -516,8 +516,8 @@ impl AccountView {
             .child(dialog_title("account.sign-out.title", cx).child("Sign out of Matty?"))
             .child(
                 dialog_description("account.sign-out.description", cx).child(
-                    "Your drafts stay on this computer. You will need your password or \
-                     single sign-on to come back.",
+                    "Matty removes your messages and files from this computer. You \
+                     will need your password or single sign-on to come back.",
                 ),
             )
             .child(
