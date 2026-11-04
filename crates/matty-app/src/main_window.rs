@@ -358,8 +358,7 @@ impl MainWindow {
                 }
                 ChannelEvent::ToggleFavorite(favorite) => {
                     if let Some(id) = this.selected_channel.clone() {
-                        this.sidebar
-                            .update(cx, |sidebar, cx| sidebar.set_favorite(&id, *favorite, cx));
+                        this.set_favorite(id, *favorite, cx);
                     }
                     this.refresh_channel_info(cx);
                 }
@@ -443,6 +442,17 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::OpenFile(id) => this.download_file(id, cx),
+                ChannelEvent::ViewImages(ids) => {
+                    let here = this
+                        .live
+                        .as_ref()
+                        .map(|live| live.full_images(ids))
+                        .unwrap_or_default();
+                    for (id, image) in here {
+                        this.channel
+                            .update(cx, |view, cx| view.set_full_image(id, image, cx));
+                    }
+                }
                 ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
                 | ChannelEvent::Retry(_)
@@ -468,10 +478,8 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.insert_text(text, window, cx));
                 }
-                RightPaneEvent::ToggleFavorite { favorite, .. } => {
-                    let favorite = *favorite;
-                    this.channel
-                        .update(cx, |channel, cx| channel.set_favorite(favorite, cx));
+                RightPaneEvent::ToggleFavorite { channel, favorite } => {
+                    this.set_favorite(channel.clone(), *favorite, cx);
                 }
                 RightPaneEvent::ToggleMute { channel, muted } => {
                     let muted = *muted;
@@ -495,6 +503,17 @@ impl MainWindow {
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
                 RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
+                RightPaneEvent::ViewImages(ids) => {
+                    let here = this
+                        .live
+                        .as_ref()
+                        .map(|live| live.full_images(ids))
+                        .unwrap_or_default();
+                    for (id, image) in here {
+                        this.right_pane
+                            .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
+                    }
+                }
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -512,7 +531,12 @@ impl MainWindow {
                     SidebarEvent::NewMessage => return this.new_message(window, cx),
                     SidebarEvent::CreateChannel => return this.open_create_channel(window, cx),
                     SidebarEvent::MarkRead(id) => {
-                        // The row is clear; sync owes the server-side read.
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::ViewChannel {
+                                channel_id: id.to_string(),
+                                prev_channel_id: String::new(),
+                            });
+                        }
                         let id = id.clone();
                         return this
                             .sidebar
@@ -877,6 +901,12 @@ impl MainWindow {
         if let Some(profiles) = update.profiles {
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
+        }
+        if let Some((id, image)) = update.full_image {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_full_image(&id, image.clone(), cx));
+            self.channel
+                .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
         if let Some(download) = update.download {
             match download {
@@ -1289,6 +1319,12 @@ impl MainWindow {
     /// Moves `id` into or out of Favorites in the sidebar and on the open
     /// channel's header star. Sync owes the server-side category move.
     fn set_favorite(&mut self, id: SharedString, favorite: bool, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::SetFavorite {
+                channel_id: id.to_string(),
+                favorite,
+            });
+        }
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_favorite(&id, favorite, cx));
         if self.selected_channel.as_ref() == Some(&id) {
@@ -1321,8 +1357,13 @@ impl MainWindow {
 
     /// Closes a direct or group conversation: the row goes and the next
     /// channel opens. Mattermost keeps the channel and hides it by
-    /// preference, which sync owes; the posts stay on the server.
+    /// preference until it is opened again; the posts stay on the server.
     fn close_direct(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::CloseDirect {
+                channel_id: id.to_string(),
+            });
+        }
         let mut model = self.sidebar.read(cx).model().clone();
         model.remove(&id);
         let next = model
