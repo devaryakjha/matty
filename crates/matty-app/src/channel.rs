@@ -2619,6 +2619,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&Entity<ComposerState>>,
         highlight: MessageHighlight,
+        menu_open: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2630,7 +2631,8 @@ impl ChannelView {
         let more_items = Self::more_items_for(post, cx);
         let save_id = id.clone();
         let actions = message_actions(cx)
-            .child(style::tipped(
+            .child(style::tipped_when(
+                !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
                 "Add reaction",
                 message_action(
@@ -2645,7 +2647,8 @@ impl ChannelView {
                     },
                 )),
             ))
-            .child(style::tipped(
+            .child(style::tipped_when(
+                !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
                 "Reply in thread",
                 message_action(
@@ -2658,7 +2661,8 @@ impl ChannelView {
                     cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
                 })),
             ))
-            .child(style::tipped(
+            .child(style::tipped_when(
+                !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
                 if post.saved { "Unsave" } else { "Save" },
                 message_action(
@@ -2673,7 +2677,8 @@ impl ChannelView {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
             ))
-            .child(style::tipped(
+            .child(style::tipped_when(
+                !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
                 "More actions",
                 message_action(
@@ -2956,7 +2961,8 @@ impl ChannelView {
                             .filter(|editing| editing.post == post.id)
                             .map(|editing| editing.composer.clone());
                         let highlight = this.row_highlight(index, &post);
-                        Self::post_row(&post, profile, editor.as_ref(), highlight, cx)
+                        let menu_open = this.menu.read(cx).is_open();
+                        Self::post_row(&post, profile, editor.as_ref(), highlight, menu_open, cx)
                             .into_any_element()
                     })
                 }
@@ -3114,7 +3120,8 @@ impl ChannelView {
             .open(picker_open)
             .offset(px(6.))
             .trigger_with(move |_, _, _| {
-                style::tipped("composer.emoji.tip", "Emoji", emoji_tool).into_any_element()
+                style::tipped_when(!picker_open, "composer.emoji.tip", "Emoji", emoji_tool)
+                    .into_any_element()
             })
             .on_open_change(cx.listener(|this, open: &bool, window, cx| {
                 if *open {

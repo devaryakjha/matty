@@ -40,7 +40,7 @@ Values are sRGB hex; the CSS is the source of truth.
 | `sidebar-border` / `border` | `#e3e5ea` / `#e6e8ec` | `#262a33` / `#2a2e37` | Hairlines |
 | `primary` / `primary-foreground` | `#3056d3` / `#ffffff` | `#6688f2` / `#0f1114` | Buttons, links, selected rail item, mention badges |
 | `accent` / `accent-foreground` | `#eef0f4` / `#1b1f2a` | `#242830` / `#e8eaef` | Hover on buttons and menu items |
-| `muted` / `muted-foreground` | `#f1f2f4` / `#5f6775` | `#1d2027` / `#8b93a5` | Timestamps, placeholders, meta |
+| `muted` / `muted-foreground` | `#f1f2f4` / `#5f6775` | `#262a33` / `#8b93a5` | Timestamps, placeholders, meta; avatar and icon frames |
 | `card` / `popover` | `#ffffff` | `#1c1f26` | Popovers, menus, dialogs |
 | `destructive` | `#d42020` | `#f0564f` | Errors, delete, DND |
 | `ring` | `#3056d3` | `#6688f2` | Focus |
@@ -514,6 +514,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   and pointed the quick switcher at `SWITCHER_MAX_WIDTH`. The right pane's
   limits in §4 now match the code (320 to 640). Pixels are identical
   (`design-56`).
+- **Dark sweep** (DESIGN §2): a pass over every dialog, pane, menu and
+  popover in dark mode. Dark `muted` was `#1d2027`, one step from `card`
+  and `popover` (`#1c1f26`), so avatar fallbacks and icon frames vanished
+  on the profile card, New message and Browse dialogs and the quick
+  switcher; it is now `#262a33` (1.15:1 on `popover`, `muted-foreground`
+  still 4.66:1 on it). Tooltips no longer linger over a menu or popover
+  opened from their control: `style::tipped_when` drops the tooltip while
+  the emoji picker or a post's action menu is open. Light mode only gains
+  the tooltip fix (`design-57`).
 
 ## 5. Components
 
