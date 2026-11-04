@@ -30,6 +30,7 @@ matty-sync.workspace = true
 matty-markdown.workspace = true
 matty-notify.workspace = true
 async-channel.workspace = true
+getrandom.workspace = true
 url.workspace = true
 jiff.workspace = true
 keyring.workspace = true
