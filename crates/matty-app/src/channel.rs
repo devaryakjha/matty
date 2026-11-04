@@ -283,10 +283,25 @@ pub(crate) fn post_editor(
 /// "Delete this message?", or "Discard this message?" for one the server
 /// never got (#195), naming `place` it is removed from. `prefix` scopes
 /// the ids.
+/// What deleting a sent post does: gone for everyone in `place`, and a
+/// root takes its `replies` with it, as on the server (#118).
+fn delete_description(place: &str, replies: usize) -> String {
+    match replies {
+        0 => format!("It is removed for everyone in {place}. This cannot be undone."),
+        1 => format!(
+            "It is removed for everyone in {place}, along with its reply. This cannot be undone."
+        ),
+        n => format!(
+            "It is removed for everyone in {place}, along with its {n} replies. This cannot be undone."
+        ),
+    }
+}
+
 pub(crate) fn delete_popup(
     prefix: &str,
     unsent: bool,
     place: &str,
+    replies: usize,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx).clone();
@@ -302,7 +317,7 @@ pub(crate) fn delete_popup(
         (
             "Delete message",
             "Delete this message?",
-            format!("It is removed for everyone in {place}. This cannot be undone.").into(),
+            delete_description(place, replies).into(),
             "Delete",
         )
     };
@@ -656,8 +671,47 @@ pub(crate) fn format_shortcut(
     }
 }
 
+/// When `selection` in `value` is already wrapped in `before` and `after`,
+/// either just outside it or as its own ends: the wrapped range to replace
+/// with its inside, and the selection after, so the shortcut toggles the
+/// format off (#115). A one-character marker next to another of its kind
+/// is part of a longer one, such as `` ` `` in a code fence, and stays.
+fn unwrap_selection(
+    value: &str,
+    selection: std::ops::Range<usize>,
+    before: &str,
+    after: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let lone = |at: usize, marker: &str| {
+        marker.chars().count() > 1
+            || (!value[..at].ends_with(marker) && !value[at + marker.len()..].starts_with(marker))
+    };
+    // Markers just outside the selection: **|bold|**
+    if let (Some(start), Some(end)) = (
+        selection.start.checked_sub(before.len()),
+        selection.end.checked_add(after.len()),
+    ) && value.get(start..selection.start) == Some(before)
+        && value.get(selection.end..end) == Some(after)
+        && lone(start, before)
+        && lone(selection.end, after)
+    {
+        return Some((start..end, start..selection.end - before.len()));
+    }
+    // The selection takes the markers in: |**bold**|
+    let selected = value.get(selection.clone())?;
+    if selected.len() >= before.len() + after.len()
+        && selected.starts_with(before)
+        && selected.ends_with(after)
+    {
+        let inner = selected.len() - before.len() - after.len();
+        return Some((selection.clone(), selection.start..selection.start + inner));
+    }
+    None
+}
+
 /// Applies a formatting shortcut to `composer` and reports whether the key
-/// was one. A link leaves "url" selected so typing replaces it.
+/// was one. A link leaves "url" selected so typing replaces it; a selection
+/// already in that format loses it.
 pub(crate) fn apply_format(
     composer: &Entity<ComposerState>,
     keystroke: &gpui_kit::Keystroke,
@@ -672,6 +726,19 @@ pub(crate) fn apply_format(
     let composer = composer.clone();
     window.defer(cx, move |window, cx| {
         composer.update(cx, |composer, cx| {
+            let value = composer.value(cx);
+            if let Some((wrapped, selection)) =
+                unwrap_selection(&value, composer.selection(cx), before, after)
+            {
+                let inside =
+                    value[wrapped.start + before.len()..wrapped.end - after.len()].to_string();
+                composer.input().update(cx, |input, cx| {
+                    input.set_selected_range(wrapped, cx);
+                    input.replace(inside, window, cx);
+                    input.set_selected_range(selection, cx);
+                });
+                return;
+            }
             composer.wrap_selection(before, after, window, cx);
             if after == "](url)" {
                 let end = composer.selection(cx).end;
@@ -2469,7 +2536,13 @@ impl ChannelView {
             .as_ref()
             .and_then(|model| model.posts.iter().find(|post| post.id == id))
             .is_none_or(|post| post.body == body);
-        if body.is_empty() || body.chars().count() > self.max_post_size() || unchanged {
+        if body.is_empty() {
+            // Emptying a message asks to delete it, as the webapp does.
+            self.cancel_edit(window, cx);
+            self.ask_delete(id, window, cx);
+            return;
+        }
+        if body.chars().count() > self.max_post_size() || unchanged {
             self.cancel_edit(window, cx);
             return;
         }
@@ -3004,7 +3077,21 @@ impl ChannelView {
                     .any(|post| &post.id == id && post.status != PostStatus::Sent)
             })
         });
-        let popup = delete_popup("post.delete", unsent, &channel, cx);
+        let replies = self
+            .deleting
+            .as_ref()
+            .and_then(|id| {
+                self.model
+                    .as_ref()?
+                    .posts
+                    .iter()
+                    .find(|post| &post.id == id)?
+                    .replies
+                    .as_ref()
+                    .map(|summary| summary.count)
+            })
+            .unwrap_or(0);
+        let popup = delete_popup("post.delete", unsent, &channel, replies, cx);
         let view = cx.entity().downgrade();
         alert_dialog("post.delete", &self.delete, popup, window, cx).on_ok(move |_, window, cx| {
             view.update(cx, |this, cx| {
@@ -4921,6 +5008,46 @@ mod tests {
             ]
         );
         assert!(values("ada").is_empty());
+    }
+
+    #[test]
+    fn a_format_shortcut_on_formatted_text_takes_the_format_off() {
+        // Markers just outside the selection.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 4..8, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        // Markers inside it.
+        assert_eq!(
+            unwrap_selection("a **bold** b", 2..10, "**", "**"),
+            Some((2..10, 2..6))
+        );
+        assert_eq!(
+            unwrap_selection("a `x` b", 3..4, "`", "`"),
+            Some((2..5, 2..3))
+        );
+        // Not wrapped, or a lone marker that belongs to a longer one.
+        assert_eq!(unwrap_selection("a bold b", 2..6, "**", "**"), None);
+        assert_eq!(unwrap_selection("``x``", 2..3, "`", "`"), None);
+        // A second Cmd+B on an empty pair takes it back out.
+        assert_eq!(
+            unwrap_selection("****", 2..2, "**", "**"),
+            Some((0..4, 0..0))
+        );
+        assert_eq!(unwrap_selection("**", 0..2, "**", "**"), None);
+    }
+
+    #[test]
+    fn deleting_a_root_names_the_replies_it_takes() {
+        assert_eq!(
+            delete_description("#town", 0),
+            "It is removed for everyone in #town. This cannot be undone."
+        );
+        assert_eq!(
+            delete_description("#town", 1),
+            "It is removed for everyone in #town, along with its reply. This cannot be undone."
+        );
+        assert!(delete_description("#town", 3).contains("along with its 3 replies"));
     }
 
     #[test]

@@ -180,6 +180,9 @@ pub enum RightPaneContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// The user confirmed deleting their sent reply; the pane already
+    /// dropped it.
+    Delete(SharedString),
     /// "Remove from channel" on a member in the channel info (#208).
     RemoveMember {
         user_id: SharedString,
@@ -922,6 +925,10 @@ impl RightPaneView {
         let Some(thread) = self.thread_mut() else {
             return;
         };
+        let sent = thread
+            .replies
+            .iter()
+            .any(|post| post.id == id && post.status == PostStatus::Sent);
         thread.replies.retain(|post| post.id != id);
         if self
             .editing
@@ -932,7 +939,11 @@ impl RightPaneView {
         }
         let content = self.content.clone();
         self.set_content(content, cx);
-        cx.emit(RightPaneEvent::Discard(id));
+        cx.emit(if sent {
+            RightPaneEvent::Delete(id)
+        } else {
+            RightPaneEvent::Discard(id)
+        });
     }
 
     /// The connection went down or came back: waiting replies read "Will
@@ -945,7 +956,8 @@ impl RightPaneView {
         }
     }
 
-    /// Opens "Discard this message?" for a reply waiting to send.
+    /// Opens "Discard this message?" for a reply waiting to send, or
+    /// "Delete this message?" for one sent.
     fn ask_discard(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.discarding = Some(id);
         self.discard.open(window, cx);
@@ -959,11 +971,14 @@ impl RightPaneView {
         }
     }
 
-    /// Turns a reply waiting to send into a composer holding its text, as
-    /// in the channel (#195). Enter saves, Escape cancels.
+    /// Turns the user's reply, sent or waiting to send, into a composer
+    /// holding its text, as in the channel (#117, #195). Enter saves,
+    /// Escape cancels.
     fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(post) = self.reply_post(&id).filter(|post| {
-            post.mine && post.kind == PostKind::Regular && waiting_to_send(post, self.away)
+            post.mine
+                && post.kind == PostKind::Regular
+                && (post.status == PostStatus::Sent || waiting_to_send(post, self.away))
         }) else {
             return;
         };
@@ -1004,8 +1019,8 @@ impl RightPaneView {
         }
     }
 
-    /// Keeps the new text and tells sync; an unchanged or emptied body just
-    /// closes the editor, since discarding has its own confirmation.
+    /// Keeps the new text and tells sync; an unchanged body just closes the
+    /// editor and an emptied one asks to delete.
     fn save_edit(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = self.editing.as_ref() else {
             return;
@@ -1013,12 +1028,25 @@ impl RightPaneView {
         let id = editing.post.clone();
         let body: SharedString = text.trim().to_string().into();
         let unchanged = self.reply_post(&id).is_none_or(|post| post.body == body);
-        if body.is_empty() || unchanged {
+        if body.is_empty() {
+            // Emptying a message asks to delete it, as the webapp does.
+            self.cancel_edit(window, cx);
+            self.ask_discard(id, window, cx);
+            return;
+        }
+        if unchanged {
             self.cancel_edit(window, cx);
             return;
         }
         // A waiting send just goes with the new text, without "(edited)".
-        self.mutate_reply(&id, |post| post.body = body.clone(), cx);
+        self.mutate_reply(
+            &id,
+            |post| {
+                post.body = body.clone();
+                post.edited = post.status == PostStatus::Sent;
+            },
+            cx,
+        );
         cx.emit(RightPaneEvent::SaveEdit {
             post: id,
             text: body,
@@ -1027,7 +1055,18 @@ impl RightPaneView {
     }
 
     fn discard_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popup = delete_popup("thread.discard", true, "the thread", cx);
+        let thread = match self.content.as_ref() {
+            Some(RightPaneContent::Thread(thread)) => Some(thread),
+            _ => None,
+        };
+        let unsent = self.discarding.as_ref().is_none_or(|id| {
+            self.reply_post(id)
+                .is_none_or(|post| post.status != PostStatus::Sent)
+        });
+        let place: SharedString = thread
+            .map(|thread| format!("#{}", thread.channel_name).into())
+            .unwrap_or_else(|| "the channel".into());
+        let popup = delete_popup("thread.discard", unsent, &place, 0, cx);
         let view = cx.entity().downgrade();
         alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
             view.update(cx, |this, cx| {
@@ -1479,6 +1518,66 @@ impl RightPaneView {
         cx.notify();
     }
 
+    /// The post on thread row `row`: the root, or a reply after the
+    /// divider.
+    fn row_post(&self, row: usize) -> Option<&Post> {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return None;
+        };
+        match row {
+            0 => Some(&thread.root),
+            row => thread.replies.get(row.checked_sub(THREAD_HEAD)?),
+        }
+    }
+
+    /// Single keys on the selected row, as in the channel (#107): R
+    /// replies, E edits and Delete removes the user's own reply, P pins, S
+    /// saves and U marks unread.
+    fn selection_key(
+        &mut self,
+        keystroke: &gpui_kit::Keystroke,
+        selected: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.platform || modifiers.alt {
+            return false;
+        }
+        let Some(row) = selected else {
+            return false;
+        };
+        let Some(post) = self.row_post(row).cloned() else {
+            return false;
+        };
+        let reply = row >= THREAD_HEAD;
+        let own = reply && post.mine && post.kind == PostKind::Regular;
+        let sent = post.status == PostStatus::Sent;
+        let id = post.id.clone();
+        match keystroke.key.as_str() {
+            "r" => self.select_row(None, window, cx),
+            "e" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.selection = None;
+                self.start_edit(id, window, cx);
+            }
+            "delete" | "backspace" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.ask_discard(id, window, cx)
+            }
+            "p" if sent => cx.emit(RightPaneEvent::SetPinned {
+                post: id,
+                pinned: !post.pinned,
+            }),
+            "s" if sent => cx.emit(RightPaneEvent::SetSaved {
+                post: id,
+                saved: !post.saved,
+            }),
+            "u" if sent => cx.emit(RightPaneEvent::MarkUnread(id)),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Selects the newest reply, or the root when there is none.
     fn select_newest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.thread_rows();
@@ -1532,6 +1631,7 @@ impl RightPaneView {
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
         away: bool,
+        reply: bool,
     ) -> Vec<MenuItem> {
         let body = post.body.clone();
         let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
@@ -1647,6 +1747,31 @@ impl RightPaneView {
                     let id = retry_id.clone();
                     retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
                 }),
+            );
+        }
+        // The user's own sent replies are edited and deleted here, as in
+        // the channel (#117, #118); the root is the channel's to change.
+        if reply && post.mine && post.kind == PostKind::Regular && post.status == PostStatus::Sent {
+            let (edit_view, edit_id) = (view.clone(), post.id.clone());
+            let (delete_view, delete_id) = (view.clone(), post.id.clone());
+            items.push(MenuItem::separator());
+            items.push(MenuItem::new("thread.context.edit", "Edit").on_click(
+                move |_, window, cx| {
+                    edit_view
+                        .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                        .ok();
+                },
+            ));
+            items.push(
+                MenuItem::new("thread.context.delete", "Delete\u{2026}").on_click(
+                    move |_, window, cx| {
+                        delete_view
+                            .update(cx, |this, cx| {
+                                this.ask_discard(delete_id.clone(), window, cx)
+                            })
+                            .ok();
+                    },
+                ),
             );
         }
         let (edit_view, edit_id) = (view.clone(), post.id.clone());
@@ -1947,7 +2072,7 @@ impl RightPaneView {
             row = row.header_child(marker);
         }
         // Right-click selects the row and opens its menu (design-42).
-        let items = Self::thread_items_for(view, post, away);
+        let items = Self::thread_items_for(view, post, away, !root);
         let menu_view = view.clone();
         div()
             .on_mouse_down(
@@ -2083,6 +2208,15 @@ impl RightPaneView {
                 move |index, window, cx| {
                     view.update(cx, |this, cx| this.select_row(index, window, cx))
                         .ok();
+                }
+            })
+            .on_key({
+                let view = cx.entity().downgrade();
+                move |event, selected, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.selection_key(&event.keystroke, selected, window, cx)
+                    })
+                    .unwrap_or(false)
                 }
             });
         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
@@ -3286,6 +3420,146 @@ mod tests {
             "at the root: nothing more to ask"
         );
         assert!(cx.debug_bounds("right-pane.older").is_none());
+    }
+
+    /// #107: single keys act on the selected thread row as in the channel.
+    #[gpui_kit::test]
+    fn single_keys_act_on_the_selected_reply(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: post("root"),
+            replies: vec![Post {
+                mine: true,
+                status: PostStatus::Sent,
+                ..post("r1")
+            }],
+            following: true,
+            reply_count: 1,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SetPinned { .. }
+                        | RightPaneEvent::SetSaved { .. }
+                        | RightPaneEvent::MarkUnread(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let key = |k: &'static str| gpui_kit::Keystroke::parse(k).unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                let reply = Some(THREAD_HEAD);
+                assert!(view.selection_key(&key("p"), reply, window, cx));
+                assert!(view.selection_key(&key("s"), reply, window, cx));
+                assert!(view.selection_key(&key("u"), Some(0), window, cx));
+                // Someone else's root is not the user's to edit; a modifier
+                // leaves the key to the app.
+                assert!(!view.selection_key(&key("e"), Some(0), window, cx));
+                assert!(!view.selection_key(&key("ctrl-p"), reply, window, cx));
+                assert!(view.selection_key(&key("e"), reply, window, cx));
+                assert!(view.editing.is_some());
+                assert_eq!(view.selection, None);
+            })
+        });
+        let events = events.borrow();
+        assert!(
+            matches!(&events[0], RightPaneEvent::SetPinned { post, pinned: true } if post == "r1")
+        );
+        assert!(
+            matches!(&events[1], RightPaneEvent::SetSaved { post, saved: true } if post == "r1")
+        );
+        assert!(matches!(&events[2], RightPaneEvent::MarkUnread(post) if post == "root"));
+        assert_eq!(events.len(), 3);
+    }
+
+    /// #117, #118: the user's sent reply is edited in place, marked
+    /// edited, and emptying it asks to delete it for everyone.
+    #[gpui_kit::test]
+    fn a_sent_reply_is_edited_or_deleted(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let mine = Post {
+            mine: true,
+            status: PostStatus::Sent,
+            body: "Shipping today.".into(),
+            ..post("r1")
+        };
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: Post {
+                mine: true,
+                ..post("root")
+            },
+            replies: vec![mine],
+            following: true,
+            reply_count: 1,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SaveEdit { .. }
+                        | RightPaneEvent::Delete(_)
+                        | RightPaneEvent::Discard(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                // The root is the channel's to edit; the reply is the pane's.
+                view.start_edit("root".into(), window, cx);
+                assert!(view.editing.is_none());
+                view.start_edit("r1".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Shipping tomorrow.".into(), window, cx);
+                let reply = view.reply_post(&"r1".into()).unwrap();
+                assert_eq!(reply.body.as_ref(), "Shipping tomorrow.");
+                assert!(reply.edited);
+
+                view.start_edit("r1".into(), window, cx);
+                view.save_edit("  ".into(), window, cx);
+                assert!(view.editing.is_none());
+                assert_eq!(view.discarding.as_deref(), Some("r1"));
+                let id = view.discarding.take().unwrap();
+                view.discard(id, cx);
+                assert!(view.reply_post(&"r1".into()).is_none());
+            })
+        });
+        let events = events.borrow();
+        assert!(matches!(&events[0], RightPaneEvent::SaveEdit { post, .. } if post == "r1"));
+        assert!(matches!(&events[1], RightPaneEvent::Delete(post) if post == "r1"));
+        assert_eq!(events.len(), 2);
     }
 
     /// #195: a reply queued while offline is edited in place or discarded

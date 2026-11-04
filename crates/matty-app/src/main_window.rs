@@ -2720,6 +2720,13 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::Delete(post) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::DeletePost {
+                        post_id: post.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::Discard(post) => {
                 if let Some(live) = &self.live {
                     live.send(matty_sync::Command::Discard {
