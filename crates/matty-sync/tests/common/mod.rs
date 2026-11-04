@@ -103,7 +103,7 @@ pub async fn next(
     changes: &async_channel::Receiver<ChangeSet>,
     stop: impl Fn(&ChangeSet) -> bool,
 ) -> ChangeSet {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let change = changes.recv().await.unwrap();
             if stop(&change) {

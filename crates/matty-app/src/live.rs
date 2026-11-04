@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
-use matty_sync::{ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads};
+use matty_sync::{
+    ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads, UploadState,
+};
 
 use crate::channel::{ChannelModel, Post};
 use crate::login::{SignInMethods, SsoProvider};
@@ -51,6 +53,36 @@ pub struct Live {
     ready: Option<String>,
     /// The search on screen and its results once they come.
     search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The composer's files, by the tray's id: where each goes and its
+    /// server id once up.
+    uploads: HashMap<String, UploadJob>,
+    /// Image files' thumbnails by file id, and those asked for.
+    thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
+    asked_thumbnails: std::collections::HashSet<String>,
+}
+
+/// One tray file on its way to the server.
+#[derive(Clone, Debug)]
+pub struct UploadJob {
+    pub channel_id: String,
+    pub name: String,
+    pub source: crate::attachments::UploadSource,
+    file_id: Option<String>,
+}
+
+impl UploadJob {
+    pub fn new(
+        channel_id: impl Into<String>,
+        name: impl Into<String>,
+        source: crate::attachments::UploadSource,
+    ) -> Self {
+        Self {
+            channel_id: channel_id.into(),
+            name: name.into(),
+            source,
+            file_id: None,
+        }
+    }
 }
 
 /// How long a typing notice lasts without another.
@@ -95,6 +127,10 @@ pub struct Update {
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
+    /// A file saved to the download folder, or the failure.
+    pub download: Option<matty_sync::DownloadState>,
+    /// A tray file's progress, by the tray's id.
+    pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -171,6 +207,34 @@ pub fn notify_props(
     ])
 }
 
+/// What an image's bytes are. The server's type is a fallback only: it
+/// labels every thumbnail `image/jpeg`, even one it kept as PNG.
+fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
+    use gpui_kit::ImageFormat;
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
+        [0xFF, 0xD8, 0xFF, ..] => Some(ImageFormat::Jpeg),
+        [b'G', b'I', b'F', b'8', ..] => Some(ImageFormat::Gif),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some(ImageFormat::Webp),
+        [b'B', b'M', ..] => Some(ImageFormat::Bmp),
+        _ => ImageFormat::from_mime_type(content_type),
+    }
+}
+
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
 /// the order changed.
@@ -215,7 +279,10 @@ impl Live {
         path: PathBuf,
         account: &SavedAccount,
     ) -> std::io::Result<(Self, async_channel::Receiver<ChangeSet>)> {
-        let sync = matty_sync::spawn_at(path)?;
+        let media = url::Url::parse(&account.server)
+            .ok()
+            .and_then(|server| matty_sync::media_dir(&server, &account.user_id));
+        let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
         Ok((
             Self {
@@ -237,6 +304,9 @@ impl Live {
                 typing: Vec::new(),
                 ready: None,
                 search: None,
+                uploads: HashMap::new(),
+                thumbnails: HashMap::new(),
+                asked_thumbnails: std::collections::HashSet::new(),
             },
             changes,
         ))
@@ -244,6 +314,33 @@ impl Live {
 
     pub fn send(&self, command: Command) {
         self.sync.send(command);
+    }
+
+    /// Remembers a tray file so its progress reaches the tray.
+    pub fn track_upload(&mut self, id: &str, job: UploadJob) {
+        self.uploads.insert(id.to_owned(), job);
+    }
+
+    /// The tray file `id`, to send again after a failure.
+    pub fn upload_job(&self, id: &str) -> Option<UploadJob> {
+        self.uploads.get(id).cloned()
+    }
+
+    /// Forgets a tray file and stops it if it is still sending.
+    pub fn cancel_upload(&mut self, id: &str) {
+        if self.uploads.remove(id).is_some() {
+            self.sync.send(Command::CancelUpload {
+                upload_id: id.to_owned(),
+            });
+        }
+    }
+
+    /// The server ids for the tray files a post carries; they leave the
+    /// tray with it.
+    pub fn take_file_ids(&mut self, ids: &[SharedString]) -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| self.uploads.remove(id.as_ref())?.file_id)
+            .collect()
     }
 
     /// Shows `row`'s channel: sync publishes its posts now and as they
@@ -276,6 +373,7 @@ impl Live {
         if model.loading {
             return None;
         }
+        self.ask_thumbnails(&model.posts);
         let update = self
             .shown
             .as_deref()
@@ -309,7 +407,39 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
+            if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
+                file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+            }
+        }
         Some(model)
+    }
+
+    /// The name a file was posted with, when its post is in the open
+    /// channel or the search results.
+    pub fn file_name(&self, file_id: &str) -> Option<String> {
+        let searched = self.search.as_ref().and_then(|(_, posts)| posts.as_deref());
+        self.posts
+            .as_deref()
+            .into_iter()
+            .chain(searched)
+            .flatten()
+            .flat_map(|post| &post.metadata.files)
+            .find(|file| file.id == file_id)
+            .map(|file| file.name.clone())
+    }
+
+    /// Asks sync for the thumbnails of image files not yet asked for.
+    fn ask_thumbnails(&mut self, posts: &[Post]) {
+        for file in posts.iter().flat_map(|post| &post.files) {
+            if crate::attachments::is_image(&file.name)
+                && self.asked_thumbnails.insert(file.id.to_string())
+            {
+                self.sync.send(Command::LoadThumbnail {
+                    file_id: file.id.to_string(),
+                });
+            }
+        }
     }
 
     /// The header, purpose and counts as far as they are known; until the
@@ -537,6 +667,44 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
+            ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
+            ChangeSet::Thumbnail {
+                file_id,
+                bytes,
+                content_type,
+            } => {
+                let Some(format) = image_format(bytes, content_type) else {
+                    return update;
+                };
+                let image = gpui_kit::Image::from_bytes(format, bytes.to_vec());
+                self.thumbnails.insert(file_id.clone(), Arc::new(image));
+                let shown = self.shown.as_ref().is_some_and(|posts| {
+                    posts
+                        .iter()
+                        .flat_map(|post| &post.files)
+                        .any(|file| file.id.as_ref() == file_id)
+                });
+                if shown {
+                    update.channel = self.channel_update();
+                }
+            }
+            ChangeSet::Upload { upload_id, state } => {
+                if let Some(job) = self.uploads.get_mut(upload_id) {
+                    use crate::attachments::AttachmentStatus;
+                    let status = match state {
+                        UploadState::Sending(fraction) => AttachmentStatus::Uploading(*fraction),
+                        UploadState::Done { file_id } => {
+                            job.file_id = Some(file_id.clone());
+                            AttachmentStatus::Ready
+                        }
+                        UploadState::Failed(error) => {
+                            tracing::warn!(%error, "upload failed");
+                            AttachmentStatus::Failed
+                        }
+                    };
+                    update.upload = Some((upload_id.as_str().into(), status));
+                }
+            }
             ChangeSet::Search { terms, posts } => {
                 if let Some((asked, results)) = self.search.as_mut()
                     && asked == terms
@@ -1293,5 +1461,113 @@ mod tests {
         let (muted, prefs) = notifications(&ChannelMember::default());
         assert!(!muted);
         assert_eq!(prefs, ChannelNotifications::default());
+    }
+
+    #[test]
+    fn upload_progress_reaches_the_tray_and_the_file_id_the_post() {
+        use crate::attachments::{AttachmentStatus, UploadSource};
+        let mut live = live();
+        let job = UploadJob::new("c1", "notes.txt", UploadSource::Path("notes.txt".into()));
+        live.track_upload("upload-1", job);
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Sending(0.5),
+        });
+        assert_eq!(
+            update.upload,
+            Some(("upload-1".into(), AttachmentStatus::Uploading(0.5)))
+        );
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Done {
+                file_id: "f1".into(),
+            },
+        });
+        assert_eq!(
+            update.upload,
+            Some(("upload-1".into(), AttachmentStatus::Ready))
+        );
+        assert_eq!(live.take_file_ids(&["upload-1".into()]), vec!["f1"]);
+        // It left with the post; a late report changes nothing.
+        let update = live.apply(&ChangeSet::Upload {
+            upload_id: "upload-1".into(),
+            state: UploadState::Failed("gone".into()),
+        });
+        assert_eq!(update.upload, None);
+    }
+
+    #[test]
+    fn a_removed_upload_is_forgotten() {
+        use crate::attachments::UploadSource;
+        let mut live = live();
+        let job = UploadJob::new("c1", "notes.txt", UploadSource::Path("notes.txt".into()));
+        live.track_upload("upload-1", job);
+        live.cancel_upload("upload-1");
+        assert!(live.upload_job("upload-1").is_none());
+        assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
+    }
+
+    #[test]
+    fn a_thumbnail_fills_its_file_on_screen() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let mut post = matty_api::models::Post {
+            id: "p1".into(),
+            user_id: "ada".into(),
+            ..Default::default()
+        };
+        post.metadata.files.push(matty_api::models::FileInfo {
+            id: "f1".into(),
+            name: "menu.png".into(),
+            ..Default::default()
+        });
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        assert!(live.asked_thumbnails.contains("f1"));
+        let update = live.apply(&ChangeSet::Thumbnail {
+            file_id: "f1".into(),
+            bytes: Arc::from(&b"png"[..]),
+            content_type: "image/png".into(),
+        });
+        let Some(ChannelUpdate::Patch { updated, .. }) = update.channel else {
+            panic!("expected a patch, got {:?}", update.channel);
+        };
+        assert!(updated[0].files[0].preview.is_some());
+    }
+
+    #[test]
+    fn an_image_format_comes_from_its_bytes() {
+        use gpui_kit::ImageFormat;
+        let png = b"\x89PNG\r\n\x1a\n";
+        assert_eq!(image_format(png, "image/jpeg"), Some(ImageFormat::Png));
+        assert_eq!(
+            image_format(&[0xFF, 0xD8, 0xFF, 0xE0], "image/png"),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(image_format(b"??", "image/gif"), Some(ImageFormat::Gif));
+        assert_eq!(image_format(b"??", "text/plain"), None);
+    }
+
+    #[test]
+    fn a_file_on_screen_has_its_posted_name() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let mut post = matty_api::models::Post {
+            id: "p1".into(),
+            ..Default::default()
+        };
+        post.metadata.files.push(matty_api::models::FileInfo {
+            id: "f1".into(),
+            name: "notes.pdf".into(),
+            ..Default::default()
+        });
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        assert_eq!(live.file_name("f1").as_deref(), Some("notes.pdf"));
+        assert_eq!(live.file_name("f2"), None);
     }
 }

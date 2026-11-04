@@ -67,6 +67,21 @@ pub(crate) enum Loaded {
         channels: Vec<Channel>,
         members: std::collections::HashMap<String, i64>,
     },
+    /// An upload's progress, file id or failure.
+    Upload {
+        upload_id: String,
+        state: crate::change::UploadState,
+    },
+    /// A file saved to the download folder, or the failure.
+    Download {
+        file_id: String,
+        state: crate::change::DownloadState,
+    },
+    /// A file's thumbnail from the server; `None` when it has none.
+    Thumbnail {
+        file_id: String,
+        image: Option<(Vec<u8>, String)>,
+    },
     /// Search results, best first.
     Search {
         terms: String,
