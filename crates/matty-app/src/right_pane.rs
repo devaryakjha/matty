@@ -198,6 +198,11 @@ impl RightPaneView {
             state.set_submit_on_enter(send_on == SendKey::Enter);
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
+                if let Some(composer) = keys.upgrade().map(|view| view.read(cx).composer.clone())
+                    && crate::channel::apply_format(&composer, keystroke, window, cx)
+                {
+                    return true;
+                }
                 if keystroke.key == "tab" && keystroke.modifiers.shift {
                     // Shift+Tab leaves the composer for keyboard selection of
                     // the thread's rows, as in the channel (PLAN §4.2).
