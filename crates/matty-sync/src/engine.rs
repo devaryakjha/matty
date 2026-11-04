@@ -307,6 +307,15 @@ pub enum Command {
         /// On.
         on: bool,
     },
+    /// Saves account preferences Preferences mirrors, such as
+    /// `display_settings/message_display` (#156) or
+    /// `advanced_settings/send_on_ctrl_enter` (#157), as the user's.
+    /// [`ChangeSet::AccountPreferences`](crate::ChangeSet::AccountPreferences)
+    /// answers with every such preference.
+    SetPreferences {
+        /// Category, name and value of each; the user id is filled in.
+        preferences: Vec<Preference>,
+    },
     /// Moves a channel into or out of the team's Favorites, by the
     /// `favorite_channel` preference the server turns into the move.
     SetFavorite {
@@ -454,6 +463,10 @@ impl std::fmt::Debug for Command {
             Self::SetCollapsedThreads { on } => f
                 .debug_struct("SetCollapsedThreads")
                 .field("on", on)
+                .finish(),
+            Self::SetPreferences { preferences } => f
+                .debug_struct("SetPreferences")
+                .field("preferences", preferences)
                 .finish(),
             Self::SetFavorite {
                 channel_id,
@@ -1279,6 +1292,20 @@ impl Engine {
                         sidebar::upsert_preferences(&tx, std::slice::from_ref(&preference))?;
                         dirty.preferences = true;
                         writes.push(Write::Preferences(vec![preference]));
+                    }
+                }
+                Message::Command(Command::SetPreferences { preferences }) => {
+                    if let Some(me) = &self.me {
+                        let preferences: Vec<Preference> = preferences
+                            .into_iter()
+                            .map(|preference| Preference {
+                                user_id: me.clone(),
+                                ..preference
+                            })
+                            .collect();
+                        sidebar::upsert_preferences(&tx, &preferences)?;
+                        dirty.preferences = true;
+                        writes.push(Write::Preferences(preferences));
                     }
                 }
                 Message::Command(Command::SetFavorite {
@@ -2262,6 +2289,11 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
                 dirty.direct.push(ChangeSet::Preferences);
+                dirty
+                    .direct
+                    .push(ChangeSet::AccountPreferences(account_preferences(
+                        &preferences,
+                    )));
                 dirty.unreads = true;
                 let open: Vec<String> = self.open_channels.iter().cloned().collect();
                 for channel_id in open {
@@ -3064,11 +3096,16 @@ impl Engine {
     /// changes every count and the channel windows.
     fn preferences_changed(&mut self, dirty: &mut Dirty) {
         dirty.direct.push(ChangeSet::Preferences);
-        let Some(capabilities) = &self.capabilities else {
-            return;
-        };
         let conn = self.store.conn();
         let Ok(preferences) = all_preferences(conn) else {
+            return;
+        };
+        dirty
+            .direct
+            .push(ChangeSet::AccountPreferences(account_preferences(
+                &preferences,
+            )));
+        let Some(capabilities) = &self.capabilities else {
             return;
         };
         let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
@@ -3201,6 +3238,19 @@ fn cached_link(db: &Db, query: &crate::LinkQuery) -> Result<Option<crate::LinkAn
 
 /// Whether link previews show: the server's `EnableLinkPreviews`, then the
 /// user's `display_settings/link_previews`, on unless set to "false".
+/// The categories of account preferences Preferences mirrors (#156, #157).
+const ACCOUNT_CATEGORIES: [&str; 2] = ["display_settings", "advanced_settings"];
+
+/// The user's display and advanced settings, for
+/// [`ChangeSet::AccountPreferences`].
+pub(crate) fn account_preferences(preferences: &[Preference]) -> Arc<[Preference]> {
+    preferences
+        .iter()
+        .filter(|p| ACCOUNT_CATEGORIES.contains(&p.category.as_str()))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn link_previews(enabled: bool, preferences: &[Preference]) -> bool {
     enabled
         && !preferences.iter().any(|p| {

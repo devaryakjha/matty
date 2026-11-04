@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use matty_api::ServerCapabilities;
-use matty_api::models::{Channel, ChannelMember, ChannelStats, Draft, Post, Status, User};
+use matty_api::models::{
+    Channel, ChannelMember, ChannelStats, Draft, Post, Preference, Status, User,
+};
 use matty_api::ws::ConnectionState;
 use matty_store::outbox::Outgoing;
 use matty_store::posts::ThreadSummary;
@@ -241,6 +243,11 @@ pub enum ChangeSet {
     Connection(Connection),
     /// The user's preferences changed.
     Preferences,
+    /// The user's `display_settings` and `advanced_settings` preferences,
+    /// at sign-in and whenever they change, for Preferences to mirror:
+    /// message display and name format (#156), send on Ctrl+Enter (#157).
+    /// A preference the user never set is missing.
+    AccountPreferences(Arc<[Preference]>),
     /// Whether collapsed reply threads are on for the user, at sign-in and
     /// whenever the preferences or the server's config change.
     CollapsedThreads(bool),

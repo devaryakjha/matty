@@ -14,6 +14,7 @@ use crate::attachments::PostFile;
 use crate::channel::{
     ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostKind, PostReaction, PostStatus,
 };
+use crate::settings::NameFormat;
 use crate::sidebar::ChannelRow;
 
 /// Posts by one person within this many milliseconds share a header.
@@ -33,13 +34,29 @@ pub struct Viewer<'a> {
     /// reply footer and replies stay in their thread; off, replies show in
     /// the channel under a "Commented on" line.
     pub collapsed_threads: bool,
+    /// How people's names read (#156).
+    pub names: NameFormat,
 }
 
-/// The name Mattermost shows by default: nickname, then full name, then
-/// username.
+/// The name Matty shows when the user has not chosen a format: nickname,
+/// then full name, then username.
 pub fn display_name(user: &User) -> String {
-    let full = format!("{} {}", user.first_name, user.last_name);
-    [user.nickname.trim(), full.trim()]
+    display_name_as(user, NameFormat::default())
+}
+
+/// `user`'s name in `format`, as the web app's "Teammate name display":
+/// a name that is not set falls back to the full name, then the username.
+pub fn display_name_as(user: &User, format: NameFormat) -> String {
+    let full = format!("{} {}", user.first_name.trim(), user.last_name.trim());
+    let nickname = match format {
+        NameFormat::NicknameFullName => user.nickname.trim(),
+        NameFormat::Username | NameFormat::FullName => "",
+    };
+    let full = match format {
+        NameFormat::Username => "",
+        NameFormat::NicknameFullName | NameFormat::FullName => full.trim(),
+    };
+    [nickname, full]
         .into_iter()
         .find(|name| !name.is_empty())
         .unwrap_or(&user.username)
@@ -83,7 +100,7 @@ pub fn channel_model(
         }
         let stamp = when(post.create_at, viewer.zone, today);
         let day = stamp.1.clone();
-        if let Some(entry) = Activity::of(post, users, viewer.user_id) {
+        if let Some(entry) = Activity::of(post, users, viewer) {
             let last = rows.last_mut().filter(|last| {
                 last.kind == (PostKind::System { activity: true })
                     && last.day == day
@@ -108,7 +125,7 @@ pub fn channel_model(
             // A system row breaks the run of one author's posts.
             previous = None;
             thread = None;
-            if let Some(text) = system_text(post, users, viewer.user_id) {
+            if let Some(text) = system_text(post, users, viewer) {
                 rows.push(system_post(post, text, false, stamp));
             }
             continue;
@@ -119,7 +136,11 @@ pub fn channel_model(
             post.id.as_str()
         };
         let reply_to = (post.is_reply() && thread != Some(root_id))
-            .then(|| known.get(root_id).map(|root| reply_context(root, users)))
+            .then(|| {
+                known
+                    .get(root_id)
+                    .map(|root| reply_context(root, users, viewer))
+            })
             .flatten();
         thread = Some(root_id);
         // A reply under its own "Commented on" line starts a new run.
@@ -157,10 +178,14 @@ pub fn channel_model(
 }
 
 /// What a reply answers: its root's author and words.
-fn reply_context(root: &ApiPost, users: &HashMap<String, User>) -> crate::channel::ReplyContext {
+fn reply_context(
+    root: &ApiPost,
+    users: &HashMap<String, User>,
+    viewer: &Viewer<'_>,
+) -> crate::channel::ReplyContext {
     let author = users
         .get(&root.user_id)
-        .map(display_name)
+        .map(|user| display_name_as(user, viewer.names))
         .unwrap_or_else(|| "Someone".into());
     let words = crate::channel::plain_text(&root.message);
     let excerpt = words.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -194,7 +219,7 @@ fn reply_summary(
         last_day,
         participants: people
             .iter()
-            .map(|user| display_name(user).into())
+            .map(|user| display_name_as(user, viewer.names).into())
             .collect(),
         participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
         following: root.is_following.unwrap_or(false),
@@ -213,7 +238,7 @@ fn display_post(
 ) -> Post {
     let author = users
         .get(&post.user_id)
-        .map(display_name)
+        .map(|user| display_name_as(user, viewer.names))
         .unwrap_or_else(|| "Someone".into());
     let kind = if is_regular(&post.kind) {
         PostKind::Regular
@@ -223,7 +248,7 @@ fn display_post(
         PostKind::Unsupported(post.kind.clone().into())
     };
     let body = match kind {
-        PostKind::System { .. } => system_text(post, users, viewer.user_id)
+        PostKind::System { .. } => system_text(post, users, viewer)
             .unwrap_or_else(|| post.message.clone())
             .into(),
         _ => post.message.clone().into(),
@@ -237,7 +262,7 @@ fn display_post(
         day,
         date,
         body,
-        reactions: reactions(post, viewer.user_id, users),
+        reactions: reactions(post, viewer.user_id, users, viewer.names),
         mentions_me: mention.mentioned(&post.message),
         edited: post.edit_at != 0,
         continues,
@@ -328,12 +353,12 @@ fn prop<'a>(post: &'a ApiPost, key: &str) -> &'a str {
 
 /// How a system message names someone: "You" for the viewer, then their
 /// display name, then the username the post carries, then "Someone".
-fn person(id: &str, username: &str, users: &HashMap<String, User>, me: &str) -> String {
-    if !id.is_empty() && id == me {
+fn person(id: &str, username: &str, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> String {
+    if !id.is_empty() && id == viewer.user_id {
         return "You".into();
     }
     match users.get(id) {
-        Some(user) => display_name(user),
+        Some(user) => display_name_as(user, viewer.names),
         None if !username.is_empty() => format!("@{username}"),
         None => "Someone".into(),
     }
@@ -400,15 +425,15 @@ struct Activity {
 }
 
 impl Activity {
-    fn of(post: &ApiPost, users: &HashMap<String, User>, me: &str) -> Option<Self> {
+    fn of(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Option<Self> {
         let verb = Verb::of(&post.kind)?;
         let name = |id_key: &str, name_key: &str, fallback_id: &str| {
             let id = Some(prop(post, id_key))
                 .filter(|id| !id.is_empty())
                 .unwrap_or(fallback_id);
-            person(id, prop(post, name_key), users, me)
+            person(id, prop(post, name_key), users, viewer)
         };
-        let actor = || person(&post.user_id, prop(post, "username"), users, me);
+        let actor = || person(&post.user_id, prop(post, "username"), users, viewer);
         Some(match verb {
             Verb::AddToChannel | Verb::AddGuestToChannel | Verb::AddToTeam => Self {
                 verb,
@@ -476,11 +501,15 @@ fn activity_text(entries: &[Activity]) -> String {
 /// The sentence for a system post other than a join or leave, in the web
 /// app's wording; the server's own text for types Matty does not word
 /// itself. `None` when there is nothing to say.
-fn system_text(post: &ApiPost, users: &HashMap<String, User>, me: &str) -> Option<String> {
-    if let Some(activity) = Activity::of(post, users, me) {
+fn system_text(
+    post: &ApiPost,
+    users: &HashMap<String, User>,
+    viewer: &Viewer<'_>,
+) -> Option<String> {
+    if let Some(activity) = Activity::of(post, users, viewer) {
         return Some(activity_text(&[activity]));
     }
-    let actor = || person(&post.user_id, prop(post, "username"), users, me);
+    let actor = || person(&post.user_id, prop(post, "username"), users, viewer);
     let server_text = || Some(post.message.trim().to_string()).filter(|text| !text.is_empty());
     let change = |what: &str, old: &str, new: &str| {
         let (old, new) = (prop(post, old).trim(), prop(post, new).trim());
@@ -541,7 +570,7 @@ pub fn thread_row(
         .collect();
     let participants = people
         .iter()
-        .map(|user| display_name(user).into())
+        .map(|user| display_name_as(user, viewer.names).into())
         .collect();
     let participant_ids = people.iter().map(|user| user.id.clone().into()).collect();
     crate::threads::ThreadRow {
@@ -595,7 +624,12 @@ fn when(
 }
 
 /// Reaction chips in the order each emoji was first used.
-fn reactions(post: &ApiPost, me: &str, users: &HashMap<String, User>) -> Vec<PostReaction> {
+fn reactions(
+    post: &ApiPost,
+    me: &str,
+    users: &HashMap<String, User>,
+    names: NameFormat,
+) -> Vec<PostReaction> {
     let mut chips: Vec<(String, PostReaction)> = Vec::new();
     for reaction in &post.metadata.reactions {
         // Others by name for the tooltip; people not loaded yet are left
@@ -603,7 +637,7 @@ fn reactions(post: &ApiPost, me: &str, users: &HashMap<String, User>) -> Vec<Pos
         let name = (reaction.user_id != me)
             .then(|| users.get(&reaction.user_id))
             .flatten()
-            .map(|user| SharedString::from(display_name(user)));
+            .map(|user| SharedString::from(display_name_as(user, names)));
         match chips
             .iter_mut()
             .find(|(name, _)| *name == reaction.emoji_name)
@@ -671,6 +705,7 @@ mod tests {
             now: Timestamp::from_second(1_793_793_600).unwrap(),
             link_previews: true,
             collapsed_threads: false,
+            names: NameFormat::default(),
         }
     }
 
@@ -802,7 +837,7 @@ mod tests {
                 ..User::default()
             },
         )]);
-        let chips = reactions(&p, "me", &users);
+        let chips = reactions(&p, "me", &users, NameFormat::default());
         assert_eq!(chips.len(), 2);
         assert_eq!(
             (chips[0].emoji.as_ref(), chips[0].count, chips[0].mine),
@@ -1229,5 +1264,33 @@ mod tests {
         assert_eq!(emoji_name("👍"), "+1");
         assert_eq!(emoji_name(":partyparrot:"), "partyparrot");
         assert_eq!(emoji_name("tada"), "tada");
+    }
+
+    #[test]
+    fn names_follow_the_chosen_format() {
+        let user = User {
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            last_name: "Lovelace".into(),
+            nickname: "Countess".into(),
+            ..User::default()
+        };
+        assert_eq!(display_name_as(&user, NameFormat::Username), "ada");
+        assert_eq!(display_name_as(&user, NameFormat::FullName), "Ada Lovelace");
+        assert_eq!(
+            display_name_as(&user, NameFormat::NicknameFullName),
+            "Countess"
+        );
+        let bare = User {
+            username: "sam".into(),
+            ..User::default()
+        };
+        for format in [
+            NameFormat::Username,
+            NameFormat::FullName,
+            NameFormat::NicknameFullName,
+        ] {
+            assert_eq!(display_name_as(&bare, format), "sam");
+        }
     }
 }

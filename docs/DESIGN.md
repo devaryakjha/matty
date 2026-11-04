@@ -270,13 +270,23 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `attachment_group` directly above the composer card (`design-23`):
   gpuicn `Attachment` thumbnails for images and cards with a type icon,
   the name and "PDF · 2.4 MB" for anything else. Files arrive from the
-  Attach button or Cmd+U (the platform file dialog), from dropping onto
-  the composer, which tints it `accent` while hovering, and from pasting
-  an image, which becomes "Pasted image.png". A chip shows "Uploading…
+  Attach button, Cmd+U or File > Upload files (the platform file dialog),
+  from dropping anywhere on the channel view or the thread pane, and from
+  pasting an image, which becomes "Pasted image.png". While files are
+  dragged over either, gpuicn's empty state covers it, dashed in `ring` on
+  `accent`: "Drop to upload to #general" over "Files go into the message
+  you are writing." (or "your reply"); the thread pane's drop goes to the
+  reply. A file over the server's `MaxFileSize` or past the tenth never
+  starts uploading: the tray says so in one `meta` line in `destructive`
+  with an icon ("demo.mov is 240 MB. Files must be under 100 MB.").
+  A chip shows "Uploading…
   60%" with a progress bar, then its meta line; a failed one turns
   `destructive`, says "Upload failed" and gets Retry. Each has a remove
   button. Send stays disabled while any file is uploading or failed, and
-  a post may be files alone; the tray clears on send.
+  a post may be files alone; the tray clears on send. Enter while files
+  upload queues the send: the Send button spins, a muted line says
+  "Sends when the uploads finish…", and the post goes when the last one
+  is up; a failure drops the queued send and says so.
 - **Files on posts and the lightbox** (PLAN §4.6 Files, gpuicn G8) put a
   post's files under its text as the same `Attachment` chips: image
   thumbnails in one row, then cards with the type icon, name and
@@ -337,19 +347,38 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   until the handle is two characters long, and the new channel opens at
   its empty state with the purpose as its line. Sync owns both on the
   server (PLAN §4.3).
-- **Preferences** is a dialog, not a window: sections under `label`
-  headings, joined toggle groups for theme (System, Light, Dark), text
-  size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a
-  one-line `meta` explanation. The clock applies to every time Matty
-  prints: post headers, gutter times, "Last reply", the Threads list
-  (`design-18`); 24-hour is the default. A compact message density waits
-  on gpuicn's `Message` growing one; Matty does not fake it with
-  continuation rows.
-  "Send message with" picks Enter (default; Shift+Enter for a new line) or
-  Ctrl+Enter, Cmd+Enter on macOS (Enter then starts a new line); the
-  modifier combination always sends, whichever is chosen, in the channel
-  composer and in thread replies (`design-30`).
-  Every change applies behind the dialog as it is made; the only button is
+- **Preferences** (#155) is a gpuicn `Drawer` from the window's right
+  edge, 760px wide or the window's width: a title, "Changes apply right
+  away and are saved for next time." and Done above a section list (a
+  gpuicn `Sidebar` with roving focus: Tab lands on the open section, Up and
+  Down move, Enter opens) and the open section's controls. gpuicn's
+  `Dialog` is fixed at 384px, too narrow for a list beside the controls;
+  the drawer is gpuicn's sheet and closes on Escape and the backdrop.
+  Sections: **General** (keep running when closed, open at login, the
+  download folder), **Appearance** (theme, text size, message display,
+  clock, names, reduce motion), **Messages** (send key, collapsed reply
+  threads where the server lets users choose), **Notifications** (the
+  user's `notify_props`) and **Advanced** (log detail, the logs folder).
+  Groups sit under `label` headings, with joined toggle groups for
+  choices and switches with a one-line `meta` explanation. A setting the
+  Mattermost account keeps ends with a cloud glyph and "Synced with your
+  Mattermost account": message display (`display_settings/
+  message_display`, `clean` or `compact`), clock (`use_military_time`),
+  names (`name_format`: nickname, full name or username, falling back as
+  the web app does), the send key (`advanced_settings/send_on_ctrl_enter`
+  and `code_block_ctrl_enter`), collapsed reply threads and every
+  notification setting. Those are mirrored into the settings file so they
+  apply before sync connects; a preference the account never set leaves
+  the local choice alone. The clock applies to every time Matty prints:
+  post headers, gutter times, "Last reply", the Threads list
+  (`design-18`); 24-hour is the default.
+  "Send messages with" picks Enter (default; Shift+Enter for a new line),
+  Ctrl+Enter (Cmd+Enter on macOS; Enter then starts a new line) or "Enter,
+  but not in code": inside a code block opened with ``` and not yet
+  closed, Enter starts a new line and the modifier sends. The modifier
+  combination always sends, whichever is chosen, in the channel composer
+  and in thread replies (`design-30`).
+  Every change applies behind the sheet as it is made; the only button is
   Done.
 - **Channel menu** (PLAN §3 M1 channel management): the channel name in
   the header is a gpuicn `Menu` trigger with a chevron: "Edit header…",
@@ -514,7 +543,7 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - **Motion** (DESIGN §1, PLAN §5 and §8): the connection banner slides open
   and closed over 200ms and a sidebar category's chevron turns from right to
   down over 150ms, both through gpuicn's `transition_value`, so the theme's
-  timing and the OS reduced-motion setting govern them. Preferences → Window
+  timing and the OS reduced-motion setting govern them. Preferences → Appearance
   gains "Reduce motion", which sets the theme's `motion.reduced` and snaps
   every gpuicn transition (drawers, switches, the sidebar) as well. Nothing
   in the message list moves (`design-54`).

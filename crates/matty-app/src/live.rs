@@ -65,6 +65,8 @@ pub struct Live {
     threads_on: Option<bool>,
     /// Whether link previews show (#187); until sync says, they do.
     link_previews: bool,
+    /// How people's names read (#156), from settings.
+    names: crate::settings::NameFormat,
     /// Not connected: an open channel with no posts may just not be saved
     /// here yet (#163).
     offline: bool,
@@ -170,6 +172,9 @@ pub struct Update {
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// The user's display and advanced settings from the server, for
+    /// Preferences to mirror (#156, #157).
+    pub account_preferences: Option<Arc<[matty_api::models::Preference]>>,
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
@@ -197,6 +202,8 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// The server's `MaxFileSize`, for the trays to check files against.
+    pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
@@ -464,6 +471,7 @@ impl Live {
                 threads_choice: None,
                 threads_on: None,
                 link_previews: true,
+                names: crate::settings::NameFormat::default(),
                 offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
@@ -589,6 +597,7 @@ impl Live {
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let mut model = crate::transcript::channel_model(
             row,
@@ -785,6 +794,26 @@ impl Live {
         }
     }
 
+    /// Names people in `names` from now on (#156): the views on screen
+    /// come back renamed.
+    pub fn set_names(&mut self, names: crate::settings::NameFormat) -> Update {
+        let mut update = Update::default();
+        if names == self.names {
+            return update;
+        }
+        self.names = names;
+        if self.posts.is_some() {
+            update.channel = self.channel_update();
+            update.profiles = Some(self.profiles());
+        }
+        update.thread = self.thread_model();
+        if self.thread_list.is_some() {
+            update.threads = Some(self.threads_model());
+        }
+        update.search = self.search_model();
+        update
+    }
+
     /// Whether a draft's link is worth asking the server about (#187).
     pub fn link_previews(&self) -> bool {
         self.link_previews
@@ -857,6 +886,7 @@ impl Live {
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let rows = threads
             .iter()
@@ -894,6 +924,7 @@ impl Live {
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -931,6 +962,7 @@ impl Live {
             now: jiff::Timestamp::now(),
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
         };
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
@@ -994,7 +1026,7 @@ impl Live {
         UserProfile {
             user_id: user.id.clone().into(),
             username: user.username.clone().into(),
-            display_name: crate::transcript::display_name(user).into(),
+            display_name: crate::transcript::display_name_as(user, self.names).into(),
             position: None,
             presence: self
                 .presence
@@ -1382,6 +1414,7 @@ impl Live {
             }
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);
+                update.max_file_size = Some(capabilities.max_file_size);
                 self.threads_choice = Some(matches!(
                     capabilities.collapsed_threads,
                     matty_api::capabilities::CollapsedThreads::DefaultOn
@@ -1397,6 +1430,9 @@ impl Live {
                 if changed && self.posts.is_some() {
                     update.channel = self.channel_update();
                 }
+            }
+            ChangeSet::AccountPreferences(preferences) => {
+                update.account_preferences = Some(preferences.clone());
             }
             ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
                 self.link_previews = *on;
