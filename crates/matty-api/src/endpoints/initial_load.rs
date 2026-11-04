@@ -206,6 +206,20 @@ impl Client {
         self.get(&format!("channels/{channel_id}")).await
     }
 
+    /// `GET teams/{team_id}/channels/name/{name}`: a channel by its URL
+    /// name, as channel links carry it. Archived channels count.
+    pub async fn channel_by_name(&self, team_id: &str, name: &str) -> Result<Channel, ApiError> {
+        let name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .collect();
+        self.get_query(
+            &format!("teams/{team_id}/channels/name/{name}"),
+            &[("include_deleted", "true".to_owned())],
+        )
+        .await
+    }
+
     /// `GET channels/{channel_id}/members/me`: the user's own membership.
     pub async fn my_channel_member(&self, channel_id: &str) -> Result<ChannelMember, ApiError> {
         self.get(&format!("channels/{channel_id}/members/me")).await

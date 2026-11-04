@@ -316,6 +316,33 @@ fn sidebar_snapshot_orders_categories_and_channels_and_names_dms() {
 }
 
 #[test]
+fn a_dm_row_carries_the_partners_names_for_the_name_format() {
+    let store = seeded();
+    let conn = store.conn();
+    let mut alice = user("u1", "alice");
+    alice.first_name = "Alice".into();
+    alice.last_name = "Liddell".into();
+    alice.nickname = "Al".into();
+    sidebar::upsert_users(conn, &[alice]).unwrap();
+    let sections = sidebar::sidebar_snapshot(conn, "t1", ME, UnreadMode::AllPosts).unwrap();
+    let dm = sections[2]
+        .channels
+        .iter()
+        .find(|c| c.dm_user_id.as_deref() == Some("u1"))
+        .unwrap();
+    // The stored name stays the username; the app formats from the parts.
+    assert_eq!(dm.display_name, "alice");
+    let person = dm.dm_user.as_ref().unwrap();
+    assert_eq!(person.id, "u1");
+    assert_eq!(person.username, "alice");
+    assert_eq!(person.first_name, "Alice");
+    assert_eq!(person.last_name, "Liddell");
+    assert_eq!(person.nickname, "Al");
+    // Channels other than direct messages carry no person.
+    assert!(sections[1].channels.iter().all(|c| c.dm_user.is_none()));
+}
+
+#[test]
 fn sidebar_snapshot_counts_per_crt_mode() {
     let store = seeded();
     let unread = |mode| {
@@ -453,4 +480,19 @@ fn a_category_reads_back_as_the_server_sent_it() {
         category("chan", "channels", &["town", "noisy", "old", "other"])
     );
     assert_eq!(sidebar::category(store.conn(), "nope").unwrap(), None);
+}
+
+#[test]
+fn links_find_channels_by_team_and_name_and_users_by_username() {
+    let store = seeded();
+    let conn = store.conn();
+    let town = sidebar::channel_by_name(conn, "t1", "town")
+        .unwrap()
+        .unwrap();
+    assert_eq!(town.id, "town");
+    assert_eq!(sidebar::channel_by_name(conn, "t2", "town").unwrap(), None);
+    assert_eq!(sidebar::channel_by_name(conn, "t1", "nope").unwrap(), None);
+    let alice = sidebar::user_by_username(conn, "Alice").unwrap().unwrap();
+    assert_eq!(alice.id, "u1");
+    assert_eq!(sidebar::user_by_username(conn, "carol").unwrap(), None);
 }
