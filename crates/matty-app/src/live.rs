@@ -808,6 +808,7 @@ impl Live {
             saved: &self.saved,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let listed: Vec<_> = posts
             .iter()
