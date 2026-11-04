@@ -214,6 +214,7 @@ pub(crate) fn edit_composer(
         });
         state
     });
+    crate::updater::watch_composer(&composer, cx);
     let focus = composer.clone();
     window.on_next_frame(move |window, cx| {
         focus.update(cx, |composer, cx| {
@@ -529,6 +530,9 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
+    /// The user may archive the channel or make it private: a channel or
+    /// system admin (#208). The server has the last word.
+    pub can_manage: bool,
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
@@ -822,6 +826,9 @@ pub enum ChannelEvent {
     /// The draft has this link; sync asks the server for its preview and
     /// the window hands it back through `set_link_preview`.
     PreviewLink(SharedString),
+    /// The composer's draft changed, after a pause in typing, on leaving
+    /// the channel or on sending; sync stores it (#114).
+    SaveDraft(crate::composer_draft::DraftSave),
     /// The user removed a file from the tray before sending.
     CancelUpload(SharedString),
     /// The user asked to upload a failed file again.
@@ -915,6 +922,10 @@ pub enum ChannelEvent {
     SetPurpose(SharedString),
     /// The user confirmed leaving the channel from its header menu.
     Leave,
+    /// "Archive channel" was confirmed (#208).
+    Archive,
+    /// "Convert to private channel" was confirmed (#208).
+    ConvertToPrivate,
     /// The user saved the channel's notification preferences; `muted`
     /// is the mute switch from the same dialog.
     SetNotifications {
@@ -960,6 +971,9 @@ pub struct ChannelView {
     notifications: Entity<NotificationsView>,
     add_members: Entity<AddMembersView>,
     leave: DialogHandle,
+    /// Confirmations for archiving the channel and making it private.
+    archive: DialogHandle,
+    convert: DialogHandle,
     /// The full emoji picker, in a popover on the composer's emoji button.
     picker: Entity<EmojiPickerState>,
     picker_open: bool,
@@ -1013,6 +1027,9 @@ pub struct ChannelView {
     me: SharedString,
     /// Characters in the composer, for the Send button and the counter.
     draft_len: usize,
+    /// Which channel's draft the composer holds, and what was saved of it.
+    draft: crate::composer_draft::ComposerDraft,
+    _draft_task: Option<gpui_kit::Task<()>>,
     /// Numbers the optimistic rows until sync assigns ids.
     pending_seq: usize,
     /// Set by the jump pill so the latest snapshot opens at the end.
@@ -1181,6 +1198,7 @@ impl ChannelView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let menu = cx.new(|cx| MenuState::new([], cx));
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
@@ -1220,13 +1238,18 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        crate::perf::composer_changed();
                         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
                         follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
-                        if this.draft_len > 0 {
-                            cx.emit(ChannelEvent::Typing { root: None });
+                        // A restored draft is not the user typing.
+                        if !this.draft.is_saved(&text) {
+                            this.schedule_draft_save(cx);
+                            if this.draft_len > 0 {
+                                cx.emit(ChannelEvent::Typing { root: None });
+                            }
                         }
                         cx.notify();
                     }
@@ -1260,6 +1283,8 @@ impl ChannelView {
             notifications,
             add_members,
             leave: DialogHandle::new(false),
+            archive: DialogHandle::new(false),
+            convert: DialogHandle::new(false),
             picker,
             picker_open: false,
             picker_target: None,
@@ -1286,6 +1311,8 @@ impl ChannelView {
             deleting: None,
             me: me.into(),
             draft_len: 0,
+            draft: Default::default(),
+            _draft_task: None,
             pending_seq: 0,
             open_at_end: false,
             composer_cap: px(320.),
@@ -1301,6 +1328,12 @@ impl ChannelView {
         self.model.as_ref()
     }
 
+    /// Puts the caret in the composer (Ctrl+Shift+L).
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx))
+    }
+
     /// Replaces the channel and resets the transcript to its end.
     pub fn set_model(
         &mut self,
@@ -1308,6 +1341,11 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::perf::channel_shown(
+            model.as_ref().map(|model| model.id.as_ref()),
+            model.as_ref().is_some_and(|model| model.loading),
+            model.as_ref().map_or(0, |model| model.posts.len()),
+        );
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         self.refresh_header_menu(model.as_ref(), cx);
         let count = self.rows.len();
@@ -1346,6 +1384,12 @@ impl ChannelView {
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(placeholder, window, cx);
         });
+        let key = model
+            .as_ref()
+            .map(|model| crate::composer_draft::DraftKey::channel(model.id.clone()));
+        if self.draft.key() != key.as_ref() {
+            self.switch_draft(key, window, cx);
+        }
         self.model = model;
         self.apply_pending_jump(cx);
         cx.notify();
@@ -1410,6 +1454,8 @@ impl ChannelView {
             .filter(|post| !post.mine && !matches!(post.kind, PostKind::System { .. }))
             .count();
         model.posts.extend(posts);
+        // Sync's first posts for a channel it had none of come as a patch.
+        crate::perf::channel_shown(Some(&model.id), model.loading, model.posts.len());
         let rows = model.rows();
         let before = self.rows.len();
         let added = rows.len().saturating_sub(before);
@@ -1737,6 +1783,7 @@ impl ChannelView {
         purpose: Option<SharedString>,
         members: usize,
         pinned: usize,
+        can_manage: bool,
         cx: &mut Context<Self>,
     ) {
         if let Some(model) = self.model.as_mut() {
@@ -1744,6 +1791,12 @@ impl ChannelView {
             model.purpose = purpose;
             model.members = members;
             model.pinned = pinned;
+            let menu_changed = model.can_manage != can_manage;
+            model.can_manage = can_manage;
+            if menu_changed {
+                let model = self.model.clone();
+                self.refresh_header_menu(model.as_ref(), cx);
+            }
             cx.notify();
         }
     }
@@ -1882,14 +1935,25 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.tray.uploads().iter().any(|upload| upload.id == id) {
+            // A file in another channel's draft.
+            if let Some(save) = crate::composer_draft::DraftBook::set_upload_status(id, status, cx)
+            {
+                cx.emit(ChannelEvent::SaveDraft(save));
+            }
+            return;
+        }
         if self.tray.set_status(id, status) {
             self.send_queued(window, cx);
+        } else if status == AttachmentStatus::Ready {
+            self.schedule_draft_save(cx);
         }
         cx.notify();
     }
 
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
+        self.schedule_draft_save(cx);
         cx.emit(ChannelEvent::CancelUpload(id.clone()));
         if due {
             self.send_queued(window, cx);
@@ -2028,6 +2092,54 @@ impl ChannelView {
         )
     }
 
+    /// Puts the composer on `key`'s draft, saving the one it leaves.
+    fn switch_draft(
+        &mut self,
+        key: Option<crate::composer_draft::DraftKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._draft_task = None;
+        let left = self
+            .draft
+            .switch(key, &self.composer, &mut self.tray, Some(window), cx);
+        if let Some(left) = left {
+            cx.emit(ChannelEvent::SaveDraft(left));
+        }
+        self.draft_len = self.composer.read(cx).value(cx).chars().count();
+        self.link = Default::default();
+        self._link_task = None;
+    }
+
+    /// Saves the draft once typing pauses (#114).
+    fn schedule_draft_save(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::composer_draft::SAVE_PAUSE)
+                .await;
+            this.update(cx, |this, cx| this.save_draft(cx)).ok();
+        }));
+    }
+
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = None;
+        if let Some(save) = self.draft.save(&self.composer, &self.tray, cx) {
+            cx.emit(ChannelEvent::SaveDraft(save));
+        }
+    }
+
+    /// The channel's draft changed elsewhere; the composer follows unless
+    /// the user has typed since it was saved.
+    pub fn refresh_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .draft
+            .refresh(&self.composer, &mut self.tray, window, cx)
+        {
+            self.draft_len = self.composer.read(cx).value(cx).chars().count();
+            cx.notify();
+        }
+    }
+
     /// Follows the draft's first link: a new one is asked about after a
     /// pause in typing, so a link being typed is not asked about letter by
     /// letter.
@@ -2110,6 +2222,10 @@ impl ChannelView {
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
+        self._draft_task = None;
+        if let Some(cleared) = self.draft.sent(cx) {
+            cx.emit(ChannelEvent::SaveDraft(cleared));
+        }
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
@@ -2329,24 +2445,8 @@ impl ChannelView {
         }
     }
 
-    /// "Priya is typing…" under the transcript; the row keeps its height
-    /// when nobody is, so the transcript does not jump.
     fn typing_line(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
-        let text = match channel.typing.as_slice() {
-            [] => String::new(),
-            [one] => format!("{} is typing\u{2026}", first(one)),
-            [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
-            _ => "Several people are typing\u{2026}".to_string(),
-        };
-        div()
-            .flex_shrink_0()
-            .h(scaled(&theme, metrics::TYPING_LINE))
-            .px(theme.space(4.))
-            .type_style(style::META, &theme)
-            .text_color(theme.colors.muted_foreground)
-            .child(text)
+        typing_line(&channel.typing, cx)
     }
 
     /// Opens the picker for `target` (a post to react to, or the composer).
@@ -2831,6 +2931,21 @@ impl ChannelView {
                 MenuItem::new("channel.menu.leave", "Leave channel…")
                     .on_click(move |_, window, cx| leave.open(window, cx)),
             );
+            if model.is_some_and(|m| m.can_manage) {
+                items.push(MenuItem::separator());
+                if model.is_some_and(|m| m.kind == ChannelKind::Public) {
+                    let convert = self.convert.clone();
+                    items.push(
+                        MenuItem::new("channel.menu.convert", "Convert to private channel…")
+                            .on_click(move |_, window, cx| convert.open(window, cx)),
+                    );
+                }
+                let archive = self.archive.clone();
+                items.push(
+                    MenuItem::new("channel.menu.archive", "Archive channel…")
+                        .on_click(move |_, window, cx| archive.open(window, cx)),
+                );
+            }
         }
         self.header_menu
             .update(cx, |menu, cx| menu.set_items(items, cx));
@@ -2936,6 +3051,87 @@ impl ChannelView {
         let title = self.edit.read(cx).field().title();
         let popup = dialog_popup("channel.edit.popup", title, cx).child(self.edit.clone());
         dialog("channel.edit", &handle, popup, window, cx)
+    }
+
+    /// A confirmation for a channel action: `title` over `description`,
+    /// with Cancel and a destructive `action` that emits `event`.
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_dialog(
+        &self,
+        id: &'static str,
+        handle: &DialogHandle,
+        title: String,
+        description: &'static str,
+        action: &'static str,
+        event: ChannelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let element_id = |part: &str| gpui_kit::ElementId::Name(format!("{id}.{part}").into());
+        let popup = dialog_popup(element_id("popup"), title.clone(), cx)
+            .child(dialog_title(element_id("title"), cx).child(title))
+            .child(dialog_description(element_id("description"), cx).child(description))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        alert_dialog_cancel(element_id("cancel"))
+                            .variant(ButtonVariant::Outline)
+                            .label("Cancel"),
+                    )
+                    .child(
+                        alert_dialog_action(element_id("confirm"))
+                            .variant(ButtonVariant::Destructive)
+                            .label(action),
+                    ),
+            );
+        let view = cx.entity().downgrade();
+        alert_dialog(id, handle, popup, window, cx).on_ok(move |_, _, cx| {
+            view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            true
+        })
+    }
+
+    fn archive_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.archive",
+            &self.archive.clone(),
+            format!("Archive {name}?"),
+            "Nobody can post in it any more and it leaves everyone's sidebar. \
+             Its messages and files stay on the server.",
+            "Archive",
+            ChannelEvent::Archive,
+            window,
+            cx,
+        )
+    }
+
+    fn convert_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.channel_label();
+        self.confirm_dialog(
+            "channel.convert",
+            &self.convert.clone(),
+            format!("Make {name} private?"),
+            "Only its members will see it, and people join by invitation. \
+             Its history stays. This can't be undone from Matty.",
+            "Make private",
+            ChannelEvent::ConvertToPrivate,
+            window,
+            cx,
+        )
+    }
+
+    /// "#name", or "this channel" before the model arrives.
+    fn channel_label(&self) -> SharedString {
+        match self.model.as_ref() {
+            Some(channel) => format!("#{}", channel.name).into(),
+            None => "this channel".into(),
+        }
     }
 
     fn leave_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3145,14 +3341,25 @@ impl ChannelView {
                 format!("post.{id}.avatar").into(),
             ))
             .size(AvatarSize::Default)
-            .fallback(initial)
-            .aria_label(post.author.clone()),
+            .fallback(initial),
             &post.author_id,
             cx,
         );
         let Some(profile) = profile.cloned() else {
-            return avatar.into_any_element();
+            return avatar.aria_label(post.author.clone()).into_any_element();
         };
+        // The author's presence on the avatar (#135).
+        let theme = UiTheme::read(cx);
+        let avatar = div()
+            .relative()
+            .child(avatar.aria_label(crate::style::presence_name(&post.author, profile.presence)))
+            .child(crate::style::presence_dot(
+                profile.presence,
+                scaled(theme, 10.),
+                theme.colors.background,
+                theme,
+                &crate::style::Palette::read(cx),
+            ));
         let view = cx.entity().downgrade();
         let card_id = id.clone();
         popover(gpui_kit::ElementId::Name(
@@ -4243,10 +4450,9 @@ impl Render for ChannelView {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
-                this.composer
-                    .update(cx, |composer, cx| composer.focus(window, cx))
-            }));
+            .on_action(
+                cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
+            );
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };
@@ -4292,6 +4498,8 @@ impl Render for ChannelView {
             .child(self.notifications_dialog(window, cx))
             .child(self.add_members_dialog(window, cx))
             .child(self.leave_dialog(window, cx))
+            .child(self.archive_dialog(window, cx))
+            .child(self.convert_dialog(window, cx))
             .child(self.lightbox(window, cx))
     }
 }
@@ -4308,6 +4516,31 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .shadow(theme.shadows.md.to_vec())
         .overflow_hidden()
         .child(picker)
+}
+
+/// What the typing line says for `names`: "Ana is typing…", "Ana and Ben
+/// are typing…", "Several people are typing…", or nothing.
+pub(crate) fn typing_text(names: &[SharedString]) -> String {
+    let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
+    match names {
+        [] => String::new(),
+        [one] => format!("{} is typing\u{2026}", first(one)),
+        [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
+        _ => "Several people are typing\u{2026}".to_string(),
+    }
+}
+
+/// The typing line under a transcript (#137); it keeps its height when
+/// nobody is typing, so the transcript does not jump.
+pub(crate) fn typing_line(names: &[SharedString], cx: &App) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx);
+    div()
+        .flex_shrink_0()
+        .h(scaled(theme, metrics::TYPING_LINE))
+        .px(theme.space(4.))
+        .type_style(style::META, theme)
+        .text_color(theme.colors.muted_foreground)
+        .child(typing_text(names))
 }
 
 /// `@` suggestions from `profiles` for `query` (lowercase): a person
@@ -4380,7 +4613,7 @@ mod tests {
             position: None,
             presence: crate::sidebar::Presence::Offline,
             status_text: None,
-            local_time: None,
+            time_zone: None,
         };
         let shown = |format, query: &str| {
             people_suggestions(std::iter::once(&profile(format)), query, 8)
@@ -4509,6 +4742,7 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
+            can_manage: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -4587,6 +4821,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4627,6 +4862,7 @@ mod tests {
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4686,6 +4922,7 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
+            can_manage: false,
         };
         assert_eq!(
             channel.rows(),
@@ -4727,6 +4964,7 @@ mod tests {
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
+            can_manage: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -4752,6 +4990,25 @@ mod tests {
         assert_eq!(channel.first_unread, Some(3));
         assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
         assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
+    }
+
+    #[test]
+    fn typing_text_names_one_two_or_several() {
+        let names = |list: &[&str]| -> Vec<SharedString> {
+            list.iter()
+                .map(|name| SharedString::from(name.to_string()))
+                .collect()
+        };
+        assert_eq!(typing_text(&[]), "");
+        assert_eq!(typing_text(&names(&["Ana Lopez"])), "Ana is typing\u{2026}");
+        assert_eq!(
+            typing_text(&names(&["Ana Lopez", "Ben Ode"])),
+            "Ana and Ben are typing\u{2026}"
+        );
+        assert_eq!(
+            typing_text(&names(&["Ana", "Ben", "Cy"])),
+            "Several people are typing\u{2026}"
+        );
     }
 
     #[gpui_kit::test]
@@ -4799,5 +5056,133 @@ mod tests {
             type_then_enter("```\nfn x() {}\n```", super::SendKey::CodeBlocks).as_deref(),
             Some("```\nfn x() {}\n```")
         );
+    }
+
+    /// #114: what is typed stays with its channel: switching away saves it,
+    /// switching back restores it with the caret at the end, and sending
+    /// clears it.
+    #[gpui_kit::test]
+    fn a_channels_draft_survives_switching_and_sending_clears_it(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::composer_draft::{DraftBook, DraftKey, SAVE_PAUSE};
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let design = crate::preview::channel("design").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            ChannelView::new(Some(general.clone()), "me", window, cx)
+        });
+        let saves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let saves = saves.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if let ChannelEvent::SaveDraft(save) = event {
+                    saves
+                        .borrow_mut()
+                        .push((save.key.channel_id.to_string(), save.text.to_string()));
+                }
+            })
+            .detach();
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| view.read(cx).composer.read(cx).value(cx).to_string())
+        };
+
+        // Typing saves once it pauses.
+        cx.simulate_input("half a thought");
+        cx.run_until_parked();
+        assert!(saves.borrow().is_empty(), "nothing before the pause");
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), "half a thought".to_owned())]
+        );
+
+        // More typing, then leaving before the pause: saved on the way out.
+        cx.simulate_input(" and more");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_model(Some(design.clone()), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), "half a thought and more".to_owned())]
+        );
+
+        // Back again: the text returns, caret at the end, and is not saved
+        // again or sent as typing.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_model(Some(general.clone()), window, cx)
+            })
+        });
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(text(cx), "half a thought and more");
+        let caret = cx.update(|_, cx| view.read(cx).composer.read(cx).selection(cx));
+        assert_eq!(caret, 23..23);
+        assert!(saves.borrow().is_empty());
+        assert!(cx.update(|_, cx| DraftBook::channels(cx).contains("general")));
+
+        // Sending clears it here and in sync.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let text = view.composer.read(cx).value(cx);
+                view.send(text, window, cx);
+            })
+        });
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), String::new())]
+        );
+        assert!(cx.update(|_, cx| DraftBook::get(cx, &DraftKey::channel("general")).is_none()));
+    }
+
+    /// #114: a draft changed on another device replaces the composer only
+    /// while the user has nothing unsaved in it.
+    #[gpui_kit::test]
+    fn a_draft_from_elsewhere_never_overwrites_unsaved_typing(cx: &mut gpui_kit::TestAppContext) {
+        use crate::composer_draft::{DraftBook, DraftKey, Kept};
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChannelView::new(Some(general), "me", window, cx));
+        let remote = |text: &str, cx: &mut gpui_kit::VisualTestContext| {
+            let kept = Kept {
+                text: text.to_owned().into(),
+                ..Kept::default()
+            };
+            cx.update(|window, cx| {
+                DraftBook::put(DraftKey::channel("general"), kept, cx);
+                view.update(cx, |view, cx| view.refresh_draft(window, cx));
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| view.read(cx).composer.read(cx).value(cx).to_string())
+        };
+        assert_eq!(remote("from the web app", cx), "from the web app");
+        cx.update(|window, cx| {
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        cx.simulate_input("!");
+        cx.run_until_parked();
+        assert_eq!(remote("edited again", cx), "from the web app!");
     }
 }

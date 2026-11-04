@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Prints the Homebrew cask for a Matty release: packaging/homebrew/matty.rb
+# with the version and the DMG's SHA-256 filled in (#203).
+#
+#   scripts/homebrew-cask 0.1.0                 reads the release's SHA256SUMS
+#   scripts/homebrew-cask 0.1.0 path/SHA256SUMS  reads a local one instead
+set -euo pipefail
+
+version="${1:?usage: scripts/homebrew-cask VERSION [SHA256SUMS]}"
+version="${version#v}"
+sums="${2:-}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+repo="${MATTY_REPO:-devaryakjha/matty}"
+
+if [[ -z "$sums" ]]; then
+	sums="$(mktemp)"
+	trap 'rm -f "$sums"' EXIT
+	curl --fail --silent --show-error --location \
+		"https://github.com/$repo/releases/download/v$version/SHA256SUMS" -o "$sums"
+fi
+
+dmg="Matty-$version.dmg"
+sha="$(awk -v f="$dmg" '$2 == f || $2 == "*" f { print $1 }' "$sums")"
+if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+	echo "homebrew-cask: no SHA-256 for $dmg in SHA256SUMS" >&2
+	exit 1
+fi
+
+sed -e "s/@VERSION@/$version/g" -e "s/@SHA256@/$sha/g" \
+	"$root/packaging/homebrew/matty.rb"

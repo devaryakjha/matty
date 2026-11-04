@@ -29,6 +29,7 @@ matty-api.workspace = true
 matty-sync.workspace = true
 matty-markdown.workspace = true
 matty-notify.workspace = true
+matty-update.workspace = true
 async-channel.workspace = true
 getrandom.workspace = true
 url.workspace = true

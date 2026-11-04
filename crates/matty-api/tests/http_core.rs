@@ -200,3 +200,133 @@ async fn reads_capabilities_with_format_old() {
     assert_eq!(caps.version, matty_api::Version::new(10, 5, 0));
     assert!(caps.minimum_supported().is_ok());
 }
+
+/// Mounts a server whose ping answers `ping` and whose config and license
+/// are the team fixtures.
+async fn probed(ping: ResponseTemplate) -> MockServer {
+    let server = MockServer::start().await;
+    let fixture = |name: &str| -> Value {
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(ping)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/config/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture("config_client_team.json")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/license/client"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(fixture("license_client_unlicensed.json")),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_probe_pings_then_reads_the_config() {
+    use matty_api::ProbeError;
+    let ok = ResponseTemplate::new(200).set_body_json(json!({"status": "OK"}));
+    let server = probed(ok).await;
+    let caps = Client::new(server.uri()).unwrap().probe().await.unwrap();
+    assert_eq!(caps.version, matty_api::Version::new(10, 5, 0));
+
+    // A web page where the ping should be is not Mattermost.
+    let page =
+        ResponseTemplate::new(200).set_body_raw("<!doctype html><title>Hi</title>", "text/html");
+    let server = probed(page).await;
+    let error = Client::new(server.uri())
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ProbeError::Ping(ApiError::Decode(_))),
+        "{error:?}"
+    );
+
+    let missing = ResponseTemplate::new(404);
+    let server = probed(missing).await;
+    let error = Client::new(server.uri())
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ProbeError::Ping(ApiError::Server { status: 404, .. })
+        ),
+        "{error:?}"
+    );
+
+    let unhealthy = ResponseTemplate::new(200).set_body_json(json!({"status": "UNHEALTHY"}));
+    let server = probed(unhealthy).await;
+    let error = Client::new(server.uri())
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ProbeError::Unhealthy(ref s) if s == "UNHEALTHY"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_probe_reports_a_config_that_fails_after_a_good_ping() {
+    use matty_api::ProbeError;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/config/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(["not", "a", "map"])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/license/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let error = Client::new(server.uri())
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProbeError::Config(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_probe_never_follows_a_redirect_to_another_host() {
+    use matty_api::ProbeError;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/system/ping"))
+        .respond_with(
+            ResponseTemplate::new(301)
+                .insert_header("location", "https://chat.example.com/api/v4/system/ping"),
+        )
+        .mount(&server)
+        .await;
+    let error = Client::new(server.uri())
+        .unwrap()
+        .probe()
+        .await
+        .unwrap_err();
+    match error {
+        ProbeError::Ping(ApiError::Redirected { location }) => {
+            assert_eq!(location, "https://chat.example.com/api/v4/system/ping");
+        }
+        other => panic!("{other:?}"),
+    }
+}

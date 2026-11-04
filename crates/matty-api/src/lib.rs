@@ -19,8 +19,10 @@ pub use capabilities::{ServerCapabilities, UnsupportedVersion, Version};
 pub use client::{
     Client, ClientBuilder, Fetched, MAX_OUTSIDE_IMAGE, RateLimit, Sleeper, TokioSleeper,
 };
-pub use endpoints::browse::{ChannelPatch, NewChannel, SearchQuery};
+pub use endpoints::browse::{ChannelPatch, NewChannel, ProfilePatch, SearchQuery};
 pub use endpoints::files::{Progress, Upload, Uploaded};
 pub use endpoints::posts::{Direction, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery};
+pub use endpoints::system::ProbeError;
 pub use endpoints::users::{Credentials, MFA_BAD_CODE_ID, MFA_REQUIRED_ID, SignedIn};
 pub use error::ApiError;
+pub use tls::https_config;
