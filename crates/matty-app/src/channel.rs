@@ -187,6 +187,8 @@ pub struct Post {
     pub replies: Option<ReplySummary>,
     /// Files on the post (PLAN §4.6).
     pub files: Vec<PostFile>,
+    /// Link previews and message attachments under the body (#187).
+    pub embeds: Vec<crate::embeds::Embed>,
 }
 
 /// What the channel shows about a post's thread without loading it.
@@ -1618,6 +1620,7 @@ impl ChannelView {
             status: PostStatus::Pending,
             replies: None,
             files,
+            embeds: Vec::new(),
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
@@ -2851,6 +2854,9 @@ impl ChannelView {
                     .ok();
             });
         }
+        if !post.embeds.is_empty() {
+            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+        }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
             let file_view = image_view.clone();
@@ -3612,6 +3618,7 @@ mod tests {
             status: PostStatus::Sent,
             replies: None,
             files: vec![],
+            embeds: vec![],
         }
     }
 

@@ -129,6 +129,7 @@ fn display_post(
                 height: u32::try_from(file.height).unwrap_or(0),
             })
             .collect(),
+        embeds: crate::embeds::from_post(post),
     }
 }
 

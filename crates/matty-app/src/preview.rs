@@ -159,6 +159,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         status: PostStatus::Sent,
         replies: None,
         files: vec![],
+        embeds: vec![],
     };
     let reaction = |emoji: &str, count: usize, mine: bool, users: &[&str]| PostReaction {
         emoji: emoji.into(),
@@ -208,6 +209,48 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "09:15",
                 "Yesterday",
                 "One more thing: the macOS build now needs `MATTY_PREVIEW=1` to show sample data, nothing else changed.",
+            )
+        },
+        Post {
+            embeds: vec![crate::embeds::Embed::Attachment(
+                crate::embeds::AttachmentCard {
+                    color: "good".into(),
+                    pretext: "".into(),
+                    author: "GitHub Actions".into(),
+                    author_link: "".into(),
+                    title: "Build 1482 passed".into(),
+                    title_link: "https://github.com/devaryakjha/matty/actions".into(),
+                    text: "All checks are green on `release-2026-11`.".into(),
+                    fields: vec![
+                        crate::embeds::AttachmentFieldCard {
+                            title: "Branch".into(),
+                            value: "release-2026-11".into(),
+                            short: true,
+                        },
+                        crate::embeds::AttachmentFieldCard {
+                            title: "Duration".into(),
+                            value: "6 min 12 s".into(),
+                            short: true,
+                        },
+                    ],
+                    footer: "matty / ci.yml".into(),
+                },
+            )],
+            ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
+        },
+        Post {
+            embeds: vec![crate::embeds::Embed::Link(crate::embeds::LinkCard {
+                url: "https://github.com/devaryakjha/matty/releases".into(),
+                site_name: "GitHub".into(),
+                title: "Releases · devaryakjha/matty".into(),
+                description: "A native desktop client for Mattermost, built with GPUI.".into(),
+            })],
+            ..post(
+                "p3c",
+                "Sam Okafor",
+                "09:22",
+                "Yesterday",
+                "Release notes draft: https://github.com/devaryakjha/matty/releases",
             )
         },
         Post {
@@ -535,6 +578,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         status: PostStatus::Sent,
         replies: None,
         files: vec![],
+        embeds: vec![],
     };
     vec![
         post("p10", "Jonas Weber", "08:41", "Found it, thanks!"),
@@ -870,6 +914,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         status: PostStatus::Sent,
         replies: None,
         files: vec![],
+        embeds: vec![],
     };
     Some(ThreadModel {
         channel_name: channel.name.clone(),
