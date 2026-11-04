@@ -17,8 +17,8 @@ use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
     HistoryForward, MarkAllRead, MarkChannelRead, NextChannel, NextUnreadChannel, OpenPreferences,
     Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
-    ZoomOut,
+    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter,
+    UploadFiles, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -625,7 +625,7 @@ impl MainWindow {
                             name.to_string(),
                             source.clone(),
                         );
-                        this.start_upload(id.clone(), job, cx);
+                        this.start_upload(id.clone(), job, window, cx);
                     }
                 }
                 ChannelEvent::CancelUpload(id) => {
@@ -635,7 +635,7 @@ impl MainWindow {
                 }
                 ChannelEvent::RetryUpload(id) => {
                     if let Some(job) = this.live.as_ref().and_then(|live| live.upload_job(id)) {
-                        this.start_upload(id.clone(), job, cx);
+                        this.start_upload(id.clone(), job, window, cx);
                     }
                 }
                 ChannelEvent::OpenFile(id) => this.download_file(id, cx),
@@ -918,13 +918,14 @@ impl MainWindow {
         &mut self,
         id: SharedString,
         job: crate::live::UploadJob,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(live) = &mut self.live else {
             return;
         };
         live.track_upload(&id, job.clone());
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move {
                     match job.source {
@@ -933,7 +934,7 @@ impl MainWindow {
                     }
                 })
                 .await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 // Removed from the tray while it was being read.
                 let Some(live) = this
                     .live
@@ -951,19 +952,34 @@ impl MainWindow {
                     }),
                     Err(error) => {
                         tracing::warn!(%error, "could not read a file to upload");
-                        this.channel.update(cx, |view, cx| {
-                            view.set_upload_status(
-                                &id,
-                                crate::attachments::AttachmentStatus::Failed,
-                                cx,
-                            );
-                        });
+                        let failed = crate::attachments::AttachmentStatus::Failed;
+                        this.set_upload_status(&id, failed, window, cx);
                     }
                 }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Hands a file's progress to the tray it came from: the channel's
+    /// or the thread reply's, by id.
+    fn set_upload_status(
+        &mut self,
+        id: &str,
+        status: crate::attachments::AttachmentStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if id.starts_with(crate::right_pane::UPLOAD_PREFIX) {
+            self.right_pane.update(cx, |view, cx| {
+                view.set_upload_status(id, status, window, cx)
+            });
+        } else {
+            self.channel.update(cx, |view, cx| {
+                view.set_upload_status(id, status, window, cx)
+            });
+        }
     }
 
     /// Saves a post's file to the download folder; it opens once saved
@@ -1279,8 +1295,13 @@ impl MainWindow {
             }
         }
         if let Some((id, status)) = update.upload {
+            self.set_upload_status(&id, status, window, cx);
+        }
+        if let Some(bytes) = update.max_file_size {
             self.channel
-                .update(cx, |view, cx| view.set_upload_status(&id, status, cx));
+                .update(cx, |view, _| view.set_max_file_size(bytes));
+            self.right_pane
+                .update(cx, |view, _| view.set_max_file_size(bytes));
         }
         if let Some(names) = update.typing {
             let someone = !names.is_empty();
@@ -2124,18 +2145,41 @@ impl MainWindow {
                     pane.update(cx, |view, cx| view.set_link_preview(url, card, cx));
                 }
             }
-            RightPaneEvent::Reply { root, text, unfurl } => {
-                if let Some(live) = &self.live
+            RightPaneEvent::Reply {
+                root,
+                text,
+                files,
+                unfurl,
+            } => {
+                if let Some(live) = &mut self.live
                     && let Some(channel_id) = live.thread_channel()
                 {
+                    let file_ids = live.take_file_ids(files);
                     live.send(matty_sync::Command::SendPost {
                         pending_post_id: String::new(),
                         channel_id,
                         root_id: root.to_string(),
                         message: text.to_string(),
-                        file_ids: Vec::new(),
+                        file_ids,
                         props: crate::embeds::send_props(*unfurl),
                     });
+                }
+            }
+            RightPaneEvent::Upload { id, name, source } => {
+                if let Some(channel) = self.live.as_ref().and_then(|live| live.thread_channel()) {
+                    let job =
+                        crate::live::UploadJob::new(channel, name.to_string(), source.clone());
+                    self.start_upload(id.clone(), job, window, cx);
+                }
+            }
+            RightPaneEvent::CancelUpload(id) => {
+                if let Some(live) = &mut self.live {
+                    live.cancel_upload(id);
+                }
+            }
+            RightPaneEvent::RetryUpload(id) => {
+                if let Some(job) = self.live.as_ref().and_then(|live| live.upload_job(id)) {
+                    self.start_upload(id.clone(), job, window, cx);
                 }
             }
             RightPaneEvent::Retry(post) => {
@@ -3937,6 +3981,12 @@ impl Render for MainWindow {
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
                 this.step_channel(Step::Next, true, window, cx)
+            }))
+            // File > Upload files with focus outside both composers goes
+            // to the channel's; each composer answers it first itself.
+            .on_action(cx.listener(|this, _: &UploadFiles, window, cx| {
+                this.channel
+                    .update(cx, |view, cx| view.choose_files(window, cx))
             }))
             .on_action(cx.listener(|this, _: &UnreadsFilter, _, cx| {
                 this.sidebar
