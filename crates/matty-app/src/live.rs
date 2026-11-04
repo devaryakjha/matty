@@ -470,6 +470,14 @@ impl Live {
     ) -> std::io::Result<(Self, async_channel::Receiver<ChangeSet>)> {
         let media = media_dir(account);
         let sync = matty_sync::spawn_at(path, media)?;
+        Ok(Self::start_with(sync, account))
+    }
+
+    /// Follows `sync`, already started for `account`.
+    pub fn start_with(
+        sync: matty_sync::SyncHandle,
+        account: &SavedAccount,
+    ) -> (Self, async_channel::Receiver<ChangeSet>) {
         let changes = sync.subscribe();
         let asker = sync.clone();
         let avatars =
@@ -479,7 +487,7 @@ impl Live {
                     last_picture_update: version,
                 });
             }));
-        Ok((
+        (
             Self {
                 sync,
                 team: None,
@@ -526,7 +534,7 @@ impl Live {
                 avatars,
             },
             changes,
-        ))
+        )
     }
 
     pub fn send(&self, command: Command) {

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Rebuilds the web demo's sample workspace, crates/matty-web/demo/demo.sqlite:
+# a fresh dev server, the demo seed (scripts/demo/content.py), then a
+# snapshot of what the demo user sees. Needs Docker and Pillow. Commit the
+# result; `scripts/web build` bakes it into the page. See docs/web.md.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$root"
+port="${MATTY_MM_PORT:-8065}"
+
+scripts/dev-server reset
+python3 scripts/demo/seed.py --server "http://localhost:$port"
+cargo run --quiet -p matty-demo -- --server "http://localhost:$port" \
+    --login maya --out crates/matty-web/demo/demo.sqlite

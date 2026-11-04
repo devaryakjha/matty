@@ -130,3 +130,25 @@ fn remote_keys_are_short_stable_and_distinct() {
         matty_store::media::remote_key("https://example.com/b.png")
     );
 }
+
+#[test]
+fn a_cache_in_the_database_round_trips_and_forgets() {
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let cache = MediaCache::in_database();
+    let key = media::avatar_key("u1", 7);
+
+    assert!(cache.dir().is_none());
+    assert!(cache.get(conn, &key).unwrap().is_none());
+    cache.put(conn, &key, b"picture", "image/png").unwrap();
+    let got = cache.get(conn, &key).unwrap().unwrap();
+    assert_eq!(got.bytes, b"picture");
+    assert_eq!(got.content_type, "image/png");
+
+    cache.remove(conn, &key).unwrap();
+    assert!(cache.get(conn, &key).unwrap().is_none());
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_bytes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}

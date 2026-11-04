@@ -1,9 +1,10 @@
 //! The on-disk media cache: avatars, file thumbnails and previews, custom
 //! emoji (PLAN §6.5).
 //!
-//! Bytes live in files under the cache folder; the `media` table indexes
-//! them with their size and last access for eviction. Decoding to an image
-//! is the caller's job.
+//! Bytes live in files under the cache folder, or in the database itself
+//! where there are no files (the web build, and the web demo's snapshot);
+//! the `media` table indexes them with their size and last access for
+//! eviction. Decoding to an image is the caller's job.
 
 use std::fs;
 use std::io::{ErrorKind, Write as _};
@@ -73,18 +74,89 @@ pub struct Media {
 /// Media files for one account, indexed in that account's store.
 #[derive(Clone, Debug)]
 pub struct MediaCache {
-    dir: PathBuf,
+    /// `None` keeps the bytes in the `media_bytes` table.
+    dir: Option<PathBuf>,
 }
+
+/// Holds the bytes of a cache kept in the database. Made on first use, so
+/// a desktop database never has it.
+const BYTES_TABLE: &str = "CREATE TABLE IF NOT EXISTS media_bytes (
+    key TEXT PRIMARY KEY NOT NULL,
+    bytes BLOB NOT NULL
+) STRICT";
 
 impl MediaCache {
     /// A cache rooted at `dir`, created on the first `put`.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: Some(dir.into()),
+        }
     }
 
-    /// The folder holding the files.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// A cache that keeps the bytes in the store's own database, for where
+    /// there is no file system: the browser.
+    pub fn in_database() -> Self {
+        Self { dir: None }
+    }
+
+    /// The folder holding the files, if they are files.
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
+
+    /// Writes the bytes under `relative` (a file) or `key` (a row).
+    fn write(&self, conn: &Connection, key: &str, relative: &str, bytes: &[u8]) -> Result<()> {
+        let Some(dir) = &self.dir else {
+            conn.execute(BYTES_TABLE, [])?;
+            conn.prepare_cached(
+                "INSERT INTO media_bytes (key, bytes) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET bytes = excluded.bytes",
+            )?
+            .execute(params![key, bytes])?;
+            return Ok(());
+        };
+        let path = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let partial = path.with_extension("partial");
+        {
+            let mut file = fs::File::create(&partial)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        fs::rename(&partial, &path)?;
+        Ok(())
+    }
+
+    /// The bytes [`Self::write`] stored, or `None` when they are gone.
+    fn read(&self, conn: &Connection, key: &str, relative: &str) -> Result<Option<Vec<u8>>> {
+        let Some(dir) = &self.dir else {
+            conn.execute(BYTES_TABLE, [])?;
+            return Ok(conn
+                .prepare_cached("SELECT bytes FROM media_bytes WHERE key = ?1")?
+                .query_row([key], |row| row.get(0))
+                .optional()?);
+        };
+        match fs::read(dir.join(relative)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Deletes the bytes [`Self::write`] stored, if any.
+    fn delete(&self, conn: &Connection, key: &str) -> Result<()> {
+        let Some(dir) = &self.dir else {
+            conn.execute(BYTES_TABLE, [])?;
+            conn.prepare_cached("DELETE FROM media_bytes WHERE key = ?1")?
+                .execute([key])?;
+            return Ok(());
+        };
+        match fs::remove_file(dir.join(relative_path(key))) {
+            Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
     }
 
     /// Stores `bytes` under `key`, replacing what was there. The file is
@@ -98,17 +170,7 @@ impl MediaCache {
         content_type: &str,
     ) -> Result<()> {
         let relative = relative_path(key);
-        let path = self.dir.join(&relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let partial = path.with_extension("partial");
-        {
-            let mut file = fs::File::create(&partial)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-        }
-        fs::rename(&partial, &path)?;
+        self.write(conn, key, &relative, bytes)?;
         let size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
         conn.prepare_cached(
             "INSERT INTO media (key, path, size, content_type, accessed_at)
@@ -143,17 +205,12 @@ impl MediaCache {
         else {
             return Ok(None);
         };
-        let bytes = match fs::read(self.dir.join(&relative)) {
-            Ok(bytes) if i64::try_from(bytes.len()).ok() == Some(size) => bytes,
-            Ok(_) => {
+        let bytes = match self.read(conn, key, &relative)? {
+            Some(bytes) if i64::try_from(bytes.len()).ok() == Some(size) => bytes,
+            _ => {
                 self.remove(conn, key)?;
                 return Ok(None);
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                self.remove(conn, key)?;
-                return Ok(None);
-            }
-            Err(error) => return Err(error.into()),
         };
         conn.prepare_cached("UPDATE media SET accessed_at = ?2 WHERE key = ?1")?
             .execute(params![key, next_access(conn)?])?;
@@ -174,10 +231,7 @@ impl MediaCache {
     pub fn remove(&self, conn: &Connection, key: &str) -> Result<()> {
         conn.prepare_cached("DELETE FROM media WHERE key = ?1")?
             .execute([key])?;
-        match fs::remove_file(self.dir.join(relative_path(key))) {
-            Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
-        }
+        self.delete(conn, key)
     }
 
     /// Index entries oldest access first, as (key, size), for eviction.

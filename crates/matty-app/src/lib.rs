@@ -72,10 +72,27 @@ const DEFAULT_WINDOW: (f32, f32) = (1200., 800.);
 
 static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether `matty --offline` started the app: the last account's cache
-/// opens without signing in.
+static DEMO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DEMO_SNAPSHOT: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+
+/// Whether `matty --offline` started the app, or the web demo is open: the
+/// cache shows without signing in, and nothing connects.
 pub fn offline() -> bool {
-    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed) || demo()
+}
+
+/// Whether the web demo's sample workspace is open.
+pub(crate) fn demo() -> bool {
+    DEMO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn set_demo(on: bool) {
+    DEMO.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The web demo's snapshot, which opens when no account is saved.
+pub(crate) fn demo_snapshot() -> Option<&'static [u8]> {
+    DEMO_SNAPSHOT.get().copied()
 }
 
 /// [`run`] with the cache of the last account and no network.
@@ -121,8 +138,14 @@ pub fn run_with_links(links: Vec<String>) {
 /// GPUI's web text system has no system fonts and falls back to IBM Plex
 /// Sans for `.SystemUIFont`, which inputs use before the first render sets
 /// Geist, so the page passes that font in. `webgl` skips WebGPU.
+///
+/// `demo` is a sample workspace `matty-demo` wrote; it opens instead of the
+/// sign-in card while no account is saved.
 #[cfg(target_family = "wasm")]
-pub fn run_web(fallback_font: &'static [u8], webgl: bool) {
+pub fn run_web(fallback_font: &'static [u8], webgl: bool, demo: Option<&'static [u8]>) {
+    if let Some(demo) = demo {
+        let _ = DEMO_SNAPSHOT.set(demo);
+    }
     gpui_kit::platform::web_init();
     let backend = if webgl {
         gpui_kit::platform::WebBackendPreference::WebGl
