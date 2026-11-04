@@ -7,6 +7,7 @@ use gpui_kit::SharedString;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use matty_api::models::{Post as ApiPost, User};
+use matty_notify::MentionKeys;
 
 use crate::attachments::PostFile;
 use crate::channel::{ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostReaction, PostStatus};
@@ -45,7 +46,7 @@ pub fn channel_model(
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
     let mut previous: Option<(&str, i64, SharedString)> = None;
-    let mention = format!("@{}", viewer.username);
+    let mention = MentionKeys::username(viewer.username);
     for post in posts.unwrap_or_default() {
         if post.delete_at != 0 || !post.kind.is_empty() && post.kind.starts_with("system_") {
             continue;
@@ -85,7 +86,7 @@ fn display_post(
     post: &ApiPost,
     users: &HashMap<String, User>,
     viewer: &Viewer<'_>,
-    mention: &str,
+    mention: &MentionKeys,
     (time, day, date): (u16, SharedString, SharedString),
     continues: bool,
 ) -> Post {
@@ -101,7 +102,7 @@ fn display_post(
         date,
         body: post.message.clone().into(),
         reactions: reactions(post, viewer.user_id, users),
-        mentions_me: !viewer.username.is_empty() && mentions(&post.message, mention),
+        mentions_me: mention.mentioned(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
@@ -135,7 +136,7 @@ fn display_post(
 /// A post shown on its own, as in search results: never a continuation.
 pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Post {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
-    let mention = format!("@{}", viewer.username);
+    let mention = MentionKeys::username(viewer.username);
     display_post(
         post,
         users,
@@ -171,17 +172,6 @@ fn when(
     };
     let full = date.strftime("%A, %B %-d, %Y").to_string();
     (minutes, day.into(), full.into())
-}
-
-/// `@name` as a word: not followed by more of a username.
-fn mentions(message: &str, mention: &str) -> bool {
-    message.match_indices(mention).any(|(at, _)| {
-        let rest = &message[at + mention.len()..];
-        !rest
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    })
 }
 
 /// Reaction chips in the order each emoji was first used.
@@ -395,12 +385,5 @@ mod tests {
         assert_eq!(emoji_name("👍"), "+1");
         assert_eq!(emoji_name(":partyparrot:"), "partyparrot");
         assert_eq!(emoji_name("tada"), "tada");
-    }
-
-    #[test]
-    fn a_mention_must_end_the_name() {
-        assert!(mentions("hey @arya!", "@arya"));
-        assert!(!mentions("hey @arya.jha", "@arya"));
-        assert!(mentions("@arya", "@arya"));
     }
 }
