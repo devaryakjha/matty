@@ -668,10 +668,12 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         ),
     ];
     let keys = matty_notify::MentionKeys::username("arya");
+    let saved = std::collections::HashSet::new();
     let zone = jiff::tz::TimeZone::UTC;
     let viewer = crate::transcript::Viewer {
         user_id: "arya",
         keys: &keys,
+        saved: &saved,
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
