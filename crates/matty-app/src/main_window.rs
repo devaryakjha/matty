@@ -2370,6 +2370,15 @@ impl MainWindow {
         }
     }
 
+    /// The offline banner's Retry now: the socket redials at once and the
+    /// banner shows the attempt (#162).
+    fn retry_connection(&mut self, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::Reconnect);
+        }
+        self.set_connection(ConnectionState::Reconnecting { attempt: 1 }, cx);
+    }
+
     /// A 32px strip under the title bar: `muted` while reconnecting with a
     /// spinner, `destructive`-tinted once offline with a Retry button.
     fn connection_banner(
@@ -2456,9 +2465,7 @@ impl MainWindow {
                         .size(ButtonSize::Xs)
                         .aria_label("Retry now")
                         .text_color(theme.colors.destructive)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_connection(ConnectionState::Reconnecting { attempt: 1 }, cx)
-                        }))
+                        .on_click(cx.listener(|this, _, _, cx| this.retry_connection(cx)))
                         .child("Retry now"),
                 )
             });
