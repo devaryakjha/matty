@@ -4,6 +4,7 @@
 //! Escape.
 
 use gpui_icons::{LucideIcon, lucide};
+use gpui_kit::base::input::{MoveDown, MoveUp};
 use gpui_kit::{
     App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -29,7 +30,7 @@ use crate::ui::{
     attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerEvent, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
@@ -78,6 +79,10 @@ pub struct SearchModel {
     pub results: Vec<ListedPost>,
     /// True while sync runs the query.
     pub searching: bool,
+    /// Another page of results may follow.
+    pub more: bool,
+    /// The next page is on its way.
+    pub loading_more: bool,
 }
 
 /// What search's `in:` and `from:` suggest: (handle, shown name) pairs.
@@ -94,6 +99,21 @@ struct Suggestion {
     insert: SharedString,
     label: SharedString,
     detail: SharedString,
+}
+
+/// Where the highlight lands after one arrow press among `count` rows:
+/// down from nothing starts at the top, up from nothing at the bottom, and
+/// both wrap around.
+fn step(at: Option<usize>, count: usize, down: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (at, down) {
+        (None, true) => 0,
+        (None, false) => count - 1,
+        (Some(at), true) => (at + 1) % count,
+        (Some(at), false) => (at + count - 1) % count,
+    })
 }
 
 /// At most this many suggestions show at once.
@@ -167,6 +187,28 @@ pub enum RightPaneEvent {
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
+    /// The user asked for the search's next page.
+    SearchMore,
+    /// The reply composer typed `@` and this much of a name; sync asks
+    /// the server and [`RightPaneView::set_suggested`] takes the answer.
+    SuggestPeople(SharedString),
+    /// Message menu actions on a thread post, as in the channel (#213).
+    CopyLink(SharedString),
+    SetSaved {
+        post: SharedString,
+        saved: bool,
+    },
+    SetPinned {
+        post: SharedString,
+        pinned: bool,
+    },
+    Forward(SharedString),
+    /// Mark the channel unread from this reply on.
+    MarkUnread(SharedString),
+    Remind {
+        post: SharedString,
+        at: crate::channel::RemindAt,
+    },
     /// The user replied under `root`; the pane already shows the reply
     /// pending (PLAN §4.3).
     Reply {
@@ -282,6 +324,10 @@ pub struct RightPaneView {
     /// People the thread's authors are looked up in for their presence
     /// dots (#135); the window keeps it in step with the channel's.
     profiles: Vec<UserProfile>,
+    /// What the server said about names typed after `@` in a reply.
+    people: crate::channel::PeopleAsk,
+    /// The channels `~` can complete in a reply.
+    directory: Vec<crate::sidebar::ChannelRow>,
     /// Who is typing a reply in the thread (#137).
     typing: Vec<SharedString>,
     draft_len: usize,
@@ -304,6 +350,8 @@ pub struct RightPaneView {
     /// What `from:` and `in:` can suggest, and what they suggest now.
     hints: SearchHints,
     suggestions: Vec<Suggestion>,
+    /// The suggestion the arrow keys point at, which Enter picks.
+    suggestion_at: Option<usize>,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -357,6 +405,7 @@ impl RightPaneView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
+            state.set_triggers(['@', '~', ':'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
@@ -417,43 +466,60 @@ impl RightPaneView {
         });
         crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
-        let subscriptions =
-            vec![
-                cx.subscribe_in(
-                    &composer,
-                    window,
-                    |this, composer, event: &ComposerEvent, window, cx| match event {
-                        ComposerEvent::Change => {
-                            let send_on = SettingsStore::global(cx).read(cx).get().send_on;
-                            crate::channel::follow_send_key(composer, send_on, cx);
-                            let text = composer.read(cx).value(cx);
-                            this.draft_len = text.chars().count();
-                            this.draft_changed(&text, cx);
-                            // A restored draft is not the user typing.
-                            if !this.draft.is_saved(&text) {
-                                this.schedule_draft_save(cx);
-                            }
-                            cx.notify();
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, composer, event: &ComposerEvent, window, cx| match event {
+                    ComposerEvent::Change => {
+                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                        crate::channel::follow_send_key(composer, send_on, cx);
+                        let text = composer.read(cx).value(cx);
+                        this.draft_len = text.chars().count();
+                        this.draft_changed(&text, cx);
+                        // A restored draft is not the user typing.
+                        if !this.draft.is_saved(&text) {
+                            this.schedule_draft_save(cx);
                         }
-                        ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
-                        _ => {}
-                    },
-                ),
-                cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
-                    match event {
-                        InputEvent::PressEnter { .. } => {
-                            this.suggestions.clear();
-                            this.submit_search(cx);
-                        }
-                        InputEvent::Change => {
-                            let query = input.read(cx).value().to_string();
-                            this.suggestions = suggestions(&query, &this.hints);
-                            cx.notify();
-                        }
-                        _ => {}
+                        cx.notify();
                     }
-                }),
-            ];
+                    ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete { trigger, query } => {
+                        if let Some(term) = this.people.ask(*trigger, query) {
+                            cx.emit(RightPaneEvent::SuggestPeople(term.into()));
+                        }
+                        let suggestions = this.reply_suggestions(*trigger, query);
+                        composer
+                            .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+                    }
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => {
+                        if let Some(pick) =
+                            this.suggestion_at.and_then(|at| this.suggestions.get(at))
+                        {
+                            let insert = pick.insert.clone();
+                            this.accept_suggestion(insert, window, cx);
+                            return;
+                        }
+                        this.suggestions.clear();
+                        this.submit_search(cx);
+                    }
+                    InputEvent::Change => {
+                        let query = input.read(cx).value().to_string();
+                        this.suggestions = suggestions(&query, &this.hints);
+                        this.suggestion_at = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
+        ];
         Self {
             composer_cap: px(320.),
             content: None,
@@ -466,6 +532,8 @@ impl RightPaneView {
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             profiles: Vec::new(),
+            people: crate::channel::PeopleAsk::default(),
+            directory: Vec::new(),
             typing: Vec::new(),
             draft_len: 0,
             draft: Default::default(),
@@ -479,6 +547,7 @@ impl RightPaneView {
             loading: false,
             hints: SearchHints::default(),
             suggestions: Vec::new(),
+            suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -1026,6 +1095,20 @@ impl RightPaneView {
             input.focus(window, cx);
         });
         self.suggestions.clear();
+        self.suggestion_at = None;
+        cx.notify();
+    }
+
+    /// Moves the highlight through the suggestions with the arrow keys,
+    /// leaving the keys to the field when nothing is suggested.
+    fn step_suggestion(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = self.suggestions.len();
+        if count == 0 {
+            cx.propagate();
+            return;
+        }
+        self.suggestion_at = step(self.suggestion_at, count, down);
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -1415,6 +1498,75 @@ impl RightPaneView {
                 },
             ),
         ]);
+        if post.status == PostStatus::Sent {
+            let emit = |name: &str, label: SharedString, event: RightPaneEvent| {
+                let view = view.clone();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("thread.context.{name}").into()),
+                    label,
+                )
+                .on_click(move |_, _, cx| {
+                    let event = event.clone();
+                    view.update(cx, |_, cx| cx.emit(event)).ok();
+                })
+            };
+            let id = post.id.clone();
+            items.extend([
+                emit(
+                    "copy-link",
+                    "Copy link".into(),
+                    RightPaneEvent::CopyLink(id.clone()),
+                ),
+                emit(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    RightPaneEvent::SetPinned {
+                        post: id.clone(),
+                        pinned: !post.pinned,
+                    },
+                ),
+                emit(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    RightPaneEvent::SetSaved {
+                        post: id.clone(),
+                        saved: !post.saved,
+                    },
+                ),
+                emit(
+                    "forward",
+                    "Forward\u{2026}".into(),
+                    RightPaneEvent::Forward(id.clone()),
+                ),
+                emit(
+                    "unread",
+                    "Mark as unread".into(),
+                    RightPaneEvent::MarkUnread(id.clone()),
+                ),
+                MenuItem::submenu(
+                    "thread.context.remind",
+                    "Remind me",
+                    crate::channel::RemindAt::ALL.map(|at| {
+                        emit(
+                            &format!("remind.{at:?}"),
+                            at.label().into(),
+                            RightPaneEvent::Remind {
+                                post: id.clone(),
+                                at,
+                            },
+                        )
+                    }),
+                ),
+            ]);
+        }
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
@@ -1527,6 +1679,39 @@ impl RightPaneView {
     }
 
     /// Keeps the people whose presence the thread's avatars show.
+    /// Suggestions for the reply composer's triggers, as in the channel's;
+    /// the server's matches stand in for the thread's people.
+    fn reply_suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+        crate::channel::composer_suggestions(
+            trigger,
+            query,
+            std::iter::empty(),
+            &self.people,
+            &self.directory,
+            true,
+        )
+    }
+
+    /// Takes the server's matches for `term` and, while the reply composer
+    /// still asks for it, shows them.
+    pub fn set_suggested(
+        &mut self,
+        term: String,
+        people: Vec<UserProfile>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.people.answer(&term, people) {
+            let suggestions = self.reply_suggestions('@', &term);
+            self.composer
+                .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+        }
+    }
+
+    /// The channels `~` can complete in a reply.
+    pub fn set_directory(&mut self, rows: Vec<crate::sidebar::ChannelRow>) {
+        self.directory = rows;
+    }
+
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
         if self.profiles != profiles {
             self.profiles = profiles;
@@ -1943,6 +2128,7 @@ impl RightPaneView {
         id: &'static str,
         items: &[ListedPost],
         empty: (LucideIcon, &'static str, &'static str),
+        more: Option<bool>,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let theme = UiTheme::read(cx).clone();
@@ -2019,6 +2205,26 @@ impl RightPaneView {
                         cx,
                     ))
             }))
+            // `Some(loading)` when another page may follow.
+            .when_some(more, |list, loading| {
+                list.child(
+                    div().px(theme.space(4.)).pb(theme.space(2.)).child(
+                        Button::new(gpui_kit::ElementId::Name(format!("{id}.more").into()))
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .w_full()
+                            .disabled(loading)
+                            .label(if loading {
+                                "Loading more\u{2026}"
+                            } else {
+                                "Show more results"
+                            })
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::SearchMore)),
+                            ),
+                    ),
+                )
+            })
             .into_any_element()
     }
 
@@ -2081,6 +2287,7 @@ impl RightPaneView {
                         "Nothing matched",
                         "Try fewer words, or narrow with from: and in:.",
                     ),
+                    model.more.then_some(model.loading_more),
                     cx,
                 ))
                 .into_any_element()
@@ -2101,6 +2308,13 @@ impl RightPaneView {
                     .gap(theme.space(1.5))
                     .border_b(style::hairline())
                     .border_color(theme.colors.border)
+                    // Caught on the way down, before the field moves its cursor.
+                    .capture_action(
+                        cx.listener(|this, _: &MoveDown, _, cx| this.step_suggestion(true, cx)),
+                    )
+                    .capture_action(
+                        cx.listener(|this, _: &MoveUp, _, cx| this.step_suggestion(false, cx)),
+                    )
                     .child(Input::new(&self.search).aria_label("Search messages"))
                     .when(!self.suggestions.is_empty(), |field| {
                         field.child(self.suggestion_list(cx))
@@ -2131,7 +2345,11 @@ impl RightPaneView {
                         Button::new(gpui_kit::ElementId::Name(
                             format!("right-pane.search.suggestion.{index}").into(),
                         ))
-                        .variant(ButtonVariant::Ghost)
+                        .variant(if self.suggestion_at == Some(index) {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
                         .w_full()
                         .justify_start()
                         .aria_label(format!("Search {}", suggestion.insert))
@@ -2665,6 +2883,7 @@ impl Render for RightPaneView {
                         "Nothing pinned yet",
                         "Pin a message from its More menu to keep it here for everyone.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Saved(posts)) => root
@@ -2677,6 +2896,7 @@ impl Render for RightPaneView {
                         "Nothing saved yet",
                         "Save a message from its hover toolbar to find it here later.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Mentions(posts)) => root
@@ -2689,6 +2909,7 @@ impl Render for RightPaneView {
                         "No mentions yet",
                         "Messages that mention you or your keywords show up here.",
                     ),
+                    None,
                     cx,
                 )),
             Some(RightPaneContent::Search(model)) => root
@@ -2727,6 +2948,16 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_walk_the_suggestions_and_wrap() {
+        assert_eq!(step(None, 3, true), Some(0));
+        assert_eq!(step(None, 3, false), Some(2));
+        assert_eq!(step(Some(2), 3, true), Some(0));
+        assert_eq!(step(Some(0), 3, false), Some(2));
+        assert_eq!(step(Some(1), 3, true), Some(2));
+        assert_eq!(step(None, 0, true), None);
+    }
 
     #[test]
     fn from_and_in_suggest_people_and_channels_for_the_last_word() {

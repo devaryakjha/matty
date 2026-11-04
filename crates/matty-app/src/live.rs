@@ -93,6 +93,9 @@ pub struct Live {
     ready: Option<String>,
     /// The search on screen and its results once they come.
     search: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The search's last page asked for, whether another may follow, and
+    /// whether it is on its way.
+    search_page: (u32, bool, bool),
     /// The saved, pinned or mentions listing on screen and its posts once
     /// they come (#130–#132).
     listing: Option<(matty_sync::Listing, Option<Arc<[matty_api::models::Post]>>)>,
@@ -202,6 +205,8 @@ pub struct Update {
     pub directory: Option<Vec<crate::directory::DirectoryChannel>>,
     /// The shown team's people, for a new direct message.
     pub people: Option<Vec<UserProfile>>,
+    /// Who the server says matches a typed `@name`, channel members first.
+    pub suggested: Option<(String, Vec<UserProfile>)>,
     /// A channel to switch to: the one the user joined, created or
     /// started, now in the sidebar.
     pub ready: Option<SharedString>,
@@ -507,6 +512,7 @@ impl Live {
                 thread_typing: Vec::new(),
                 ready: None,
                 search: None,
+                search_page: (0, false, false),
                 listing: None,
                 saved: Default::default(),
                 uploads: HashMap::new(),
@@ -865,11 +871,35 @@ impl Live {
         };
         let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
         self.search = Some((terms.to_owned(), None));
+        self.search_page = (0, false, false);
         self.send(Command::Search {
             team_id,
             terms: terms.to_owned(),
             time_zone_offset: offset,
+            page: 0,
         });
+    }
+
+    /// Asks for the search's next page; it comes as [`Update::search`]
+    /// with the results so far.
+    pub fn search_more(&mut self) -> Option<crate::right_pane::SearchModel> {
+        let (page, more, loading) = self.search_page;
+        let (terms, Some(_)) = self.search.as_ref()? else {
+            return None;
+        };
+        if !more || loading {
+            return None;
+        }
+        let team_id = self.team.clone()?;
+        let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
+        self.send(Command::Search {
+            team_id,
+            terms: terms.clone(),
+            time_zone_offset: offset,
+            page: page + 1,
+        });
+        self.search_page = (page + 1, more, true);
+        self.search_model()
     }
 
     /// What search's `in:` and `from:` can suggest: the shown team's
@@ -1044,6 +1074,23 @@ impl Live {
     }
 
     /// The right pane moved on from the thread.
+    /// The channel of a post on screen: in the open thread, the channel or
+    /// the listing.
+    pub fn post_channel(&self, post_id: &str) -> Option<String> {
+        let thread = self.thread.as_ref().and_then(|(_, posts)| posts.as_deref());
+        let listing = self
+            .listing
+            .as_ref()
+            .and_then(|(_, posts)| posts.as_deref());
+        thread
+            .into_iter()
+            .chain(self.posts.as_deref())
+            .chain(listing)
+            .flat_map(|posts| posts.iter())
+            .find(|post| post.id == post_id)
+            .map(|post| post.channel_id.clone())
+    }
+
     pub fn close_thread(&mut self) {
         self.thread_typing.clear();
         if let Some((root_id, _)) = self.thread.take() {
@@ -1229,6 +1276,8 @@ impl Live {
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
             searching: posts.is_none(),
+            more: self.search_page.1,
+            loading_more: self.search_page.2,
             results: posts
                 .iter()
                 .flat_map(|posts| posts.iter())
@@ -1508,6 +1557,17 @@ impl Live {
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
             }
+            ChangeSet::Suggested { term, users } => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                }
+                let people = users
+                    .iter()
+                    .filter(|user| user.delete_at == 0)
+                    .map(|user| self.profile(user))
+                    .collect();
+                update.suggested = Some((term.clone(), people));
+            }
             ChangeSet::Draft {
                 channel_id,
                 root_id,
@@ -1520,11 +1580,30 @@ impl Live {
             ChangeSet::LinkResolved { query, answer } => {
                 update.link = Some((query.clone(), answer.clone()));
             }
-            ChangeSet::Search { terms, posts } => {
+            ChangeSet::Search {
+                terms,
+                page,
+                posts,
+                more,
+            } => {
                 if let Some((asked, results)) = self.search.as_mut()
                     && asked == terms
+                    && *page == self.search_page.0
                 {
-                    *results = Some(posts.clone());
+                    *results = Some(match (results.take(), page) {
+                        // A later page adds what earlier ones lacked.
+                        (Some(shown), 1..) => shown
+                            .iter()
+                            .chain(
+                                posts
+                                    .iter()
+                                    .filter(|post| shown.iter().all(|seen| seen.id != post.id)),
+                            )
+                            .cloned()
+                            .collect(),
+                        _ => posts.clone(),
+                    });
+                    self.search_page = (*page, *more, false);
                     update.search = self.search_model();
                 }
             }
@@ -1534,6 +1613,18 @@ impl Live {
                 {
                     *shown = Some(posts.clone());
                     update.listing = self.listing_content();
+                }
+                // The open channel's pins, fresh from the server, also
+                // correct the header's count.
+                if let matty_sync::Listing::Pinned { channel_id } = listing
+                    && self.is_open(channel_id)
+                    && let Some(stats) = self.stats.as_mut()
+                {
+                    let pinned = i64::try_from(posts.len()).unwrap_or(i64::MAX);
+                    if stats.pinnedpost_count != pinned {
+                        Arc::make_mut(stats).pinnedpost_count = pinned;
+                        update.details = self.shown_details();
+                    }
                 }
             }
             ChangeSet::Saved(ids) => {
@@ -1566,9 +1657,13 @@ impl Live {
             ChangeSet::Failed(matty_sync::CommandError::Server {
                 action: "search", ..
             }) => {
-                // Shown as no results rather than searching forever.
+                // Shown as no results rather than searching forever; a
+                // later page that failed keeps what came before.
                 if let Some((_, results)) = self.search.as_mut() {
-                    *results = Some(Arc::from(Vec::new()));
+                    if results.is_none() {
+                        *results = Some(Arc::from(Vec::new()));
+                    }
+                    self.search_page = (self.search_page.0, false, false);
                     update.search = self.search_model();
                 }
             }
@@ -1904,6 +1999,9 @@ impl Live {
                         }
                         if let Some(person) = &channel.dm_user {
                             row = row.handle(person.username.clone());
+                        } else if matches!(row.kind, ChannelKind::Public | ChannelKind::Private) {
+                            // `~` mentions and links use the URL name.
+                            row = row.handle(channel.name.clone());
                         }
                         if channel.unreads.messages > 0 {
                             row = row.unread();
@@ -2435,6 +2533,24 @@ mod tests {
         );
         // Another team's sidebar changing leaves the shown one alone.
         assert_eq!(live.apply(&t2).categories, None);
+    }
+
+    #[test]
+    fn a_channel_row_keeps_its_url_name_for_tilde_mentions() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let mut town = channel("c1", "O", 0, 0);
+        town.name = "town-square".into();
+        town.display_name = "Town Square".into();
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![town])]),
+        });
+        let row = &update.categories.unwrap()[0].rows[0];
+        assert_eq!(row.name.as_ref(), "Town Square");
+        assert_eq!(row.handle.as_deref(), Some("town-square"));
     }
 
     #[test]
@@ -3310,6 +3426,55 @@ mod tests {
     }
 
     #[test]
+    fn more_search_results_add_to_the_first_page() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let hit = |id: &str| matty_api::models::Post {
+            id: id.into(),
+            channel_id: "c1".into(),
+            ..Default::default()
+        };
+        live.search("lunch");
+        assert!(
+            live.search_more().is_none(),
+            "nothing to page before results"
+        );
+        let first = live
+            .apply(&ChangeSet::Search {
+                terms: "lunch".into(),
+                page: 0,
+                posts: Arc::from(vec![hit("p1"), hit("p2")]),
+                more: true,
+            })
+            .search
+            .unwrap();
+        assert!(first.more && !first.loading_more);
+        let asked = live.search_more().unwrap();
+        assert!(asked.loading_more);
+        assert!(live.search_more().is_none(), "one page at a time");
+        let model = live
+            .apply(&ChangeSet::Search {
+                terms: "lunch".into(),
+                page: 1,
+                posts: Arc::from(vec![hit("p2"), hit("p3")]),
+                more: false,
+            })
+            .search
+            .unwrap();
+        assert_eq!(
+            model
+                .results
+                .iter()
+                .map(|r| r.post.id.as_ref())
+                .collect::<Vec<_>>(),
+            ["p1", "p2", "p3"]
+        );
+        assert!(!model.more && !model.loading_more);
+    }
+
+    #[test]
     fn mention_terms_leave_out_channel_wide_mentions() {
         let keys = matty_notify::MentionKeys {
             username: "ada".into(),
@@ -3339,12 +3504,16 @@ mod tests {
             ..Default::default()
         };
         let stale = live.apply(&ChangeSet::Search {
+            page: 0,
+            more: false,
             terms: "lunc".into(),
             posts: Arc::from(vec![hit("p0", "town")]),
         });
         assert_eq!(stale.search, None);
         let model = live
             .apply(&ChangeSet::Search {
+                page: 0,
+                more: false,
                 terms: "lunch".into(),
                 posts: Arc::from(vec![hit("p1", "town"), hit("p2", "elsewhere")]),
             })

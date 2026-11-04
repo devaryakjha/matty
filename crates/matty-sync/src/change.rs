@@ -201,8 +201,12 @@ pub enum ChangeSet {
     Search {
         /// What was searched for.
         terms: String,
-        /// The posts that matched.
+        /// Which page of results, from 0.
+        page: u32,
+        /// The posts that matched on this page.
         posts: Arc<[Post]>,
+        /// A full page came back, so another may follow.
+        more: bool,
     },
     /// A listing of posts outside their channel: the answer to
     /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors
@@ -267,6 +271,15 @@ pub enum ChangeSet {
     LinkPreviews(bool),
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
+    /// Who matches a typed `@name`: the answer to
+    /// [`Command::SuggestPeople`](crate::Command::SuggestPeople), channel
+    /// members first. Empty when no one does or the server could not say.
+    Suggested {
+        /// What was asked.
+        term: String,
+        /// The matches.
+        users: Arc<[User]>,
+    },
     /// What a link in a message points at: the answer to
     /// [`Command::ResolveLink`](crate::Command::ResolveLink). `None` when
     /// it is gone or the user may not see it.

@@ -23,6 +23,7 @@ pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod forward;
 pub mod links;
 pub mod live;
 pub mod logging;

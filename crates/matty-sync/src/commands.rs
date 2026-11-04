@@ -148,6 +148,12 @@ pub(crate) enum Write {
     },
     /// Finds what a link names, which the cache did not know.
     Resolve(crate::LinkQuery),
+    /// Finds who matches a typed `@name`.
+    Suggest {
+        term: String,
+        team_id: Option<String>,
+        channel_id: Option<String>,
+    },
 }
 
 impl Write {
@@ -195,6 +201,7 @@ impl Write {
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
             Self::Resolve(_) => "open link",
+            Self::Suggest { .. } => "suggest people",
         }
     }
 
@@ -237,6 +244,7 @@ impl Write {
                 thread_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
+            Self::Suggest { term, .. } => term.clone(),
             Self::Resolve(query) => match query {
                 crate::LinkQuery::Post { post_id } => post_id.clone(),
                 crate::LinkQuery::Channel { name, .. } => name.clone(),
@@ -315,6 +323,29 @@ pub(crate) async fn run(
                     Err(error) => return Err(error),
                 };
                 Some(Loaded::Resolved { query, answer })
+            }
+            Write::Suggest {
+                term,
+                team_id,
+                channel_id,
+            } => {
+                // Suggestions are a nicety: a failure leaves the local ones
+                // rather than an error the user did not cause.
+                let users = match client
+                    .autocomplete_users(&term, team_id.as_deref(), channel_id.as_deref())
+                    .await
+                {
+                    Ok(found) => found
+                        .users
+                        .into_iter()
+                        .chain(found.out_of_channel)
+                        .collect(),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not suggest people");
+                        Vec::new()
+                    }
+                };
+                Some(Loaded::Suggested { term, users })
             }
             Write::Follow {
                 team_id,
@@ -500,9 +531,12 @@ pub(crate) async fn run(
             }
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
+                let posts: Vec<_> = results.list.ordered().cloned().collect();
                 Some(Loaded::Search {
-                    posts: results.list.ordered().cloned().collect(),
+                    more: posts.len() >= query.per_page as usize,
+                    posts,
                     terms: query.terms,
+                    page: query.page,
                 })
             }
             Write::CreateCategory { team_id, category } => {
