@@ -21,6 +21,7 @@ use crate::ui::{
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     menu::{Menu, MenuItem, MenuState},
     separator::Separator,
+    sortable::{Sortable, SortableGroup, SortableMove, SortableRow},
     theme::UiTheme,
     tooltip::text_tooltip,
 };
@@ -28,13 +29,79 @@ use crate::ui::{
 /// A saved server on the rail (#206).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Server {
+    /// What names the server for good, its data key; its name until set.
+    pub key: SharedString,
     /// Its `SiteName`, or its host.
     pub name: SharedString,
+    /// Some unmuted channel on the server is unread.
+    pub unread: bool,
+    /// Mentions of the user across the server.
+    pub mentions: usize,
 }
 
 impl Server {
     pub fn new(name: impl Into<SharedString>) -> Self {
-        Self { name: name.into() }
+        let name = name.into();
+        Self {
+            key: name.clone(),
+            name,
+            unread: false,
+            mentions: 0,
+        }
+    }
+
+    /// The server's data key, which keeps its place in the dragged list.
+    pub fn key(mut self, key: impl Into<SharedString>) -> Self {
+        self.key = key.into();
+        self
+    }
+
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread |= unread;
+        self
+    }
+
+    pub fn mentions(mut self, count: usize) -> Self {
+        self.mentions = count;
+        self.unread |= count > 0;
+        self
+    }
+}
+
+/// A rail button's unread dot or mention count, on its top-right corner
+/// with a ring in the rail's color so it stands off the button; the ring
+/// also keeps the badge from touching the next one.
+fn corner_badge(mentions: usize, unread: bool, theme: &UiTheme) -> Option<gpui_kit::Div> {
+    let corner = || {
+        div()
+            .absolute()
+            .top(px(-4.))
+            .right(px(-4.))
+            .border_2()
+            .border_color(theme.colors.sidebar)
+            .rounded_full()
+    };
+    if mentions > 0 {
+        Some(
+            corner().child(
+                Badge::count(mentions, 99)
+                    .h(theme.space(4.))
+                    .min_w(theme.space(4.))
+                    .px(theme.space(1.))
+                    .text_size(theme.text(10.))
+                    .line_height(theme.text(10.)),
+            ),
+        )
+    } else if unread {
+        Some(
+            corner()
+                .w(theme.space(3.))
+                .h(theme.space(3.))
+                .flex_shrink_0()
+                .bg(theme.colors.sidebar_foreground),
+        )
+    } else {
+        None
     }
 }
 
@@ -117,6 +184,9 @@ pub enum RailEvent {
     AddServer,
     /// The user confirmed removing the `n`th saved server and its data.
     RemoveServer(usize),
+    /// The user dragged the server at `from` to `to`, counted once it has
+    /// left `from`, or moved it with Alt+Shift+Up or Down.
+    MoveServer { from: usize, to: usize },
 }
 
 /// The rail's state and rendering. Sync fills the teams and their counts,
@@ -294,6 +364,10 @@ impl RailView {
                 cx.emit(RailEvent::SelectServer(index));
             }
         }));
+        // The shown server's counts are in its sidebar.
+        let badge = (!current)
+            .then(|| corner_badge(server.mentions, server.unread, &theme))
+            .flatten();
         div()
             .relative()
             .w_full()
@@ -304,6 +378,7 @@ impl RailView {
                     .id(gpui_kit::ElementId::Name(
                         format!("rail.server.{index}.tip").into(),
                     ))
+                    .relative()
                     .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
                     .on_mouse_down(
                         gpui_kit::MouseButton::Right,
@@ -311,7 +386,8 @@ impl RailView {
                             this.open_server_menu(index, event.position, window, cx)
                         }),
                     )
-                    .child(button),
+                    .child(button)
+                    .children(badge),
             )
             .when(current, |cell| {
                 cell.child(
@@ -325,6 +401,68 @@ impl RailView {
                         .bg(theme.colors.primary),
                 )
             })
+    }
+
+    /// The servers as a list that reorders by drag, or by Alt+Shift+Up and
+    /// Down on a focused server (#206).
+    fn sortable_servers(&self, cx: &mut Context<Self>) -> Sortable {
+        let view = cx.entity();
+        let rows = self
+            .servers
+            .iter()
+            .enumerate()
+            .map(|(index, server)| {
+                let (view, server) = (view.clone(), server.clone());
+                SortableRow::new(
+                    gpui_kit::ElementId::Name(format!("rail.server.drag.{}", server.key).into()),
+                    server.name.clone(),
+                    move |_: &mut Window, cx: &mut gpui_kit::App| {
+                        let gap = UiTheme::read(cx).space(2.);
+                        let button = view.update(cx, |this, cx| {
+                            this.server(index, &server, cx).into_any_element()
+                        });
+                        // The rail's own gap, inside the rows so a drag
+                        // can land between them.
+                        div()
+                            .w_full()
+                            .when(index > 0, |row| row.pt(gap))
+                            .child(button)
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let moved = view.downgrade();
+        Sortable::new("rail.servers", "Servers")
+            .w_full()
+            .group(
+                SortableGroup::new("rail.servers.group", "Servers")
+                    .header(|_, _| div())
+                    .rows(rows),
+            )
+            .on_reorder(move |movement, _, cx| {
+                moved
+                    .update(cx, |this, cx| this.move_server(movement, cx))
+                    .ok();
+            })
+    }
+
+    /// Moves a server on the rail at once and asks the window to save the
+    /// order; the shown server stays shown.
+    fn move_server(&mut self, movement: &SortableMove, cx: &mut Context<Self>) {
+        let (from, to) = (movement.from.index, movement.to.index);
+        if from == to || from >= self.servers.len() || to >= self.servers.len() {
+            return;
+        }
+        let current = self
+            .current_server
+            .and_then(|index| self.servers.get(index))
+            .map(|server| server.key.clone());
+        let server = self.servers.remove(from);
+        self.servers.insert(to, server);
+        self.current_server =
+            current.and_then(|key| self.servers.iter().position(|server| server.key == key));
+        cx.emit(RailEvent::MoveServer { from, to });
+        cx.notify();
     }
 
     /// "Remove {server}?": the server's sign-in and everything Matty keeps
@@ -412,17 +550,7 @@ impl RailView {
             None => team.initials().into_any_element(),
         })
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)));
-        // The badge sits on the square's top-right corner with a ring in the
-        // rail's color so it stands off the tile; the ring also keeps the
-        // badge from touching the next square.
-        let corner = |cell: gpui_kit::Div| {
-            cell.absolute()
-                .top(px(-4.))
-                .right(px(-4.))
-                .border_2()
-                .border_color(theme.colors.sidebar)
-                .rounded_full()
-        };
+        let badge = corner_badge(team.mentions, team.unread, &theme);
         let tip = name.clone();
         div()
             .relative()
@@ -437,27 +565,7 @@ impl RailView {
                     .relative()
                     .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
                     .child(button)
-                    .when(team.mentions > 0, |cell| {
-                        cell.child(
-                            corner(div()).child(
-                                Badge::count(team.mentions, 99)
-                                    .h(theme.space(4.))
-                                    .min_w(theme.space(4.))
-                                    .px(theme.space(1.))
-                                    .text_size(theme.text(10.))
-                                    .line_height(theme.text(10.)),
-                            ),
-                        )
-                    })
-                    .when(team.mentions == 0 && team.unread, |cell| {
-                        cell.child(
-                            corner(div())
-                                .w(theme.space(3.))
-                                .h(theme.space(3.))
-                                .flex_shrink_0()
-                                .bg(theme.colors.sidebar_foreground),
-                        )
-                    }),
+                    .children(badge),
             )
             .when(current, |cell| {
                 cell.child(
@@ -477,16 +585,12 @@ impl RailView {
 impl Render for RailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let servers: Vec<_> = if self.shows_servers() {
-            self.servers
-                .clone()
-                .iter()
-                .enumerate()
-                .map(|(index, server)| self.server(index, server, cx).into_any_element())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let servers = self.shows_servers().then(|| {
+            div()
+                .w_full()
+                .key_context(crate::actions::SIDEBAR_SORTABLE)
+                .child(self.sortable_servers(cx))
+        });
         let squares: Vec<_> = if self.shows_teams() {
             self.teams
                 .clone()
@@ -606,6 +710,27 @@ mod tests {
             assert_eq!(rail.current_server(), Some(1));
         });
         assert_eq!(initials("Matty Community"), "MC");
+    }
+
+    #[gpui_kit::test]
+    fn a_moved_server_keeps_the_shown_one_shown(cx: &mut gpui_kit::TestAppContext) {
+        let rail = cx.new(|cx| RailView::new(Vec::new(), None, cx));
+        let servers = vec![Server::new("A"), Server::new("B"), Server::new("C")];
+        rail.update(cx, |rail, cx| rail.set_servers(servers, Some(0), cx));
+        let moved = |from, to| SortableMove {
+            from: at(from),
+            to: at(to),
+        };
+        rail.update(cx, |rail, cx| rail.move_server(&moved(0, 2), cx));
+        rail.read_with(cx, |rail, _| {
+            let names: Vec<_> = rail.servers().iter().map(|s| s.name.to_string()).collect();
+            assert_eq!(names, ["B", "C", "A"]);
+            assert_eq!(rail.current_server(), Some(2));
+        });
+    }
+
+    fn at(index: usize) -> crate::ui::sortable::SortablePosition {
+        crate::ui::sortable::SortablePosition::new(0, index)
     }
 
     #[test]
