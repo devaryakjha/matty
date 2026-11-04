@@ -6,7 +6,10 @@
 //! Clicks come back through a delegate object, which is an Objective-C
 //! class of our own: defining one is the module's only `unsafe`.
 //!
-//! The dock badge (#141) needs no bundle, so it is set either way.
+//! The dock badge (#141) needs no bundle, so it is set either way, and so
+//! is the sound (#142): NSSound plays the system sound that stands in for
+//! the user's Mattermost sound, since the notification center can only
+//! play the default sound or files shipped inside the bundle.
 
 #![allow(unsafe_code)]
 
@@ -17,12 +20,12 @@ use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
-use objc2_app_kit::NSApplication;
+use objc2_app_kit::{NSApplication, NSSound};
 use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
-    UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
 use crate::backend::{Badge, Clicked, Logged};
@@ -137,8 +140,8 @@ impl Notifier for Center {
         content.setTitle(&NSString::from_str(&notification.title));
         content.setBody(&NSString::from_str(&notification.body));
         content.setThreadIdentifier(&NSString::from_str(&notification.channel_id));
-        if notification.sound {
-            content.setSound(Some(&UNNotificationSound::defaultSound()));
+        if let Some(sound) = notification.sound {
+            play(sound);
         }
         let id = Clicked::identifier_of(notification);
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
@@ -188,6 +191,9 @@ pub struct DockOnly;
 impl Notifier for DockOnly {
     fn show(&self, notification: &Notification) {
         Logged.show(notification);
+        if let Some(sound) = notification.sound {
+            play(sound);
+        }
     }
 
     fn withdraw(&self, channel_id: &str) {
@@ -197,6 +203,17 @@ impl Notifier for DockOnly {
     fn set_badge(&self, badge: Badge) {
         set_dock_badge(badge);
     }
+}
+
+/// Plays the system sound standing in for `sound`, restarting it when it is
+/// already playing. A missing system sound is logged and skipped.
+pub(crate) fn play(sound: crate::Sound) {
+    let Some(player) = NSSound::soundNamed(&NSString::from_str(sound.system_name())) else {
+        tracing::warn!(?sound, "the system sound is missing");
+        return;
+    };
+    player.stop();
+    player.play();
 }
 
 /// Puts `badge` on the dock icon. AppKit allows this only on the main

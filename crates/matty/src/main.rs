@@ -9,6 +9,9 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
+        // A Matty already running takes this launch's link, or only comes
+        // forward, and this one exits (#84).
+        None if matty_app::instance::forward(None) => ExitCode::SUCCESS,
         None => {
             matty_app::run();
             ExitCode::SUCCESS
@@ -23,13 +26,16 @@ fn main() -> ExitCode {
         }
         Some("--help" | "-h") => {
             println!(
-                "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help | <link>]\n\n    --offline    open the last account's cache without connecting\n    <link>       open a mattermost:// link, such as the SSO hand-off",
+                "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help | <link>]\n\n    --offline    open the last account's cache without connecting\n    <link>       open a matty:// or mattermost:// link: a channel, a post, or the SSO hand-off",
                 matty_app::VERSION
             );
             ExitCode::SUCCESS
         }
         // A deep link, such as the SSO hand-off a browser passes to
         // `matty mattermost://…` on systems that launch the handler.
+        Some(link) if link.contains("://") && matty_app::instance::forward(Some(link)) => {
+            ExitCode::SUCCESS
+        }
         Some(link) if link.contains("://") => {
             matty_app::run_with_links(vec![link.to_string()]);
             ExitCode::SUCCESS

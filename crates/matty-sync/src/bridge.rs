@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use matty_store::Store;
+use matty_store::demo::DemoAccount;
 use tokio::sync::mpsc;
 
 use crate::change::ChangeSet;
@@ -54,6 +55,9 @@ pub fn spawn(store: Store) -> io::Result<SyncHandle> {
 /// cache at `media`, when given (PLAN §6.5).
 pub fn spawn_at(path: PathBuf, media: Option<PathBuf>) -> io::Result<SyncHandle> {
     let media = media.map(matty_store::media::MediaCache::new);
+    // The browser has no files; images stay in the database in memory.
+    #[cfg(target_family = "wasm")]
+    let media = media.or(Some(matty_store::media::MediaCache::in_database()));
     start(
         move || match Store::open(&path) {
             Ok(store) => store,
@@ -64,6 +68,21 @@ pub fn spawn_at(path: PathBuf, media: Option<PathBuf>) -> io::Result<SyncHandle>
         },
         media,
     )
+}
+
+/// [`spawn`] over the web demo's sample workspace: `snapshot` is a file
+/// `matty-demo` wrote. It opens in memory with its times moved to now, and
+/// nothing in it reaches a server. `None` when it is not such a file.
+pub fn spawn_demo(snapshot: &[u8]) -> io::Result<Option<(SyncHandle, DemoAccount)>> {
+    let opened = matty_store::demo::open(snapshot).map_err(io::Error::other)?;
+    let Some((store, account)) = opened else {
+        return Ok(None);
+    };
+    let sync = start(
+        move || store,
+        Some(matty_store::media::MediaCache::in_database()),
+    )?;
+    Ok(Some((sync, account)))
 }
 
 /// On the web the engine runs on the page's event loop: the browser has

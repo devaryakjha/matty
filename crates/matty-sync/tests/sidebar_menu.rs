@@ -458,3 +458,72 @@ async fn categories_and_channels_move_up_and_down() {
     assert_eq!(moved["channel_ids"], json!(["c1", "c3", "c2"]));
     assert_eq!(moved["sorting"], "manual");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dragged_channels_and_categories_land_where_they_are_dropped() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "categories": [
+                {"id": "cat", "team_id": "t1", "type": "channels", "display_name": "Channels",
+                 "sorting": "alpha", "channel_ids": ["c1", "c2", "c3"]},
+                {"id": "mine", "team_id": "t1", "type": "custom", "display_name": "Mine",
+                 "channel_ids": ["c4"]},
+                {"id": "dms", "team_id": "t1", "type": "direct_messages", "display_name": "DMs",
+                 "channel_ids": []}
+            ],
+            "order": ["cat", "mine", "dms"]
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/me/teams/t1/channels/categories/order"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(["dms", "cat", "mine"])))
+        .mount(&server)
+        .await;
+    let (sync, _changes) = connected(&server).await;
+
+    // Already in place: nothing is sent.
+    sync.send(Command::PlaceChannel {
+        channel_id: "c1".into(),
+        category_id: "cat".into(),
+        index: 0,
+    });
+    // Into another category, between its rows.
+    sync.send(Command::PlaceChannel {
+        channel_id: "c2".into(),
+        category_id: "mine".into(),
+        index: 1,
+    });
+    // A category to the top.
+    sync.send(Command::PlaceCategory {
+        category_id: "dms".into(),
+        index: 0,
+    });
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = category_requests(&server).await;
+        if sent.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    let order = sent.iter().find(|(_, p, _)| p.ends_with("/order")).unwrap();
+    assert_eq!(order.2, json!(["dms", "cat", "mine"]));
+    let moved = &sent
+        .iter()
+        .find(|(_, p, _)| !p.ends_with("/order"))
+        .unwrap()
+        .2[0];
+    assert_eq!(moved["id"], "mine");
+    assert_eq!(moved["channel_ids"], json!(["c4", "c2"]));
+    assert_eq!(moved["sorting"], "manual");
+}

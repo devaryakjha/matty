@@ -7,7 +7,7 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -28,6 +28,9 @@ pub struct Team {
     pub unread: bool,
     /// Mentions of the user across the team's channels.
     pub mentions: usize,
+    /// The team's `last_team_icon_update`; 0 when it has no icon, and the
+    /// square shows initials.
+    pub icon: i64,
 }
 
 impl Team {
@@ -37,7 +40,25 @@ impl Team {
             name: name.into(),
             unread: false,
             mentions: 0,
+            icon: 0,
         }
+    }
+
+    /// The team's icon version, from its `last_team_icon_update`.
+    pub fn icon(mut self, last_team_icon_update: i64) -> Self {
+        self.icon = last_team_icon_update;
+        self
+    }
+
+    /// The team's icon, once sync has it (#153). Learning the version here
+    /// asks for a changed icon the first time the rail draws it.
+    fn icon_image(&self, cx: &gpui_kit::App) -> Option<std::sync::Arc<gpui_kit::Image>> {
+        if self.icon <= 0 {
+            return None;
+        }
+        let icons = cx.try_global::<crate::avatars::TeamIcons>()?;
+        icons.learn(&self.id, self.icon);
+        icons.image(&self.id)
     }
 
     pub fn unread(mut self) -> Self {
@@ -159,7 +180,14 @@ impl RailView {
                 .text_color(theme.colors.sidebar_foreground)
         })
         .type_style(style::UI_STRONG, &theme)
-        .child(team.initials())
+        .child(match team.icon_image(cx) {
+            Some(icon) => gpui_kit::img(icon)
+                .size_full()
+                .rounded(theme.radius.lg)
+                .object_fit(gpui_kit::ObjectFit::Cover)
+                .into_any_element(),
+            None => team.initials().into_any_element(),
+        })
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)));
         // The badge sits on the square's top-right corner with a ring in the
         // rail's color so it stands off the tile; the ring also keeps the

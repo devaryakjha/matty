@@ -30,7 +30,8 @@ fn keys_name_the_kind_and_version() {
         "file/f1/preview"
     );
     assert_eq!(media::file_key("f1", FileVariant::Full), "file/f1/full");
-    assert_eq!(media::emoji_key("e1"), "emoji/e1");
+    assert_eq!(media::emoji_key("e1", 5), "emoji/e1/5");
+    assert_eq!(media::team_icon_key("t1", 7), "team/t1/7");
 }
 
 #[test]
@@ -61,7 +62,7 @@ fn get_updates_last_access() {
     let store = Store::open_in_memory().unwrap();
     let conn = store.conn();
     let cache = MediaCache::new(dir.path());
-    let (a, b) = (media::emoji_key("a"), media::emoji_key("b"));
+    let (a, b) = (media::emoji_key("a", 0), media::emoji_key("b", 0));
     cache.put(conn, &a, b"a", "image/png").unwrap();
     cache.put(conn, &b, b"b", "image/png").unwrap();
     assert!(accessed(conn, &a) < accessed(conn, &b));
@@ -129,4 +130,26 @@ fn remote_keys_are_short_stable_and_distinct() {
         key,
         matty_store::media::remote_key("https://example.com/b.png")
     );
+}
+
+#[test]
+fn a_cache_in_the_database_round_trips_and_forgets() {
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let cache = MediaCache::in_database();
+    let key = media::avatar_key("u1", 7);
+
+    assert!(cache.dir().is_none());
+    assert!(cache.get(conn, &key).unwrap().is_none());
+    cache.put(conn, &key, b"picture", "image/png").unwrap();
+    let got = cache.get(conn, &key).unwrap().unwrap();
+    assert_eq!(got.bytes, b"picture");
+    assert_eq!(got.content_type, "image/png");
+
+    cache.remove(conn, &key).unwrap();
+    assert!(cache.get(conn, &key).unwrap().is_none());
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_bytes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
 }

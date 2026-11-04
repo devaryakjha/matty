@@ -28,14 +28,16 @@ mod wake;
 #[cfg(target_family = "wasm")]
 mod web;
 
-pub use bridge::{SyncHandle, spawn, spawn_at};
+pub use bridge::{SyncHandle, spawn, spawn_at, spawn_demo};
 pub use change::{
     Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, LinkAnswer, LinkQuery,
-    Listing, POSTS_WINDOW, UploadState,
+    Listing, POSTS_WINDOW, Picture, UploadState,
 };
 pub use engine::Command;
 /// Where an account's database lives.
 pub use matty_store::default_path as database_path;
+/// Whose workspace the web demo's snapshot is.
+pub use matty_store::demo::DemoAccount;
 /// Deletes an account's database and media cache after sign out.
 pub use matty_store::forget as forget_account;
 /// Where an account's media cache lives.

@@ -45,7 +45,7 @@ use crate::ui::{
         message_action, message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
-    popover::popover,
+    popover::{hover_popover, popover},
     skeleton::Skeleton,
     spinner::Spinner,
     theme::UiTheme,
@@ -146,6 +146,15 @@ pub fn waiting_to_send(post: &Post, away: bool) -> bool {
 /// when back online" show even in a run of the user's own posts.
 pub fn queued(post: &Post, away: bool) -> bool {
     post.status == PostStatus::Pending && away
+}
+
+/// Whether the user may delete the post: their own, sent or waiting to
+/// send, or anyone's sent post when `delete_others` (#106).
+pub(crate) fn deletable(post: &Post, away: bool, delete_others: bool) -> bool {
+    if post.mine {
+        return post.status == PostStatus::Sent || waiting_to_send(post, away);
+    }
+    delete_others && post.status == PostStatus::Sent && post.kind == PostKind::Regular
 }
 
 /// The clock in a queued post's header (#195).
@@ -550,6 +559,11 @@ pub struct ChannelModel {
     /// The user may archive the channel or make it private: a channel or
     /// system admin (#208). The server has the last word.
     pub can_manage: bool,
+    /// The user may delete other people's posts: a system admin, as
+    /// Mattermost's default `delete_others_posts` allows (#106). Team
+    /// admins may too, but their role is not kept. The server has the
+    /// last word.
+    pub delete_others: bool,
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
@@ -1140,8 +1154,9 @@ pub struct ChannelView {
     /// The banner says the user is offline: actions that need the server
     /// are refused before the transcript changes (#163).
     offline: bool,
-    /// Posts whose preview images the user collapsed (#187), as the web
-    /// app's per-post toggle; they expand again with the toggle.
+    /// Part of every profile card's id: bumping it after a card's action
+    /// closes the card, since a new id starts closed.
+    profile_cards: usize,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1220,7 +1235,9 @@ impl ChannelView {
                         })
                         .unwrap_or(false);
                 }
-                if keystroke.key != "up" {
+                // Up and Shift+Up only: Alt+Shift+Up is the unread jump.
+                let mods = &keystroke.modifiers;
+                if keystroke.key != "up" || mods.alt || mods.control || mods.platform {
                     return false;
                 }
                 keys.update(cx, |this, cx| {
@@ -1421,6 +1438,7 @@ impl ChannelView {
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
+            profile_cards: 0,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1901,22 +1919,15 @@ impl ChannelView {
 
     /// Sync loaded the channel's header, purpose and counts; the scroll
     /// stays where it is.
-    pub fn set_details(
-        &mut self,
-        header: Option<SharedString>,
-        purpose: Option<SharedString>,
-        members: usize,
-        pinned: usize,
-        can_manage: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_details(&mut self, details: crate::live::Details, cx: &mut Context<Self>) {
         if let Some(model) = self.model.as_mut() {
-            model.header = header;
-            model.purpose = purpose;
-            model.members = members;
-            model.pinned = pinned;
-            let menu_changed = model.can_manage != can_manage;
-            model.can_manage = can_manage;
+            model.header = details.header;
+            model.purpose = details.purpose;
+            model.members = details.members;
+            model.pinned = details.pinned;
+            let menu_changed = model.can_manage != details.can_manage;
+            model.can_manage = details.can_manage;
+            model.delete_others = details.delete_others;
             if menu_changed {
                 let model = self.model.clone();
                 self.refresh_header_menu(model.as_ref(), cx);
@@ -2928,7 +2939,12 @@ impl ChannelView {
 
     /// The "More" menu. A post the server does not have yet only offers
     /// its text, plus Edit and Discard while it waits to send (#195).
-    fn more_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn more_items_for(
+        post: &Post,
+        away: bool,
+        delete_others: bool,
+        cx: &Context<Self>,
+    ) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: SharedString, run: MenuAction| {
@@ -3054,15 +3070,19 @@ impl ChannelView {
                 })
             }),
         ));
+        if post.mine || deletable(post, away, delete_others) {
+            items.push(MenuItem::separator());
+        }
         if post.mine {
             let edit_id = id.clone();
-            let delete_id = id.clone();
-            items.push(MenuItem::separator());
             items.push(act(
                 "edit",
                 "Edit".into(),
                 Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
             ));
+        }
+        if deletable(post, away, delete_others) {
+            let delete_id = id.clone();
             items.push(act(
                 "delete",
                 "Delete…".into(),
@@ -3074,10 +3094,15 @@ impl ChannelView {
 
     /// The right-click menu: reply and react first, then everything the
     /// "More" button offers, with "Mark as unread" after Save.
-    fn context_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn context_items_for(
+        post: &Post,
+        away: bool,
+        delete_others: bool,
+        cx: &Context<Self>,
+    ) -> Vec<MenuItem> {
         // The server does not have it yet: nothing to reply to or react to.
         if post.status != PostStatus::Sent {
-            return Self::more_items_for(post, away, cx);
+            return Self::more_items_for(post, away, delete_others, cx);
         }
         let view = cx.entity().downgrade();
         let id = post.id.clone();
@@ -3107,7 +3132,7 @@ impl ChannelView {
             ),
             MenuItem::separator(),
         ];
-        let more = Self::more_items_for(post, away, cx);
+        let more = Self::more_items_for(post, away, delete_others, cx);
         // `more` is copy, copy as Markdown, copy link, pin, save, then the
         // owner's edit and delete.
         let (keep, own) = more.split_at(5.min(more.len()));
@@ -3637,6 +3662,7 @@ impl ChannelView {
         id: SharedString,
         post: &Post,
         profile: Option<&UserProfile>,
+        card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let initial: String = post.author.chars().take(1).collect();
@@ -3663,43 +3689,46 @@ impl ChannelView {
             .ring_color(theme.colors.background);
         let view = cx.entity().downgrade();
         let card_id = id.clone();
-        popover(gpui_kit::ElementId::Name(
-            format!("post.{id}.profile").into(),
-        ))
-        .offset(px(4.))
-        .trigger_with(move |_, _, _| {
-            div()
-                .id(gpui_kit::ElementId::Name(
-                    format!("post.{id}.avatar.trigger").into(),
-                ))
-                .cursor_pointer()
-                .child(avatar)
-                .into_any_element()
-        })
-        .content(move |_, _, cx| {
-            let (message_view, mention_view) = (view.clone(), view.clone());
-            let (message_profile, mention_profile) = (profile.clone(), profile.clone());
-            let (close_message, close_mention, close_view) =
-                (cx.entity(), cx.entity(), cx.entity());
-            let (view_view, view_profile) = (view.clone(), profile.clone());
+        let label = crate::style::presence_name(&post.author, profile.presence);
+        // Resting on the avatar opens the card; a click or Enter pins it
+        // (gpuicn's hover popover, #118).
+        hover_popover(
+            gpui_kit::ElementId::Name(format!("post.{id}.profile.{card}").into()),
+            label,
+        )
+        .trigger(avatar)
+        .content(move |_, cx| {
+            let (message_view, mention_view, view_view) =
+                (view.clone(), view.clone(), view.clone());
+            let (message_profile, mention_profile, view_profile) =
+                (profile.clone(), profile.clone(), profile.clone());
+            // Each action closes the card by giving it a fresh id.
+            let close = |this: &mut Self, cx: &mut Context<Self>| {
+                this.profile_cards += 1;
+                cx.notify();
+            };
             profile_card(
                 &card_id,
                 &profile,
                 ProfileActions {
-                    on_message: Box::new(move |window, cx| {
-                        close_message.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_message: Box::new(move |_, cx| {
                         let event = ChannelEvent::OpenDirect {
                             user_id: message_profile.user_id.clone(),
                             username: message_profile.username.clone(),
                             display_name: message_profile.display_name.clone(),
                         };
-                        message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        message_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     }),
                     on_mention: Box::new(move |window, cx| {
-                        close_mention.update(cx, |state, cx| state.dismiss(window, cx));
                         let text = format!("@{} ", mention_profile.username);
                         mention_view
                             .update(cx, |this, cx| {
+                                close(this, cx);
                                 this.composer.update(cx, |composer, cx| {
                                     composer.insert(text, window, cx);
                                     composer.focus(window, cx);
@@ -3707,10 +3736,14 @@ impl ChannelView {
                             })
                             .ok();
                     }),
-                    on_view: Some(Box::new(move |window, cx| {
-                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                    on_view: Some(Box::new(move |_, cx| {
                         let event = ChannelEvent::ViewProfile(view_profile.clone());
-                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        view_view
+                            .update(cx, |this, cx| {
+                                close(this, cx);
+                                cx.emit(event);
+                            })
+                            .ok();
                     })),
                 },
                 cx,
@@ -3724,16 +3757,22 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed): (bool, bool, bool),
+        (menu_open, away, previews_collapsed, delete_others, profile_card): (
+            bool,
+            bool,
+            bool,
+            bool,
+            usize,
+        ),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
-        let avatar = Self::avatar(id.clone(), post, profile, cx);
+        let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, away, cx);
+        let more_items = Self::more_items_for(post, away, delete_others, cx);
         let save_id = id.clone();
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
@@ -3833,7 +3872,7 @@ impl ChannelView {
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .on_reaction(move |emoji, _, cx| {
@@ -3960,7 +3999,7 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, away, cx);
+        let context_items = Self::context_items_for(post, away, delete_others, cx);
         div()
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
@@ -4274,6 +4313,8 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let delete_others =
+                            this.model.as_ref().is_some_and(|model| model.delete_others);
                         let previews_collapsed = SettingsStore::global(cx)
                             .read(cx)
                             .get()
@@ -4283,7 +4324,13 @@ impl ChannelView {
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away, previews_collapsed),
+                            (
+                                menu_open,
+                                away,
+                                previews_collapsed,
+                                delete_others,
+                                this.profile_cards,
+                            ),
                             cx,
                         )
                         .into_any_element()
@@ -4385,8 +4432,11 @@ impl ChannelView {
                 self.start_edit(id, window, cx);
             }
             "delete" | "backspace"
-                if post.mine
-                    && (post.status == PostStatus::Sent || waiting_to_send(&post, self.away)) =>
+                if deletable(
+                    &post,
+                    self.away,
+                    self.model.as_ref().is_some_and(|model| model.delete_others),
+                ) =>
             {
                 self.ask_delete(id, window, cx)
             }
@@ -5259,6 +5309,31 @@ mod tests {
     }
 
     #[test]
+    fn admins_may_delete_other_peoples_posts() {
+        let theirs = post("p1", "Today");
+        let mine = Post {
+            mine: true,
+            ..post("p2", "Today")
+        };
+        // A member deletes only their own.
+        assert!(deletable(&mine, false, false));
+        assert!(!deletable(&theirs, false, false));
+        // A system admin deletes anyone's sent post.
+        assert!(deletable(&theirs, false, true));
+        // Not a system row, and not someone else's post still sending.
+        let system = Post {
+            kind: PostKind::System { activity: false },
+            ..post("p3", "Today")
+        };
+        assert!(!deletable(&system, false, true));
+        let sending = Post {
+            status: PostStatus::Pending,
+            ..post("p4", "Today")
+        };
+        assert!(!deletable(&sending, false, true));
+    }
+
+    #[test]
     fn only_a_waiting_send_of_ones_own_can_be_changed() {
         let mine = |status| Post {
             mine: true,
@@ -5313,6 +5388,7 @@ mod tests {
             posts: vec![],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5380,6 +5456,7 @@ mod tests {
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5486,6 +5563,7 @@ mod tests {
             posts: vec![mine],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5552,6 +5630,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -5593,6 +5672,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -5653,6 +5733,7 @@ mod tests {
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         assert_eq!(
             channel.rows(),
@@ -5695,6 +5776,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),

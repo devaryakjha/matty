@@ -358,6 +358,23 @@ pub fn upsert_emoji(conn: &Connection, emoji: &[Emoji]) -> Result<()> {
     Ok(())
 }
 
+/// The custom emoji not deleted, by name.
+pub fn custom_emoji(conn: &Connection) -> Result<Vec<Emoji>> {
+    let mut statement = conn.prepare_cached(
+        "SELECT id, name, creator_id, update_at FROM emoji WHERE delete_at = 0 ORDER BY name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(Emoji {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            creator_id: row.get(2)?,
+            update_at: row.get(3)?,
+            ..Emoji::default()
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Which counts unread math reads (PLAN §6.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnreadMode {
