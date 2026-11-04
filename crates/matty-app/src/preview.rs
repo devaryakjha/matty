@@ -1025,6 +1025,7 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
     [
         ("desktop", "mention"),
         ("mention_keys", "arya,@arya,release,design review"),
+        ("highlight_keys", "incident"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
