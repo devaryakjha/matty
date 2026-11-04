@@ -8,7 +8,8 @@
 
 use gpui_kit::{
     App, ElementId, FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, Rgba, SharedString, StatefulInteractiveElement as _, Styled, div, px, rgb,
+    Pixels, Rgba, SharedString, StatefulInteractiveElement as _, Styled, div,
+    prelude::FluentBuilder as _, px, rgb,
 };
 
 use gpui_icons::{LucideIcon, lucide};
@@ -289,11 +290,26 @@ pub fn tipped(
     child: impl IntoElement,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let tip: SharedString = tip.into();
+    tipped_when(true, id, tip, child)
+}
+
+/// [`tipped`] whose tooltip is attached only while `show` is true. Pass
+/// `false` while a menu or popover opened from the control is showing, so
+/// the tooltip does not linger over it.
+pub fn tipped_when(
+    show: bool,
+    id: impl Into<ElementId>,
+    tip: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let tip: SharedString = tip.into();
     div()
         .id(id)
         .flex()
         .flex_shrink_0()
-        .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
+        .when(show, |this| {
+            this.tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
+        })
         .child(child)
 }
 
