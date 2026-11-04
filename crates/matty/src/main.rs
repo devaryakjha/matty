@@ -18,13 +18,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {
-            println!("matty {}", env!("CARGO_PKG_VERSION"));
+            println!("matty {}", matty_app::VERSION);
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") => {
             println!(
                 "matty {}\n\nUSAGE:\n    matty [--offline | --version | --help | <link>]\n\n    --offline    open the last account's cache without connecting\n    <link>       open a mattermost:// link, such as the SSO hand-off",
-                env!("CARGO_PKG_VERSION")
+                matty_app::VERSION
             );
             ExitCode::SUCCESS
         }

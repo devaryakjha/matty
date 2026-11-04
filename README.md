@@ -6,7 +6,8 @@ component library. The goal is a client that opens instantly, switches
 channels without a spinner, and stays usable offline.
 
 > **Status: early alpha.** Matty is under active development toward its first
-> milestone (M1). There are no releases yet: build it from source. The plan of
+> milestone (M1). There are no releases yet: build it from source (see
+> [Install](#install) for what releases will look like). The plan of
 > record is [docs/PLAN.md](docs/PLAN.md), and work is tracked in
 > [GitHub issues](https://github.com/devaryakjha/matty/issues).
 
@@ -62,6 +63,54 @@ below) at 1200×800.
 Desktop notifications, the image viewer, link previews and signed release
 builds are next. See the [M1 milestones](docs/PLAN.md) for the full list.
 
+## Install
+
+Matty is an unofficial client for Mattermost, not made or endorsed by
+Mattermost, Inc. Releases are published on
+[GitHub Releases](https://github.com/devaryakjha/matty/releases); the first
+one comes with the M1 beta.
+
+**macOS 13 or later, Apple silicon or Intel.** Download `Matty-<version>.dmg`
+from the latest release, open it and drag Matty to Applications. Each release
+lists the files' SHA-256 checksums in `SHA256SUMS`:
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Or install with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask devaryakjha/matty/matty
+```
+
+Matty updates itself, so `brew upgrade` leaves it alone unless you pass
+`--greedy`. `brew uninstall --zap --cask matty` also removes its settings,
+cache and logs. Your sign-in tokens stay in the keychain under "Matty" until
+you sign out or delete them in Keychain Access.
+
+Windows and Linux builds come later (M2); until then, build from source.
+
+### Supported servers
+
+The current Mattermost release and the extended support releases still
+getting patches. CI tests against Mattermost 12.0, 11.7, 10.11 and 10.5.
+
+### Known limitations
+
+- Webapp plugins (Boards, Playbooks and other plugin UIs) can't run in a
+  native client. Their posts show a card with "Open in browser".
+- Calls isn't supported; call posts open in the browser.
+- The System Console isn't in Matty; use the web app.
+
+### Reporting problems
+
+[Open an issue](https://github.com/devaryakjha/matty/issues/new) with your
+Matty version (`/Applications/Matty.app/Contents/MacOS/matty --version`),
+your macOS version and your Mattermost server version. Preferences has a
+button that opens the logs folder. Logs leave out tokens and message text
+by default, but look before you attach one.
+
 ## Building
 
 Matty builds with the Rust toolchain pinned in `rust-toolchain.toml`
@@ -88,6 +137,10 @@ URL schemes, so it can sit next to a release install:
 ```sh
 scripts/dev-bundle && open "target/Matty Dev.app"
 ```
+
+`scripts/release-bundle` builds the universal release bundle,
+`target/dist/Matty.app`, for Apple silicon and Intel. It needs both Rust
+targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
 ## Development
 

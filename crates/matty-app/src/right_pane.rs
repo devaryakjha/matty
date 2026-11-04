@@ -48,6 +48,8 @@ pub const UPLOAD_PREFIX: &str = "thread-upload";
 /// A thread: its root post and the replies loaded for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadModel {
+    /// The thread's channel, where its reply draft belongs.
+    pub channel_id: SharedString,
     pub channel_name: SharedString,
     pub root: Post,
     pub replies: Vec<Post>,
@@ -160,6 +162,10 @@ pub enum RightPaneContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
     Close,
+    /// "Remove from channel" on a member in the channel info (#208).
+    RemoveMember {
+        user_id: SharedString,
+    },
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
     Search(SharedString),
@@ -204,6 +210,9 @@ pub enum RightPaneEvent {
     /// The reply draft has this link; sync asks the server for its
     /// preview and calls `set_link_preview` (#188).
     PreviewLink(SharedString),
+    /// The reply draft changed, after a pause in typing, on leaving the
+    /// thread or on sending; sync stores it (#114).
+    SaveDraft(crate::composer_draft::DraftSave),
     /// Retry a reply that failed; the pane shows it pending again.
     Retry(SharedString),
     /// The user edited a reply waiting to send; it goes with this text
@@ -287,7 +296,18 @@ pub struct RightPaneView {
     menu: Entity<MenuState>,
     /// The current user's display name, for optimistic rows.
     me: SharedString,
+    /// People the thread's authors are looked up in for their presence
+    /// dots (#135); the window keeps it in step with the channel's.
+    profiles: Vec<UserProfile>,
+    /// Who is typing a reply in the thread (#137).
+    typing: Vec<SharedString>,
     draft_len: usize,
+    /// Which thread's draft the composer holds, and what was saved of it.
+    draft: crate::composer_draft::ComposerDraft,
+    _draft_task: Option<gpui_kit::Task<()>>,
+    /// This pane's window, to put a thread's draft in the composer once the
+    /// pane switches threads.
+    window: gpui_kit::AnyWindowHandle,
     /// The preview above the reply composer (#188).
     link: crate::draft_link::DraftLink,
     /// Files waiting to go with the reply, and a reply waiting on them.
@@ -412,6 +432,7 @@ impl RightPaneView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let subscriptions =
             vec![
@@ -425,6 +446,10 @@ impl RightPaneView {
                             let text = composer.read(cx).value(cx);
                             this.draft_len = text.chars().count();
                             this.draft_changed(&text, cx);
+                            // A restored draft is not the user typing.
+                            if !this.draft.is_saved(&text) {
+                                this.schedule_draft_save(cx);
+                            }
                             cx.notify();
                         }
                         ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
@@ -457,7 +482,12 @@ impl RightPaneView {
             loading_older: false,
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
+            profiles: Vec::new(),
+            typing: Vec::new(),
             draft_len: 0,
+            draft: Default::default(),
+            _draft_task: None,
+            window: window.window_handle(),
             link: Default::default(),
             tray: UploadTray::new(UPLOAD_PREFIX),
             _link_task: None,
@@ -632,6 +662,10 @@ impl RightPaneView {
         thread.replies.push(reply);
         let content = self.content.clone();
         self.set_content(content, cx);
+        self._draft_task = None;
+        if let Some(cleared) = self.draft.sent(cx) {
+            cx.emit(RightPaneEvent::SaveDraft(cleared));
+        }
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
@@ -713,14 +747,25 @@ impl RightPaneView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.tray.uploads().iter().any(|upload| upload.id == id) {
+            // A file in another thread's draft.
+            if let Some(save) = crate::composer_draft::DraftBook::set_upload_status(id, status, cx)
+            {
+                cx.emit(RightPaneEvent::SaveDraft(save));
+            }
+            return;
+        }
         if self.tray.set_status(id, status) {
             self.send_queued(window, cx);
+        } else if status == AttachmentStatus::Ready {
+            self.schedule_draft_save(cx);
         }
         cx.notify();
     }
 
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
+        self.schedule_draft_save(cx);
         cx.emit(RightPaneEvent::CancelUpload(id.clone()));
         if due {
             self.send_queued(window, cx);
@@ -1053,16 +1098,103 @@ impl RightPaneView {
         if !same_thread {
             self.link = Default::default();
             self._link_task = None;
-            // The files were for the other thread's channel.
-            for upload in self.tray.take() {
-                cx.emit(RightPaneEvent::CancelUpload(upload.id));
-            }
             self.editing = None;
         }
         self.content = content;
         self.selection = None;
         self.loading_older = false;
+        let key = self.draft_key();
+        let moved = self.draft.key() != key.as_ref();
+        if moved
+            && self
+                .draft
+                .switches_quietly(key.as_ref(), &self.composer, cx)
+        {
+            // Nothing typed and nothing to restore: switch now, without
+            // touching the window (an update there redraws it).
+            self.switch_draft(key, None, cx);
+        } else if moved {
+            // The composer needs the window to change its text.
+            let window = self.window;
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                window
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.sync_draft(window, cx))
+                    })
+                    .ok();
+            });
+        }
         cx.notify();
+    }
+
+    /// Where the composer's draft belongs: the shown thread.
+    fn draft_key(&self) -> Option<crate::composer_draft::DraftKey> {
+        match &self.content {
+            Some(RightPaneContent::Thread(thread)) => {
+                Some(crate::composer_draft::DraftKey::thread(
+                    thread.channel_id.clone(),
+                    thread.root.id.clone(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Puts the composer on the shown thread's draft, saving the one it
+    /// leaves.
+    fn sync_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.draft_key();
+        if self.draft.key() == key.as_ref() {
+            return;
+        }
+        self.switch_draft(key, Some(window), cx);
+    }
+
+    fn switch_draft(
+        &mut self,
+        key: Option<crate::composer_draft::DraftKey>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        self._draft_task = None;
+        let left = self
+            .draft
+            .switch(key, &self.composer, &mut self.tray, window, cx);
+        if let Some(left) = left {
+            cx.emit(RightPaneEvent::SaveDraft(left));
+        }
+        self.draft_len = self.composer.read(cx).value(cx).chars().count();
+        cx.notify();
+    }
+
+    /// Saves the reply draft once typing pauses (#114).
+    fn schedule_draft_save(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::composer_draft::SAVE_PAUSE)
+                .await;
+            this.update(cx, |this, cx| this.save_draft(cx)).ok();
+        }));
+    }
+
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = None;
+        if let Some(save) = self.draft.save(&self.composer, &self.tray, cx) {
+            cx.emit(RightPaneEvent::SaveDraft(save));
+        }
+    }
+
+    /// The thread's draft changed elsewhere; the composer follows unless
+    /// the user has typed since it was saved.
+    pub fn refresh_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .draft
+            .refresh(&self.composer, &mut self.tray, window, cx)
+        {
+            self.draft_len = self.composer.read(cx).value(cx).chars().count();
+            cx.notify();
+        }
     }
 
     /// Sync's latest of the open thread. The same thread keeps its scroll
@@ -1467,6 +1599,57 @@ impl RightPaneView {
             )
     }
 
+    /// Who is typing a reply in the open thread.
+    pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
+        if self.typing != names {
+            self.typing = names;
+            cx.notify();
+        }
+    }
+
+    /// Keeps the people whose presence the thread's avatars show.
+    pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
+        if self.profiles != profiles {
+            self.profiles = profiles;
+            cx.notify();
+        }
+    }
+
+    /// A post's avatar, with the author's presence dot when the author is
+    /// a known person (#135).
+    fn avatar(
+        id: &str,
+        post: &Post,
+        presence: Option<Presence>,
+        initial: String,
+        cx: &App,
+    ) -> gpui_kit::AnyElement {
+        let avatar = crate::avatars::with_picture(
+            Avatar::new(gpui_kit::ElementId::Name(
+                format!("thread.{id}.avatar").into(),
+            ))
+            .size(AvatarSize::Default)
+            .fallback(initial),
+            &post.author_id,
+            cx,
+        );
+        let Some(presence) = presence else {
+            return avatar.aria_label(post.author.clone()).into_any_element();
+        };
+        let theme = UiTheme::read(cx);
+        div()
+            .relative()
+            .child(avatar.aria_label(style::presence_name(&post.author, presence)))
+            .child(style::presence_dot(
+                presence,
+                scaled(theme, 10.),
+                theme.colors.background,
+                theme,
+                &Palette::read(cx),
+            ))
+            .into_any_element()
+    }
+
     fn post_row(
         view: &gpui_kit::WeakEntity<Self>,
         post: &Post,
@@ -1476,6 +1659,13 @@ impl RightPaneView {
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        let presence = view.upgrade().and_then(|pane| {
+            pane.read(cx)
+                .profiles
+                .iter()
+                .find(|profile| profile.display_name == post.author)
+                .map(|profile| profile.presence)
+        });
         let time = post_time(post, away, cx);
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
@@ -1513,16 +1703,7 @@ impl RightPaneView {
             .continuation(post.continues && !root && !queued(post, away))
             .density(message_density(cx))
             .highlight(highlight)
-            .avatar(crate::avatars::with_picture(
-                Avatar::new(gpui_kit::ElementId::Name(
-                    format!("thread.{id}.avatar").into(),
-                ))
-                .size(AvatarSize::Default)
-                .fallback(initial)
-                .aria_label(post.author.clone()),
-                &post.author_id,
-                cx,
-            ))
+            .avatar(Self::avatar(&id, post, presence, initial, cx))
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
@@ -1773,6 +1954,7 @@ impl RightPaneView {
                 this.add_sources(paths.paths().iter().cloned().map(UploadSource::Path), cx)
             }))
             .child(div().flex_1().min_h_0().child(transcript))
+            .child(crate::channel::typing_line(&self.typing, cx))
             .child(
                 div()
                     .flex_shrink_0()
@@ -2305,17 +2487,17 @@ impl RightPaneView {
                 )
             });
         let view = cx.entity().downgrade();
+        let me = self.me.clone();
+        let can_manage = channel.can_manage;
         let members = div()
             .flex()
             .flex_col()
             .gap(theme.space(1.))
             .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
-            .children(
-                channel
-                    .profiles
-                    .iter()
-                    .map(|profile| Self::member_row(profile, &view, cx)),
-            )
+            .children(channel.profiles.iter().map(|profile| {
+                let removable = can_manage && profile.display_name != me;
+                Self::member_row(profile, removable, &view, cx)
+            }))
             .when(channel.profiles.len() < channel.members, |members| {
                 members.child(
                     Button::new("info.members.all")
@@ -2343,19 +2525,30 @@ impl RightPaneView {
 
     /// One member: avatar with presence, name and handle, opening the
     /// profile card.
+    /// The right-click menu of a member the user may remove.
+    fn member_items(view: &gpui_kit::WeakEntity<Self>, profile: &UserProfile) -> Vec<MenuItem> {
+        let (view, user_id) = (view.clone(), profile.user_id.clone());
+        vec![
+            MenuItem::new("info.member.remove", "Remove from channel").on_click(move |_, _, cx| {
+                let event = RightPaneEvent::RemoveMember {
+                    user_id: user_id.clone(),
+                };
+                view.update(cx, |_, cx| cx.emit(event)).ok();
+            }),
+        ]
+    }
+
+    /// One member; `removable` adds a right-click "Remove from channel".
     fn member_row(
         profile: &UserProfile,
+        removable: bool,
         view: &gpui_kit::WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
+        let menu_view = view.clone();
+        let menu_profile = profile.clone();
         let theme = UiTheme::read(cx).clone();
         let palette = Palette::read(cx);
-        let dot = match profile.presence {
-            Presence::Online => palette.online,
-            Presence::Away => palette.away,
-            Presence::Dnd => palette.dnd,
-            Presence::Offline => theme.colors.muted_foreground,
-        };
         let initial: String = profile.display_name.chars().take(1).collect();
         let username = profile.username.clone();
         let (row_profile, card_profile) = (profile.clone(), profile.clone());
@@ -2365,10 +2558,23 @@ impl RightPaneView {
         ))
         .offset(px(4.))
         .trigger_with(move |_, _, cx| {
+            let (menu_view, menu_profile) = (menu_view.clone(), menu_profile.clone());
             div()
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
                 ))
+                .when(removable, |row| {
+                    row.on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        move |event: &gpui_kit::MouseDownEvent, window, cx| {
+                            let items = Self::member_items(&menu_view, &menu_profile);
+                            let at = event.position;
+                            menu_view
+                                .update(cx, |this, cx| this.open_menu(items, at, window, cx))
+                                .ok();
+                        },
+                    )
+                })
                 .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
                 .px(theme.space(2.))
                 .mx(theme.space(-2.))
@@ -2388,21 +2594,20 @@ impl RightPaneView {
                             ))
                             .size(AvatarSize::Sm)
                             .fallback(initial.clone())
-                            .aria_label(row_profile.display_name.clone()),
+                            .aria_label(style::presence_name(
+                                &row_profile.display_name,
+                                row_profile.presence,
+                            )),
                             &row_profile.user_id,
                             cx,
                         ))
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom(px(-1.))
-                                .right(px(-1.))
-                                .size(px(9.))
-                                .rounded_full()
-                                .bg(dot)
-                                .border_2()
-                                .border_color(theme.colors.background),
-                        ),
+                        .child(style::presence_dot(
+                            row_profile.presence,
+                            scaled(&theme, 9.),
+                            theme.colors.background,
+                            &theme,
+                            &palette,
+                        )),
                 )
                 .child(
                     div()
@@ -2659,6 +2864,7 @@ mod tests {
     /// The thread with replies `r{from}` to `r{to - 1}` of 500 loaded.
     fn thread(replies: std::ops::Range<usize>, older: bool, failed: bool) -> ThreadModel {
         ThreadModel {
+            channel_id: "c-town".into(),
             channel_name: "town".into(),
             root: Post {
                 root_id: SharedString::default(),
@@ -2808,6 +3014,7 @@ mod tests {
             ..post(id)
         };
         let thread = ThreadModel {
+            channel_id: "c-town".into(),
             channel_name: "town".into(),
             root: post("root"),
             replies: vec![
@@ -2886,6 +3093,84 @@ mod tests {
                 },
                 RightPaneEvent::Discard("me:1".into()),
             ]
+        );
+    }
+
+    /// #114: each thread keeps its own reply draft; switching threads saves
+    /// the one left and restores the one opened, and replying clears it.
+    #[gpui_kit::test]
+    fn a_threads_reply_draft_survives_switching_threads(cx: &mut gpui_kit::TestAppContext) {
+        use crate::composer_draft::SAVE_PAUSE;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let posts = crate::preview::channel("general").unwrap().posts;
+        let thread = |index: usize| {
+            RightPaneContent::Thread(Box::new(
+                crate::preview::thread("general", &posts[index].id).unwrap(),
+            ))
+        };
+        let (first, second) = (thread(0), thread(1));
+        let (pane, cx) = cx.add_window_view(|window, cx| RightPaneView::new("me", window, cx));
+        let saves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let saves = saves.clone();
+            cx.subscribe(&pane, move |_, event: &RightPaneEvent, _| {
+                if let RightPaneEvent::SaveDraft(save) = event {
+                    saves
+                        .borrow_mut()
+                        .push((save.key.root_id.to_string(), save.text.to_string()));
+                }
+            })
+            .detach();
+        });
+        let show = |content: &RightPaneContent, cx: &mut gpui_kit::VisualTestContext| {
+            let content = content.clone();
+            cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_content(Some(content), cx)));
+            cx.run_until_parked();
+        };
+        let focus = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let composer = pane.read(cx).composer.clone();
+                composer.update(cx, |composer, cx| composer.focus(window, cx));
+            });
+        };
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| pane.read(cx).composer.read(cx).value(cx).to_string())
+        };
+        let root = |content: &RightPaneContent| match content {
+            RightPaneContent::Thread(thread) => thread.root.id.to_string(),
+            _ => unreachable!(),
+        };
+
+        show(&first, cx);
+        focus(cx);
+        cx.simulate_input("on it");
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [(root(&first), "on it".to_owned())]
+        );
+
+        show(&second, cx);
+        assert_eq!(text(cx), "");
+        show(&first, cx);
+        assert_eq!(text(cx), "on it");
+        assert!(saves.borrow().is_empty(), "restoring saves nothing");
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                let text = pane.composer.read(cx).value(cx);
+                pane.reply(text, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [(root(&first), String::new())]
         );
     }
 }

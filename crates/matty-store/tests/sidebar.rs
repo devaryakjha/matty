@@ -472,6 +472,33 @@ fn a_closed_conversation_leaves_the_sidebar_until_shown_again() {
 }
 
 #[test]
+fn a_category_reads_back_as_the_server_sent_it() {
+    let store = seeded();
+    let chan = sidebar::category(store.conn(), "chan").unwrap().unwrap();
+    assert_eq!(
+        chan,
+        category("chan", "channels", &["town", "noisy", "old", "other"])
+    );
+    assert_eq!(sidebar::category(store.conn(), "nope").unwrap(), None);
+}
+
+#[test]
+fn a_scheme_admin_is_stored_as_a_channel_admin() {
+    let store = seeded();
+    let conn = store.conn();
+    let admin = |roles: &str| ChannelMember {
+        roles: roles.into(),
+        scheme_admin: true,
+        ..member("town")
+    };
+    for roles in ["channel_user", "channel_user channel_admin"] {
+        sidebar::upsert_channel_members(conn, &[admin(roles)]).unwrap();
+        let stored = sidebar::channel_member(conn, "town", ME).unwrap().unwrap();
+        assert_eq!(stored.roles, "channel_user channel_admin");
+    }
+}
+
+#[test]
 fn links_find_channels_by_team_and_name_and_users_by_username() {
     let store = seeded();
     let conn = store.conn();

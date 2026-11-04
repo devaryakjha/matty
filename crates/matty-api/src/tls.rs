@@ -21,6 +21,13 @@ pub(crate) fn client_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
     Ok(config)
 }
 
+/// The TLS configuration for HTTPS to a host other than the server, such as
+/// GitHub for the update feed (#180): the same verifier and provider as the
+/// REST client.
+pub fn https_config() -> Result<ClientConfig, ApiError> {
+    client_config(HTTP_ALPN)
+}
+
 /// ALPN for the REST client: HTTP/2 when the server offers it.
 pub(crate) const HTTP_ALPN: &[&[u8]] = &[b"h2", b"http/1.1"];
 /// ALPN for the WebSocket, which upgrades an HTTP/1.1 connection.

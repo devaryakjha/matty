@@ -27,43 +27,8 @@ if [[ -z "$bin" ]]; then
 fi
 [[ -x "$bin" ]] || { echo "no binary at $bin" >&2; exit 1; }
 
-name="Matty Dev"
-bundle_id="dev.arya.matty.dev"
-schemes=(mattermost-dev matty-dev)
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-
-app="target/$name.app"
-rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin" "$app/Contents/MacOS/matty"
-
-scheme_lines=""
-for scheme in "${schemes[@]}"; do
-	scheme_lines+=$'\t\t\t\t'"<string>$scheme</string>"$'\n'
-done
-scheme_lines="${scheme_lines%$'\n'}"
-
-template="packaging/macos/Info.plist.in"
-plist="$app/Contents/Info.plist"
-while IFS= read -r line || [[ -n "$line" ]]; do
-	if [[ "$line" == "@SCHEMES@" ]]; then
-		printf '%s\n' "$scheme_lines"
-	else
-		line="${line//@NAME@/$name}"
-		line="${line//@BUNDLE_ID@/$bundle_id}"
-		line="${line//@VERSION@/$version}"
-		printf '%s\n' "$line"
-	fi
-done <"$template" >"$plist"
-printf 'APPL????' >"$app/Contents/PkgInfo"
-
-if [[ "$(uname)" == Darwin ]]; then
-	plutil -lint "$plist" >/dev/null
-	# Ad hoc: no certificate, but macOS then gives the bundle a stable
-	# identity for notifications.
-	codesign --force --sign - --timestamp=none "$app"
-	codesign --verify --strict "$app"
-else
-	echo "not on macOS: $app is unsigned" >&2
-fi
-echo "$app"
+# The scheme and id differ from the release bundle's (scripts/release-bundle),
+# so the two can be installed side by side.
+exec scripts/macos-bundle --name "Matty Dev" --id dev.arya.matty.dev \
+	--scheme mattermost-dev --scheme matty-dev \
+	--bin "$bin" --out target

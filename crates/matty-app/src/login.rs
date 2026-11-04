@@ -10,6 +10,7 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _,
 };
 
+use crate::settings::{RecentServer, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, scaled};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
@@ -283,6 +284,12 @@ pub fn normalize_server_url(input: &str) -> Result<String, &'static str> {
     Ok(with_scheme.trim_end_matches('/').to_string())
 }
 
+/// `chat.example.com` from `https://chat.example.com/sub`.
+fn server_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
 pub struct LoginView {
     model: LoginModel,
     server: Entity<InputState>,
@@ -293,6 +300,10 @@ pub struct LoginView {
     show_token: bool,
     /// The person picked AD/LDAP where the server offers both.
     picked_ldap: bool,
+    /// Servers whose check went through before, newest first.
+    recent: Vec<RecentServer>,
+    /// The URL last sent to be checked, remembered once it goes through.
+    checking: Option<String>,
     focus: FocusHandle,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
@@ -339,6 +350,20 @@ impl LoginView {
                 },
             ));
         }
+        // Typing clears a complaint about the address; leaving the field
+        // says what is wrong with it before anything is sent.
+        subscriptions.push(cx.subscribe_in(
+            &server,
+            window,
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => this.server_edited(cx),
+                InputEvent::Blur => this.server_left(cx),
+                _ => {}
+            },
+        ));
+        let recent = SettingsStore::try_global(cx)
+            .map(|store| store.read(cx).get().recent_servers.clone())
+            .unwrap_or_default();
         // First launch lands with the cursor in the field it asks for.
         let focus = cx.focus_handle();
         let first = match &model.step {
@@ -357,6 +382,8 @@ impl LoginView {
             code,
             show_token: false,
             picked_ldap: false,
+            recent,
+            checking: None,
             focus,
             _subscriptions: subscriptions,
         }
@@ -371,6 +398,12 @@ impl LoginView {
     /// a wrong code is cleared for the next one.
     pub fn set_model(&mut self, model: LoginModel, window: &mut Window, cx: &mut Context<Self>) {
         let step_changed = model.step != self.model.step;
+        if let (LoginStep::Server, LoginStep::Methods { server_name, .. }) =
+            (&self.model.step, &model.step)
+            && let Some(url) = self.checking.take()
+        {
+            self.remember_server(&url, server_name, cx);
+        }
         self.model = model;
         let on_code = matches!(self.model.step, LoginStep::Mfa { .. });
         if on_code && (step_changed || (self.model.error.is_some() && !self.model.busy)) {
@@ -385,13 +418,18 @@ impl LoginView {
     }
 
     fn focus_step(&self, window: &mut Window, cx: &App) {
-        let focus = match &self.model.step {
+        let focus = self.step_focus(cx);
+        window.on_next_frame(move |window, cx| window.focus(&focus, cx));
+    }
+
+    /// What the current step focuses when it opens.
+    fn step_focus(&self, cx: &App) -> FocusHandle {
+        match &self.model.step {
             LoginStep::Server => self.server.read(cx).focus_handle(cx),
             LoginStep::Methods { .. } => self.login_id.read(cx).focus_handle(cx),
             LoginStep::Mfa { .. } => self.code.read(cx).focus_handle(cx),
             LoginStep::Browser { .. } => self.focus.clone(),
-        };
-        window.on_next_frame(move |window, cx| window.focus(&focus, cx));
+        }
     }
 
     /// The password sign-in for what is typed, with `mfa_token` if given.
@@ -410,6 +448,42 @@ impl LoginView {
         }
     }
 
+    /// Puts `url` first among the recent servers, here and in settings.
+    fn remember_server(&mut self, url: &str, name: &str, cx: &mut Context<Self>) {
+        let Some(store) = SettingsStore::try_global(cx) else {
+            return;
+        };
+        store.update(cx, |store, cx| {
+            store.update(cx, |settings| settings.remember_server(url, name))
+        });
+        self.recent = store.read(cx).get().recent_servers.clone();
+    }
+
+    /// The server step's address changed: a complaint about the old one
+    /// no longer applies.
+    fn server_edited(&mut self, cx: &mut Context<Self>) {
+        if self.model.step == LoginStep::Server && !self.model.busy && self.model.error.is_some() {
+            self.model.error = None;
+            cx.notify();
+        }
+    }
+
+    /// Focus left the address: say now if it cannot be a server address.
+    /// An empty field waits for Continue.
+    fn server_left(&mut self, cx: &mut Context<Self>) {
+        if self.model.step != LoginStep::Server || self.model.busy {
+            return;
+        }
+        let typed = self.server.read(cx).value().to_string();
+        if typed.trim().is_empty() {
+            return;
+        }
+        if let Err(message) = normalize_server_url(&typed) {
+            self.model.error = Some(message.into());
+            cx.notify();
+        }
+    }
+
     /// The URL as typed, for the window to keep across steps.
     pub fn server_url(&self, cx: &App) -> String {
         self.server.read(cx).value().to_string()
@@ -425,6 +499,7 @@ impl LoginView {
                 match normalize_server_url(&typed) {
                     Ok(url) => {
                         self.model.error = None;
+                        self.checking = Some(url.clone());
                         cx.emit(LoginEvent::CheckServer(url));
                     }
                     Err(message) => self.model.error = Some(message.into()),
@@ -529,6 +604,69 @@ impl LoginView {
             )
             .children(self.error_line(cx))
             .child(self.primary("login.continue", "Continue", Submit::Server, cx))
+            .when(!self.recent.is_empty(), |step| {
+                step.child(self.recent_servers(cx))
+            })
+    }
+
+    /// The servers checked before, after Continue in tab order: one press
+    /// checks that server again.
+    fn recent_servers(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        let rows = self.recent.iter().enumerate().map(|(index, server)| {
+            let host = server_host(&server.url).to_string();
+            let url = server.url.clone();
+            Button::new(gpui_kit::ElementId::NamedInteger(
+                "login.recent".into(),
+                index as u64,
+            ))
+            .variant(ButtonVariant::Outline)
+            .size(ButtonSize::Lg)
+            .w_full()
+            .justify_start()
+            .disabled(self.model.busy)
+            .aria_label(format!("Connect to {}", server.name))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.server
+                    .update(cx, |field, cx| field.set_value(url.clone(), window, cx));
+                this.submit(Submit::Server, window, cx);
+            }))
+            .child(
+                lucide(LucideIcon::Server)
+                    .size(scaled(&theme, 14.))
+                    .text_color(muted)
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.colors.foreground)
+                    .child(server.name.clone()),
+            )
+            .when(host != server.name, |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .type_style(style::META, &theme)
+                        .text_color(muted)
+                        .child(host),
+                )
+            })
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .child(
+                div()
+                    .type_style(style::LABEL, &theme)
+                    .text_color(muted)
+                    .child("RECENT SERVERS"),
+            )
+            .children(rows)
     }
 
     fn methods_step(
@@ -1149,6 +1287,196 @@ mod tests {
             LoginStep::Server.to_browser(SsoProvider::GitLab),
             LoginStep::Server
         );
+    }
+
+    /// The sign-in card alone in a window, with the events it sends.
+    struct Card {
+        view: Entity<LoginView>,
+        cx: gpui_kit::VisualTestContext,
+        events: std::rc::Rc<std::cell::RefCell<Vec<LoginEvent>>>,
+    }
+
+    impl Card {
+        fn open(cx: &mut gpui_kit::TestAppContext, model: LoginModel) -> Self {
+            cx.update(|cx| {
+                crate::ui::theme::init(cx);
+                crate::settings::SettingsStore::init(None, cx);
+            });
+            let window = cx.add_window(|window, cx| {
+                window.activate_window();
+                LoginView::new(model, window, cx)
+            });
+            let view = window.root(cx).unwrap();
+            let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let sent = events.clone();
+            cx.update(|cx| {
+                cx.subscribe(&view, move |_, event: &LoginEvent, _| {
+                    sent.borrow_mut().push(event.clone())
+                })
+                .detach()
+            });
+            let cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let mut card = Self { view, cx, events };
+            card.focus_step();
+            card
+        }
+
+        /// What the view's next frame does: focus the step's first control.
+        fn focus_step(&mut self) {
+            let view = self.view.clone();
+            self.cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                view.read(cx).step_focus(cx).focus(window, cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+
+        fn press(&mut self, keys: &'static str) {
+            for key in keys.split(' ') {
+                let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+                self.cx.simulate_event(gpui_kit::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                });
+                self.cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+                self.redraw();
+            }
+        }
+
+        fn type_text(&mut self, text: &str) {
+            self.cx.simulate_input(text);
+            self.redraw();
+        }
+
+        fn redraw(&mut self) {
+            self.cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+
+        fn sent(&self) -> Vec<LoginEvent> {
+            self.events.borrow().clone()
+        }
+
+        fn error(&mut self) -> Option<SharedString> {
+            let view = self.view.clone();
+            self.cx.update(|_, cx| view.read(cx).model().error.clone())
+        }
+
+        fn typed(&mut self) -> String {
+            let view = self.view.clone();
+            self.cx.update(|_, cx| view.read(cx).server_url(cx))
+        }
+
+        fn set_model(&mut self, model: LoginModel) {
+            let view = self.view.clone();
+            self.cx
+                .update(|window, cx| view.update(cx, |view, cx| view.set_model(model, window, cx)));
+            self.focus_step();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn enter_in_the_address_checks_it_with_https(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, LoginModel::default());
+        card.type_text("chat.example.com");
+        card.press("enter");
+        assert_eq!(
+            card.sent(),
+            [LoginEvent::CheckServer("https://chat.example.com".into())]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn tab_goes_from_the_address_to_continue(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, LoginModel::default());
+        card.type_text("chat.example.com");
+        // Enter on the focused Continue button submits too.
+        card.press("tab enter");
+        assert_eq!(
+            card.sent(),
+            [LoginEvent::CheckServer("https://chat.example.com".into())]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn leaving_a_bad_address_says_why_and_typing_clears_it(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, LoginModel::default());
+        // Leaving the empty field says nothing yet.
+        card.press("tab");
+        assert_eq!(card.error(), None);
+        card.press("shift-tab");
+        card.type_text("justaword");
+        card.press("tab");
+        assert_eq!(
+            card.error(),
+            Some("That does not look like a server address.".into())
+        );
+        assert!(card.sent().is_empty());
+        card.press("shift-tab");
+        card.type_text(".com");
+        assert_eq!(card.error(), None);
+    }
+
+    #[gpui_kit::test]
+    fn the_address_stays_editable_while_a_check_runs(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, LoginModel::default());
+        card.type_text("chat.example.com");
+        card.press("enter");
+        card.set_model(LoginModel {
+            busy: true,
+            ..LoginModel::default()
+        });
+        card.type_text("/x");
+        assert_eq!(card.typed(), "chat.example.com/x");
+        // A second Enter waits for the first check.
+        card.press("enter");
+        assert_eq!(card.sent().len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn a_server_that_answers_is_remembered_and_offered_again(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, LoginModel::default());
+        card.type_text("chat.example.com");
+        card.press("enter");
+        card.set_model(LoginModel {
+            step: LoginStep::Methods {
+                server_name: "Example Chat".into(),
+                methods: methods(true, false),
+            },
+            ..LoginModel::default()
+        });
+        let recent = card.cx.update(|_, cx| {
+            crate::settings::SettingsStore::global(cx)
+                .read(cx)
+                .get()
+                .recent_servers
+                .clone()
+        });
+        assert_eq!(
+            recent,
+            [RecentServer {
+                url: "https://chat.example.com".into(),
+                name: "Example Chat".into(),
+            }]
+        );
+
+        // Back on the server step, Tab passes Continue to the recent
+        // server, and Enter checks it again.
+        card.set_model(LoginModel::default());
+        card.press("tab tab enter");
+        assert_eq!(
+            card.sent().last(),
+            Some(&LoginEvent::CheckServer("https://chat.example.com".into()))
+        );
+    }
+
+    #[test]
+    fn a_host_drops_the_scheme_and_path() {
+        assert_eq!(
+            server_host("https://chat.example.com/sub"),
+            "chat.example.com"
+        );
+        assert_eq!(server_host("http://localhost:8065"), "localhost:8065");
     }
 
     #[test]
