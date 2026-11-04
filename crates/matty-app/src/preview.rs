@@ -17,7 +17,8 @@ pub fn enabled() -> bool {
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
 /// `login-ldap` offers AD/LDAP beside passwords, `login-mfa` and
-/// `login-mfa-error` show the code step, and `login-version` the server step
+/// `login-mfa-error` show the code step, `login-server` the empty server
+/// step, and `login-version` the server step
 /// refusing a server below the version floor. `sso-waiting` shows the card
 /// waiting for the browser after GitLab, and `sso-expired` the same after
 /// the three minutes ran out.
@@ -69,6 +70,7 @@ pub fn login() -> Option<LoginModel> {
                 "Sign-in timed out: the browser did not finish within three minutes.".into()
             }),
         ),
+        "login-server" => (LoginStep::Server, None),
         "login-version" => {
             let old = matty_api::UnsupportedVersion {
                 found: matty_api::Version::new(9, 3, 2),
