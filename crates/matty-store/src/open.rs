@@ -117,6 +117,29 @@ pub fn database_file_name(server: &url::Url, user_id: &str) -> String {
     )
 }
 
+/// Deletes an account's cache after sign out (#160): the database with its
+/// `-wal` and `-shm` files, and the media folder. Files already gone are
+/// fine; the first other failure is returned after trying the rest.
+pub fn forget(database: &Path, media: Option<&Path>) -> std::io::Result<()> {
+    let mut first = None;
+    let mut note = |result: std::io::Result<()>| {
+        if let Err(error) = result
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            first.get_or_insert(error);
+        }
+    };
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut path = database.as_os_str().to_owned();
+        path.push(suffix);
+        note(std::fs::remove_file(PathBuf::from(path)));
+    }
+    if let Some(media) = media {
+        note(std::fs::remove_dir_all(media));
+    }
+    first.map_or(Ok(()), Err)
+}
+
 /// Where an account's database lives: `<app data>/Matty/accounts/<file>`.
 pub fn default_path(server: &url::Url, user_id: &str) -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| {

@@ -12,7 +12,7 @@ pub mod posts;
 pub mod sidebar;
 
 pub use migrations::{LATEST_VERSION, schema_version};
-pub use open::{BUSY_TIMEOUT, Store, database_file_name, default_path};
+pub use open::{BUSY_TIMEOUT, Store, database_file_name, default_path, forget};
 
 /// Why the store could not be opened or used.
 #[derive(Debug, thiserror::Error)]
