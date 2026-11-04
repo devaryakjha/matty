@@ -11,6 +11,11 @@ use gpui_kit::{
     Pixels, Rgba, SharedString, StatefulInteractiveElement as _, Styled, div, px, rgb,
 };
 
+use gpui_icons::{LucideIcon, lucide};
+
+use crate::ui::empty::{
+    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
 use crate::ui::theme::{ThemeMode, UiTheme};
 use crate::ui::tooltip::text_tooltip;
 
@@ -192,6 +197,63 @@ pub const fn hairline() -> Pixels {
     px(1.)
 }
 
+/// An empty state the way DESIGN.md §3 draws every one: a 40px icon in a
+/// tinted circle, a `title` line and one `meta` sentence, all centered.
+/// Callers add at most one outline button through [`Empty::content`].
+pub fn empty_state(
+    glyph: LucideIcon,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    cx: &App,
+) -> Empty {
+    let theme = UiTheme::read(cx);
+    Empty::new().header(
+        EmptyHeader::new()
+            .media(
+                EmptyMedia::new()
+                    .with_variant(EmptyMediaVariant::Icon)
+                    .size(theme.space(10.))
+                    .rounded_full()
+                    .child(
+                        lucide(glyph)
+                            .size(scaled(theme, metrics::ICON_LARGE))
+                            .text_color(theme.colors.muted_foreground),
+                    ),
+            )
+            .title(
+                EmptyTitle::new()
+                    .type_style(TITLE, theme)
+                    .text_center()
+                    .child(title.into()),
+            )
+            .description(
+                EmptyDescription::new()
+                    .type_style(META, theme)
+                    .text_center()
+                    .child(description.into()),
+            ),
+    )
+}
+
+/// [`empty_state`] centered in the space it fills, for a pane with nothing
+/// else to show.
+pub fn centered_empty(
+    glyph: LucideIcon,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    cx: &App,
+) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx);
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p(theme.space(6.))
+        .child(empty_state(glyph, title, description, cx))
+}
+
 /// Wraps `child` so hovering it shows `tip` (DESIGN.md §5: every icon-only
 /// button has a tooltip, with its shortcut when there is one). `id` must be
 /// unique within the window; the wrapper sizes to its child.
@@ -199,7 +261,7 @@ pub fn tipped(
     id: impl Into<ElementId>,
     tip: impl Into<SharedString>,
     child: impl IntoElement,
-) -> impl IntoElement {
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let tip: SharedString = tip.into();
     div()
         .id(id)

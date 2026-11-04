@@ -488,6 +488,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - Icons are Lucide at 16px in chrome, 20px in empty states, 14px inside
   badges and sidebar rows. Stroke color follows the text color around it.
 - Tooltips on every icon-only button, with the shortcut when there is one.
+- Empty states are built by `style::empty_state` (gpuicn `Empty` with its
+  icon media sized to the 40px circle) or `style::centered_empty`; a view
+  never assembles one by hand.
 
 ## 6. Screens that set the bar
 
