@@ -41,6 +41,34 @@ pub struct ChannelPatch {
     pub purpose: Option<String>,
 }
 
+/// The fields of the user's own profile to change, as `PUT users/{id}/patch`
+/// takes them; `None` leaves a field alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ProfilePatch {
+    /// Given name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    /// Family name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
+    /// Nickname.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    /// Job title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    /// Without `@`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+impl ProfilePatch {
+    /// Whether the patch changes nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A post search, as `POST teams/{id}/posts/search` takes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SearchQuery {
@@ -154,6 +182,16 @@ impl Client {
         self.post("channels/stats/member_count", channel_ids).await
     }
 
+    /// `PUT users/{user_id}/patch`: changes the user's names, nickname,
+    /// position or username, and returns the updated user.
+    pub async fn patch_profile(
+        &self,
+        user_id: &str,
+        patch: &ProfilePatch,
+    ) -> Result<crate::models::User, ApiError> {
+        self.put(&format!("users/{user_id}/patch"), patch).await
+    }
+
     /// `PUT channels/{channel_id}/patch`: renames a channel or changes its
     /// header or purpose.
     pub async fn patch_channel(
@@ -163,6 +201,29 @@ impl Client {
     ) -> Result<Channel, ApiError> {
         self.put(&format!("channels/{channel_id}/patch"), patch)
             .await
+    }
+
+    /// `DELETE channels/{channel_id}`: archives the channel. Its posts stay
+    /// on the server.
+    pub async fn archive_channel(&self, channel_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("channels/{channel_id}"))
+            .await
+            .map(|_| ())
+    }
+
+    /// `PUT channels/{channel_id}/privacy`: makes a public channel private
+    /// (`private`) or a private one public.
+    pub async fn set_channel_privacy(
+        &self,
+        channel_id: &str,
+        private: bool,
+    ) -> Result<Channel, ApiError> {
+        let privacy = if private { "P" } else { "O" };
+        self.put(
+            &format!("channels/{channel_id}/privacy"),
+            &json!({ "privacy": privacy }),
+        )
+        .await
     }
 
     /// `PUT channels/{channel_id}/members/{user_id}/notify_props`: changes

@@ -20,6 +20,7 @@ pub mod io;
 mod load;
 mod netwatch;
 mod outbox;
+mod presence;
 mod typing;
 
 pub use bridge::{SyncHandle, spawn, spawn_at};

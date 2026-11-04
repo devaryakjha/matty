@@ -31,6 +31,13 @@ pub struct User {
     pub is_bot: bool,
     /// The user's locale, such as `en`.
     pub locale: String,
+    /// Job title, when the user set one.
+    pub position: String,
+    /// `useAutomaticTimezone` (`"true"` or `"false"`), `automaticTimezone`
+    /// and `manualTimezone`, each an IANA zone name or empty. Some
+    /// endpoints send `null`.
+    #[serde(deserialize_with = "null_as_default")]
+    pub timezone: std::collections::HashMap<String, String>,
     /// Notification preferences such as `desktop` and `mention_keys`;
     /// the server sends them only for the signed-in user.
     pub notify_props: std::collections::HashMap<String, String>,
@@ -148,6 +155,9 @@ pub struct ChannelMember {
     pub user_id: String,
     /// Space-separated role names.
     pub roles: String,
+    /// Admin of the channel through its permission scheme; `roles` then
+    /// leaves `channel_admin` out.
+    pub scheme_admin: bool,
     /// Milliseconds since the epoch when the user last viewed the channel.
     pub last_viewed_at: i64,
     /// Messages the user has seen, counting replies.

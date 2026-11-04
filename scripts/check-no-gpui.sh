@@ -4,7 +4,7 @@
 set -euo pipefail
 
 status=0
-for crate in matty-api matty-store matty-sync matty-markdown; do
+for crate in matty-api matty-store matty-sync matty-markdown matty-update; do
     if cargo tree --locked -p "$crate" -e normal,build --prefix none \
         | grep -Eq '^(gpui-pre|gpui-kit|gpui-component|gpuicn|gpui-icons) '; then
         echo "error: $crate depends on GPUI:" >&2
