@@ -432,6 +432,17 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::PreviewLink(url) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::LoadLinkPreview {
+                            url: url.to_string(),
+                        });
+                    } else if crate::preview::enabled() {
+                        let card = crate::preview::link_card(url);
+                        this.channel
+                            .update(cx, |view, cx| view.set_link_preview(url, card, cx));
+                    }
+                }
                 ChannelEvent::Typing { root } => {
                     if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
                         live.send(matty_sync::Command::Typing {
@@ -1225,6 +1236,10 @@ impl MainWindow {
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
             cx.notify();
+        }
+        if let Some((url, card)) = update.link_preview {
+            self.channel
+                .update(cx, |view, cx| view.set_link_preview(&url, card, cx));
         }
         if let Some(arrival) = update.arrived {
             self.notify(&arrival, window, cx);

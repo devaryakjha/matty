@@ -294,6 +294,15 @@ pub enum Command {
         /// Which rendition.
         size: ImageSize,
     },
+    /// Asks the server for a link's Open Graph data, for the preview while
+    /// composing (#188); [`ChangeSet::LinkPreview`] answers, at once when
+    /// the link was asked about before.
+    ///
+    /// [`ChangeSet::LinkPreview`]: crate::ChangeSet::LinkPreview
+    LoadLinkPreview {
+        /// The link.
+        url: String,
+    },
     /// Fetches an image from outside the server, such as a link preview's:
     /// through the server's image proxy when it has one, else directly and
     /// without the session (#159). [`ChangeSet::RemoteImage`] answers; a URL
@@ -543,6 +552,9 @@ impl std::fmt::Debug for Command {
                 .field("file_id", file_id)
                 .field("size", size)
                 .finish(),
+            Self::LoadLinkPreview { .. } => {
+                f.debug_struct("LoadLinkPreview").finish_non_exhaustive()
+            }
             Self::LoadRemoteImage { .. } => {
                 f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
             }
@@ -686,6 +698,8 @@ pub(crate) struct Engine {
     floors: std::collections::HashMap<String, i64>,
     /// Thumbnails on their way from the server.
     fetching: BTreeSet<String>,
+    /// What the server said about each link asked for while composing.
+    link_previews: std::collections::HashMap<String, Option<Arc<matty_api::models::OpenGraph>>>,
 }
 
 impl Engine {
@@ -710,6 +724,7 @@ impl Engine {
             uploads: std::collections::HashMap::new(),
             media: None,
             fetching: BTreeSet::new(),
+            link_previews: std::collections::HashMap::new(),
             history: std::collections::HashMap::new(),
             sending: std::collections::HashMap::new(),
             floors: std::collections::HashMap::new(),
@@ -763,6 +778,7 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
+        let mut link_previews = Vec::new();
         let mut pages = Vec::new();
         let mut downloads = Vec::new();
         let mut fetches = Vec::new();
@@ -1134,6 +1150,9 @@ impl Engine {
                 Message::Command(Command::LoadRemoteImage { url }) => {
                     remote_images.push(url);
                 }
+                Message::Command(Command::LoadLinkPreview { url }) => {
+                    link_previews.push(url);
+                }
                 Message::Command(Command::Download {
                     file_id,
                     folder,
@@ -1219,6 +1238,9 @@ impl Engine {
         }
         for url in remote_images {
             self.remote_image(url, dirty);
+        }
+        for url in link_previews {
+            self.link_preview(url, dirty);
         }
         for upload in uploads {
             self.upload(upload, dirty);
@@ -1466,6 +1488,40 @@ impl Engine {
                 size,
                 image,
             });
+        });
+    }
+
+    /// Answers from what the server already said about `url`, or asks it;
+    /// the answer comes back as [`Loaded::LinkPreview`]. Each link is asked
+    /// about once a run.
+    fn link_preview(&mut self, url: String, dirty: &mut Dirty) {
+        if let Some(graph) = self.link_previews.get(&url) {
+            dirty.direct.push(ChangeSet::LinkPreview {
+                url,
+                graph: graph.clone(),
+            });
+            return;
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(format!("opengraph/{url}")) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let graph = match client.opengraph(&url).await {
+                Ok(graph) if !graph.title.is_empty() || !graph.description.is_empty() => {
+                    Some(graph)
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::debug!(%error, "no link preview");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::LinkPreview { url, graph });
         });
     }
 
@@ -1974,6 +2030,12 @@ impl Engine {
                         content_type,
                     });
                 }
+            }
+            Loaded::LinkPreview { url, graph } => {
+                self.fetching.remove(&format!("opengraph/{url}"));
+                let graph = graph.map(Arc::new);
+                self.link_previews.insert(url.clone(), graph.clone());
+                dirty.direct.push(ChangeSet::LinkPreview { url, graph });
             }
             Loaded::RemoteImage { url, image } => {
                 let key = matty_store::media::remote_key(&url);

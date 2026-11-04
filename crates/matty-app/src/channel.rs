@@ -155,6 +155,9 @@ pub enum PostStatus {
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
 pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
+/// How long typing pauses before the draft's link is asked about (#188).
+const LINK_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// One post, already formatted for display: sync does the time zone and
 /// Markdown rewriting, the view only draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,6 +458,9 @@ pub enum ChannelEvent {
         name: SharedString,
         source: UploadSource,
     },
+    /// The draft has this link; sync asks the server for its preview and
+    /// the window hands it back through `set_link_preview`.
+    PreviewLink(SharedString),
     /// The user removed a file from the tray before sending.
     CancelUpload(SharedString),
     /// The user asked to upload a failed file again.
@@ -610,6 +616,12 @@ pub struct ChannelView {
     /// a permalink target until the timer below clears it.
     permalink: Option<SharedString>,
     _permalink_task: Option<gpui_kit::Task<()>>,
+    /// The preview above the composer (#188): the draft's first link and
+    /// its card once the server has read it; links the user removed from
+    /// this draft stay removed.
+    link: Option<(SharedString, Option<crate::embeds::LinkCard>)>,
+    removed_links: std::collections::HashSet<SharedString>,
+    _link_task: Option<gpui_kit::Task<()>>,
     /// A jump whose post is not in the transcript yet; applied when it
     /// arrives with the channel or a later page.
     pending_jump: Option<SharedString>,
@@ -809,7 +821,9 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
-                        this.draft_len = composer.read(cx).value(cx).chars().count();
+                        let text = composer.read(cx).value(cx);
+                        this.draft_len = text.chars().count();
+                        this.draft_changed(&text, cx);
                         if this.draft_len > 0 {
                             cx.emit(ChannelEvent::Typing { root: None });
                         }
@@ -861,6 +875,9 @@ impl ChannelView {
             unseen: 0,
             permalink: None,
             _permalink_task: None,
+            link: None,
+            removed_links: Default::default(),
+            _link_task: None,
             pending_jump: None,
             jump_asked: None,
             selection: None,
@@ -1584,6 +1601,51 @@ impl ChannelView {
         chip
     }
 
+    /// Follows the draft's first link: a new one is asked about after a
+    /// pause in typing, so a link being typed is not asked about letter by
+    /// letter.
+    fn draft_changed(&mut self, text: &str, cx: &mut Context<Self>) {
+        let link = crate::embeds::first_link(text)
+            .map(SharedString::from)
+            .filter(|link| !self.removed_links.contains(link));
+        if self.link.as_ref().map(|(url, _)| url) == link.as_ref() {
+            return;
+        }
+        self._link_task = None;
+        self.link = link.clone().map(|url| (url, None));
+        let Some(url) = link else {
+            return;
+        };
+        self._link_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LINK_PAUSE).await;
+            this.update(cx, |_, cx| cx.emit(ChannelEvent::PreviewLink(url)))
+                .ok();
+        }));
+    }
+
+    /// What the server read from `url`; ignored once the draft moved on.
+    pub fn set_link_preview(
+        &mut self,
+        url: &str,
+        card: Option<crate::embeds::LinkCard>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((current, shown)) = &mut self.link
+            && current.as_ref() == url
+        {
+            *shown = card;
+            cx.notify();
+        }
+    }
+
+    /// Remove preview: this draft keeps the link without a card.
+    fn remove_link_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some((url, _)) = self.link.take() {
+            self.removed_links.insert(url);
+            cx.notify();
+        }
+    }
+
     /// Appends the text as a pending post by the current user, clears the
     /// composer and tells sync (PLAN §4.3: optimistic send through the
     /// outbox). Blank text and text over the limit stay in the composer.
@@ -1627,6 +1689,9 @@ impl ChannelView {
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
+        self.link = None;
+        self.removed_links.clear();
+        self._link_task = None;
         cx.emit(ChannelEvent::Send {
             text: body,
             files: file_ids,
@@ -3239,6 +3304,18 @@ impl ChannelView {
                 picker.update(cx, |picker, cx| picker.open(window, cx));
                 emoji_popup(EmojiPicker::new(&picker).bordered(false), cx)
             });
+        let link_preview = self.link.as_ref().and_then(|(_, card)| {
+            let card = card.as_ref()?;
+            let mut preview =
+                crate::ui::embed::LinkPreview::new("composer.link-preview", card.title.clone())
+                    .density(message_density(cx))
+                    .site_name(card.site_name.clone())
+                    .on_remove(cx.listener(|this, _, _, cx| this.remove_link_preview(cx)));
+            if !card.description.is_empty() {
+                preview = preview.description(card.description.clone());
+            }
+            Some(div().pb(theme.space(2.)).child(preview))
+        });
         let tray = (!self.uploads.is_empty()).then(|| {
             let chips: Vec<Attachment> = self
                 .uploads
@@ -3278,6 +3355,7 @@ impl ChannelView {
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
             .pb(theme.space(4.))
+            .children(link_preview)
             .children(tray)
             .child(
                 Composer::new(&self.composer)
