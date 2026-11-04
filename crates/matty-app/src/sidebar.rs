@@ -499,6 +499,14 @@ impl SidebarView {
         cx.notify();
     }
 
+    /// Marks one row unread, as U on a selected post does.
+    pub fn mark_unread(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(row) = self.model.row_mut(id) {
+            row.unread = true;
+            cx.notify();
+        }
+    }
+
     pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         self.model.mark_all_read();
         cx.notify();
