@@ -70,6 +70,33 @@ pub enum ConnectionState {
     Offline,
 }
 
+/// What the connection banner says for `state` with `queued` messages
+/// waiting, and whether it is the offline one (with Retry now); `None`
+/// when online (#162).
+fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, bool)> {
+    let (text, offline): (SharedString, bool) = match state {
+        ConnectionState::Online => return None,
+        ConnectionState::Reconnecting { attempt } if *attempt <= 1 => {
+            ("Connection lost. Reconnecting…".into(), false)
+        }
+        ConnectionState::Reconnecting { attempt } => (
+            format!("Connection lost. Reconnecting (attempt {attempt})…").into(),
+            false,
+        ),
+        ConnectionState::Offline => (
+            "You're offline. Matty shows what it has and sends when you're back.".into(),
+            true,
+        ),
+    };
+    // What is waiting goes when the connection is back (#195).
+    let text = match queued {
+        0 => text,
+        1 => format!("{text} 1 message waiting to send.").into(),
+        n => format!("{text} {n} messages waiting to send.").into(),
+    };
+    Some((text, offline))
+}
+
 /// `chat.example.com` from `https://chat.example.com`.
 fn host(url: &str) -> String {
     url.split_once("://")
@@ -3282,33 +3309,16 @@ impl MainWindow {
         } else {
             &self.banner_last
         };
-        let (icon, text, offline): (gpui_kit::AnyElement, SharedString, bool) = match state {
-            ConnectionState::Online => return None,
-            ConnectionState::Reconnecting { attempt } => (
-                crate::ui::spinner::Spinner::new("banner.spinner")
-                    .color(theme.colors.muted_foreground)
-                    .into_any_element(),
-                if *attempt <= 1 {
-                    "Connection lost. Reconnecting…".into()
-                } else {
-                    format!("Connection lost. Reconnecting (attempt {attempt})…").into()
-                },
-                false,
-            ),
-            ConnectionState::Offline => (
-                lucide(LucideIcon::WifiOff)
-                    .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(theme.colors.destructive)
-                    .into_any_element(),
-                "You're offline. Matty shows what it has and sends when you're back.".into(),
-                true,
-            ),
-        };
-        // What is waiting goes when the connection is back (#195).
-        let text: SharedString = match self.queued {
-            0 => text,
-            1 => format!("{text} 1 message waiting to send.").into(),
-            n => format!("{text} {n} messages waiting to send.").into(),
+        let (text, offline) = banner_text(state, self.queued)?;
+        let icon: gpui_kit::AnyElement = if offline {
+            lucide(LucideIcon::WifiOff)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.destructive)
+                .into_any_element()
+        } else {
+            crate::ui::spinner::Spinner::new("banner.spinner")
+                .color(theme.colors.muted_foreground)
+                .into_any_element()
         };
         let foreground = if offline {
             theme.colors.destructive
@@ -4069,7 +4079,42 @@ fn opens_safely(path: &std::path::Path) -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::{Seen, opens_safely};
+    use super::{ConnectionState, Seen, banner_text, opens_safely};
+
+    #[test]
+    fn the_banner_says_what_the_connection_is_doing() {
+        let say = |state, queued| {
+            banner_text(&state, queued).map(|(text, offline)| (text.to_string(), offline))
+        };
+        assert_eq!(say(ConnectionState::Online, 0), None);
+        assert_eq!(
+            say(ConnectionState::Online, 3),
+            None,
+            "nothing shows while online"
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 1 }, 0),
+            Some(("Connection lost. Reconnecting…".into(), false))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 4 }, 0),
+            Some(("Connection lost. Reconnecting (attempt 4)…".into(), false))
+        );
+        let offline = "You're offline. Matty shows what it has and sends when you're back.";
+        assert_eq!(
+            say(ConnectionState::Offline, 0),
+            Some((offline.into(), true)),
+            "only the offline banner offers Retry now"
+        );
+        assert_eq!(
+            say(ConnectionState::Offline, 1),
+            Some((format!("{offline} 1 message waiting to send."), true))
+        );
+        assert_eq!(
+            say(ConnectionState::Reconnecting { attempt: 2 }, 5).map(|(text, _)| text),
+            Some("Connection lost. Reconnecting (attempt 2)… 5 messages waiting to send.".into())
+        );
+    }
 
     #[test]
     fn the_open_channel_counts_as_viewed_only_when_seen() {

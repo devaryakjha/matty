@@ -2778,6 +2778,33 @@ mod tests {
     }
 
     #[test]
+    fn network_failures_show_the_banner_and_never_a_dialog() {
+        let mut live = live();
+        // The account could not load because the network is down.
+        let update = live.apply(&ChangeSet::Connection(Connection::Failed {
+            error: matty_api::ApiError::Network("dns error".into()).to_string(),
+        }));
+        assert_eq!(update.connection, Some(ConnectionState::Offline));
+        assert!(!update.expired, "a network error is not a sign-in prompt");
+        assert!(!update.signed_out);
+        // Commands that need a connection while there is none, or that the
+        // network dropped, leave the banner to speak.
+        for failure in [
+            matty_sync::CommandError::Offline,
+            matty_sync::CommandError::Server {
+                action: "edit",
+                target: "p1".into(),
+                error: matty_api::ApiError::Network("connection reset".into()).to_string(),
+            },
+        ] {
+            let update = live.apply(&ChangeSet::Failed(failure));
+            assert!(update.join_failed.is_none());
+            assert!(!update.expired);
+            assert!(!update.signed_out);
+        }
+    }
+
+    #[test]
     fn the_connection_and_sign_out_reach_the_window() {
         let mut live = live();
         let update = live.apply(&ChangeSet::Connection(Connection::Socket(
