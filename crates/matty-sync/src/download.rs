@@ -1,15 +1,17 @@
 //! Saving a post's file to the user's download folder (PLAN §4.6 Files).
 
+#[cfg(not(target_family = "wasm"))]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use matty_api::{Client, Fetched};
+use matty_api::Client;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::change::DownloadState;
 use crate::load::Loaded;
 
-/// Fetches `file_id` and writes it into `folder` under a name of its own,
-/// then reports where as [`Loaded::Download`].
+/// Fetches `file_id` into `folder` as it arrives, reporting progress, then
+/// gives it a name of its own and reports where as [`Loaded::Download`].
 pub(crate) async fn download(
     client: Client,
     file_id: String,
@@ -17,42 +19,91 @@ pub(crate) async fn download(
     name: String,
     results: UnboundedSender<Loaded>,
 ) {
-    let state = match client.file(&file_id, None).await {
-        #[cfg(target_family = "wasm")]
-        Ok(Fetched::Fresh { bytes, .. }) => {
-            let _ = folder;
-            match crate::web::save_download(&name, &bytes) {
-                Ok(()) => DownloadState::Done(PathBuf::from(name)),
-                Err(error) => DownloadState::Failed(error),
+    #[cfg(target_family = "wasm")]
+    let state = {
+        let _ = folder;
+        let _ = &results;
+        match client.file(&file_id, None).await {
+            Ok(matty_api::Fetched::Fresh { bytes, .. }) => {
+                match crate::web::save_download(&name, &bytes) {
+                    Ok(()) => DownloadState::Done(PathBuf::from(name)),
+                    Err(error) => DownloadState::Failed(error),
+                }
             }
-        }
-        #[cfg(not(target_family = "wasm"))]
-        Ok(Fetched::Fresh { bytes, .. }) => {
-            match tokio::task::spawn_blocking(move || save(&folder, &name, &bytes)).await {
-                Ok(Ok(path)) => DownloadState::Done(path),
-                Ok(Err(error)) => DownloadState::Failed(error.to_string()),
-                Err(error) => DownloadState::Failed(error.to_string()),
+            Ok(matty_api::Fetched::NotModified) => {
+                DownloadState::Failed("the server sent nothing".into())
             }
+            Err(error) => DownloadState::Failed(error.to_string()),
         }
-        Ok(Fetched::NotModified) => DownloadState::Failed("the server sent nothing".into()),
-        Err(error) => DownloadState::Failed(error.to_string()),
+    };
+    #[cfg(not(target_family = "wasm"))]
+    let state = match save(&client, &file_id, &folder, &name, &results).await {
+        Ok(path) => DownloadState::Done(path),
+        Err(error) => DownloadState::Failed(error),
     };
     let _ = results.send(Loaded::Download { file_id, state });
 }
 
-/// Writes `bytes` beside their final name and renames, so a half-written
-/// file never sits under it.
+/// Writes the body beside its final name and renames once it is whole, so
+/// a half-written file never sits under it; the partial file goes on
+/// failure.
 #[cfg(not(target_family = "wasm"))]
-fn save(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(folder)?;
-    let path = unique_path(folder, name);
-    let partial = path.with_file_name(format!(
-        ".{}.partial",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    std::fs::write(&partial, bytes)?;
-    std::fs::rename(&partial, &path)?;
-    Ok(path)
+async fn save(
+    client: &Client,
+    file_id: &str,
+    folder: &Path,
+    name: &str,
+    results: &UnboundedSender<Loaded>,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    let partial = folder.join(format!(".{file_id}.partial"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => "it is already downloading".to_owned(),
+            _ => error.to_string(),
+        })?;
+    let mut reported = None;
+    let fetched = client
+        .download_file(file_id, |bytes, received, total| {
+            // Local writes are small and quick next to the network's pace.
+            file.write_all(bytes)?;
+            let step = progress_step(received, total);
+            if reported != Some(step) {
+                reported = Some(step);
+                let _ = results.send(Loaded::Download {
+                    file_id: file_id.to_owned(),
+                    state: DownloadState::Progress { received, total },
+                });
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|_| file.sync_all().map_err(|error| error.to_string()));
+    drop(file);
+    let finished = fetched.and_then(|()| {
+        let path = unique_path(folder, name);
+        std::fs::rename(&partial, &path).map_err(|error| error.to_string())?;
+        Ok(path)
+    });
+    if finished.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    finished
+}
+
+/// Which report a download at `received` of `total` bytes belongs to: one
+/// per percent, or per megabyte when the size is unknown, so the screen is
+/// not redrawn for every packet.
+#[cfg(not(target_family = "wasm"))]
+fn progress_step(received: u64, total: Option<u64>) -> u64 {
+    match total {
+        Some(total) if total > 0 => received.saturating_mul(100) / total,
+        _ => received / (1024 * 1024),
+    }
 }
 
 /// `folder/name`, or `name (1).ext` and up when that is taken. Only the

@@ -399,6 +399,67 @@ impl PostFile {
     }
 }
 
+/// Where a posted file's download is (#151), shown on its card.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileDownload {
+    /// Arriving: bytes so far, and the size when known.
+    Downloading { received: u64, total: Option<u64> },
+    /// Saved here; clicking the card opens this copy.
+    Saved(PathBuf),
+    /// Did not save; clicking the card tries again.
+    Failed,
+}
+
+impl FileDownload {
+    /// The card's second line for this state, in place of its kind and size:
+    /// "Downloading… 42%", "Downloaded · PDF · 2.4 MB" or "Download failed ·
+    /// Click to retry".
+    pub fn meta(&self, file: &PostFile) -> SharedString {
+        match self {
+            Self::Downloading {
+                received,
+                total: Some(total),
+            } if *total > 0 => {
+                let percent = (received.saturating_mul(100) / total).min(100);
+                format!("Downloading… {percent}%").into()
+            }
+            Self::Downloading { received, .. } => {
+                format!("Downloading… {}", format_size(*received)).into()
+            }
+            Self::Saved(_) => format!("Downloaded · {}", file.meta()).into(),
+            Self::Failed => "Download failed · Click to retry".into(),
+        }
+    }
+
+    /// The card's icon: a check once saved, an alert on failure, and the
+    /// file's own icon while it arrives.
+    fn icon(&self, name: &str) -> LucideIcon {
+        match self {
+            Self::Downloading { .. } => icon_for(name),
+            Self::Saved(_) => LucideIcon::CircleCheck,
+            Self::Failed => LucideIcon::CircleAlert,
+        }
+    }
+}
+
+/// Every download this run, by file id, for the cards to show (#151).
+#[derive(Default)]
+pub struct Downloads(pub std::collections::HashMap<SharedString, FileDownload>);
+
+impl gpui_kit::Global for Downloads {}
+
+impl Downloads {
+    /// Where `file_id`'s download is, if it has one.
+    pub fn get<'a>(cx: &'a App, file_id: &str) -> Option<&'a FileDownload> {
+        cx.try_global::<Self>()?.0.get(file_id)
+    }
+
+    /// Records where `file_id`'s download is.
+    pub fn set(cx: &mut App, file_id: SharedString, state: FileDownload) {
+        cx.default_global::<Self>().0.insert(file_id, state);
+    }
+}
+
 /// How a post's file shows; see [`PostFile::shown_as`].
 #[derive(Clone)]
 pub enum Shown {
@@ -458,10 +519,16 @@ pub fn post_files(
             Shown::Card => {
                 let file_id = file.id.clone();
                 let open = on_file.clone();
+                let download = Downloads::get(cx, &file.id);
                 cards.push(
                     Attachment::new(id, file.name.clone())
-                        .meta(file.meta())
-                        .icon(icon_for(&file.name))
+                        .meta(download.map_or_else(|| file.meta(), |state| state.meta(file)))
+                        .icon(
+                            download.map_or_else(
+                                || icon_for(&file.name),
+                                |state| state.icon(&file.name),
+                            ),
+                        )
                         .on_click(move |_, window, cx| open(file_id.clone(), window, cx)),
                 );
             }
@@ -790,6 +857,102 @@ mod tests {
         let doc = PostFile::from_upload(Upload::from_path("u2", "notes.pdf".into()));
         assert!(doc.preview.is_none());
         assert_eq!(doc.meta().as_ref(), "PDF · 0 B");
+    }
+
+    fn notes() -> PostFile {
+        PostFile {
+            id: "f1".into(),
+            name: "notes.pdf".into(),
+            size: 2_516_582,
+            preview: None,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    #[test]
+    fn a_card_says_where_its_download_is() {
+        let notes = notes();
+        let arriving = FileDownload::Downloading {
+            received: 1_056_965,
+            total: Some(2_516_582),
+        };
+        assert_eq!(arriving.meta(&notes).as_ref(), "Downloading… 42%");
+        let no_size = FileDownload::Downloading {
+            received: 3 * 1024 * 1024,
+            total: None,
+        };
+        assert_eq!(no_size.meta(&notes).as_ref(), "Downloading… 3.0 MB");
+        let saved = FileDownload::Saved("/tmp/notes.pdf".into());
+        assert_eq!(saved.meta(&notes).as_ref(), "Downloaded · PDF · 2.4 MB");
+        assert_eq!(
+            FileDownload::Failed.meta(&notes).as_ref(),
+            "Download failed · Click to retry"
+        );
+        assert_eq!(arriving.icon(&notes.name), LucideIcon::FileText);
+        assert_eq!(saved.icon(&notes.name), LucideIcon::CircleCheck);
+        assert_eq!(
+            FileDownload::Failed.icon(&notes.name),
+            LucideIcon::CircleAlert
+        );
+    }
+
+    struct CardsProbe {
+        opened: Rc<std::cell::RefCell<Vec<SharedString>>>,
+    }
+
+    impl gpui_kit::Render for CardsProbe {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            let opened = self.opened.clone();
+            div().size(gpui_kit::px(400.)).child(post_files(
+                "probe",
+                &[notes()],
+                |_, _, _| {},
+                move |file, _, _| opened.borrow_mut().push(file),
+                cx,
+            ))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_file_card_asks_for_its_file_in_every_download_state(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{Modifiers, point, px};
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let window = cx.add_window({
+            let opened = opened.clone();
+            move |_, _| CardsProbe { opened }
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let states = [
+            None,
+            Some(FileDownload::Downloading {
+                received: 10,
+                total: Some(100),
+            }),
+            Some(FileDownload::Failed),
+            Some(FileDownload::Saved("/tmp/notes.pdf".into())),
+        ];
+        for (clicks, state) in states.into_iter().enumerate() {
+            cx.update(|window, cx| {
+                if let Some(state) = state {
+                    Downloads::set(cx, "f1".into(), state);
+                }
+                window.refresh();
+            });
+            cx.run_until_parked();
+            // The card is the first thing in the window.
+            cx.simulate_click(point(px(40.), px(20.)), Modifiers::none());
+            assert_eq!(opened.borrow().len(), clicks + 1);
+        }
+        assert!(opened.borrow().iter().all(|id| id.as_ref() == "f1"));
     }
 
     fn file(name: &str, size: u64) -> Upload {
