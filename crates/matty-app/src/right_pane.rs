@@ -1177,7 +1177,14 @@ impl RightPaneView {
     fn search(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
-        let body = if model.query.is_empty() {
+        let recent = SettingsStore::global(cx)
+            .read(cx)
+            .get()
+            .recent_searches
+            .clone();
+        let body = if model.query.is_empty() && !recent.is_empty() {
+            self.recent_searches(&recent, cx).into_any_element()
+        } else if model.query.is_empty() {
             style::centered_empty(
                 LucideIcon::Search,
                 "Search messages",
@@ -1253,6 +1260,77 @@ impl RightPaneView {
                     ),
             )
             .child(body)
+    }
+
+    /// The last searches, newest first, each one click from running again.
+    fn recent_searches(
+        &self,
+        recent: &[String],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .id("right-pane.recent-searches")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(theme.space(2.))
+            .py(theme.space(2.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(theme.space(2.))
+                    .pb(theme.space(1.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .type_style(style::LABEL, &theme)
+                            .text_color(muted)
+                            .child("Recent searches"),
+                    )
+                    .child(
+                        Button::new("right-pane.recent-searches.clear")
+                            .variant(ButtonVariant::Link)
+                            .size(ButtonSize::Xs)
+                            .label("Clear")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                SettingsStore::global(cx).update(cx, |store, cx| {
+                                    store.update(cx, |settings| settings.recent_searches.clear())
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children(recent.iter().enumerate().map(|(index, query)| {
+                let run: SharedString = query.clone().into();
+                Button::new(gpui_kit::ElementId::Name(
+                    format!("right-pane.recent-searches.{index}").into(),
+                ))
+                .variant(ButtonVariant::Ghost)
+                .w_full()
+                .justify_start()
+                .aria_label(format!("Search again for {query}"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.space(2.))
+                        .min_w_0()
+                        .child(
+                            lucide(LucideIcon::Clock)
+                                .size(theme.space(4.))
+                                .text_color(muted),
+                        )
+                        .child(div().truncate().child(query.clone())),
+                )
+                .on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(RightPaneEvent::Search(run.clone()))),
+                )
+            }))
     }
 
     /// Channel info (PLAN §3 M1 navigation): what the channel is for, the

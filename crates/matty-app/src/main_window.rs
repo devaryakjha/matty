@@ -2188,6 +2188,11 @@ impl MainWindow {
     /// searching state.
     fn search(&mut self, query: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_thread();
+        if !query.trim().is_empty() {
+            SettingsStore::global(cx).update(cx, |store, cx| {
+                store.update(cx, |settings| settings.remember_search(&query))
+            });
+        }
         if let Some(live) = self.live.as_mut()
             && !query.is_empty()
         {
