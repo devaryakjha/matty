@@ -1105,6 +1105,16 @@ impl Live {
         });
     }
 
+    /// The people and channels an interactive dialog's menus offer (#211).
+    pub fn menu_sources(&self) -> crate::interactive_dialog::MenuSources {
+        crate::interactive_dialog::MenuSources {
+            people: crate::interactive::people(&self.users, self.names),
+            channels: crate::interactive::channels(
+                self.sections.values().flat_map(|sections| sections.iter()),
+            ),
+        }
+    }
+
     /// Presses an interactive message's button or picks from its menu
     /// (#211): the control waits until the server answers.
     pub fn run_post_action(&mut self, choice: &crate::interactive::ActionChoice) -> Update {
@@ -1117,17 +1127,22 @@ impl Live {
         });
         Update {
             channel: self.channel_update(),
+            thread: self.thread_model(),
             ..Update::default()
         }
     }
 
-    /// Forgets an ephemeral message the user dismissed; the view has
-    /// already removed it.
-    pub fn dismiss_ephemeral(&mut self, post_id: &str) {
-        if self.interactive.dismiss(post_id)
-            && let Some(shown) = &mut self.shown
-        {
-            shown.retain(|post| post.id.as_ref() != post_id);
+    /// Forgets an ephemeral message the user dismissed. The view it was
+    /// dismissed in has already removed it; the other one, channel or
+    /// thread, drops it with the update.
+    pub fn dismiss_ephemeral(&mut self, post_id: &str) -> Update {
+        if !self.interactive.dismiss(post_id) {
+            return Update::default();
+        }
+        Update {
+            channel: self.channel_update(),
+            thread: self.thread_model(),
+            ..Update::default()
         }
     }
 
@@ -1374,7 +1389,7 @@ impl Live {
         let (_, Some(posts)) = self.thread.as_ref()? else {
             return None;
         };
-        let posts = posts.clone();
+        let posts = crate::interactive::with_thread_ephemeral(posts, self.interactive.ephemeral());
         let (root, replies) = posts.split_first()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
@@ -1406,10 +1421,27 @@ impl Live {
                 post.status = crate::channel::PostStatus::Failed;
             }
         }
+        // The cards' images and controls, as in the channel (#211).
+        for image in std::iter::once(&mut model.root)
+            .chain(model.replies.iter_mut())
+            .flat_map(|post| &mut post.embeds)
+            .flat_map(crate::embeds::Embed::images_mut)
+        {
+            image.loaded = self.remote_images.image(&image.url);
+        }
+        for posts in [std::slice::from_mut(&mut model.root), &mut model.replies] {
+            self.interactive.fill(
+                posts,
+                &self.users,
+                self.names,
+                self.sections.values().flat_map(|sections| sections.iter()),
+            );
+        }
         let all: Vec<_> = std::iter::once(model.root.clone())
             .chain(model.replies.iter().cloned())
             .collect();
         self.ask_thumbnails(&all);
+        self.ask_remote_images(&all);
         Some(model)
     }
 
@@ -1726,6 +1758,13 @@ impl Live {
                 if shown {
                     update.channel = self.channel_update();
                 }
+                update.thread = self.thread_model().filter(|thread| {
+                    std::iter::once(&thread.root)
+                        .chain(&thread.replies)
+                        .flat_map(|post| &post.embeds)
+                        .flat_map(crate::embeds::Embed::images)
+                        .any(|image| image.url.as_ref() == url)
+                });
                 // Inline Markdown images read the store as they render.
                 update.avatars = true;
             }
@@ -1879,6 +1918,8 @@ impl Live {
                 if applied.redraw {
                     update.channel = self.channel_update();
                 }
+                // The open thread's replies and buttons may have changed.
+                update.thread = self.thread_model();
                 update.action_refused = applied.refused;
                 if applied.offline {
                     update.offline_refused = Some("run action");

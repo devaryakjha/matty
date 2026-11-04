@@ -192,6 +192,19 @@ pub fn requests(cx: &mut App) -> Entity<Requests> {
 }
 
 /// The open pop-outs, each with what it shows and on which server.
+/// Whether the window the user is in is a pop-out.
+pub fn active(cx: &App) -> bool {
+    let Some(active) = cx.active_window() else {
+        return false;
+    };
+    cx.try_global::<PopOuts>().is_some_and(|pop_outs| {
+        pop_outs
+            .windows
+            .iter()
+            .any(|handle| AnyWindowHandle::from(*handle) == active)
+    })
+}
+
 fn open_windows(cx: &App) -> Vec<(WindowHandle<PopOutView>, String, Target)> {
     let Some(pop_outs) = cx.try_global::<PopOuts>() else {
         return Vec::new();
@@ -410,6 +423,9 @@ pub struct PopOutView {
     live: Option<Live>,
     content: Content,
     toasts: Entity<ToastState>,
+    /// An integration's interactive dialog, when this window is where the
+    /// user asked for it (#211).
+    interactive_dialog: Entity<crate::interactive_dialog::InteractiveDialogView>,
     focus: FocusHandle,
     /// The channel opened with sync: its sidebar row was known.
     opened: bool,
@@ -542,6 +558,17 @@ impl PopOutView {
         .detach();
         let toasts = cx.new(ToastState::new);
         let focus = cx.focus_handle();
+        let interactive_dialog =
+            cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new());
+        cx.subscribe(&interactive_dialog, |this: &mut Self, _, event, _| {
+            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
+            if let Some(live) = &this.live {
+                let channel = this.target.channel().to_string();
+                let team = live.team().unwrap_or_default().to_owned();
+                live.send(submit.command(channel, team));
+            }
+        })
+        .detach();
         let mut this = Self {
             target,
             host,
@@ -549,6 +576,7 @@ impl PopOutView {
             live,
             content,
             toasts,
+            interactive_dialog,
             focus,
             opened: false,
             kept_unread: false,
@@ -756,6 +784,13 @@ impl PopOutView {
         let Some(live) = self.live.as_mut() else {
             return;
         };
+        if let Some(change) = crate::interactive_dialog::DialogChange::from_change(change) {
+            let here = cx.active_window() == Some(window.window_handle());
+            let sources = || live.menu_sources();
+            self.interactive_dialog.update(cx, |dialog, cx| {
+                dialog.apply(change, here, sources, window, cx)
+            });
+        }
         let update = live.apply(change);
         self.apply_update(update, window, cx);
     }
@@ -852,6 +887,10 @@ impl PopOutView {
         }
         if let Some(action) = update.offline_refused {
             self.ask(Ask::Offline(action), cx);
+        }
+        if let Some(error) = update.action_refused {
+            let text = format!("The integration couldn't take that: {error}");
+            self.toast("pop-out.action-refused", text, cx);
         }
     }
 
@@ -1295,7 +1334,10 @@ impl PopOutView {
                 let update = live.run_post_action(choice);
                 return self.apply_update(update, window, cx);
             }
-            ChannelEvent::DismissEphemeral(post) => return live.dismiss_ephemeral(post),
+            ChannelEvent::DismissEphemeral(post) => {
+                let update = live.dismiss_ephemeral(post);
+                return self.apply_update(update, window, cx);
+            }
             _ => {}
         }
         let channel_id = channel.to_string();
@@ -1531,6 +1573,14 @@ impl PopOutView {
                 return live.follow_thread(root, *following);
             }
             RightPaneEvent::LoadOlderReplies(root) => return live.load_older_replies(root),
+            RightPaneEvent::PostAction(choice) => {
+                let update = live.run_post_action(choice);
+                return self.apply_update(update, window, cx);
+            }
+            RightPaneEvent::DismissEphemeral(post) => {
+                let update = live.dismiss_ephemeral(post);
+                return self.apply_update(update, window, cx);
+            }
             RightPaneEvent::ToggleReaction { post, emoji } => matty_sync::Command::ToggleReaction {
                 post_id: post.to_string(),
                 emoji_name: crate::transcript::emoji_name(emoji),
@@ -1626,6 +1676,7 @@ impl Render for PopOutView {
                         .child(content),
                 ),
             )
+            .child(self.interactive_dialog.clone())
             .child(self.toasts.clone())
             .into_any_element()
     }

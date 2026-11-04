@@ -175,6 +175,28 @@ pub fn people(
     people
 }
 
+/// The channels a `channels` menu offers: the public and private ones the
+/// user is in, from the sidebar's `sections`, as `(channel id, name)`, by
+/// name.
+pub fn channels<'a>(
+    sections: impl Iterator<Item = &'a matty_sync::SidebarSection>,
+) -> Vec<(SharedString, SharedString)> {
+    let mut channels: Vec<(SharedString, SharedString)> = Vec::new();
+    for channel in sections
+        .flat_map(|section| &section.channels)
+        .filter(|channel| matches!(channel.kind.as_str(), "O" | "P"))
+    {
+        if !channels.iter().any(|(id, _)| id.as_ref() == channel.id) {
+            channels.push((
+                channel.id.clone().into(),
+                channel.display_name.clone().into(),
+            ));
+        }
+    }
+    channels.sort_by_key(|(_, name)| name.to_lowercase());
+    channels
+}
+
 /// `posts` with the ephemeral messages for `channel_id` among them, by
 /// time; `None` when there are none, so the caller keeps its own slice.
 pub fn with_ephemeral(
@@ -194,6 +216,29 @@ pub fn with_ephemeral(
     merged.extend(mine.into_iter().cloned());
     merged.sort_by_key(|post| post.create_at);
     Some(merged)
+}
+
+/// A thread's posts, root first, with the ephemeral replies under its root
+/// among them by time: with collapsed reply threads on, the channel leaves
+/// them out, so the thread is where they show.
+pub fn with_thread_ephemeral(
+    posts: &std::sync::Arc<[ApiPost]>,
+    ephemeral: &[ApiPost],
+) -> std::sync::Arc<[ApiPost]> {
+    let Some(root) = posts.first() else {
+        return posts.clone();
+    };
+    let replies: Vec<&ApiPost> = ephemeral
+        .iter()
+        .filter(|post| post.root_id == root.id && !posts.iter().any(|kept| kept.id == post.id))
+        .collect();
+    if replies.is_empty() {
+        return posts.clone();
+    }
+    let mut merged: Vec<ApiPost> = posts[1..].to_vec();
+    merged.extend(replies.into_iter().cloned());
+    merged.sort_by_key(|post| post.create_at);
+    std::iter::once(root.clone()).chain(merged).collect()
 }
 
 /// Keeps the ephemeral messages up to date with one from the server: a new
@@ -264,21 +309,11 @@ impl Session {
         } else {
             Vec::new()
         };
-        let mut channels: Vec<(SharedString, SharedString)> = Vec::new();
-        if sources.contains(&MenuSource::Channels) {
-            for channel in sections
-                .flat_map(|section| &section.channels)
-                .filter(|channel| matches!(channel.kind.as_str(), "O" | "P"))
-            {
-                if !channels.iter().any(|(id, _)| id.as_ref() == channel.id) {
-                    channels.push((
-                        channel.id.clone().into(),
-                        channel.display_name.clone().into(),
-                    ));
-                }
-            }
-            channels.sort_by_key(|(_, name)| name.to_lowercase());
-        }
+        let channels = if sources.contains(&MenuSource::Channels) {
+            channels(sections)
+        } else {
+            Vec::new()
+        };
         fill(posts, &self.pending, &people, &channels);
     }
 
@@ -316,15 +351,18 @@ impl Session {
                 let before = self.pending.len();
                 self.pending.retain(|(post_id, _)| post_id != target);
                 applied.redraw = self.pending.len() != before;
-                applied.refused = Some(error.clone().into());
+                // Every window hears it; the one that sent it says so.
+                if applied.redraw {
+                    applied.refused = Some(error.clone().into());
+                }
             }
             ChangeSet::Failed(CommandError::Offline {
                 action: "run action",
             }) => {
                 // Sync does not say which: none of them got there.
                 applied.redraw = !self.pending.is_empty();
+                applied.offline = applied.redraw;
                 self.pending.clear();
-                applied.offline = true;
             }
             _ => {}
         }
@@ -624,6 +662,38 @@ mod tests {
         assert_eq!(ids, ["a", "e1", "b"]);
         assert!(with_ephemeral(Some(&posts), &kept, "c3").is_none());
         assert!(with_ephemeral(None, &kept, "c1").is_none(), "still loading");
+    }
+
+    /// With collapsed reply threads on, an ephemeral reply shows in its
+    /// thread, by time, and in no other.
+    #[test]
+    fn ephemeral_replies_join_their_thread() {
+        let post = |id: &str, root: &str, at: i64| ApiPost {
+            id: id.into(),
+            channel_id: "c1".into(),
+            root_id: root.into(),
+            create_at: at,
+            ..ApiPost::default()
+        };
+        let thread: std::sync::Arc<[ApiPost]> = vec![
+            post("root", "", 1),
+            post("r1", "root", 10),
+            post("r2", "root", 30),
+        ]
+        .into();
+        let reply = ApiPost {
+            kind: EPHEMERAL.into(),
+            ..post("e1", "root", 20)
+        };
+        let elsewhere = ApiPost {
+            kind: EPHEMERAL.into(),
+            ..post("e2", "other", 25)
+        };
+        let merged = with_thread_ephemeral(&thread, &[reply, elsewhere.clone()]);
+        let ids: Vec<&str> = merged.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["root", "r1", "e1", "r2"]);
+        let alone = with_thread_ephemeral(&thread, &[elsewhere]);
+        assert!(std::sync::Arc::ptr_eq(&alone, &thread), "nothing to add");
     }
 
     #[test]
