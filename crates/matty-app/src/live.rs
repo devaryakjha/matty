@@ -227,6 +227,9 @@ pub struct Update {
     pub ready: Option<SharedString>,
     /// A join the server refused, for Browse to show as not joined again.
     pub join_failed: Option<SharedString>,
+    /// An action that could not reach the server, as sync names it, for
+    /// the window to say the user is offline (#163).
+    pub offline_refused: Option<&'static str>,
     /// The open channel's mute and notification preferences.
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
@@ -1763,19 +1766,27 @@ impl Live {
                     update.listing = self.listing_content();
                 }
             }
-            ChangeSet::Failed(matty_sync::CommandError::Server {
-                action: "load saved messages" | "load pinned messages" | "load recent mentions",
-                ..
-            }) => {
+            ChangeSet::Failed(
+                matty_sync::CommandError::Server {
+                    action: "load saved messages" | "load pinned messages" | "load recent mentions",
+                    ..
+                }
+                | matty_sync::CommandError::Offline {
+                    action: "load saved messages" | "load pinned messages" | "load recent mentions",
+                },
+            ) => {
                 // Shown as an empty listing rather than loading forever.
                 if let Some((_, shown)) = self.listing.as_mut() {
                     *shown = Some(Arc::from(Vec::new()));
                     update.listing = self.listing_content();
                 }
             }
-            ChangeSet::Failed(matty_sync::CommandError::Server {
-                action: "search", ..
-            }) => {
+            ChangeSet::Failed(
+                matty_sync::CommandError::Server {
+                    action: "search", ..
+                }
+                | matty_sync::CommandError::Offline { action: "search" },
+            ) => {
                 // Shown as no results rather than searching forever; a
                 // later page that failed keeps what came before.
                 if let Some((_, results)) = self.search.as_mut() {
@@ -1785,6 +1796,9 @@ impl Live {
                     self.search_page = (self.search_page.0, false, false);
                     update.search = self.search_model();
                 }
+            }
+            ChangeSet::Failed(matty_sync::CommandError::Offline { action }) => {
+                update.offline_refused = Some(action);
             }
             ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
@@ -2927,7 +2941,7 @@ mod tests {
         // Commands that need a connection while there is none, or that the
         // network dropped, leave the banner to speak.
         for failure in [
-            matty_sync::CommandError::Offline,
+            matty_sync::CommandError::Offline { action: "view" },
             matty_sync::CommandError::Server {
                 action: "edit",
                 target: "p1".into(),
@@ -2939,6 +2953,33 @@ mod tests {
             assert!(!update.expired);
             assert!(!update.signed_out);
         }
+    }
+
+    /// #163: an action that could not reach the server reaches the window
+    /// by name, and a search or a mentions listing that could not run stops
+    /// loading rather than spin.
+    #[test]
+    fn offline_failures_name_the_action_and_stop_loading() {
+        let mut live = live();
+        let refused = |action| ChangeSet::Failed(matty_sync::CommandError::Offline { action });
+        let update = live.apply(&refused("add reaction"));
+        assert_eq!(update.offline_refused, Some("add reaction"));
+
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        live.search("lunch");
+        let update = live.apply(&refused("search"));
+        let search = update.search.expect("the search stops");
+        assert!(!search.searching && search.results.is_empty());
+        assert_eq!(update.offline_refused, None, "the pane says it");
+
+        live.show_mentions();
+        let update = live.apply(&refused("load recent mentions"));
+        assert!(matches!(
+            update.listing,
+            Some(crate::right_pane::RightPaneContent::Mentions(ref posts)) if posts.is_empty()
+        ));
     }
 
     #[test]

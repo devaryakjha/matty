@@ -160,7 +160,7 @@ pub(crate) enum Write {
 
 impl Write {
     /// What the user asked, for [`CommandError::Server`](crate::CommandError::Server).
-    fn action(&self) -> &'static str {
+    pub(crate) fn action(&self) -> &'static str {
         match self {
             Self::Edit { .. } => "edit",
             Self::Delete { .. } => "delete",
@@ -402,7 +402,7 @@ pub(crate) async fn run(
                     Some(Loaded::ReactFailed {
                         reaction: Box::new(reaction),
                         added: add,
-                        error: error.to_string(),
+                        error: told(&error),
                     })
                 } else {
                     None
@@ -621,16 +621,25 @@ pub(crate) async fn run(
             }
             Write::Listing(listing) => {
                 let list = match &listing {
-                    crate::Listing::Saved => client.saved_posts(&user_id, 0, LISTING_PAGE).await?,
-                    crate::Listing::Pinned { channel_id } => {
-                        client.pinned_posts(channel_id).await?
-                    }
+                    crate::Listing::Saved => client.saved_posts(&user_id, 0, LISTING_PAGE).await,
+                    crate::Listing::Pinned { channel_id } => client.pinned_posts(channel_id).await,
                     crate::Listing::Mentions { team_id, terms } => {
                         let mut query = SearchQuery::new(terms.clone());
                         query.is_or_search = true;
                         query.per_page = LISTING_PAGE;
-                        client.search_posts(team_id, &query).await?.list
+                        client
+                            .search_posts(team_id, &query)
+                            .await
+                            .map(|found| found.list)
                     }
+                };
+                let list = match list {
+                    Ok(list) => list,
+                    // Unreachable: the cache answers what it can.
+                    Err(error) if told(&error).is_none() => {
+                        return Ok(Some(Loaded::ListingOffline(listing)));
+                    }
+                    Err(error) => return Err(error),
                 };
                 let mut posts: Vec<_> = list.ordered().cloned().collect();
                 posts.sort_by_key(|post| std::cmp::Reverse(post.create_at));
@@ -662,10 +671,20 @@ pub(crate) async fn run(
         Err(error) => Loaded::WriteFailed {
             action,
             target,
-            error: error.to_string(),
+            error: told(&error),
         },
     };
     let _ = results.send(message);
+}
+
+/// What the server said, or `None` when it could not be reached: the
+/// network is down or the request timed out, and the app says the user is
+/// offline rather than quoting a transport error (#163).
+fn told(error: &ApiError) -> Option<String> {
+    match error {
+        ApiError::Network(_) | ApiError::Timeout => None,
+        error => Some(error.to_string()),
+    }
 }
 
 /// A team's categories after a change to them, so the sidebar shows the

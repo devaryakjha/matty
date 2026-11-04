@@ -23,7 +23,8 @@ impl MainWindow {
         if crate::offline() {
             self.login = None;
             self.start_live(account, window, cx);
-            self.connection = ConnectionState::Offline;
+            // Tells the views too, so they refuse what needs the server (#163).
+            self.set_connection(ConnectionState::Offline, cx);
             if let Some(live) = &self.live {
                 live.send(matty_sync::Command::ShowCache);
             }

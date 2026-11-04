@@ -219,17 +219,21 @@ pub(crate) enum Loaded {
     /// The read state after marking a post unread.
     Unread(Box<matty_api::models::ChannelUnreadAt>),
     /// A reaction the store already shows did not reach the server.
+    /// `error` is `None` when the server could not be reached.
     ReactFailed {
         reaction: Box<matty_api::models::Reaction>,
         added: bool,
-        error: String,
+        error: Option<String>,
     },
-    /// A command's server call failed.
+    /// A command's server call failed; `error` is `None` when the server
+    /// could not be reached, which the app tells as being offline.
     WriteFailed {
         action: &'static str,
         target: String,
-        error: String,
+        error: Option<String>,
     },
+    /// A listing could not reach the server: the cache answers instead.
+    ListingOffline(crate::Listing),
 }
 
 /// Runs a fetch an event asked for. Failures are logged: the next resync

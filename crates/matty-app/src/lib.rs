@@ -31,6 +31,7 @@ pub mod logging;
 pub mod login;
 mod main_window;
 pub mod menu;
+pub mod offline;
 pub mod perf;
 pub mod preview;
 pub mod profile;
