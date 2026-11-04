@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-use matty_sync::{ChangeSet, Command, CommandError};
+use matty_api::Client;
+use matty_store::Store;
+use matty_sync::{ChangeSet, Command, CommandError, Connection};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -77,8 +79,10 @@ async fn a_failed_send_keeps_its_text_and_a_retry_sends_it() {
     next(&changes, |c| window(c) == ["server1"]).await;
 }
 
+/// A send on its way may already be on the server, so it can be neither
+/// changed nor dropped until it comes back.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unsent_post_cannot_be_edited_or_deleted() {
+async fn a_send_on_its_way_cannot_be_edited_or_discarded() {
     let server = server().await;
     Mock::given(method("POST"))
         .and(path("/api/v4/posts"))
@@ -87,14 +91,22 @@ async fn an_unsent_post_cannot_be_edited_or_deleted() {
         .await;
     let (sync, changes) = connected(&server).await;
     sync.send(send());
+    // On its way: one attempt started.
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Outbox { sends, .. } if sends.first().is_some_and(|s| s.attempts == 1))
+    })
+    .await;
     sync.send(Command::EditPost {
         post_id: "me:1".into(),
         message: "changed".into(),
     });
+    sync.send(Command::Discard {
+        pending_post_id: "me:1".into(),
+    });
     sync.send(Command::DeletePost {
         post_id: "me:1".into(),
     });
-    for _ in 0..2 {
+    for _ in 0..3 {
         let refused = next(&changes, |c| matches!(c, ChangeSet::Failed(_))).await;
         assert_eq!(
             refused,
@@ -122,6 +134,197 @@ async fn an_unsent_post_cannot_be_edited_or_deleted() {
         matches!(c, ChangeSet::Posts { posts, .. } if posts.first().is_some_and(|p| p.message == "changed"))
     })
     .await;
+}
+
+/// A send still waiting its turn can be edited, keeping its place, or
+/// discarded, before it goes (#195).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_send_can_be_edited_or_discarded() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(Echo(Duration::from_millis(800)))
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    // The first goes at once; the others wait behind it.
+    for (id, message) in [("me:1", "hello"), ("me:2", "second"), ("me:3", "third")] {
+        sync.send(post_in("c1", id, message));
+    }
+    sync.send(Command::EditPost {
+        post_id: "me:2".into(),
+        message: "second, fixed".into(),
+    });
+    sync.send(Command::Discard {
+        pending_post_id: "me:3".into(),
+    });
+    let edited = next(&changes, |c| {
+        matches!(c, ChangeSet::Outbox { sends, .. } if sends.iter().any(|s| s.message == "second, fixed"))
+    })
+    .await;
+    let ChangeSet::Outbox { sends, .. } = edited else {
+        unreachable!()
+    };
+    let queued: Vec<&str> = sends.iter().map(|s| s.pending_post_id.as_str()).collect();
+    assert_eq!(queued, ["me:1", "me:2"]);
+    next(
+        &changes,
+        |c| matches!(c, ChangeSet::Outbox { sends, .. } if sends.is_empty()),
+    )
+    .await;
+    assert_eq!(
+        sent(&server).await,
+        [
+            ("c1".to_owned(), "hello".to_owned()),
+            ("c1".to_owned(), "second, fixed".to_owned())
+        ]
+    );
+}
+
+/// Posts written while the server cannot take them are still sent after
+/// the app is killed and launched again: each once, in order per channel
+/// (#194).
+#[tokio::test(flavor = "multi_thread")]
+async fn queued_posts_survive_a_relaunch_and_go_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path_on_disk = dir.path().join("account.sqlite");
+    let written = [
+        ("c1", "me:1", "one"),
+        ("c2", "me:2", "two"),
+        ("c1", "me:3", "three"),
+        ("c2", "me:4", "four"),
+        ("c1", "me:5", "five"),
+    ];
+
+    // First run: the server takes nothing, so everything stays queued.
+    {
+        let down = server().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v4/posts"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+                "id": "app.busy", "message": "Busy.", "status_code": 503
+            })))
+            .mount(&down)
+            .await;
+        let sync = matty_sync::spawn(Store::open(&path_on_disk).unwrap()).unwrap();
+        let changes = sync.subscribe();
+        sync.send(Command::Connect {
+            client: Client::new(down.uri()).unwrap().with_token("token"),
+        });
+        next(&changes, |c| {
+            matches!(c, ChangeSet::Connection(Connection::Loaded))
+        })
+        .await;
+        for (channel, id, message) in written {
+            sync.send(post_in(channel, id, message));
+        }
+        next(&changes, |c| {
+            matches!(c, ChangeSet::Outbox { channel_id, sends } if channel_id == "c1" && sends.len() == 3)
+        })
+        .await;
+        // Killed: the engine stops with nothing delivered.
+        drop(sync);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    {
+        let store = Store::open(&path_on_disk).unwrap();
+        let queued: Vec<String> = ["c1", "c2"]
+            .into_iter()
+            .flat_map(|c| matty_store::outbox::for_channel(store.conn(), c).unwrap())
+            .map(|outgoing| outgoing.pending_post_id)
+            .collect();
+        assert_eq!(queued, ["me:1", "me:3", "me:5", "me:2", "me:4"]);
+    }
+
+    // Relaunch against a server that is back.
+    let up = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(Echo(Duration::from_millis(50)))
+        .mount(&up)
+        .await;
+    let sync = matty_sync::spawn(Store::open(&path_on_disk).unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(up.uri()).unwrap().with_token("token"),
+    });
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while sent(&up).await.len() < written.len() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Let anything extra arrive before counting.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let arrived = sent(&up).await;
+    for channel in ["c1", "c2"] {
+        let got: Vec<&str> = arrived
+            .iter()
+            .filter(|(c, _)| c == channel)
+            .map(|(_, m)| m.as_str())
+            .collect();
+        let want: Vec<&str> = written
+            .iter()
+            .filter(|(c, _, _)| *c == channel)
+            .map(|(_, _, m)| *m)
+            .collect();
+        assert_eq!(got, want, "{channel}");
+    }
+    drop(changes);
+    drop(sync);
+    let store = Store::open(&path_on_disk).unwrap();
+    assert!(
+        matty_store::outbox::channels(store.conn())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn post_in(channel: &str, id: &str, message: &str) -> Command {
+    Command::SendPost {
+        pending_post_id: id.into(),
+        channel_id: channel.into(),
+        root_id: String::new(),
+        message: message.into(),
+        file_ids: Vec::new(),
+        props: Default::default(),
+    }
+}
+
+/// Creates whatever post it is sent, as the server would, after a pause.
+struct Echo(Duration);
+
+impl wiremock::Respond for Echo {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let pending = body["pending_post_id"].as_str().unwrap_or_default();
+        ResponseTemplate::new(201)
+            .set_body_json(json!({
+                "id": format!("s-{pending}"), "channel_id": body["channel_id"], "user_id": ME,
+                "create_at": 100, "update_at": 100, "message": body["message"],
+                "pending_post_id": pending
+            }))
+            .set_delay(self.0)
+    }
+}
+
+/// The posts the server was sent, as (channel, message), in arrival order.
+async fn sent(server: &wiremock::MockServer) -> Vec<(String, String)> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|request| request.url.path() == "/api/v4/posts")
+        .map(|request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            (
+                body["channel_id"].as_str().unwrap().to_owned(),
+                body["message"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]

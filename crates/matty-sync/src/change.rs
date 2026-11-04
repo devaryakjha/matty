@@ -365,8 +365,9 @@ pub enum UploadState {
 /// Why a command was not carried out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandError {
-    /// The post is still in the outbox: it can be retried or discarded, but
-    /// not edited or deleted until the server has it.
+    /// The post is on its way to the server: it can be neither edited nor
+    /// discarded until the send comes back. A post still waiting in the
+    /// outbox can be edited or discarded (#195).
     NotSentYet {
         /// The post's pending id.
         post_id: String,
