@@ -210,6 +210,8 @@ pub mod metrics {
     pub const THREADS_LIST_WIDTH: f32 = 360.;
     /// The widest a Drafts card runs.
     pub const DRAFTS_MAX_WIDTH: f32 = 760.;
+    /// A short field such as a time picker.
+    pub const FIELD_NARROW_WIDTH: f32 = 140.;
     /// Post avatars in the channel view and threads.
     pub const AVATAR: f32 = 32.;
 }

@@ -12,7 +12,7 @@ use crate::actions::OpenPreferences;
 use crate::dnd::{self, DURATIONS, DndDuration};
 use crate::settings::ClockFormat;
 use crate::sidebar::Presence;
-use crate::style::{Palette, scaled, tipped_when};
+use crate::style::{Palette, metrics, scaled, tipped_when};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
@@ -381,7 +381,7 @@ impl AccountView {
                     )
                     .child(
                         div()
-                            .w(px(140.))
+                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
                             .child(Select::new(&self.custom_time).aria_label("Time")),
                     ),
             )
