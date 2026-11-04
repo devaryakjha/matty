@@ -68,6 +68,8 @@ pub enum ConnectionState {
     Reconnecting { attempt: u32 },
     /// Gave up until asked; cached content stays usable.
     Offline,
+    /// The web demo's sample workspace: no server, nothing leaves the page.
+    Demo,
 }
 
 /// What the connection banner says for `state` with `queued` messages
@@ -86,6 +88,11 @@ fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, 
         ConnectionState::Offline => (
             "You're offline. Matty shows what it has and sends when you're back.".into(),
             true,
+        ),
+        ConnectionState::Demo => (
+            "This is a demo workspace with sample data. Nothing you do here leaves your browser."
+                .into(),
+            false,
         ),
     };
     // What is waiting goes when the connection is back (#195).
@@ -1098,6 +1105,11 @@ impl MainWindow {
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
         if !crate::preview::enabled()
+            && saved.is_none()
+            && let Some(snapshot) = crate::demo_snapshot()
+        {
+            this.start_demo(snapshot, window, cx);
+        } else if !crate::preview::enabled()
             && let Some(account) = saved
         {
             if crate::offline() {
@@ -1136,7 +1148,48 @@ impl MainWindow {
             self.forget = None;
         }
         self.forget_signed_out(cx);
-        let (live, changes) = match Live::start(path, account) {
+        self.run_live(account, Live::start(path, account), window, cx);
+    }
+
+    /// Opens the web demo's sample workspace from `snapshot`, with no
+    /// server: the sign-in card stays away until the banner's "Connect
+    /// your server" asks for it.
+    fn start_demo(&mut self, snapshot: &[u8], window: &mut Window, cx: &mut Context<Self>) {
+        let (sync, demo) = match matty_sync::spawn_demo(snapshot) {
+            Ok(Some(started)) => started,
+            Ok(None) => {
+                tracing::error!("the demo snapshot has no demo account");
+                return;
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not open the demo");
+                return;
+            }
+        };
+        crate::set_demo(true);
+        let account = crate::settings::SavedAccount {
+            server: demo.server,
+            user_id: demo.user_id,
+            username: demo.username,
+            display_name: demo.display_name,
+        };
+        self.login = None;
+        self.connection = ConnectionState::Demo;
+        self.run_live(&account, Ok(Live::start_with(sync, &account)), window, cx);
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::ShowCache);
+        }
+    }
+
+    /// Applies what `started` sync publishes, for `account`.
+    fn run_live(
+        &mut self,
+        account: &crate::settings::SavedAccount,
+        started: std::io::Result<(Live, async_channel::Receiver<matty_sync::ChangeSet>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (live, changes) = match started {
             Ok(started) => started,
             Err(error) => {
                 tracing::error!(%error, "could not start sync");
@@ -1722,6 +1775,13 @@ impl MainWindow {
             detail.update(cx, |pane, _| pane.set_directory(directory.clone()));
             self.channel
                 .update(cx, |channel, cx| channel.set_directory(directory, cx));
+            // The demo opens on its first favorite, so it starts mid-story.
+            if crate::demo()
+                && self.selected_channel.is_none()
+                && let Some(first) = model.categories.iter().find_map(|c| c.rows.first())
+            {
+                self.open_channel(first.id.clone(), window, cx);
+            }
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -3321,6 +3381,10 @@ impl MainWindow {
                 crate::live::media_dir(account),
             ));
         }
+        if crate::demo() {
+            crate::set_demo(false);
+            self.connection = ConnectionState::Online;
+        }
         match &self.live {
             Some(live) => live.send(matty_sync::Command::SignOut),
             None => {
@@ -3449,6 +3513,11 @@ impl MainWindow {
                 .size(scaled(&theme, metrics::ICON_SMALL))
                 .text_color(theme.colors.destructive)
                 .into_any_element()
+        } else if matches!(state, ConnectionState::Demo) {
+            lucide(LucideIcon::Sparkles)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.primary)
+                .into_any_element()
         } else {
             crate::ui::spinner::Spinner::new("banner.spinner")
                 .color(theme.colors.muted_foreground)
@@ -3478,6 +3547,16 @@ impl MainWindow {
             .text_color(foreground)
             .child(icon)
             .child(text)
+            .when(matches!(state, ConnectionState::Demo), |row| {
+                row.child(
+                    Button::new("banner.connect")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Xs)
+                        .aria_label("Connect your server")
+                        .on_click(cx.listener(|this, _, window, cx| this.sign_out(window, cx)))
+                        .child("Connect your server"),
+                )
+            })
             .when(offline, |row| {
                 row.child(
                     Button::new("banner.retry")
