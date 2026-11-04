@@ -383,6 +383,9 @@ def split_journey(args, xdo, perf_log):
     in turn. Returns the window the scrolling took, for the report."""
     # Cmd/Ctrl+\ opens the channel before this one beside it and focuses
     # it; the switcher then opens the long channel in that pane.
+    # The shortcut needs focus in the window: the composer has it.
+    xdo.click(WINDOW[0] * 3 // 5, WINDOW[1] - 72)
+    settle(perf_log, 0.3)
     xdo.key("ctrl+backslash")
     settle(perf_log, 0.5)
     xdo.key("ctrl+k")
