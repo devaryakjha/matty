@@ -54,6 +54,16 @@ gpui_kit::actions!(
         ReplyToLastMessage,
         /// React to the last message. (MM)
         ReactToLastMessage,
+        /// Wrap the composer selection in bold. (MM)
+        FormatBold,
+        /// Wrap the composer selection in italics. (MM)
+        FormatItalic,
+        /// Turn the composer selection into a link. (MM)
+        InsertLink,
+        /// Wrap the composer selection in strikethrough. (Slack)
+        FormatStrike,
+        /// Wrap the composer selection in inline code. (Slack)
+        FormatCode,
         /// Focus the composer. (MM)
         FocusComposer,
         /// Mark the current channel read. (Matty, from Slack)
@@ -118,6 +128,7 @@ impl Binding {
 pub const MAIN_WINDOW: &str = "MainWindow";
 pub const CHANNEL_VIEW: &str = "ChannelView";
 pub const RIGHT_PANE: &str = "RightPane";
+pub const COMPOSER: &str = "Composer";
 pub const COMPOSER_EMPTY: &str = "Composer && empty";
 
 macro_rules! row {
@@ -234,6 +245,29 @@ pub fn bindings() -> Vec<Binding> {
             "ctrl-shift-b"
         ),
         row!("Upload files", UploadFiles, main, "cmd-u", "ctrl-u"),
+        row!("Bold", FormatBold, Some(COMPOSER), "cmd-b", "ctrl-b"),
+        row!("Italic", FormatItalic, Some(COMPOSER), "cmd-i", "ctrl-i"),
+        row!(
+            "Link",
+            InsertLink,
+            Some(COMPOSER),
+            "cmd-alt-k",
+            "ctrl-alt-k"
+        ),
+        row!(
+            "Strikethrough",
+            FormatStrike,
+            Some(COMPOSER),
+            "cmd-shift-x",
+            "ctrl-shift-x"
+        ),
+        row!(
+            "Inline code",
+            FormatCode,
+            Some(COMPOSER),
+            "cmd-shift-c",
+            "ctrl-shift-c"
+        ),
         row!(
             "Edit last message",
             EditLastMessage,
@@ -350,6 +384,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 32);
+        assert_eq!(count, 37);
     }
 }

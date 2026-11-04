@@ -452,6 +452,13 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   messages…", a failed page offers Retry, and the row is empty once the
   transcript runs to the end, so the usual view is unchanged
   (`design-47`).
+- **Composer formatting shortcuts** (PLAN §4.3): Cmd/Ctrl+B, +I and
+  +Alt+K are Mattermost's bold, italic and link; Cmd/Ctrl+Shift+X and
+  +Shift+C are Slack's strikethrough and inline code. Each wraps the
+  selection in Markdown, the way the toolbar buttons do, and a link leaves
+  "url" selected so typing replaces it. They work in the channel, thread
+  and edit composers and are listed in the shortcut sheet; Cmd/Ctrl+K alone
+  stays the quick switcher (`design-48`).
 
 ## 5. Components
 

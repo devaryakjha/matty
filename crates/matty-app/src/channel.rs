@@ -319,6 +319,53 @@ pub struct History {
     pub failed_newer: bool,
 }
 
+/// The Markdown a composer formatting shortcut wraps the selection in
+/// (PLAN §4.3): Cmd/Ctrl+B bold, +I italic, +Alt+K link (Mattermost's
+/// bindings), +Shift+X strikethrough and +Shift+C inline code (Slack's).
+/// Cmd/Ctrl+K alone stays the quick switcher.
+pub(crate) fn format_shortcut(
+    keystroke: &gpui_kit::Keystroke,
+) -> Option<(&'static str, &'static str)> {
+    let mods = &keystroke.modifiers;
+    if !(mods.control || mods.platform) || mods.function {
+        return None;
+    }
+    match (keystroke.key.as_str(), mods.shift, mods.alt) {
+        ("b", false, false) => Some(("**", "**")),
+        ("i", false, false) => Some(("_", "_")),
+        ("k", false, true) => Some(("[", "](url)")),
+        ("x", true, false) => Some(("~~", "~~")),
+        ("c", true, false) => Some(("`", "`")),
+        _ => None,
+    }
+}
+
+/// Applies a formatting shortcut to `composer` and reports whether the key
+/// was one. A link leaves "url" selected so typing replaces it.
+pub(crate) fn apply_format(
+    composer: &Entity<ComposerState>,
+    keystroke: &gpui_kit::Keystroke,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let Some((before, after)) = format_shortcut(keystroke) else {
+        return false;
+    };
+    // The key arrives from inside the composer's own update, so the edit
+    // waits until it has let go of its state.
+    let composer = composer.clone();
+    window.defer(cx, move |window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.wrap_selection(before, after, window, cx);
+            if after == "](url)" {
+                let end = composer.selection(cx).end;
+                composer.set_selection(end + 2..end + 5, cx);
+            }
+        });
+    });
+    true
+}
+
 impl ReplySummary {
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
@@ -605,6 +652,11 @@ impl ChannelView {
             // macOS) always sends, which is the only way when the
             // preference puts a newline on Enter.
             state.set_on_key(move |keystroke, window, cx| {
+                if let Some(composer) = keys.upgrade().map(|view| view.read(cx).composer.clone())
+                    && apply_format(&composer, keystroke, window, cx)
+                {
+                    return true;
+                }
                 if keystroke.key == "enter"
                     && (keystroke.modifiers.control || keystroke.modifiers.platform)
                 {
@@ -1527,7 +1579,7 @@ impl ChannelView {
         }
     }
 
-    /// Wraps the selection in Markdown from a toolbar button or shortcut.
+    /// Wraps the selection in Markdown from a toolbar button.
     fn wrap(&mut self, before: &str, after: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| {
             composer.wrap_selection(before, after, window, cx);
@@ -1561,10 +1613,15 @@ impl ChannelView {
                 if keystroke.key == "escape" {
                     view.update(cx, |this, cx| this.cancel_edit(window, cx))
                         .ok();
-                    true
-                } else {
-                    false
+                    return true;
                 }
+                let editor = view.upgrade().and_then(|view| {
+                    view.read(cx)
+                        .editing
+                        .as_ref()
+                        .map(|editing| editing.composer.clone())
+                });
+                editor.is_some_and(|editor| apply_format(&editor, keystroke, window, cx))
             });
             state
         });
@@ -3484,6 +3541,22 @@ mod tests {
                 Row::Newer,
             ]
         );
+    }
+
+    #[test]
+    fn formatting_shortcuts_follow_mattermost_and_slack() {
+        fn wrap(keys: &'static str) -> Option<(&'static str, &'static str)> {
+            format_shortcut(&gpui_kit::Keystroke::parse(keys).unwrap())
+        }
+        assert_eq!(wrap("cmd-b"), Some(("**", "**")));
+        assert_eq!(wrap("ctrl-i"), Some(("_", "_")));
+        assert_eq!(wrap("ctrl-alt-k"), Some(("[", "](url)")));
+        assert_eq!(wrap("cmd-shift-x"), Some(("~~", "~~")));
+        assert_eq!(wrap("ctrl-shift-c"), Some(("`", "`")));
+        // Cmd+K is the quick switcher, Shift+B is just a capital letter.
+        assert_eq!(wrap("cmd-k"), None);
+        assert_eq!(wrap("shift-b"), None);
+        assert_eq!(wrap("b"), None);
     }
 
     #[test]
