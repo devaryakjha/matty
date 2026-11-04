@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
-use matty_api::{ApiError, Client, ServerCapabilities};
+use matty_api::{ApiError, Client, ProbeError, ServerCapabilities};
 use matty_sync::{
     ChangeSet, Command, Connection, ImageSize, SidebarChannel, SidebarSection, SyncHandle,
     TeamWithUnreads, UploadState,
@@ -1617,16 +1617,18 @@ fn connection_state(state: &matty_api::ws::ConnectionState) -> ConnectionState {
     }
 }
 
-/// Checks `url` and reads how its server lets people sign in. A server
-/// older than Matty supports is refused here, before anyone signs in.
+/// Checks `url` and reads how its server lets people sign in: `system/ping`
+/// first, then the client config. A server older than Matty supports is
+/// refused here, before anyone signs in.
 pub async fn check_server(url: String) -> Result<ServerCapabilities, String> {
+    let address = url.clone();
     let answer = matty_sync::io::run(async move {
-        let client = Client::new(&url)?;
-        client.capabilities().await
+        let client = Client::new(&url).map_err(ProbeError::Ping)?;
+        client.probe().await
     });
     match answer.recv().await {
         Ok(Ok(capabilities)) => supported(capabilities),
-        Ok(Err(error)) => Err(server_error(&error)),
+        Ok(Err(error)) => Err(probe_error(&address, &error)),
         Err(_) => Err(STOPPED.into()),
     }
 }
@@ -1766,24 +1768,61 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join(format!("matty-{}.sqlite", account.user_id)))
 }
 
-fn server_error(error: &ApiError) -> String {
+/// The sentence for a server check that stopped at `error`, naming
+/// `url`'s host where that helps.
+fn probe_error(url: &str, error: &ProbeError) -> String {
+    match error {
+        ProbeError::Ping(ApiError::Server { .. } | ApiError::Decode(_)) => format!(
+            "{} answered, but it is not a Mattermost server. Check the address.",
+            url_host(url)
+        ),
+        ProbeError::Ping(error) => server_error(url, error),
+        ProbeError::Unhealthy(_) => format!(
+            "The Mattermost server at {} says it is not working right now. Try again later or ask its administrator.",
+            url_host(url)
+        ),
+        ProbeError::Config(ApiError::Server { .. } | ApiError::Decode(_)) => format!(
+            "The Mattermost server at {} did not share its sign-in settings. Try again or ask its administrator.",
+            url_host(url)
+        ),
+        ProbeError::Config(error) => server_error(url, error),
+    }
+}
+
+/// `chat.example.com` from `https://chat.example.com/sub`.
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
+}
+
+/// The server address a redirect points at: its `Location` without the
+/// API path Matty asked for.
+fn redirect_target(location: &str) -> &str {
+    let base = location
+        .find("/api/v4")
+        .map_or(location, |at| &location[..at]);
+    base.trim_end_matches('/')
+}
+
+/// The sentence for a request that never got a Mattermost answer.
+fn server_error(url: &str, error: &ApiError) -> String {
     match error {
         // Already one sentence for a person, naming what is wrong with the
         // certificate (`matty_api::error::describe_tls`).
         ApiError::Tls(text) => text.clone(),
-        ApiError::Timeout => {
-            "That server did not answer in time. Check the address and try again.".into()
-        }
-        ApiError::Redirected { location } => {
-            format!("That address sends Matty to {location}. Enter that address instead.")
-        }
-        ApiError::Server { status: 404, .. } => {
-            "That address answered, but it is not a Mattermost server.".into()
-        }
-        ApiError::Server { .. } | ApiError::Decode(_) => {
-            "That address answered, but not like a Mattermost server.".into()
-        }
-        _ => "Matty could not reach that server. Check the address and your connection.".into(),
+        ApiError::Timeout => format!(
+            "{} did not answer in time. Check the address and try again.",
+            url_host(url)
+        ),
+        ApiError::Redirected { location } if location.contains("://") => format!(
+            "That address sends Matty to {}. Enter that address instead.",
+            redirect_target(location)
+        ),
+        ApiError::InvalidUrl(_) => "That does not look like a server address.".into(),
+        _ => format!(
+            "Can't reach {}. Check the address and your connection.",
+            url_host(url)
+        ),
     }
 }
 
@@ -1896,11 +1935,55 @@ mod tests {
     fn certificate_errors_keep_their_own_words() {
         let text =
             "The server's certificate has expired. Ask the server's administrator to renew it.";
-        assert_eq!(server_error(&ApiError::Tls(text.into())), text);
+        assert_eq!(
+            probe_error(
+                "https://chat.example.com",
+                &ProbeError::Ping(ApiError::Tls(text.into()))
+            ),
+            text
+        );
         assert_eq!(
             sign_in_error(&ApiError::Tls(text.into())),
             SignInFailure::Message(text.into())
         );
+    }
+
+    #[test]
+    fn server_check_errors_say_what_went_wrong() {
+        let url = "https://chat.example.com";
+        let say = |error: ProbeError| probe_error(url, &error);
+        assert_eq!(
+            say(ProbeError::Ping(ApiError::Network("dns error".into()))),
+            "Can't reach chat.example.com. Check the address and your connection."
+        );
+        assert!(
+            say(ProbeError::Ping(ApiError::Timeout)).starts_with("chat.example.com did not answer")
+        );
+        // A redirect names the server it points at, not the API path.
+        assert_eq!(
+            say(ProbeError::Ping(ApiError::Redirected {
+                location: "https://mm.example.org/api/v4/system/ping".into()
+            })),
+            "That address sends Matty to https://mm.example.org. Enter that address instead."
+        );
+        for not_mattermost in [
+            ApiError::Decode("expected value".into()),
+            refused(404, ""),
+            refused(500, ""),
+        ] {
+            assert_eq!(
+                say(ProbeError::Ping(not_mattermost)),
+                "chat.example.com answered, but it is not a Mattermost server. Check the address."
+            );
+        }
+        assert!(say(ProbeError::Unhealthy("UNHEALTHY".into())).contains("not working right now"));
+        assert!(
+            say(ProbeError::Config(ApiError::Decode("x".into())))
+                .contains("did not share its sign-in settings")
+        );
+        // A config request that could not connect reads like any other.
+        assert!(say(ProbeError::Config(ApiError::Timeout)).contains("did not answer in time"));
+        assert_eq!(url_host("http://localhost:8065/sub"), "localhost:8065");
     }
 
     fn refused(status: u16, id: &str) -> ApiError {

@@ -22,5 +22,6 @@ pub use client::{
 pub use endpoints::browse::{ChannelPatch, NewChannel, SearchQuery};
 pub use endpoints::files::{Progress, Upload, Uploaded};
 pub use endpoints::posts::{Direction, NewPost, PostPatch, PostsQuery, ThreadQuery, ThreadsQuery};
+pub use endpoints::system::ProbeError;
 pub use endpoints::users::{Credentials, MFA_BAD_CODE_ID, MFA_REQUIRED_ID, SignedIn};
 pub use error::ApiError;
