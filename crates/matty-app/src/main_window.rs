@@ -669,6 +669,12 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
+                ChannelEvent::OpenPermalink { channel, post } => {
+                    this.open_channel(channel.clone(), window, cx);
+                    let post = post.clone();
+                    this.channel
+                        .update(cx, |channel, cx| channel.jump_to(post, cx));
+                }
                 ChannelEvent::Forward(post) => {
                     // After the menu has closed and handed focus back, so
                     // the switcher's field keeps it.

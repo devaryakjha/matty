@@ -2751,6 +2751,8 @@ impl Engine {
                 | ChangeSet::Search { posts, .. }
                 | ChangeSet::Listing { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
+                    // Forwards quote another post, named by its author.
+                    ids.extend(posts.iter().flat_map(quoted_authors));
                 }
                 // The Threads view names each root's author and who replied.
                 ChangeSet::ThreadList { threads, roots, .. } => {
@@ -2824,6 +2826,18 @@ impl Engine {
         dirty.unreads = true;
         dirty.channels.extend(self.open_channels.iter().cloned());
     }
+}
+
+/// The authors of the posts a post quotes through permalinks.
+fn quoted_authors(post: &matty_api::models::Post) -> impl Iterator<Item = String> + '_ {
+    post.metadata
+        .embeds
+        .iter()
+        .filter(|embed| embed.kind == matty_api::models::EmbedKind::Permalink)
+        .filter_map(|embed| {
+            let id = embed.data.as_ref()?.get("post")?.get("user_id")?.as_str()?;
+            (!id.is_empty()).then(|| id.to_owned())
+        })
 }
 
 /// The preference category Mattermost keeps saved ("flagged") posts in.

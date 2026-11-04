@@ -137,6 +137,14 @@ fn display_post(
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
+            .map(|mut embed| {
+                if let crate::embeds::Embed::Permalink(quoted) = &mut embed
+                    && let Some(user) = users.get(&quoted.author_id)
+                {
+                    quoted.author = display_name(user).into();
+                }
+                embed
+            })
             .collect(),
     }
 }

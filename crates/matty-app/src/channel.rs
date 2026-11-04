@@ -579,6 +579,11 @@ pub enum ChannelEvent {
     Discard(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
+    /// The user opened a quoted post: show it in its channel.
+    OpenPermalink {
+        channel: SharedString,
+        post: SharedString,
+    },
     /// The user wants to forward `post` to another channel (#213).
     Forward(SharedString),
     /// The user asked to be reminded of `post` (#213).
@@ -2993,7 +2998,15 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
-            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+            let jump_view = cx.entity().downgrade();
+            let on_jump: crate::embeds::OnJump = std::rc::Rc::new(move |channel, post, _, cx| {
+                let event = ChannelEvent::OpenPermalink {
+                    channel: channel.clone(),
+                    post: post.clone(),
+                };
+                jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+            });
+            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, on_jump, cx));
         }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());

@@ -20,6 +20,52 @@ pub enum Embed {
     Link(LinkCard),
     /// A message attachment from `props.attachments`.
     Attachment(AttachmentCard),
+    /// Another post quoted through its permalink, as a forward sends it.
+    Permalink(QuotedPost),
+}
+
+/// A post quoted from a permalink in the message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuotedPost {
+    pub post_id: SharedString,
+    pub channel_id: SharedString,
+    /// Where it was posted, such as "~Town Square"; empty for a direct or
+    /// group message.
+    pub channel_name: SharedString,
+    pub author_id: String,
+    /// The author's name; the transcript fills it in from the users it
+    /// knows.
+    pub author: SharedString,
+    pub message: SharedString,
+}
+
+/// The quoted post of a `permalink` embed, if the server sent it.
+fn quoted_post(embed: &matty_api::models::PostEmbed) -> Option<QuotedPost> {
+    if embed.kind != EmbedKind::Permalink {
+        return None;
+    }
+    let data = embed.data.as_ref()?;
+    let text = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let post = data.get("post")?;
+    let channel = text(data, "channel_display_name");
+    Some(QuotedPost {
+        post_id: text(data, "post_id").into(),
+        channel_id: text(data, "channel_id").into(),
+        channel_name: match text(data, "channel_type").as_str() {
+            "D" | "G" => SharedString::default(),
+            _ if channel.is_empty() => SharedString::default(),
+            _ => format!("~{channel}").into(),
+        },
+        author_id: text(post, "user_id"),
+        author: "Someone".into(),
+        message: text(post, "message").into(),
+    })
 }
 
 /// A link preview's text.
@@ -98,6 +144,9 @@ pub fn from_post(post: &Post) -> Vec<Embed> {
             .map(|attachment| Embed::Attachment(attachment_card(attachment, &post.metadata.images)))
             .collect();
     }
+    if let Some(quoted) = post.metadata.embeds.iter().find_map(quoted_post) {
+        return vec![Embed::Permalink(quoted)];
+    }
     if post.props.get(REMOVE_LINK_PREVIEW).and_then(Value::as_str) == Some("true") {
         return Vec::new();
     }
@@ -173,6 +222,7 @@ impl Embed {
         match self {
             Self::Link(link) => link.image.as_ref(),
             Self::Attachment(attachment) => attachment.image.as_ref(),
+            Self::Permalink(_) => None,
         }
     }
 
@@ -181,6 +231,7 @@ impl Embed {
         match self {
             Self::Link(link) => link.image.as_mut(),
             Self::Attachment(attachment) => attachment.image.as_mut(),
+            Self::Permalink(_) => None,
         }
     }
 }
@@ -250,8 +301,17 @@ fn opens(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
+/// Opens a quoted post: its channel and its id.
+pub type OnJump =
+    std::rc::Rc<dyn Fn(&SharedString, &SharedString, &mut gpui_kit::Window, &mut App)>;
+
 /// The cards under the post `id`.
-pub fn post_embeds(id: &str, embeds: &[Embed], cx: &App) -> impl IntoElement + use<> {
+pub fn post_embeds(
+    id: &str,
+    embeds: &[Embed],
+    on_jump: OnJump,
+    cx: &App,
+) -> impl IntoElement + use<> {
     let theme = crate::ui::theme::UiTheme::read(cx).clone();
     let density = crate::channel::message_density(cx);
     div()
@@ -280,6 +340,33 @@ pub fn post_embeds(id: &str, embeds: &[Embed], cx: &App) -> impl IntoElement + u
                 }
                 Embed::Attachment(attachment) => {
                     attachment_element(element_id, id, index, attachment, density, cx)
+                }
+                Embed::Permalink(quoted) => {
+                    let mut card = MessageEmbed::new(element_id)
+                        .density(density)
+                        .author(quoted.author.clone())
+                        .title(if quoted.channel_name.is_empty() {
+                            SharedString::from("Jump to message")
+                        } else {
+                            format!("Originally posted in {}", quoted.channel_name).into()
+                        })
+                        .body(markdown(
+                            gpui_kit::ElementId::Name(
+                                format!("post.{id}.embed.{index}.quote").into(),
+                            ),
+                            quoted.message.clone(),
+                            cx,
+                        ));
+                    if !quoted.channel_id.is_empty() {
+                        let (channel, post, jump) = (
+                            quoted.channel_id.clone(),
+                            quoted.post_id.clone(),
+                            on_jump.clone(),
+                        );
+                        card = card
+                            .on_title_click(move |_, window, cx| jump(&channel, &post, window, cx));
+                    }
+                    card.into_any_element()
                 }
             }
         }))
@@ -345,6 +432,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_permalink_embed_quotes_the_post_and_where_it_was() {
+        let post: Post = serde_json::from_value(serde_json::json!({
+            "id": "fwd",
+            "message": "https://chat.example.com/dev/pl/orig",
+            "metadata": {"embeds": [{
+                "type": "permalink",
+                "data": {
+                    "post_id": "orig",
+                    "channel_id": "c1",
+                    "channel_display_name": "Town Square",
+                    "channel_type": "O",
+                    "team_name": "dev",
+                    "post": {"id": "orig", "user_id": "ada", "message": "Ship it"}
+                }
+            }]}
+        }))
+        .unwrap();
+        let embeds = from_post(&post);
+        let [Embed::Permalink(quoted)] = embeds.as_slice() else {
+            panic!("expected one quoted post");
+        };
+        assert_eq!(quoted.post_id.as_ref(), "orig");
+        assert_eq!(quoted.channel_id.as_ref(), "c1");
+        assert_eq!(quoted.channel_name.as_ref(), "~Town Square");
+        assert_eq!(quoted.author_id, "ada");
+        assert_eq!(quoted.message.as_ref(), "Ship it");
+    }
 
     fn post(props: Value, embeds: Vec<PostEmbed>) -> Post {
         Post {
