@@ -13,7 +13,10 @@ pub mod posts;
 pub mod sidebar;
 
 pub use migrations::{LATEST_VERSION, schema_version};
-pub use open::{BUSY_TIMEOUT, Store, database_file_name, default_path, forget};
+pub use open::{
+    BUSY_TIMEOUT, Store, account_key, database_file_name, default_path, forget, is_account_key,
+    path_for_key,
+};
 
 /// Why the store could not be opened or used.
 #[derive(Debug, thiserror::Error)]

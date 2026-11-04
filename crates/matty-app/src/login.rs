@@ -157,6 +157,9 @@ pub struct LoginModel {
     pub busy: bool,
     /// One specific sentence under the form, never a dialog.
     pub error: Option<SharedString>,
+    /// Signed in already and adding another server (#206): the card
+    /// offers Cancel, back to the server shown before.
+    pub adding: bool,
 }
 
 impl LoginModel {
@@ -212,6 +215,7 @@ impl Default for LoginModel {
             step: LoginStep::Server,
             busy: false,
             error: None,
+            adding: false,
         }
     }
 }
@@ -253,6 +257,8 @@ pub enum LoginEvent {
     Token(String),
     /// Back to the server step.
     ChangeServer,
+    /// Stop adding a server and go back to the one shown before (#206).
+    Cancel,
 }
 
 /// Turns what someone typed into the server URL to check, assuming
@@ -592,11 +598,19 @@ impl LoginView {
             .flex()
             .flex_col()
             .gap(theme.space(4.))
-            .child(Self::heading(
-                "Connect to your Mattermost server",
-                "Enter the address you open in the browser. Matty assumes https.",
-                &theme,
-            ))
+            .child(if self.model.adding {
+                Self::heading(
+                    "Add a Mattermost server",
+                    "Enter the address you open in the browser. Matty assumes https.",
+                    &theme,
+                )
+            } else {
+                Self::heading(
+                    "Connect to your Mattermost server",
+                    "Enter the address you open in the browser. Matty assumes https.",
+                    &theme,
+                )
+            })
             .child(
                 Field::new("login.server", &self.server)
                     .label("Server address")
@@ -1139,6 +1153,14 @@ impl Render for LoginView {
                     .shadow_md()
                     .child(body),
             )
+            .when(self.model.adding, |page| {
+                page.child(
+                    Button::new("login.cancel")
+                        .variant(ButtonVariant::Ghost)
+                        .label("Cancel")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(LoginEvent::Cancel))),
+                )
+            })
             .child(
                 div()
                     .type_style(style::META, &theme)
@@ -1168,6 +1190,7 @@ mod tests {
             },
             busy: true,
             error: None,
+            adding: false,
         }
     }
 

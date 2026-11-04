@@ -89,6 +89,60 @@ gpui_kit::actions!(
     ]
 );
 
+gpui_kit::actions!(
+    matty,
+    [
+        /// Add another server and sign in to it. (Matty, #206)
+        AddServer,
+        /// Switch to the first saved server. (Slack)
+        SwitchServer1,
+        /// Switch to the second saved server. (Slack)
+        SwitchServer2,
+        /// Switch to the third saved server. (Slack)
+        SwitchServer3,
+        /// Switch to the fourth saved server. (Slack)
+        SwitchServer4,
+        /// Switch to the fifth saved server. (Slack)
+        SwitchServer5,
+        /// Switch to the sixth saved server. (Slack)
+        SwitchServer6,
+        /// Switch to the seventh saved server. (Slack)
+        SwitchServer7,
+        /// Switch to the eighth saved server. (Slack)
+        SwitchServer8,
+        /// Switch to the ninth saved server. (Slack)
+        SwitchServer9,
+    ]
+);
+
+/// Cmd/Ctrl+1…9 switch to the saved server in that place on the rail
+/// (PLAN §4.4, #206). They stay out of [`bindings`], whose rows the
+/// shortcut sheet and the menu bar list one by one.
+pub fn server_bindings(platform: Platform) -> Vec<KeyBinding> {
+    const MACOS: [&str; 9] = [
+        "cmd-1", "cmd-2", "cmd-3", "cmd-4", "cmd-5", "cmd-6", "cmd-7", "cmd-8", "cmd-9",
+    ];
+    const OTHER: [&str; 9] = [
+        "ctrl-1", "ctrl-2", "ctrl-3", "ctrl-4", "ctrl-5", "ctrl-6", "ctrl-7", "ctrl-8", "ctrl-9",
+    ];
+    let keys = match platform {
+        Platform::MacOs => MACOS,
+        Platform::Other => OTHER,
+    };
+    let main = Some(MAIN_WINDOW);
+    vec![
+        KeyBinding::new(keys[0], SwitchServer1, main),
+        KeyBinding::new(keys[1], SwitchServer2, main),
+        KeyBinding::new(keys[2], SwitchServer3, main),
+        KeyBinding::new(keys[3], SwitchServer4, main),
+        KeyBinding::new(keys[4], SwitchServer5, main),
+        KeyBinding::new(keys[5], SwitchServer6, main),
+        KeyBinding::new(keys[6], SwitchServer7, main),
+        KeyBinding::new(keys[7], SwitchServer8, main),
+        KeyBinding::new(keys[8], SwitchServer9, main),
+    ]
+}
+
 /// Which platform a binding table is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
@@ -393,7 +447,8 @@ pub fn bind(cx: &mut App) {
     cx.bind_keys(
         bindings()
             .into_iter()
-            .map(|row| (row.bind)(row.keys(platform), row.context)),
+            .map(|row| (row.bind)(row.keys(platform), row.context))
+            .chain(server_bindings(platform)),
     );
     // On Linux and Windows a text field takes Alt+Shift+Up/Down to add a
     // cursor, which would swallow the unread jump from the composer. The
@@ -447,6 +502,25 @@ mod tests {
                         .unwrap_or_else(|e| panic!("{}: `{key}` does not parse: {e:?}", row.label));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn server_switches_take_their_place_and_no_other_shortcut() {
+        for platform in [Platform::MacOs, Platform::Other] {
+            let taken: Vec<_> = bindings()
+                .into_iter()
+                .filter(|row| row.context == Some(MAIN_WINDOW))
+                .map(|row| row.keys(platform))
+                .collect();
+            for n in 1..=9 {
+                let keys = match platform {
+                    Platform::MacOs => format!("cmd-{n}"),
+                    Platform::Other => format!("ctrl-{n}"),
+                };
+                assert!(!taken.contains(&keys.as_str()), "{keys} is taken");
+            }
+            assert_eq!(server_bindings(platform).len(), 9);
         }
     }
 

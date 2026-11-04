@@ -14,7 +14,7 @@ const SERVICE: &str = "Matty";
 /// One item per server and user.
 #[cfg(not(target_family = "wasm"))]
 fn entry(account: &SavedAccount) -> Option<keyring::Entry> {
-    keyring::Entry::new(SERVICE, &format!("{} {}", account.server, account.user_id))
+    keyring::Entry::new(SERVICE, &account.keychain_key())
         .inspect_err(|error| tracing::info!(%error, "no credential store"))
         .ok()
 }
@@ -54,7 +54,7 @@ pub fn delete(account: &SavedAccount) {
 /// The `localStorage` key for `account`'s token on the web.
 #[cfg(target_family = "wasm")]
 fn key(account: &SavedAccount) -> String {
-    format!("{SERVICE} session {} {}", account.server, account.user_id)
+    format!("{SERVICE} session {}", account.keychain_key())
 }
 
 /// Keeps `token` for `account`. The browser has no credential store, so on

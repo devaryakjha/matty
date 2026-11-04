@@ -181,14 +181,25 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
-/// The account signed in last, so its cache can open at launch. Holds no
-/// secret: the session token belongs in the keychain (#77).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A server the user signed in to, so its cache can open at launch. Holds
+/// no secret: the session token belongs in the keychain (#77). The fields
+/// after `display_name` came with multiple servers (#206); a file without
+/// them gets them from [`crate::servers`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedAccount {
     pub server: String,
     pub user_id: String,
     pub username: String,
     pub display_name: String,
+    /// The server's name on the rail: its `SiteName`, or its host.
+    #[serde(default)]
+    pub name: String,
+    /// Names this account's database and media folder.
+    #[serde(default)]
+    pub data_key: String,
+    /// Names this account's item in the system's credential store.
+    #[serde(default)]
+    pub keychain_key: String,
 }
 
 /// A server whose check went through, for the sign-in card's server step.
@@ -236,7 +247,10 @@ pub struct Settings {
     /// [`collapse_previews`](Self::collapse_previews), oldest first, at most
     /// [`PREVIEW_CHOICES`].
     pub preview_choices: Vec<PreviewChoice>,
+    /// The server shown now, one of [`servers`](Self::servers).
     pub account: Option<SavedAccount>,
+    /// Every server signed in to, in rail order (#206).
+    pub servers: Vec<SavedAccount>,
     /// Servers whose check went through, newest first.
     pub recent_servers: Vec<RecentServer>,
     /// The last searches, newest first, at most [`RECENT_SEARCHES`] (#129).
@@ -270,6 +284,7 @@ impl Default for Settings {
             collapse_previews: false,
             preview_choices: Vec::new(),
             account: None,
+            servers: Vec::new(),
             recent_servers: Vec::new(),
             recent_searches: Vec::new(),
             unknown: serde_json::Map::new(),
@@ -332,6 +347,7 @@ impl Settings {
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
         self.recent_servers.truncate(RECENT_SERVERS);
+        self.migrate_servers();
         let extra = self.preview_choices.len().saturating_sub(PREVIEW_CHOICES);
         self.preview_choices.drain(..extra);
         self
