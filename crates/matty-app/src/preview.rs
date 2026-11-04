@@ -144,6 +144,50 @@ pub fn servers() -> Vec<crate::rail::Server> {
     ]
 }
 
+/// What the other preview servers' caches hold, for the switcher's
+/// "Search all servers" (#206), keyed by name as `servers()` keys them.
+pub fn other_servers() -> Vec<crate::switcher::ServerChannels> {
+    let public = |id: &str, name: &str| ChannelRow::new(id, name, ChannelKind::Public);
+    let channels = |team: &str, rows: Vec<ChannelRow>| {
+        rows.into_iter()
+            .map(|row| (SharedString::from(team.to_owned()), row))
+            .collect::<Vec<_>>()
+    };
+    servers()
+        .into_iter()
+        .filter_map(|server| {
+            let channels = match server.name.as_ref() {
+                "Acme Corp" => [
+                    channels(
+                        "Engineering",
+                        vec![
+                            public("acme-town-square", "town-square"),
+                            public("acme-deploys", "deploys").unread().mentions(4),
+                            ChannelRow::new("acme-incidents", "incidents", ChannelKind::Private),
+                            public("acme-design-review", "design-review"),
+                        ],
+                    ),
+                    channels("Sales", vec![public("acme-sales-general", "general")]),
+                ]
+                .concat(),
+                "chat.example.org" => channels(
+                    "Community",
+                    vec![
+                        public("example-general", "general").unread(),
+                        public("example-design", "design"),
+                    ],
+                ),
+                _ => return None,
+            };
+            Some(crate::switcher::ServerChannels {
+                key: server.key,
+                name: server.name,
+                channels,
+            })
+        })
+        .collect()
+}
+
 pub fn teams() -> Vec<Team> {
     vec![
         Team::new("matty", "Matty"),
@@ -340,6 +384,15 @@ fn repeat(posts: &[Post], count: usize) -> Vec<Post> {
 }
 
 pub fn channel(id: &str) -> Option<ChannelModel> {
+    // Another preview server's channel opens empty.
+    if let Some(row) = other_servers()
+        .into_iter()
+        .flat_map(|server| server.channels)
+        .map(|(_, row)| row)
+        .find(|row| row.id.as_ref() == id)
+    {
+        return Some(empty_channel(row.id, row.name, row.kind, None));
+    }
     let row = teams()
         .into_iter()
         .flat_map(|team| team_sidebar(&team.id).categories)
