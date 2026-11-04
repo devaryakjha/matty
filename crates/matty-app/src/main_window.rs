@@ -8,8 +8,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     Action, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::account::{Account, AccountEvent, AccountView};
@@ -3123,23 +3123,57 @@ impl MainWindow {
             .flex()
             .flex_col()
             .gap(theme.space(3.))
-            .child(labelled_row(
-                "Download folder".into(),
-                download_folder,
-                Button::new("preferences.download-folder")
-                    .variant(ButtonVariant::Outline)
-                    .size(ButtonSize::Sm)
-                    .aria_label("Change download folder")
-                    .label("Change…")
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_download_folder(cx)))
-                    .into_any_element(),
-            ))
+            .child(
+                // A path can be long: one truncated line, the whole path
+                // in a tooltip.
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(theme.space(4.))
+                    .child(
+                        div()
+                            .id("preferences.download-folder.path")
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(theme.space(0.5))
+                            .tooltip({
+                                let path = download_folder.clone();
+                                move |_, cx| crate::ui::tooltip::text_tooltip(path.clone(), cx)
+                            })
+                            .child(
+                                div()
+                                    .type_style(style::UI, &theme)
+                                    .text_color(theme.colors.foreground)
+                                    .child("Download folder"),
+                            )
+                            .child(
+                                div()
+                                    .type_style(style::META, &theme)
+                                    .text_color(theme.colors.muted_foreground)
+                                    .truncate()
+                                    .child(download_folder),
+                            ),
+                    )
+                    .child(
+                        Button::new("preferences.download-folder")
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .aria_label("Change download folder")
+                            .label("Change…")
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.choose_download_folder(cx)),
+                            ),
+                    ),
+            )
             .child(labelled_row(
                 "Log detail".into(),
                 "How much goes into the logs.".into(),
                 div()
                     .flex_shrink_0()
-                    .w(theme.space(36.))
+                    .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
                     .child(Select::new(&self.log_level).aria_label("Log detail"))
                     .into_any_element(),
             ))
