@@ -25,7 +25,7 @@ use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessage
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::live::{ChannelUpdate, Live};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
-use crate::rail::{RailEvent, RailView, Team};
+use crate::rail::{RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
     LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
@@ -171,6 +171,7 @@ type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
 mod drafts;
 mod preferences;
+mod servers;
 mod sso;
 
 pub struct MainWindow {
@@ -298,6 +299,7 @@ impl MainWindow {
             window,
             |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
+                this.refresh_server_rail(cx);
                 let names = store.read(cx).get().name_format;
                 if let Some(live) = this.live.as_mut() {
                     let update = live.set_names(names);
@@ -417,21 +419,16 @@ impl MainWindow {
             },
         )
         .detach();
-        let rail = cx.new(|_| {
+        let rail = cx.new(|cx| {
             let teams = if crate::preview::enabled() {
                 crate::preview::teams()
             } else {
                 vec![Team::new("team", "Matty")]
             };
             let current = teams.first().map(|team| team.id.clone());
-            RailView::new(teams, current)
+            RailView::new(teams, current, cx)
         });
-        cx.subscribe(&rail, |_, _, event: &RailEvent, cx| match event {
-            // Switching teams and joining one are sync's (PLAN §3 M2); the
-            // rail already shows the pick.
-            RailEvent::Select(_) | RailEvent::Join => cx.notify(),
-        })
-        .detach();
+        cx.subscribe_in(&rail, window, Self::on_rail_event).detach();
         cx.subscribe_in(&browse, window, Self::on_directory_event)
             .detach();
         cx.subscribe_in(&new_message, window, Self::on_directory_event)
@@ -1051,31 +1048,14 @@ impl MainWindow {
         this.follow_links(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
-        let saved = this
-            .settings
-            .update(cx, |settings, cx| settings.launch_server(cx));
         if !crate::preview::enabled()
-            && let Some(account) = saved
+            && let Some(account) = this
+                .settings
+                .update(cx, |settings, cx| settings.launch_server(cx))
         {
-            if crate::offline() {
-                this.login = None;
-                this.connection = ConnectionState::Offline;
-                this.start_live(&account, window, cx);
-                if let Some(live) = &this.live {
-                    live.send(matty_sync::Command::ShowCache);
-                }
-            } else if let Some(token) = crate::secrets::load(&account)
-                && let Ok(client) = matty_api::Client::new(&account.server)
-            {
-                this.login = None;
-                this.start_live(&account, window, cx);
-                if let Some(live) = &this.live {
-                    live.send(matty_sync::Command::Connect {
-                        client: client.with_token(token),
-                    });
-                }
-            }
+            this.open_server(&account, window, cx);
         }
+        this.refresh_server_rail(cx);
         this
     }
 
@@ -1086,6 +1066,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Switching servers: the shown one stops first (#206).
+        if self.live.is_some() {
+            self.leave_server(window, cx);
+        }
         let path = crate::live::database_path(account);
         // Signed in again before the last sign out finished: keep the cache
         // if it is this account's, else delete it now.
@@ -1884,6 +1868,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let LoginEvent::Cancel = event {
+            return this.cancel_add_server(window, cx);
+        }
         if crate::preview::enabled() {
             return Self::on_preview_login_event(view, event, window, cx);
         }
@@ -1953,6 +1940,7 @@ impl MainWindow {
                 this.cancel_sso();
                 model.step = model.step.back_to_methods();
             }
+            LoginEvent::Cancel => {}
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
@@ -2046,6 +2034,7 @@ impl MainWindow {
             LoginEvent::SignIn(_) | LoginEvent::Token(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());
             }
+            LoginEvent::Cancel => {}
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
     }
@@ -3298,6 +3287,11 @@ impl MainWindow {
                 s.account = None;
             })
         });
+        // Other servers stay signed in: the next one opens.
+        if self.open_next_server(window, cx) {
+            window.focus(&self.focus, cx);
+            return cx.notify();
+        }
         self.selected_channel = None;
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_model(SidebarModel::loading(), cx)
@@ -3313,24 +3307,9 @@ impl MainWindow {
     /// Deletes the signed-out account's cache. Sync may still be closing
     /// the database, so a failed delete is tried again for a few seconds.
     fn forget_signed_out(&mut self, cx: &mut Context<Self>) {
-        let Some((database, media)) = self.forget.take() else {
-            return;
-        };
-        let executor = cx.background_executor().clone();
-        cx.background_executor()
-            .spawn(async move {
-                for _ in 0..20 {
-                    match matty_sync::forget_account(&database, media.as_deref()) {
-                        Ok(()) => return,
-                        Err(error) => {
-                            tracing::debug!(%error, "the cache is still in use");
-                            executor.timer(std::time::Duration::from_millis(250)).await;
-                        }
-                    }
-                }
-                tracing::warn!(path = %database.display(), "could not delete the signed-out cache");
-            })
-            .detach();
+        if let Some((database, media)) = self.forget.take() {
+            servers::forget_files(database, media, cx);
+        }
     }
 
     /// The server refused the saved session: forget it and ask the user to
@@ -4003,6 +3982,7 @@ impl Render for MainWindow {
         div()
             .key_context(actions::MAIN_WINDOW)
             .track_focus(&self.focus)
+            .map(|root| Self::on_server_actions(root, cx))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 if Self::narrow_sidebar(window) {
                     this.sidebar_drawer_open = !this.sidebar_drawer_open;

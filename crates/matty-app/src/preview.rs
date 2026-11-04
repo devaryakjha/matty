@@ -36,6 +36,7 @@ pub fn enabled() -> bool {
 /// A sidebar with every row state DESIGN.md §4 describes.
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
+/// `add-server` is the server step of adding a second server (#206).
 /// `login-ldap` offers AD/LDAP beside passwords, `login-mfa` and
 /// `login-mfa-error` show the code step, `login-server` the empty server
 /// step, and `login-version` the server step
@@ -90,7 +91,7 @@ pub fn login() -> Option<LoginModel> {
                 "Sign-in timed out: the browser did not finish within three minutes.".into()
             }),
         ),
-        "login-server" => (LoginStep::Server, None),
+        "login-server" | "add-server" => (LoginStep::Server, None),
         "login-version" => {
             let old = matty_api::UnsupportedVersion {
                 found: matty_api::Version::new(9, 3, 2),
@@ -104,6 +105,7 @@ pub fn login() -> Option<LoginModel> {
         step,
         busy: false,
         error,
+        adding: value == "add-server",
     })
 }
 
@@ -129,6 +131,18 @@ pub fn queued() -> usize {
 }
 
 /// The teams in the rail: name and whether it is the current one.
+/// `MATTY_PREVIEW=servers` puts three saved servers on the rail, the
+/// first current (#206); the other previews have the one.
+pub fn servers() -> Vec<crate::rail::Server> {
+    if value().as_deref() != Some("servers") {
+        return Vec::new();
+    }
+    ["Matty Community", "Acme Corp", "chat.example.org"]
+        .into_iter()
+        .map(crate::rail::Server::new)
+        .collect()
+}
+
 pub fn teams() -> Vec<Team> {
     vec![
         Team::new("matty", "Matty"),

@@ -91,6 +91,7 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("Matty").items([
             dialog("Preferences"),
             MenuItem::separator(),
+            MenuItem::action("Add server\u{2026}", actions::AddServer),
             MenuItem::action("Sign out", SignOut),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
