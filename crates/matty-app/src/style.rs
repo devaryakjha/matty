@@ -325,8 +325,11 @@ pub fn composer_cap(window: &gpui_kit::Window) -> gpui_kit::Pixels {
 /// #135): filled for online, away and Do not disturb, a hollow ring for
 /// offline. `ring` is the surface it sits on, so the dot reads as cut out
 /// of the avatar. The dot has no label of its own; the avatar's label says
-/// the presence (see [`presence_name`]). gpuicn's Avatar has no status
-/// slot yet (devaryakjha/gpuicn#115); this goes when it does.
+/// the presence (see [`presence_name`]).
+///
+/// Only for the 18px avatars in the sidebar and switcher: gpuicn's
+/// `Avatar::status` sizes its dot for a 24px avatar, too big there
+/// (devaryakjha/gpuicn#127). Every other avatar uses [`avatar_status`].
 pub fn presence_dot(
     presence: crate::sidebar::Presence,
     size: Pixels,
@@ -367,6 +370,32 @@ pub fn presence_name(name: &str, presence: crate::sidebar::Presence) -> SharedSt
     format!("{name}, {state}").into()
 }
 
+/// The presence an avatar shows (DESIGN.md §3, #135) as gpuicn's avatar
+/// status: a dot over the bottom-right corner, filled with Matty's presence
+/// colors for online, away and Do not disturb and a hollow ring for
+/// offline. The avatar adds the presence to its accessible name, as in
+/// "Ana Lopez, away". Pair it with `ring_color` set to the surface under
+/// the avatar, so the dot reads as cut out of it.
+pub fn avatar_status(
+    presence: crate::sidebar::Presence,
+    palette: &Palette,
+) -> crate::ui::avatar::AvatarStatus {
+    use crate::sidebar::Presence;
+    use crate::ui::avatar::AvatarStatus;
+    let color = match presence {
+        Presence::Online => palette.online,
+        Presence::Away => palette.away,
+        Presence::Dnd => palette.dnd,
+        Presence::Offline => return AvatarStatus::Offline,
+    };
+    AvatarStatus::Custom {
+        color,
+        label: crate::account::presence_label(presence)
+            .to_lowercase()
+            .into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,13 +428,21 @@ mod tests {
     }
 
     #[test]
-    fn avatar_labels_name_the_presence() {
+    fn avatar_statuses_name_the_presence() {
         use crate::sidebar::Presence;
+        let palette = Palette::for_mode(ThemeMode::Light);
+        let label = |presence| avatar_status(presence, &palette).label();
+        assert_eq!(label(Presence::Online), "online");
+        assert_eq!(label(Presence::Away), "away");
+        assert_eq!(label(Presence::Dnd), "do not disturb");
+        assert_eq!(label(Presence::Offline), "offline");
+        assert_eq!(
+            avatar_status(Presence::Offline, &palette),
+            crate::ui::avatar::AvatarStatus::Offline
+        );
         assert_eq!(
             presence_name("Ana Lopez", Presence::Away),
             "Ana Lopez, away"
         );
-        assert_eq!(presence_name("Ben", Presence::Dnd), "Ben, do not disturb");
-        assert_eq!(presence_name("Cy", Presence::Offline), "Cy, offline");
     }
 }
