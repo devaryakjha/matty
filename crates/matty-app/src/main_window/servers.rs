@@ -1,6 +1,7 @@
-//! Opening, adding, switching and removing saved servers (#206). One
-//! server is live at a time in this slice: switching stops the shown
-//! server's sync and starts the other's over its own cache.
+//! Opening, adding, switching and removing saved servers (#206). Every
+//! saved server's sync keeps running (see [`super::background`]); the
+//! window shows one at a time, and switching shows another over its
+//! running sync.
 
 use gpui_kit::{AppContext as _, Context, Entity, Window};
 
@@ -13,7 +14,8 @@ use crate::sidebar::SidebarModel;
 impl MainWindow {
     /// Opens `account` at launch or after a switch: its cache alone with
     /// `matty --offline`, otherwise its cache and a connection with the
-    /// saved session. `false` when it has no session to connect with.
+    /// saved session, unless its sync is connected already. `false` when it
+    /// has no session to connect with.
     pub(super) fn open_server(
         &mut self,
         account: &SavedAccount,
@@ -36,7 +38,9 @@ impl MainWindow {
             return false;
         };
         self.login = None;
-        self.start_live(account, window, cx);
+        if self.start_live(account, window, cx) {
+            return true;
+        }
         if let Some(live) = &self.live {
             live.send(matty_sync::Command::Connect {
                 client: client.with_token(token),
@@ -45,10 +49,12 @@ impl MainWindow {
         true
     }
 
-    /// Stops the shown server's sync and empties what the window showed of
-    /// it, before another server's sync starts.
+    /// Empties what the window showed of the shown server, before it shows
+    /// another. The server's sync runs on for its badges.
     pub(super) fn leave_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.live = None;
+        if let Some(live) = self.live.take() {
+            live.release();
+        }
         self._live_task = None;
         self._typing_task = None;
         self._view_task = None;
@@ -189,6 +195,7 @@ impl MainWindow {
             }));
         }
         crate::secrets::delete(&account);
+        self.watches.stop(&account.data_key());
         self.settings.update(cx, |settings, cx| {
             settings.update(cx, |s| {
                 s.remove_server(&account.data_key());
@@ -210,20 +217,36 @@ impl MainWindow {
         next.is_some_and(|account| self.open_server(&account, window, cx))
     }
 
-    /// The rail follows the saved servers.
+    /// The rail follows the saved servers, each of which stays connected.
     pub(super) fn refresh_server_rail(&mut self, cx: &mut Context<Self>) {
+        self.watch_servers(cx);
+        self.show_servers(cx);
+    }
+
+    /// The rail's servers, with the unreads and mentions of those not shown.
+    pub(super) fn show_servers(&mut self, cx: &mut Context<Self>) {
         let (servers, current) = if crate::preview::enabled() {
             let servers = crate::preview::servers();
             let current = self.rail.read(cx).current_server().or(Some(0));
             (servers, current)
         } else {
             let settings = self.settings.read(cx).get();
+            let current = settings.current_server();
             let servers = settings
                 .servers
                 .iter()
-                .map(|server| Server::new(server.label().to_owned()))
+                .enumerate()
+                .map(|(index, server)| {
+                    let rail = Server::new(server.label().to_owned());
+                    match self.watches.unreads(&server.data_key()) {
+                        Some((mentions, unread)) if current != Some(index) => {
+                            rail.unread(unread).mentions(mentions)
+                        }
+                        _ => rail,
+                    }
+                })
                 .collect();
-            (servers, settings.current_server())
+            (servers, current)
         };
         self.rail
             .update(cx, |rail, cx| rail.set_servers(servers, current, cx));

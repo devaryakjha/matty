@@ -30,11 +30,67 @@ use crate::ui::{
 pub struct Server {
     /// Its `SiteName`, or its host.
     pub name: SharedString,
+    /// Some unmuted channel on the server is unread.
+    pub unread: bool,
+    /// Mentions of the user across the server.
+    pub mentions: usize,
 }
 
 impl Server {
     pub fn new(name: impl Into<SharedString>) -> Self {
-        Self { name: name.into() }
+        Self {
+            name: name.into(),
+            unread: false,
+            mentions: 0,
+        }
+    }
+
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread |= unread;
+        self
+    }
+
+    pub fn mentions(mut self, count: usize) -> Self {
+        self.mentions = count;
+        self.unread |= count > 0;
+        self
+    }
+}
+
+/// A rail button's unread dot or mention count, on its top-right corner
+/// with a ring in the rail's color so it stands off the button; the ring
+/// also keeps the badge from touching the next one.
+fn corner_badge(mentions: usize, unread: bool, theme: &UiTheme) -> Option<gpui_kit::Div> {
+    let corner = || {
+        div()
+            .absolute()
+            .top(px(-4.))
+            .right(px(-4.))
+            .border_2()
+            .border_color(theme.colors.sidebar)
+            .rounded_full()
+    };
+    if mentions > 0 {
+        Some(
+            corner().child(
+                Badge::count(mentions, 99)
+                    .h(theme.space(4.))
+                    .min_w(theme.space(4.))
+                    .px(theme.space(1.))
+                    .text_size(theme.text(10.))
+                    .line_height(theme.text(10.)),
+            ),
+        )
+    } else if unread {
+        Some(
+            corner()
+                .w(theme.space(3.))
+                .h(theme.space(3.))
+                .flex_shrink_0()
+                .bg(theme.colors.sidebar_foreground),
+        )
+    } else {
+        None
     }
 }
 
@@ -294,6 +350,10 @@ impl RailView {
                 cx.emit(RailEvent::SelectServer(index));
             }
         }));
+        // The shown server's counts are in its sidebar.
+        let badge = (!current)
+            .then(|| corner_badge(server.mentions, server.unread, &theme))
+            .flatten();
         div()
             .relative()
             .w_full()
@@ -304,6 +364,7 @@ impl RailView {
                     .id(gpui_kit::ElementId::Name(
                         format!("rail.server.{index}.tip").into(),
                     ))
+                    .relative()
                     .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
                     .on_mouse_down(
                         gpui_kit::MouseButton::Right,
@@ -311,7 +372,8 @@ impl RailView {
                             this.open_server_menu(index, event.position, window, cx)
                         }),
                     )
-                    .child(button),
+                    .child(button)
+                    .children(badge),
             )
             .when(current, |cell| {
                 cell.child(
@@ -412,17 +474,7 @@ impl RailView {
             None => team.initials().into_any_element(),
         })
         .on_click(cx.listener(move |this, _, _, cx| this.select(id.clone(), cx)));
-        // The badge sits on the square's top-right corner with a ring in the
-        // rail's color so it stands off the tile; the ring also keeps the
-        // badge from touching the next square.
-        let corner = |cell: gpui_kit::Div| {
-            cell.absolute()
-                .top(px(-4.))
-                .right(px(-4.))
-                .border_2()
-                .border_color(theme.colors.sidebar)
-                .rounded_full()
-        };
+        let badge = corner_badge(team.mentions, team.unread, &theme);
         let tip = name.clone();
         div()
             .relative()
@@ -437,27 +489,7 @@ impl RailView {
                     .relative()
                     .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
                     .child(button)
-                    .when(team.mentions > 0, |cell| {
-                        cell.child(
-                            corner(div()).child(
-                                Badge::count(team.mentions, 99)
-                                    .h(theme.space(4.))
-                                    .min_w(theme.space(4.))
-                                    .px(theme.space(1.))
-                                    .text_size(theme.text(10.))
-                                    .line_height(theme.text(10.)),
-                            ),
-                        )
-                    })
-                    .when(team.mentions == 0 && team.unread, |cell| {
-                        cell.child(
-                            corner(div())
-                                .w(theme.space(3.))
-                                .h(theme.space(3.))
-                                .flex_shrink_0()
-                                .bg(theme.colors.sidebar_foreground),
-                        )
-                    }),
+                    .children(badge),
             )
             .when(current, |cell| {
                 cell.child(

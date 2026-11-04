@@ -277,7 +277,11 @@ pub struct Arrival {
 }
 
 impl Arrival {
-    fn new(arrived: &matty_sync::Arrived, me: &str, user: &matty_notify::UserPrefs) -> Self {
+    pub(crate) fn new(
+        arrived: &matty_sync::Arrived,
+        me: &str,
+        user: &matty_notify::UserPrefs,
+    ) -> Self {
         use matty_notify::ChannelKind;
         let post = &arrived.post;
         let channel_kind = match arrived.channel_type.as_str() {
@@ -1173,6 +1177,20 @@ impl Live {
         self.thread_typing.clear();
         if let Some((root_id, _)) = self.thread.take() {
             self.send(Command::CloseThread { root_id });
+        }
+    }
+
+    /// Stops following what the window showed, as it moves to another
+    /// server: the engine runs on for this one's badges (#206).
+    pub fn release(mut self) {
+        if let Some(row) = self.open.take() {
+            self.send(Command::CloseChannel {
+                channel_id: row.id.to_string(),
+            });
+        }
+        self.close_thread();
+        if let Some(team_id) = self.team.take() {
+            self.send(Command::CloseThreadList { team_id });
         }
     }
 

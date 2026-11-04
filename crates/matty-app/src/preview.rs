@@ -137,10 +137,11 @@ pub fn servers() -> Vec<crate::rail::Server> {
     if value().as_deref() != Some("servers") {
         return Vec::new();
     }
-    ["Matty Community", "Acme Corp", "chat.example.org"]
-        .into_iter()
-        .map(crate::rail::Server::new)
-        .collect()
+    vec![
+        crate::rail::Server::new("Matty Community"),
+        crate::rail::Server::new("Acme Corp").mentions(4),
+        crate::rail::Server::new("chat.example.org").unread(true),
+    ]
 }
 
 pub fn teams() -> Vec<Team> {

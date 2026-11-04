@@ -52,6 +52,7 @@ mod updater;
 #[cfg(target_family = "wasm")]
 #[path = "updater_web.rs"]
 mod updater;
+pub mod watch;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;
 
