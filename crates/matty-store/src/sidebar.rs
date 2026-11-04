@@ -416,6 +416,8 @@ pub struct SidebarChannel {
     pub id: String,
     /// `O` public, `P` private, `D` direct, `G` group.
     pub kind: String,
+    /// The URL handle, such as `town-square`, which search's `in:` takes.
+    pub name: String,
     /// The channel's name for display; for a direct message, the other
     /// person's username (or the user's own for a self DM).
     pub display_name: String,
@@ -575,6 +577,7 @@ pub fn sidebar_snapshot(
             muted: section.muted || member.is_muted(),
             unreads: unreads(&channel, &member, mode),
             kind,
+            name,
             display_name,
             dm_user_id,
             dm_user,

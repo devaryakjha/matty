@@ -43,6 +43,11 @@ pub mod switcher;
 pub mod threads;
 pub mod transcript;
 mod ui;
+#[cfg(not(target_family = "wasm"))]
+mod updater;
+#[cfg(target_family = "wasm")]
+#[path = "updater_web.rs"]
+mod updater;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;
 
@@ -56,6 +61,9 @@ use gpui_kit::{
 use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
 use ui::title_bar::title_bar_window_options;
+
+/// This build's version, with the release tag's pre-release suffix.
+pub const VERSION: &str = matty_update::CURRENT_VERSION;
 
 /// The smallest window PLAN §4.1 supports.
 pub const MIN_WINDOW: (f32, f32) = (480., 400.);
@@ -141,7 +149,7 @@ pub fn run_web(fallback_font: &'static [u8], webgl: bool) {
 fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     // Settings load after this, so their level applies just below.
     let logs = logging::init(logging::default_dir().as_deref(), Default::default());
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
+    tracing::info!(version = VERSION, "matty starting");
     ui::theme::init(cx);
     style::install(ThemeMode::Light, cx);
     load_fonts(cx);

@@ -214,6 +214,7 @@ pub(crate) fn edit_composer(
         });
         state
     });
+    crate::updater::watch_composer(&composer, cx);
     let focus = composer.clone();
     window.on_next_frame(move |window, cx| {
         focus.update(cx, |composer, cx| {
@@ -415,6 +416,54 @@ pub struct Post {
     pub files: Vec<PostFile>,
     /// Link previews and message attachments under the body (#187).
     pub embeds: Vec<crate::embeds::Embed>,
+}
+
+/// When "Remind me" brings a post back, as the webapp offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemindAt {
+    In30Minutes,
+    In1Hour,
+    In2Hours,
+    /// Tomorrow at 9:00 in the user's zone.
+    Tomorrow,
+}
+
+impl RemindAt {
+    pub const ALL: [Self; 4] = [
+        Self::In30Minutes,
+        Self::In1Hour,
+        Self::In2Hours,
+        Self::Tomorrow,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::In30Minutes => "In 30 minutes",
+            Self::In1Hour => "In 1 hour",
+            Self::In2Hours => "In 2 hours",
+            Self::Tomorrow => "Tomorrow at 9:00",
+        }
+    }
+
+    /// The moment it names, in Unix seconds, from `now` in `zone`.
+    pub fn target(self, now: jiff::Timestamp, zone: &jiff::tz::TimeZone) -> i64 {
+        let minutes = match self {
+            Self::In30Minutes => 30,
+            Self::In1Hour => 60,
+            Self::In2Hours => 120,
+            Self::Tomorrow => {
+                let tomorrow = now
+                    .to_zoned(zone.clone())
+                    .date()
+                    .tomorrow()
+                    .ok()
+                    .and_then(|day| day.at(9, 0, 0, 0).to_zoned(zone.clone()).ok());
+                return tomorrow
+                    .map_or(now.as_second() + 24 * 3600, |at| at.timestamp().as_second());
+            }
+        };
+        now.as_second() + minutes * 60
+    }
 }
 
 /// The root a reply answers, for "Commented on Ada's message: …" above the
@@ -825,6 +874,8 @@ pub enum ChannelEvent {
     OpenInfo,
     /// The user starred or unstarred the channel; the header shows it.
     ToggleFavorite(bool),
+    /// The user chose View profile on someone's profile card (#212).
+    ViewProfile(UserProfile),
     /// The user chose Message on someone's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -855,6 +906,15 @@ pub enum ChannelEvent {
     Discard(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
+    /// The user opened a quoted post: show it in its channel.
+    OpenPermalink {
+        channel: SharedString,
+        post: SharedString,
+    },
+    /// The user wants to forward `post` to another channel (#213).
+    Forward(SharedString),
+    /// The user asked to be reminded of `post` (#213).
+    Remind { post: SharedString, at: RemindAt },
     /// The user renamed the channel from its header menu; the view already
     /// shows the new name.
     Rename(SharedString),
@@ -1140,6 +1200,7 @@ impl ChannelView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let menu = cx.new(|cx| MenuState::new([], cx));
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
@@ -2668,6 +2729,43 @@ impl ChannelView {
                 )
             },
         ]);
+        if let Some(replies) = &post.replies {
+            let follow_id = id.clone();
+            items.push(act(
+                "follow",
+                if replies.following {
+                    "Unfollow thread".into()
+                } else {
+                    "Follow thread".into()
+                },
+                Box::new(move |this, _, cx| this.toggle_follow(follow_id.clone(), cx)),
+            ));
+        }
+        let forward_id = id.clone();
+        items.push(act(
+            "forward",
+            "Forward\u{2026}".into(),
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::Forward(forward_id.clone()))),
+        ));
+        items.push(MenuItem::submenu(
+            gpui_kit::ElementId::Name("post.menu.remind".into()),
+            "Remind me",
+            RemindAt::ALL.map(|at| {
+                let id = id.clone();
+                let view = view.clone();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("post.menu.remind.{at:?}").into()),
+                    at.label(),
+                )
+                .on_click(move |_, _, cx| {
+                    let event = ChannelEvent::Remind {
+                        post: id.clone(),
+                        at,
+                    };
+                    view.update(cx, |_, cx| cx.emit(event)).ok();
+                })
+            }),
+        ));
         if post.mine {
             let edit_id = id.clone();
             let delete_id = id.clone();
@@ -3282,7 +3380,9 @@ impl ChannelView {
         .content(move |_, _, cx| {
             let (message_view, mention_view) = (view.clone(), view.clone());
             let (message_profile, mention_profile) = (profile.clone(), profile.clone());
-            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            let (close_message, close_mention, close_view) =
+                (cx.entity(), cx.entity(), cx.entity());
+            let (view_view, view_profile) = (view.clone(), profile.clone());
             profile_card(
                 &card_id,
                 &profile,
@@ -3308,6 +3408,11 @@ impl ChannelView {
                             })
                             .ok();
                     }),
+                    on_view: Some(Box::new(move |window, cx| {
+                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = ChannelEvent::ViewProfile(view_profile.clone());
+                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })),
                 },
                 cx,
             )
@@ -3502,6 +3607,14 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
+            let jump_view = cx.entity().downgrade();
+            let on_jump: crate::embeds::OnJump = std::rc::Rc::new(move |channel, post, _, cx| {
+                let event = ChannelEvent::OpenPermalink {
+                    channel: channel.clone(),
+                    post: post.clone(),
+                };
+                jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+            });
             let (view, post_id) = (cx.entity().downgrade(), id.clone());
             row = row.child(crate::embeds::post_embeds(
                 &id,
@@ -3512,6 +3625,7 @@ impl ChannelView {
                     view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
                         .ok();
                 }),
+                on_jump,
                 cx,
             ));
         }
@@ -4470,6 +4584,25 @@ fn people_suggestions<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminders_land_at_the_offered_times() {
+        let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
+        // 2026-11-04 12:00 UTC is 17:30 in Kolkata.
+        let now = jiff::Timestamp::from_second(1_793_793_600).unwrap();
+        assert_eq!(
+            RemindAt::In30Minutes.target(now, &zone),
+            1_793_793_600 + 1800
+        );
+        assert_eq!(RemindAt::In2Hours.target(now, &zone), 1_793_793_600 + 7200);
+        // 2026-11-05 09:00 in Kolkata is 03:30 UTC.
+        assert_eq!(
+            RemindAt::Tomorrow.target(now, &zone),
+            jiff::Timestamp::from_second(1_793_793_600 + 15 * 3600 + 1800)
+                .unwrap()
+                .as_second()
+        );
+    }
 
     #[test]
     fn mention_suggestions_name_people_in_the_users_format() {

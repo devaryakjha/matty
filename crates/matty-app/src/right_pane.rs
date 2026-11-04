@@ -20,7 +20,7 @@ use crate::channel::{
     message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
     reaction_tooltip, waiting_items, waiting_to_send,
 };
-use crate::profile::{ProfileActions, UserProfile, profile_card};
+use crate::profile::{ProfileActions, UserProfile, profile_card, profile_pane};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -80,6 +80,63 @@ pub struct SearchModel {
     pub searching: bool,
 }
 
+/// What search's `in:` and `from:` suggest: (handle, shown name) pairs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchHints {
+    pub channels: Vec<(SharedString, SharedString)>,
+    pub people: Vec<(SharedString, SharedString)>,
+}
+
+/// One suggestion under the search field: what replaces the word being
+/// typed, and how it reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Suggestion {
+    insert: SharedString,
+    label: SharedString,
+    detail: SharedString,
+}
+
+/// At most this many suggestions show at once.
+const SUGGESTIONS: usize = 6;
+
+/// The suggestions for `query`'s last word when it starts with `from:` or
+/// `in:` (#129).
+fn suggestions(query: &str, hints: &SearchHints) -> Vec<Suggestion> {
+    if query.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let word = query.rsplit(char::is_whitespace).next().unwrap_or("");
+    let (prefix, typed, options) = if let Some(typed) = word.strip_prefix("from:") {
+        ("from:", typed.trim_start_matches('@'), &hints.people)
+    } else if let Some(typed) = word.strip_prefix("in:") {
+        ("in:", typed.trim_start_matches('~'), &hints.channels)
+    } else {
+        return Vec::new();
+    };
+    let typed = typed.to_lowercase();
+    options
+        .iter()
+        .filter(|(handle, shown)| {
+            handle.to_lowercase().starts_with(&typed)
+                || shown
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|part| part.starts_with(&typed))
+        })
+        .filter(|(handle, _)| handle.as_ref() != typed)
+        .take(SUGGESTIONS)
+        .map(|(handle, shown)| Suggestion {
+            insert: format!("{prefix}{handle}").into(),
+            label: shown.clone(),
+            detail: if prefix == "from:" {
+                format!("@{handle}").into()
+            } else {
+                format!("~{handle}").into()
+            },
+        })
+        .collect()
+}
+
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
@@ -95,6 +152,8 @@ pub enum RightPaneContent {
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
     Search(SearchModel),
+    /// Someone's profile (#212).
+    Profile(UserProfile),
 }
 
 /// What the pane asks the window to do.
@@ -169,6 +228,8 @@ pub enum RightPaneEvent {
     OpenPinned,
     /// The user clicked a link or an entity chip in a message (#103).
     OpenLink(SharedString),
+    /// View profile on a member's profile card; the window shows it here.
+    ViewProfile(UserProfile),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -238,6 +299,11 @@ pub struct RightPaneView {
     pending_seq: usize,
     /// The search field at the top of the Search listing.
     search: Entity<InputState>,
+    /// The saved, pinned or mentions listing has yet to come from sync.
+    loading: bool,
+    /// What `from:` and `in:` can suggest, and what they suggest now.
+    hints: SearchHints,
+    suggestions: Vec<Suggestion>,
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
@@ -349,34 +415,45 @@ impl RightPaneView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &composer,
-                window,
-                |this, composer, event: &ComposerEvent, window, cx| match event {
-                    ComposerEvent::Change => {
-                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
-                        crate::channel::follow_send_key(composer, send_on, cx);
-                        let text = composer.read(cx).value(cx);
-                        this.draft_len = text.chars().count();
-                        this.draft_changed(&text, cx);
-                        // A restored draft is not the user typing.
-                        if !this.draft.is_saved(&text) {
-                            this.schedule_draft_save(cx);
+        let subscriptions =
+            vec![
+                cx.subscribe_in(
+                    &composer,
+                    window,
+                    |this, composer, event: &ComposerEvent, window, cx| match event {
+                        ComposerEvent::Change => {
+                            let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                            crate::channel::follow_send_key(composer, send_on, cx);
+                            let text = composer.read(cx).value(cx);
+                            this.draft_len = text.chars().count();
+                            this.draft_changed(&text, cx);
+                            // A restored draft is not the user typing.
+                            if !this.draft.is_saved(&text) {
+                                this.schedule_draft_save(cx);
+                            }
+                            cx.notify();
                         }
-                        cx.notify();
+                        ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                        _ => {}
+                    },
+                ),
+                cx.subscribe_in(&search, window, |this, input, event: &InputEvent, _, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            this.suggestions.clear();
+                            this.submit_search(cx);
+                        }
+                        InputEvent::Change => {
+                            let query = input.read(cx).value().to_string();
+                            this.suggestions = suggestions(&query, &this.hints);
+                            cx.notify();
+                        }
+                        _ => {}
                     }
-                    ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
-                    _ => {}
-                },
-            ),
-            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_search(cx);
-                }
-            }),
-        ];
+                }),
+            ];
         Self {
             composer_cap: px(320.),
             content: None,
@@ -399,6 +476,9 @@ impl RightPaneView {
             _link_task: None,
             pending_seq: 0,
             search,
+            loading: false,
+            hints: SearchHints::default(),
+            suggestions: Vec::new(),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
@@ -925,6 +1005,37 @@ impl RightPaneView {
     }
 
     /// Replaces what the pane shows and resets the transcript to its end.
+    /// Sets what search's `from:` and `in:` suggest.
+    pub fn set_search_hints(&mut self, hints: SearchHints) {
+        self.hints = hints;
+    }
+
+    /// Puts a suggestion in place of the word being typed.
+    fn accept_suggestion(
+        &mut self,
+        insert: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search.update(cx, |input, cx| {
+            let value = input.value().to_string();
+            let keep = value
+                .rfind(char::is_whitespace)
+                .map_or("", |at| &value[..=at]);
+            input.set_value(format!("{keep}{insert} "), window, cx);
+            input.focus(window, cx);
+        });
+        self.suggestions.clear();
+        cx.notify();
+    }
+
+    /// Marks the listing on screen as still loading, so an empty one reads
+    /// "Loading…" rather than its empty state.
+    pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        self.loading = loading;
+        cx.notify();
+    }
+
     /// Shows a search: the field takes the query and focus, the listing the
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
@@ -955,6 +1066,7 @@ impl RightPaneView {
     }
 
     pub fn set_content(&mut self, content: Option<RightPaneContent>, cx: &mut Context<Self>) {
+        self.loading = false;
         let rows = match &content {
             Some(RightPaneContent::Thread(thread)) => thread.replies.len() + THREAD_HEAD,
             _ => 0,
@@ -1833,10 +1945,20 @@ impl RightPaneView {
         empty: (LucideIcon, &'static str, &'static str),
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let theme = UiTheme::read(cx).clone();
+        if items.is_empty() && self.loading {
+            return div()
+                .flex_1()
+                .px(theme.space(4.))
+                .py(theme.space(3.))
+                .type_style(style::META, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child("Loading\u{2026}")
+                .into_any_element();
+        }
         if items.is_empty() {
             return style::centered_empty(empty.0, empty.1, empty.2, cx).into_any_element();
         }
-        let theme = UiTheme::read(cx).clone();
         let view = cx.entity().downgrade();
         div()
             .id(id)
@@ -1905,7 +2027,14 @@ impl RightPaneView {
     fn search(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
-        let body = if model.query.is_empty() {
+        let recent = SettingsStore::global(cx)
+            .read(cx)
+            .get()
+            .recent_searches
+            .clone();
+        let body = if model.query.is_empty() && !recent.is_empty() {
+            self.recent_searches(&recent, cx).into_any_element()
+        } else if model.query.is_empty() {
             style::centered_empty(
                 LucideIcon::Search,
                 "Search messages",
@@ -1973,6 +2102,9 @@ impl RightPaneView {
                     .border_b(style::hairline())
                     .border_color(theme.colors.border)
                     .child(Input::new(&self.search).aria_label("Search messages"))
+                    .when(!self.suggestions.is_empty(), |field| {
+                        field.child(self.suggestion_list(cx))
+                    })
                     .child(
                         div()
                             .type_style(style::META, &theme)
@@ -1981,6 +2113,120 @@ impl RightPaneView {
                     ),
             )
             .child(body)
+    }
+
+    /// The people or channels the word being typed could name.
+    fn suggestion_list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                self.suggestions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, suggestion)| {
+                        let insert = suggestion.insert.clone();
+                        Button::new(gpui_kit::ElementId::Name(
+                            format!("right-pane.search.suggestion.{index}").into(),
+                        ))
+                        .variant(ButtonVariant::Ghost)
+                        .w_full()
+                        .justify_start()
+                        .aria_label(format!("Search {}", suggestion.insert))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(theme.space(2.))
+                                .min_w_0()
+                                .child(div().truncate().child(suggestion.label.clone()))
+                                .child(
+                                    div()
+                                        .type_style(style::META, &theme)
+                                        .text_color(muted)
+                                        .child(suggestion.detail.clone()),
+                                ),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.accept_suggestion(insert.clone(), window, cx)
+                            },
+                        ))
+                    }),
+            )
+    }
+
+    /// The last searches, newest first, each one click from running again.
+    fn recent_searches(
+        &self,
+        recent: &[String],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let muted = theme.colors.muted_foreground;
+        div()
+            .id("right-pane.recent-searches")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(theme.space(2.))
+            .py(theme.space(2.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(theme.space(2.))
+                    .pb(theme.space(1.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .type_style(style::LABEL, &theme)
+                            .text_color(muted)
+                            .child("Recent searches"),
+                    )
+                    .child(
+                        Button::new("right-pane.recent-searches.clear")
+                            .variant(ButtonVariant::Link)
+                            .size(ButtonSize::Xs)
+                            .label("Clear")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                SettingsStore::global(cx).update(cx, |store, cx| {
+                                    store.update(cx, |settings| settings.recent_searches.clear())
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children(recent.iter().enumerate().map(|(index, query)| {
+                let run: SharedString = query.clone().into();
+                Button::new(gpui_kit::ElementId::Name(
+                    format!("right-pane.recent-searches.{index}").into(),
+                ))
+                .variant(ButtonVariant::Ghost)
+                .w_full()
+                .justify_start()
+                .aria_label(format!("Search again for {query}"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.space(2.))
+                        .min_w_0()
+                        .child(
+                            lucide(LucideIcon::Clock)
+                                .size(theme.space(4.))
+                                .text_color(muted),
+                        )
+                        .child(div().truncate().child(query.clone())),
+                )
+                .on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(RightPaneEvent::Search(run.clone()))),
+                )
+            }))
     }
 
     /// Channel info (PLAN §3 M1 navigation): what the channel is for, the
@@ -2281,7 +2527,9 @@ impl RightPaneView {
         .content(move |_, _, cx| {
             let (message_profile, mention_profile) = (card_profile.clone(), card_profile.clone());
             let (message_view, mention_view) = (message_view.clone(), mention_view.clone());
-            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            let (close_message, close_mention, close_view) =
+                (cx.entity(), cx.entity(), cx.entity());
+            let (view_view, view_profile) = (mention_view.clone(), card_profile.clone());
             profile_card(
                 &username,
                 &card_profile,
@@ -2300,6 +2548,11 @@ impl RightPaneView {
                         let event = RightPaneEvent::Mention(mention_profile.username.clone());
                         mention_view.update(cx, |_, cx| cx.emit(event)).ok();
                     }),
+                    on_view: Some(Box::new(move |window, cx| {
+                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = RightPaneEvent::ViewProfile(view_profile.clone());
+                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })),
                 },
                 cx,
             )
@@ -2441,6 +2694,29 @@ impl Render for RightPaneView {
             Some(RightPaneContent::Search(model)) => root
                 .child(self.header("Search".into(), None, cx))
                 .child(self.search(&model, cx)),
+            Some(RightPaneContent::Profile(profile)) => {
+                let (message_view, mention_view) =
+                    (cx.entity().downgrade(), cx.entity().downgrade());
+                let (message_profile, username) = (profile.clone(), profile.username.clone());
+                root.child(self.header("Profile".into(), None, cx)).child(
+                    div().flex_1().min_h_0().child(profile_pane(
+                        &profile,
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::OpenDirect {
+                                user_id: message_profile.user_id.clone(),
+                                username: message_profile.username.clone(),
+                                display_name: message_profile.display_name.clone(),
+                            };
+                            message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::Mention(username.clone());
+                            mention_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        cx,
+                    )),
+                )
+            }
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
@@ -2451,6 +2727,35 @@ impl Render for RightPaneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_and_in_suggest_people_and_channels_for_the_last_word() {
+        let hints = SearchHints {
+            channels: vec![
+                ("town-square".into(), "Town Square".into()),
+                ("random".into(), "Random".into()),
+            ],
+            people: vec![
+                ("ada".into(), "Ada Lovelace".into()),
+                ("alan".into(), "Alan Turing".into()),
+            ],
+        };
+        let inserts = |query: &str| {
+            suggestions(query, &hints)
+                .into_iter()
+                .map(|s| s.insert.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inserts("deploy from:a"), ["from:ada", "from:alan"]);
+        assert_eq!(inserts("from:@tur"), ["from:alan"]);
+        assert_eq!(inserts("in:squ"), ["in:town-square"]);
+        assert_eq!(inserts("in:"), ["in:town-square", "in:random"]);
+        // A finished word, a plain word and an exact match suggest nothing.
+        assert!(inserts("from:ada ").is_empty());
+        assert!(inserts("lunch").is_empty());
+        assert!(inserts("in:random").is_empty());
+    }
+
     use std::cell::RefCell;
     use std::rc::Rc;
 

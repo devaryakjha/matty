@@ -4748,6 +4748,7 @@ dependencies = [
  "matty-markdown",
  "matty-notify",
  "matty-sync",
+ "matty-update",
  "regex",
  "serde",
  "serde_json",
@@ -4820,6 +4821,24 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "web-time",
+ "wiremock",
+]
+
+[[package]]
+name = "matty-update"
+version = "0.0.1"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "matty-api",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
  "wiremock",
 ]
 
