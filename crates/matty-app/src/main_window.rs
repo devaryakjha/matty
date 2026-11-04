@@ -403,6 +403,9 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
+                // Sync answers with `Command::LoadOlder` (#352); until then
+                // the transcript stays at its loaded head.
+                ChannelEvent::NearTop => {}
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
