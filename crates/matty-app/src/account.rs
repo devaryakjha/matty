@@ -46,6 +46,8 @@ pub enum AccountEvent {
     /// A presence, and for Do not disturb when it ends.
     SetPresence(Presence, Option<i64>),
     SetStatus(Option<SharedString>),
+    /// "Edit profile…" (#212).
+    EditProfile,
     SignOut,
 }
 
@@ -304,6 +306,14 @@ impl AccountView {
             }),
         );
         items.push(MenuItem::separator());
+        let profile_view = view.clone();
+        items.push(
+            MenuItem::new("account.profile", "Edit profile…").on_click(move |_, _, cx| {
+                profile_view
+                    .update(cx, |_, cx| cx.emit(AccountEvent::EditProfile))
+                    .ok();
+            }),
+        );
         items.push(
             MenuItem::new("account.preferences", "Preferences").on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(OpenPreferences), cx);

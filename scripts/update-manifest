@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Writes the in-app updater's manifest for a release (#180) into its release
+# folder, and signs it when a key is given:
+#
+#   scripts/update-manifest 0.1.0-beta.1 target/dist/release https://github.com/OWNER/REPO/releases/download/v0.1.0-beta.1
+#   MATTY_UPDATE_SIGNING_KEY_FILE=key.pem scripts/update-manifest ...
+#
+# The folder must hold Matty-VERSION-macos-universal.zip (scripts/release-package).
+# Writes matty-update.json and, with a key, matty-update.json.sig: the base64
+# ed25519 signature of the manifest's exact bytes, which the app checks
+# against the public key compiled in from MATTY_UPDATE_PUBLIC_KEY.
+#
+# The key is an ed25519 private key in PEM (OpenSSL 3):
+#   openssl genpkey -algorithm ed25519 -out matty-update.pem
+# and the public key to give the build is:
+#   openssl pkey -in matty-update.pem -pubout -outform DER | tail -c 32 | base64
+# With MATTY_UPDATE_PUBLIC_KEY set too, the script refuses a key that does
+# not match it, so a release never carries a manifest its app cannot check.
+set -euo pipefail
+
+version="${1:?usage: scripts/update-manifest VERSION RELEASE_DIR DOWNLOAD_BASE_URL}"
+dir="${2:?usage: scripts/update-manifest VERSION RELEASE_DIR DOWNLOAD_BASE_URL}"
+base="${3:?usage: scripts/update-manifest VERSION RELEASE_DIR DOWNLOAD_BASE_URL}"
+
+zip_name="Matty-$version-macos-universal.zip"
+zip="$dir/$zip_name"
+[[ -f "$zip" ]] || { echo "no archive at $zip" >&2; exit 1; }
+
+if command -v sha256sum >/dev/null; then
+	sha="$(sha256sum "$zip" | cut -d' ' -f1)"
+else
+	sha="$(shasum -a 256 "$zip" | cut -d' ' -f1)"
+fi
+size="$(wc -c <"$zip" | tr -d ' ')"
+manifest="$dir/matty-update.json"
+jq -n --compact-output \
+	--arg version "$version" \
+	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	--arg notes "${MATTY_RELEASE_URL:-}" \
+	--arg url "$base/$zip_name" \
+	--arg sha "$sha" \
+	--argjson size "$size" \
+	'{version: $version, pub_date: $date}
+	 + (if $notes == "" then {} else {notes_url: $notes} end)
+	 + {platforms: {"macos-universal": {url: $url, sha256: $sha, size: $size}}}' \
+	>"$manifest"
+cat "$manifest"
+
+key="${MATTY_UPDATE_SIGNING_KEY_FILE:-}"
+if [[ -z "$key" ]]; then
+	echo "no signing key: $manifest is not signed" >&2
+	exit 0
+fi
+public="$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)"
+if [[ -n "${MATTY_UPDATE_PUBLIC_KEY:-}" && "$public" != "$MATTY_UPDATE_PUBLIC_KEY" ]]; then
+	echo "the signing key's public half ($public) is not MATTY_UPDATE_PUBLIC_KEY" >&2
+	exit 1
+fi
+signature="$manifest.sig"
+openssl pkeyutl -sign -inkey "$key" -rawin -in "$manifest" | base64 | tr -d '\n' >"$signature"
+echo >>"$signature"
+# Check it the way the app will, with the public key alone.
+public_pem="$(mktemp)"
+raw_signature="$(mktemp)"
+trap 'rm -f "$public_pem" "$raw_signature"' EXIT
+openssl pkey -in "$key" -pubout -out "$public_pem"
+base64 --decode <"$signature" >"$raw_signature"
+openssl pkeyutl -verify -pubin -inkey "$public_pem" -rawin -in "$manifest" -sigfile "$raw_signature" >/dev/null
+echo "signed $manifest with the key $public" >&2

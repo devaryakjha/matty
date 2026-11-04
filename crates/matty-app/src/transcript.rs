@@ -173,6 +173,7 @@ pub fn channel_model(
         posts: rows,
         first_unread: None,
         max_post_size: max_post_size.unwrap_or(DEFAULT_MAX_POST_SIZE),
+        can_manage: false,
         profiles: Vec::new(),
         notifications: Default::default(),
         typing: Vec::new(),
@@ -578,6 +579,7 @@ pub fn thread_row(
     crate::threads::ThreadRow {
         channel_id: root.channel_id.clone().into(),
         thread: crate::right_pane::ThreadModel {
+            channel_id: root.channel_id.clone().into(),
             channel_name,
             root: listed_post(root, users, viewer),
             replies: Vec::new(),
@@ -600,7 +602,7 @@ pub fn thread_row(
 
 /// Minutes since local midnight, the day label the post falls under, and
 /// the full date for the time's tooltip.
-fn when(
+pub(crate) fn when(
     millis: i64,
     zone: &TimeZone,
     today: jiff::civil::Date,
