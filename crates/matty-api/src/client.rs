@@ -242,8 +242,9 @@ impl Client {
         &self.base
     }
 
-    /// The session token, for the WebSocket's authentication challenge.
-    pub(crate) fn token_value(&self) -> Option<&str> {
+    /// The session token, for the WebSocket's authentication challenge and
+    /// for keeping the session in the system's credential store.
+    pub fn token_value(&self) -> Option<&str> {
         self.token.as_ref().map(|t| t.0.as_str())
     }
 

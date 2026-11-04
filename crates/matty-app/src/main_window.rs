@@ -599,17 +599,29 @@ impl MainWindow {
             login_server: None,
             sidebar_shown: false,
         };
-        // `matty --offline` opens the last account's cache without a session.
+        // `matty --offline` opens the last account's cache without a session;
+        // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
-        if crate::offline()
-            && !crate::preview::enabled()
+        if !crate::preview::enabled()
             && let Some(account) = saved
         {
-            this.login = None;
-            this.connection = ConnectionState::Offline;
-            this.start_live(&account, window, cx);
-            if let Some(live) = &this.live {
-                live.send(matty_sync::Command::ShowCache);
+            if crate::offline() {
+                this.login = None;
+                this.connection = ConnectionState::Offline;
+                this.start_live(&account, window, cx);
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::ShowCache);
+                }
+            } else if let Some(token) = crate::secrets::load(&account)
+                && let Ok(client) = matty_api::Client::new(&account.server)
+            {
+                this.login = None;
+                this.start_live(&account, window, cx);
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::Connect {
+                        client: client.with_token(token),
+                    });
+                }
             }
         }
         this
@@ -960,6 +972,9 @@ impl MainWindow {
             self.live = None;
             self._live_task = None;
         }
+        if update.expired && self.login.is_none() {
+            self.session_expired(window, cx);
+        }
     }
 
     /// The sign-in card's requests. The preview answers locally; otherwise
@@ -1060,6 +1075,9 @@ impl MainWindow {
             let _ = this.update_in(cx, |this, window, cx| match signed_in {
                 Ok(session) => {
                     let account = crate::live::saved_account(&server, &session.user);
+                    if let Some(token) = session.client.token_value() {
+                        crate::secrets::save(&account, token);
+                    }
                     this.settings.update(cx, |settings, cx| {
                         settings.update(cx, |s| s.account = Some(account.clone()))
                     });
@@ -1914,6 +1932,9 @@ impl MainWindow {
             Some(live) => live.send(matty_sync::Command::SignOut),
             None => self._live_task = None,
         }
+        if let Some(account) = self.settings.read(cx).get().account.clone() {
+            crate::secrets::delete(&account);
+        }
         self.settings
             .update(cx, |settings, cx| settings.update(cx, |s| s.account = None));
         self.selected_channel = None;
@@ -1921,6 +1942,30 @@ impl MainWindow {
             sidebar.set_model(SidebarModel::loading(), cx)
         });
         let view = cx.new(|cx| LoginView::new(LoginModel::default(), window, cx));
+        cx.subscribe_in(&view, window, Self::on_login_event)
+            .detach();
+        self.login = Some(view);
+        self.right_pane_open = false;
+        cx.notify();
+    }
+
+    /// The server refused the saved session: forget it and ask the user to
+    /// sign in again, saying why.
+    fn session_expired(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(account) = self.settings.read(cx).get().account.clone() {
+            crate::secrets::delete(&account);
+        }
+        self.live = None;
+        self._live_task = None;
+        self.selected_channel = None;
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_model(SidebarModel::loading(), cx)
+        });
+        let model = LoginModel {
+            error: Some("Your session expired. Sign in again.".into()),
+            ..LoginModel::default()
+        };
+        let view = cx.new(|cx| LoginView::new(model, window, cx));
         cx.subscribe_in(&view, window, Self::on_login_event)
             .detach();
         self.login = Some(view);

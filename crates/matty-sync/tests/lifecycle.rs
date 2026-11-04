@@ -117,3 +117,29 @@ fn io_runs_futures_for_a_caller_without_tokio() {
         matty_sync::io::run(async { Client::new("http://127.0.0.1:9").unwrap().ping().await });
     assert!(pinged.recv_blocking().unwrap().is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_token_says_the_session_expired() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "id": "api.context.session_expired.app_error", "message": "Invalid or expired session",
+            "status_code": 401
+        })))
+        .mount(&server)
+        .await;
+    let sync = matty_sync::spawn(matty_store::Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(matty_sync::Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("old"),
+    });
+    common::next(&changes, |c| {
+        matches!(
+            c,
+            matty_sync::ChangeSet::Connection(matty_sync::Connection::Expired)
+        )
+    })
+    .await;
+}

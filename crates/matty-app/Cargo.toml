@@ -30,6 +30,7 @@ matty-sync.workspace = true
 async-channel.workspace = true
 url.workspace = true
 jiff.workspace = true
+keyring.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

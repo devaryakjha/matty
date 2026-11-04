@@ -209,6 +209,9 @@ pub enum Connection {
         /// What went wrong.
         error: String,
     },
+    /// The server refused the session token: it expired or was revoked,
+    /// so the user has to sign in again.
+    Expired,
     /// [`Command::SignOut`](crate::Command::SignOut) finished: the session
     /// is gone here and, when the server could be reached, there too.
     SignedOut,
