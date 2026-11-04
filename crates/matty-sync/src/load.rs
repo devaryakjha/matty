@@ -119,6 +119,8 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// Who matches a typed `@name`, channel members first.
+    Suggested { term: String, users: Vec<User> },
     /// What a link names, or `None` when it is gone or hidden.
     Resolved {
         query: crate::LinkQuery,
@@ -144,6 +146,13 @@ pub(crate) enum Loaded {
     /// Search results, best first.
     Search {
         terms: String,
+        page: u32,
+        posts: Vec<matty_api::models::Post>,
+        more: bool,
+    },
+    /// A listing's posts, newest first.
+    Listing {
+        listing: crate::Listing,
         posts: Vec<matty_api::models::Post>,
     },
     /// A team's active people.
