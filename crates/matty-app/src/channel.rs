@@ -2957,7 +2957,7 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .border_1()
         .border_color(theme.colors.foreground.opacity(0.1))
         .bg(theme.colors.popover)
-        .shadow(theme.shadows.md.clone())
+        .shadow(theme.shadows.md.to_vec())
         .overflow_hidden()
         .child(picker)
 }
