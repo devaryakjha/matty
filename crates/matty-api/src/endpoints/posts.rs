@@ -359,6 +359,21 @@ impl Client {
         .await
     }
 
+    /// `PUT users/{user_id}/teams/{team_id}/threads/read`: marks every
+    /// followed thread in the team read.
+    pub async fn mark_all_threads_read(
+        &self,
+        user_id: &str,
+        team_id: &str,
+    ) -> Result<(), ApiError> {
+        self.put::<_, Value>(
+            &format!("users/{user_id}/teams/{team_id}/threads/read"),
+            &json!({}),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// `PUT users/{user_id}/teams/{team_id}/threads/{thread_id}/following`.
     pub async fn follow_thread(
         &self,

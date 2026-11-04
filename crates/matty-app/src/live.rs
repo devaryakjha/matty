@@ -50,6 +50,9 @@ pub struct Live {
     /// The thread in the right pane: its root, and its posts once sync
     /// has published them (root first).
     thread: Option<(String, Option<Arc<[matty_api::models::Post]>>)>,
+    /// The shown team's followed threads and their root posts, for the
+    /// Threads view and the sidebar's count (#124).
+    thread_list: Option<ThreadList>,
     /// Whether the server lets users choose collapsed reply threads, and
     /// whether they are on for the user, once each is known (#157).
     threads_choice: Option<bool>,
@@ -147,6 +150,8 @@ pub struct Update {
     pub own_presence: Option<(Presence, Option<i64>)>,
     /// The open thread, for the right pane.
     pub thread: Option<crate::right_pane::ThreadModel>,
+    /// The shown team's followed threads, for the Threads view (#124).
+    pub threads: Option<crate::threads::ThreadsModel>,
     /// A link's preview for the composer, or `None` when it has none
     /// (#188).
     pub link_preview: Option<(String, Option<crate::embeds::LinkCard>)>,
@@ -414,6 +419,7 @@ impl Live {
                 posts: None,
                 max_post_size: None,
                 thread: None,
+                thread_list: None,
                 threads_choice: None,
                 threads_on: None,
                 zone: jiff::tz::TimeZone::system(),
@@ -735,6 +741,66 @@ impl Live {
         Some(posts.as_ref()?.first()?.channel_id.clone())
     }
 
+    /// The user read the thread under `root_id` in the Threads view.
+    pub fn read_thread(&self, root_id: &str) {
+        if let Some(team_id) = self.team.clone() {
+            self.send(Command::ReadThread {
+                team_id,
+                root_id: root_id.to_owned(),
+            });
+        }
+    }
+
+    /// "Mark all as read" in the Threads view.
+    pub fn read_all_threads(&self) {
+        if let Some(team_id) = self.team.clone() {
+            self.send(Command::ReadAllThreads { team_id });
+        }
+    }
+
+    /// Follow or unfollow the thread under `root_id`.
+    pub fn follow_thread(&self, root_id: &str, follow: bool) {
+        if let Some(team_id) = self.team.clone() {
+            self.send(Command::FollowThread {
+                team_id,
+                root_id: root_id.to_owned(),
+                follow,
+            });
+        }
+    }
+
+    /// The shown team's followed threads as the Threads view lists them;
+    /// a thread whose root is not cached yet waits for it.
+    fn threads_model(&self) -> crate::threads::ThreadsModel {
+        let Some((threads, roots)) = &self.thread_list else {
+            return crate::threads::ThreadsModel::default();
+        };
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            keys: &self.prefs.keys,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+        };
+        let rows = threads
+            .iter()
+            .filter_map(|thread| {
+                let root = roots.iter().find(|root| root.id == thread.id)?;
+                let channel = self.channel_name(&root.channel_id).unwrap_or_default();
+                Some(crate::transcript::thread_row(
+                    thread,
+                    root,
+                    channel,
+                    &self.users,
+                    &viewer,
+                ))
+            })
+            .collect();
+        crate::threads::ThreadsModel {
+            threads: rows,
+            loading: false,
+        }
+    }
+
     /// The open thread as the pane shows it.
     fn thread_model(&mut self) -> Option<crate::right_pane::ThreadModel> {
         let (_, Some(posts)) = self.thread.as_ref()? else {
@@ -874,7 +940,13 @@ impl Live {
                     .cloned();
                 let team = shown.or_else(|| self.teams.first().map(|team| team.id.clone()));
                 if team != self.team {
-                    self.team = team;
+                    if let Some(old) = std::mem::replace(&mut self.team, team) {
+                        self.send(Command::CloseThreadList { team_id: old });
+                    }
+                    self.thread_list = None;
+                    if let Some(team_id) = self.team.clone() {
+                        self.send(Command::OpenThreadList { team_id });
+                    }
                     update.categories = self.shown_categories();
                 }
                 update.team_name = self.team_name();
@@ -1110,10 +1182,21 @@ impl Live {
                     update.thread = self.thread_model();
                 }
             }
+            ChangeSet::ThreadList {
+                team_id,
+                threads,
+                roots,
+            } if self.team.as_ref() == Some(team_id) => {
+                self.thread_list = Some((threads.clone(), roots.clone()));
+                update.threads = Some(self.threads_model());
+            }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
                     self.take_notify_props(user, &mut update);
+                }
+                if self.thread_list.is_some() {
+                    update.threads = Some(self.threads_model());
                 }
                 if self
                     .thread
@@ -1351,6 +1434,13 @@ pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, S
         Err(_) => Err(STOPPED.into()),
     }
 }
+
+/// A team's followed threads and their cached root posts, as sync sent
+/// them.
+type ThreadList = (
+    Arc<[matty_sync::ThreadSummary]>,
+    Arc<[matty_api::models::Post]>,
+);
 
 const STOPPED: &str = "Matty could not start its network thread. Quit and open it again.";
 
@@ -1849,6 +1939,44 @@ mod tests {
         assert_eq!(live.apply(&thread("other")).thread, None);
         live.close_thread();
         assert_eq!(live.apply(&thread("root")).thread, None, "closed");
+    }
+
+    #[test]
+    fn the_shown_teams_thread_list_reaches_the_threads_view() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let root = matty_api::models::Post {
+            id: "root".into(),
+            channel_id: "c1".into(),
+            user_id: "ada".into(),
+            message: "Plan?".into(),
+            ..Default::default()
+        };
+        let summary = |id: &str, unread| matty_sync::ThreadSummary {
+            id: id.into(),
+            channel_id: "c1".into(),
+            reply_count: 2,
+            last_reply_at: 0,
+            last_viewed_at: 0,
+            unread_replies: unread,
+            unread_mentions: 0,
+            participants: vec!["ada".into()],
+        };
+        let list = |team: &str| ChangeSet::ThreadList {
+            team_id: team.into(),
+            // "gone" has no cached root yet, so it waits.
+            threads: Arc::from(vec![summary("root", 2), summary("gone", 1)]),
+            roots: Arc::from(vec![root.clone()]),
+        };
+        assert_eq!(live.apply(&list("t2")).threads, None, "another team");
+        let model = live.apply(&list("t1")).threads.unwrap();
+        assert_eq!(model.threads.len(), 1);
+        let row = &model.threads[0];
+        assert_eq!(row.thread.root.body.as_ref(), "Plan?");
+        assert_eq!((row.summary.count, row.summary.unread), (2, true));
+        assert_eq!(model.unread(), 1);
     }
 
     fn opened(live: &mut Live) {

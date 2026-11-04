@@ -55,6 +55,9 @@ pub enum ThreadsEvent {
     MarkAllRead,
     /// The user stopped following `root`.
     Unfollow(SharedString),
+    /// The thread under `root` opened beside the list; `unread` when it
+    /// had replies the user had not read, which opening reads.
+    Open { root: SharedString, unread: bool },
 }
 
 pub struct ThreadsView {
@@ -108,16 +111,47 @@ impl ThreadsView {
     }
 
     fn select(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
+        let changed = self.selected != id;
         self.selected = id.clone();
         let row = id.and_then(|id| self.model.threads.iter_mut().find(|row| *row.id() == id));
-        let content = row.map(|row| {
-            // Opening a thread reads its replies.
-            row.summary.unread = false;
-            RightPaneContent::Thread(row.thread.clone())
-        });
-        self.detail
-            .update(cx, |pane, cx| pane.set_content(content, cx));
+        let Some(row) = row else {
+            self.detail
+                .update(cx, |pane, cx| pane.set_content(None, cx));
+            cx.notify();
+            return;
+        };
+        // Opening a thread reads its replies.
+        let unread = std::mem::take(&mut row.summary.unread);
+        let root = row.id().clone();
+        if changed {
+            let content = Some(RightPaneContent::Thread(row.thread.clone()));
+            self.detail
+                .update(cx, |pane, cx| pane.set_content(content, cx));
+        }
+        if changed || unread {
+            cx.emit(ThreadsEvent::Open { root, unread });
+        }
         cx.notify();
+    }
+
+    /// The open thread's root, for the window to open it in sync again
+    /// when the view comes back.
+    pub fn selected(&self) -> Option<&SharedString> {
+        self.selected.as_ref()
+    }
+
+    /// The pane the open thread is drawn in, for the window to handle its
+    /// replies and actions as it does the right pane's.
+    pub fn detail(&self) -> &Entity<RightPaneView> {
+        &self.detail
+    }
+
+    /// Sync's latest of the open thread, with its replies.
+    pub fn set_thread(&mut self, thread: ThreadModel, cx: &mut Context<Self>) {
+        if self.selected.as_ref() == Some(&thread.root.id) {
+            self.detail
+                .update(cx, |pane, cx| pane.set_thread(thread, cx));
+        }
     }
 
     fn mark_all_read(&mut self, cx: &mut Context<Self>) {
