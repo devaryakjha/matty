@@ -107,6 +107,9 @@ pub enum RightPaneEvent {
     },
     /// The user clicked a file on a post; sync opens or downloads it.
     OpenFile(SharedString),
+    /// The lightbox opened on these image files; the window hands their
+    /// full size back through `set_full_image`.
+    ViewImages(Vec<SharedString>),
     /// The channel info pane asked for the pinned listing.
     OpenPinned,
     /// Message on a member's profile card.
@@ -269,11 +272,33 @@ impl RightPaneView {
         if images.is_empty() {
             return;
         }
-        self.lightbox_files = ids;
+        self.lightbox_files = ids.clone();
         self.lightbox
             .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
         self.lightbox_handle.open(window, cx);
+        cx.emit(RightPaneEvent::ViewImages(ids));
         cx.notify();
+    }
+
+    /// Sync fetched a file's full-size image; the lightbox swaps it in for
+    /// the thumbnail when it shows that file.
+    pub fn set_full_image(
+        &mut self,
+        file_id: &SharedString,
+        image: std::sync::Arc<gpui_kit::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(position) = self.lightbox_files.iter().position(|id| id == file_id) else {
+            return;
+        };
+        self.lightbox.update(cx, |lightbox, cx| {
+            let mut images = lightbox.images().to_vec();
+            if let Some(entry) = images.get_mut(position) {
+                entry.source = gpui_kit::ImageSource::Image(image);
+                let index = lightbox.index();
+                lightbox.set_images(images, index, cx);
+            }
+        });
     }
 
     fn lightbox(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

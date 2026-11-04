@@ -466,6 +466,17 @@ impl MainWindow {
                 }
                 RightPaneEvent::Leave(channel) => this.leave_channel(channel.clone(), window, cx),
                 RightPaneEvent::OpenFile(id) => this.download_file(id, cx),
+                RightPaneEvent::ViewImages(ids) => {
+                    let here = this
+                        .live
+                        .as_ref()
+                        .map(|live| live.full_images(ids))
+                        .unwrap_or_default();
+                    for (id, image) in here {
+                        this.right_pane
+                            .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
+                    }
+                }
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.
                 _ => {}
             },
@@ -786,6 +797,8 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
         }
         if let Some((id, image)) = update.full_image {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_full_image(&id, image.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
