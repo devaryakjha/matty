@@ -240,6 +240,9 @@ pub struct ChannelModel {
     pub typing: Vec<SharedString>,
     /// The user's notification settings for this channel.
     pub notifications: ChannelNotifications,
+    /// Matty is offline, so no posts may only mean none were saved here
+    /// yet (#163).
+    pub offline: bool,
 }
 
 /// When a channel notifies, per surface; `Default` follows the account
@@ -385,7 +388,41 @@ impl ReplySummary {
     }
 }
 
+/// A row as it compares across edits: a post by its id, since its index
+/// shifts when a post above it goes.
+#[derive(Debug, PartialEq, Eq)]
+enum RowKey {
+    Post(SharedString),
+    Other(Row),
+}
+
+/// The rows of `before` that differ from `after`, and how many rows of
+/// `after` take their place: everything between the common head and tail.
+fn changed_rows(before: &[RowKey], after: &[RowKey]) -> (std::ops::Range<usize>, usize) {
+    let head = before
+        .iter()
+        .zip(after)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let tail = before[head..]
+        .iter()
+        .rev()
+        .zip(after[head..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    (head..before.len() - tail, after.len() - head - tail)
+}
+
 impl ChannelModel {
+    fn row_keys(&self, rows: &[Row]) -> Vec<RowKey> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Post(index) => RowKey::Post(self.posts[*index].id.clone()),
+                other => RowKey::Other(other.clone()),
+            })
+            .collect()
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(self.posts.len() + 4);
         rows.push(Row::History);
@@ -647,6 +684,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
+    /// Posts whose preview images the user collapsed (#187), as the web
+    /// app's per-post toggle; they expand again with the toggle.
+    collapsed_previews: std::collections::HashSet<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -890,6 +930,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            collapsed_previews: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1263,20 +1304,40 @@ impl ChannelView {
         self.mutate_post(&id, |current| *current = post, cx);
     }
 
-    /// Removes a post the server deleted; the rows above keep their place.
-    pub fn remove_post(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut model) = self.model.clone() else {
+    /// Removes a post the server deleted. Only its rows leave the list, so
+    /// the scroll and the New messages line stay where they were (#164).
+    pub fn remove_post(&mut self, id: &SharedString, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_mut() else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
             return;
         };
+        let before = model.row_keys(&self.rows);
         model.posts.remove(at);
         model.first_unread = model.first_unread.and_then(|first| {
             let first = if at < first { first - 1 } else { first };
             (first < model.posts.len()).then_some(first)
         });
-        self.set_model(Some(model), window, cx);
+        self.rows = model.rows();
+        let (range, count) = changed_rows(&before, &model.row_keys(&self.rows));
+        let rows = self.rows.len();
+        self.list.update(cx, |list, cx| {
+            if !list.splice(range.clone(), count, cx) {
+                list.reset(rows, cx);
+            }
+        });
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| &editing.post == id)
+        {
+            self.editing = None;
+        }
+        if self.selection.is_some_and(|row| row >= range.start) {
+            self.selection = None;
+        }
+        cx.notify();
     }
 
     /// In preview, a couple of posts land in #general a while after it
@@ -2036,6 +2097,29 @@ impl ChannelView {
         }
     }
 
+    /// Collapses or expands the images in a post's previews; the row's
+    /// height changes, so the list measures it again.
+    fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
+        let changed = if collapsed {
+            self.collapsed_previews.insert(id.clone())
+        } else {
+            self.collapsed_previews.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        let posts = self.model.as_ref().map(|model| &model.posts);
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if posts.and_then(|posts| posts.get(*index)).is_some_and(|post| post.id == id))
+        });
+        if let Some(row) = row {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(row..row + 1, cx));
+        }
+        cx.notify();
+    }
+
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
         if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
             cx.emit(ChannelEvent::ToggleSave(id));
@@ -2752,7 +2836,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away): (bool, bool),
+        (menu_open, away, previews_collapsed): (bool, bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2912,7 +2996,18 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
-            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+            let (view, post_id) = (cx.entity().downgrade(), id.clone());
+            row = row.child(crate::embeds::post_embeds(
+                &id,
+                &post.embeds,
+                previews_collapsed,
+                std::rc::Rc::new(move |collapsed, _, cx| {
+                    let post_id = post_id.clone();
+                    view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
+                        .ok();
+                }),
+                cx,
+            ));
         }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
@@ -3111,12 +3206,13 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
                         Self::post_row(
                             &post,
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away),
+                            (menu_open, away, previews_collapsed),
                             cx,
                         )
                         .into_any_element()
@@ -3466,6 +3562,36 @@ impl ChannelView {
             .child(row(3, &[0.46]))
     }
 
+    /// A channel with nothing saved on this computer while offline: saying
+    /// it is empty would be wrong, so it says why and that it will load.
+    fn offline_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let place: SharedString = match channel.kind {
+            ChannelKind::Direct { .. } => format!("your conversation with {}", channel.name).into(),
+            _ => format!("#{}", channel.name).into(),
+        };
+        let empty = style::empty_state(
+            LucideIcon::WifiOff,
+            "You're offline",
+            format!(
+                "Matty hasn't saved {place} on this computer yet. Its messages load when you're back online."
+            ),
+            cx,
+        );
+        div()
+            .size_full()
+            .flex()
+            .items_end()
+            .justify_center()
+            .p(theme.space(6.))
+            .pb(theme.space(8.))
+            .child(
+                div()
+                    .max_w(scaled(&theme, metrics::EMPTY_MAX_WIDTH))
+                    .child(empty),
+            )
+    }
+
     /// A channel with no posts yet: its purpose and a way to bring people in.
     fn empty_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -3596,6 +3722,8 @@ impl Render for ChannelView {
         }
         let body = if channel.loading && channel.posts.is_empty() {
             Self::loading(cx).into_any_element()
+        } else if channel.posts.is_empty() && channel.offline {
+            Self::offline_channel(&channel, cx).into_any_element()
         } else if channel.posts.is_empty() {
             Self::empty_channel(&channel, cx).into_any_element()
         } else {
@@ -3691,6 +3819,7 @@ mod tests {
     #[test]
     fn rows_interleave_day_and_new_message_dividers() {
         let channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -3728,6 +3857,47 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_post_changes_only_its_rows() {
+        let mut channel = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![
+                post("1", "Yesterday"),
+                post("2", "Today"),
+                post("3", "Today"),
+                post("4", "Today"),
+            ],
+            first_unread: Some(2),
+        };
+        let before = channel.row_keys(&channel.rows());
+        // The post above the New messages line goes: one row, and the
+        // marker stays on post 3.
+        channel.posts.remove(1);
+        channel.first_unread = Some(1);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (4..5, 0));
+        // The only post of a day takes its divider with it.
+        let before = after;
+        channel.posts.remove(0);
+        channel.first_unread = Some(0);
+        let after = channel.row_keys(&channel.rows());
+        assert_eq!(changed_rows(&before, &after), (1..3, 0));
+    }
+
+    #[test]
     fn formatting_shortcuts_follow_mattermost_and_slack() {
         fn wrap(keys: &'static str) -> Option<(&'static str, &'static str)> {
             format_shortcut(&gpui_kit::Keystroke::parse(keys).unwrap())
@@ -3746,6 +3916,7 @@ mod tests {
     #[test]
     fn prepending_history_keeps_the_unread_marker_and_skips_known_posts() {
         let mut channel = ChannelModel {
+            offline: false,
             purpose: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,

@@ -57,6 +57,11 @@ pub struct Live {
     /// whether they are on for the user, once each is known (#157).
     threads_choice: Option<bool>,
     threads_on: Option<bool>,
+    /// Whether link previews show (#187); until sync says, they do.
+    link_previews: bool,
+    /// Not connected: an open channel with no posts may just not be saved
+    /// here yet (#163).
+    offline: bool,
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
@@ -352,7 +357,9 @@ fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageForma
 /// How to go from the posts on screen to `new` without a reset, or `None`
 /// when only a reset will do: a post appeared between two shown ones, or
 /// the order changed. Posts before the first shown one are older history
-/// and go on top.
+/// and go on top. Unsent rows at the bottom may be passed by posts that
+/// arrive under them, as after a reconnect's backfill (#164): they are
+/// taken out and appended again in their new place.
 fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
     let kept: HashMap<&str, &Post> = old.iter().map(|post| (post.id.as_ref(), post)).collect();
     let present: std::collections::HashSet<&str> =
@@ -372,14 +379,26 @@ fn patch(old: &[Post], new: &[Post]) -> Option<ChannelUpdate> {
         .and_then(|first| new.iter().position(|post| post.id.as_ref() == *first))
         .unwrap_or(0);
     let (prepended, new) = new.split_at(start);
-    let (head, tail) = new.split_at(remaining.len().min(new.len()));
-    if head
+    let matched = new
         .iter()
-        .map(|post| post.id.as_ref())
-        .ne(remaining.iter().copied())
-    {
+        .zip(&remaining)
+        .take_while(|(post, id)| post.id.as_ref() == **id)
+        .count();
+    // The shown posts after the matching run must all be unsent ones.
+    let unsent = |id: &&str| {
+        kept.get(id)
+            .is_some_and(|post| post.status != crate::channel::PostStatus::Sent)
+    };
+    if !remaining[matched..].iter().all(unsent) {
         return None;
     }
+    let mut removed = removed;
+    removed.extend(
+        remaining[matched..]
+            .iter()
+            .map(|id| SharedString::from(id.to_string())),
+    );
+    let (head, tail) = new.split_at(matched);
     let updated = head
         .iter()
         .filter(|post| kept.get(post.id.as_ref()) != Some(post))
@@ -422,6 +441,8 @@ impl Live {
                 thread_list: None,
                 threads_choice: None,
                 threads_on: None,
+                link_previews: true,
+                offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
@@ -542,6 +563,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let mut model = crate::transcript::channel_model(
             row,
@@ -560,6 +582,7 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        model.offline = self.offline;
         for post in &mut model.posts {
             if self.failed.contains(post.id.as_ref()) {
                 post.status = crate::channel::PostStatus::Failed;
@@ -735,6 +758,11 @@ impl Live {
         }
     }
 
+    /// Whether a draft's link is worth asking the server about (#187).
+    pub fn link_previews(&self) -> bool {
+        self.link_previews
+    }
+
     /// The open thread's channel, for a reply: the root's own.
     pub fn thread_channel(&self) -> Option<String> {
         let (_, posts) = self.thread.as_ref()?;
@@ -780,6 +808,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let rows = threads
             .iter()
@@ -813,6 +842,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -845,6 +875,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
@@ -1241,6 +1272,13 @@ impl Live {
                 self.threads_on = Some(*on);
                 update.collapsed_threads = self.threads();
             }
+            ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
+                self.link_previews = *on;
+                if self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
+                update.thread = self.thread_model();
+            }
             ChangeSet::Connection(connection) => match connection {
                 Connection::Socket(matty_api::ws::ConnectionState::Unauthorized)
                 | Connection::Expired => {
@@ -1253,6 +1291,18 @@ impl Live {
                 _ => {}
             },
             _ => {}
+        }
+        if let Some(state) = &update.connection {
+            let offline = *state != ConnectionState::Online;
+            if offline != self.offline {
+                self.offline = offline;
+                // Only an empty channel reads it, and a patch would not
+                // carry it.
+                if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
+                    self.shown = None;
+                    update.channel = self.channel_update();
+                }
+            }
         }
         update
     }
@@ -1903,6 +1953,29 @@ mod tests {
     }
 
     #[test]
+    fn posts_arriving_under_an_unsent_row_keep_the_scroll() {
+        let mut failed = shown("me:1", "not sent");
+        failed.status = crate::channel::PostStatus::Failed;
+        let old = [shown("a", "one"), failed.clone()];
+        // A backfill brings posts written before the failed send.
+        let new = [
+            shown("a", "one"),
+            shown("b", "two"),
+            shown("c", "three"),
+            failed.clone(),
+        ];
+        assert_eq!(
+            patch(&old, &new),
+            Some(ChannelUpdate::Patch {
+                removed: vec!["me:1".into()],
+                prepended: vec![],
+                updated: vec![],
+                appended: vec![shown("b", "two"), shown("c", "three"), failed],
+            })
+        );
+    }
+
+    #[test]
     fn a_post_between_shown_ones_resets() {
         let old = [shown("a", "one"), shown("c", "three")];
         let new = [shown("a", "one"), shown("b", "two"), shown("c", "three")];
@@ -1942,6 +2015,46 @@ mod tests {
     }
 
     #[test]
+    fn turning_link_previews_off_drops_the_cards_in_place() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let post = matty_api::models::Post {
+            id: "p1".into(),
+            user_id: "ada".into(),
+            message: "https://github.com/a".into(),
+            metadata: matty_api::models::PostMetadata {
+                embeds: vec![matty_api::models::PostEmbed {
+                    kind: matty_api::models::EmbedKind::OpenGraph,
+                    url: "https://github.com/a".into(),
+                    data: Some(serde_json::json!({"title": "Repo", "site_name": "GitHub"})),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("the channel shows");
+        };
+        assert_eq!(model.posts[0].embeds.len(), 1);
+        let update = live.apply(&ChangeSet::LinkPreviews(false));
+        let Some(ChannelUpdate::Patch { updated, .. }) = update.channel else {
+            panic!("patched in place");
+        };
+        assert!(updated[0].embeds.is_empty());
+        assert!(!live.link_previews());
+        assert!(
+            live.apply(&ChangeSet::LinkPreviews(false))
+                .channel
+                .is_none(),
+            "no change"
+        );
+    }
+
+    #[test]
     fn the_shown_teams_thread_list_reaches_the_threads_view() {
         let mut live = live();
         live.apply(&ChangeSet::Unreads {
@@ -1977,6 +2090,33 @@ mod tests {
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
         assert_eq!((row.summary.count, row.summary.unread), (2, true));
         assert_eq!(model.unread(), 1);
+    }
+
+    #[test]
+    fn an_empty_channel_says_so_only_while_online() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let empty = ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(Vec::new()),
+        };
+        let Some(ChannelUpdate::Replace(model)) = live.apply(&empty).channel else {
+            panic!("the channel shows");
+        };
+        assert!(!model.offline);
+        let socket = |state| ChangeSet::Connection(Connection::Socket(state));
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Stopped));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn offline");
+        };
+        assert!(model.offline && model.posts.is_empty());
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Connected {
+            connection_id: "x".into(),
+        }));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn online");
+        };
+        assert!(!model.offline);
     }
 
     fn opened(live: &mut Live) {
