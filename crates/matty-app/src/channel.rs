@@ -356,6 +356,11 @@ impl ChannelModel {
     }
 }
 
+/// A post's words without the Markdown, for "Copy text" (PLAN §4.2).
+pub fn plain_text(body: &str) -> String {
+    matty_markdown::to_plain(&matty_markdown::parse(body))
+}
+
 /// The row density from Preferences (PLAN §4.2 display).
 pub fn message_density(cx: &App) -> MessageDensity {
     match SettingsStore::global(cx).read(cx).get().display {
@@ -1843,12 +1848,22 @@ impl ChannelView {
             })
         };
         let body = post.body.clone();
+        let markdown_body = post.body.clone();
         let mut items = vec![
             act(
                 "copy",
                 "Copy text".into(),
                 Box::new(move |_, _, cx| {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(body.to_string()))
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
+                }),
+            ),
+            act(
+                "copy-markdown",
+                "Copy as Markdown".into(),
+                Box::new(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                        markdown_body.to_string(),
+                    ))
                 }),
             ),
             {
@@ -1926,8 +1941,9 @@ impl ChannelView {
             MenuItem::separator(),
         ];
         let more = Self::more_items_for(post, cx);
-        // `more` is copy, pin, save, then the owner's edit and delete.
-        let (keep, own) = more.split_at(3.min(more.len()));
+        // `more` is copy, copy as Markdown, pin, save, then the owner's
+        // edit and delete.
+        let (keep, own) = more.split_at(4.min(more.len()));
         items.extend(keep.iter().cloned());
         items.push(act(
             "unread",
