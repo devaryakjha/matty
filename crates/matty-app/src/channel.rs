@@ -3813,6 +3813,7 @@ mod tests {
     fn removing_a_post_changes_only_its_rows() {
         let mut channel = ChannelModel {
             purpose: None,
+            offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
