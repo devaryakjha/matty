@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
-    SettingsStore, WindowGeometry, ZOOM_STEP,
+    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, RemoteImages, SIDEBAR_MAX, SIDEBAR_MIN,
+    SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -68,6 +68,8 @@ pub enum ConnectionState {
     Reconnecting { attempt: u32 },
     /// Gave up until asked; cached content stays usable.
     Offline,
+    /// The web demo's sample workspace: no server, nothing leaves the page.
+    Demo,
 }
 
 /// What the connection banner says for `state` with `queued` messages
@@ -86,6 +88,11 @@ fn banner_text(state: &ConnectionState, queued: usize) -> Option<(SharedString, 
         ConnectionState::Offline => (
             "You're offline. Matty shows what it has and sends when you're back.".into(),
             true,
+        ),
+        ConnectionState::Demo => (
+            "This is a demo workspace with sample data. Nothing you do here leaves your browser."
+                .into(),
+            false,
         ),
     };
     // What is waiting goes when the connection is back (#195).
@@ -171,6 +178,7 @@ type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
 mod drafts;
 mod preferences;
+mod sounds;
 mod sso;
 
 pub struct MainWindow {
@@ -201,6 +209,8 @@ pub struct MainWindow {
     highlight_keys: bool,
     /// Preferences' log detail picker (#160).
     log_level: Entity<SelectState>,
+    /// Preferences' notification sound picker (#142).
+    sound: Entity<SelectState>,
     /// The user's `notify_props` as the server last sent them.
     notify_props: Option<std::collections::HashMap<String, String>>,
     /// Whether the user may choose collapsed reply threads, and whether
@@ -299,9 +309,17 @@ impl MainWindow {
             |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
                 let names = store.read(cx).get().name_format;
+                let ask_images = store.read(cx).get().load_remote_images == RemoteImages::Ask;
                 if let Some(live) = this.live.as_mut() {
                     let update = live.set_names(names);
                     this.apply_update(update, window, cx);
+                }
+                if let Some(live) = this.live.as_mut() {
+                    let update = live.set_ask_remote_images(ask_images);
+                    this.apply_update(update, window, cx);
+                } else if crate::preview::enabled() {
+                    cx.global::<crate::remote_images::RemoteImages>()
+                        .set_ask_first(ask_images);
                 }
                 cx.notify();
             },
@@ -319,6 +337,15 @@ impl MainWindow {
         .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        if crate::preview::enabled() {
+            // Nothing to fetch in preview: its cards bring their images,
+            // and "Ask" shows the placeholders (#159).
+            let ask = settings.read(cx).get().load_remote_images == RemoteImages::Ask;
+            cx.set_global(crate::remote_images::RemoteImages::new(
+                std::rc::Rc::new(|_: &str| {}),
+                ask,
+            ));
+        }
         let model = if crate::preview::enabled() {
             crate::preview::sidebar()
         } else {
@@ -899,6 +926,29 @@ impl MainWindow {
                         }
                         return;
                     }
+                    SidebarEvent::PlaceCategory { id, index } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::PlaceCategory {
+                                category_id: id.to_string(),
+                                index: *index,
+                            });
+                        }
+                        return;
+                    }
+                    SidebarEvent::PlaceChannel {
+                        channel_id,
+                        category_id,
+                        index,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::PlaceChannel {
+                                channel_id: channel_id.to_string(),
+                                category_id: category_id.to_string(),
+                                index: *index,
+                            });
+                        }
+                        return;
+                    }
                     SidebarEvent::MoveToCategory {
                         channel_id,
                         category_id,
@@ -969,6 +1019,7 @@ impl MainWindow {
             }
         })
         .detach();
+        let sound = sounds::picker(preview_props.as_ref(), window, cx);
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         // A click on a notification opens its channel at its post (#139).
         let (clicked_tx, clicked) = async_channel::bounded(8);
@@ -1001,6 +1052,7 @@ impl MainWindow {
             highlight_keywords,
             highlight_keys: crate::preview::enabled(),
             log_level,
+            sound,
             notifier: matty_notify::backend::platform(clicked_tx),
             badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
@@ -1055,6 +1107,11 @@ impl MainWindow {
             .settings
             .update(cx, |settings, cx| settings.launch_server(cx));
         if !crate::preview::enabled()
+            && saved.is_none()
+            && let Some(snapshot) = crate::demo_snapshot()
+        {
+            this.start_demo(snapshot, window, cx);
+        } else if !crate::preview::enabled()
             && let Some(account) = saved
         {
             if crate::offline() {
@@ -1093,7 +1150,48 @@ impl MainWindow {
             self.forget = None;
         }
         self.forget_signed_out(cx);
-        let (live, changes) = match Live::start(path, account) {
+        self.run_live(account, Live::start(path, account), window, cx);
+    }
+
+    /// Opens the web demo's sample workspace from `snapshot`, with no
+    /// server: the sign-in card stays away until the banner's "Connect
+    /// your server" asks for it.
+    fn start_demo(&mut self, snapshot: &[u8], window: &mut Window, cx: &mut Context<Self>) {
+        let (sync, demo) = match matty_sync::spawn_demo(snapshot) {
+            Ok(Some(started)) => started,
+            Ok(None) => {
+                tracing::error!("the demo snapshot has no demo account");
+                return;
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not open the demo");
+                return;
+            }
+        };
+        crate::set_demo(true);
+        let account = crate::settings::SavedAccount {
+            server: demo.server,
+            user_id: demo.user_id,
+            username: demo.username,
+            display_name: demo.display_name,
+        };
+        self.login = None;
+        self.connection = ConnectionState::Demo;
+        self.run_live(&account, Ok(Live::start_with(sync, &account)), window, cx);
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::ShowCache);
+        }
+    }
+
+    /// Applies what `started` sync publishes, for `account`.
+    fn run_live(
+        &mut self,
+        account: &crate::settings::SavedAccount,
+        started: std::io::Result<(Live, async_channel::Receiver<matty_sync::ChangeSet>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (live, changes) = match started {
             Ok(started) => started,
             Err(error) => {
                 tracing::error!(%error, "could not start sync");
@@ -1101,9 +1199,13 @@ impl MainWindow {
             }
         };
         live.share_pictures(cx);
+        cx.set_global(live.remote_images());
         let mut live = live;
         // Nothing is on screen yet, so the update has nothing to show.
         let _ = live.set_names(self.settings.read(cx).get().name_format);
+        let _ = live.set_ask_remote_images(
+            self.settings.read(cx).get().load_remote_images == RemoteImages::Ask,
+        );
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
@@ -1675,6 +1777,13 @@ impl MainWindow {
             detail.update(cx, |pane, _| pane.set_directory(directory.clone()));
             self.channel
                 .update(cx, |channel, cx| channel.set_directory(directory, cx));
+            // The demo opens on its first favorite, so it starts mid-story.
+            if crate::demo()
+                && self.selected_channel.is_none()
+                && let Some(first) = model.categories.iter().find_map(|c| c.rows.first())
+            {
+                self.open_channel(first.id.clone(), window, cx);
+            }
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -1715,14 +1824,7 @@ impl MainWindow {
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {
-                view.set_details(
-                    details.header,
-                    details.purpose,
-                    details.members,
-                    details.pinned,
-                    details.can_manage,
-                    cx,
-                );
+                view.set_details(details, cx);
             });
         }
         if let Some((muted, notifications)) = update.notifications {
@@ -1791,6 +1893,7 @@ impl MainWindow {
         }
         if let Some(props) = update.notify_props {
             self.notify_props = Some(props);
+            self.show_sound(window, cx);
             cx.notify();
         }
         if let Some(on) = update.highlight_keys {
@@ -1861,6 +1964,7 @@ impl MainWindow {
         }
         if update.signed_out {
             cx.set_global(crate::avatars::Avatars::default());
+            cx.set_global(crate::remote_images::RemoteImages::default());
             cx.set_global(crate::composer_draft::DraftBook::default());
             self.live = None;
             self._live_task = None;
@@ -3279,6 +3383,10 @@ impl MainWindow {
                 crate::live::media_dir(account),
             ));
         }
+        if crate::demo() {
+            crate::set_demo(false);
+            self.connection = ConnectionState::Online;
+        }
         match &self.live {
             Some(live) => live.send(matty_sync::Command::SignOut),
             None => {
@@ -3414,6 +3522,11 @@ impl MainWindow {
                 .size(scaled(&theme, metrics::ICON_SMALL))
                 .text_color(theme.colors.destructive)
                 .into_any_element()
+        } else if matches!(state, ConnectionState::Demo) {
+            lucide(LucideIcon::Sparkles)
+                .size(scaled(&theme, metrics::ICON_SMALL))
+                .text_color(theme.colors.primary)
+                .into_any_element()
         } else {
             crate::ui::spinner::Spinner::new("banner.spinner")
                 .color(theme.colors.muted_foreground)
@@ -3443,6 +3556,16 @@ impl MainWindow {
             .text_color(foreground)
             .child(icon)
             .child(text)
+            .when(matches!(state, ConnectionState::Demo), |row| {
+                row.child(
+                    Button::new("banner.connect")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Xs)
+                        .aria_label("Connect your server")
+                        .on_click(cx.listener(|this, _, window, cx| this.sign_out(window, cx)))
+                        .child("Connect your server"),
+                )
+            })
             .when(offline, |row| {
                 row.child(
                     Button::new("banner.retry")
@@ -3687,6 +3810,19 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.go_to_link(&url, true, window, cx);
+    }
+
+    /// Opens where `url` goes; anywhere outside Matty only when `external`,
+    /// since a link from the OS that Matty cannot show should not bounce
+    /// to the browser (#84).
+    fn go_to_link(
+        &mut self,
+        url: &str,
+        external: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::links::LinkTarget;
         let (server, teams, team) = if let Some(live) = &self.live {
             (
@@ -3705,8 +3841,11 @@ impl MainWindow {
             (None, Vec::new(), None)
         };
         let names: Vec<&str> = teams.iter().map(|(_, name)| name.as_str()).collect();
-        match crate::links::route(&url, server.as_deref(), &names) {
-            LinkTarget::External(url) => cx.open_url(&url),
+        match crate::links::route(url, server.as_deref(), &names) {
+            LinkTarget::External(url) if external => cx.open_url(&url),
+            LinkTarget::External(url) => {
+                tracing::info!(link = %crate::deeplink::redacted(&url), "ignored a link Matty cannot show");
+            }
             LinkTarget::Nothing => {}
             LinkTarget::Hashtag(tag) => self.search(format!("#{tag}").into(), window, cx),
             LinkTarget::User(username) => self.open_user(username, window, cx),

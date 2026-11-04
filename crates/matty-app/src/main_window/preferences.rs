@@ -18,9 +18,12 @@ use matty_api::models::Preference;
 
 use super::{MainWindow, TEXT_SIZES};
 use crate::actions::Platform;
+use crate::dnd;
 use crate::settings::{
-    ClockFormat, MessageDisplay, NameFormat, SendKey, Settings, ThemeChoice, UpdateChannel,
+    ClockFormat, MessageDisplay, NameFormat, RemoteImages, SendKey, Settings, ThemeChoice,
+    UpdateChannel,
 };
+use crate::sidebar::Presence;
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
@@ -309,7 +312,7 @@ impl MainWindow {
 
     /// Writes one of the user's `notify_props` to the server (#158). The
     /// server sends the user back, which updates the policy's preferences.
-    fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
+    pub(super) fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
         let Some(props) = &self.notify_props else {
             return;
         };
@@ -843,6 +846,35 @@ impl MainWindow {
                 &theme,
             )
         };
+        // Local to this device, unlike the synced settings around it (#159).
+        let images_group = {
+            let store = self.settings.clone();
+            choices(
+                "preferences.remote-images",
+                "Load remote images",
+                match settings.load_remote_images {
+                    RemoteImages::Always => "always",
+                    RemoteImages::Ask => "ask",
+                },
+                &[("always", "Always"), ("ask", "Ask first")],
+                move |value, cx| {
+                    let choice = match value {
+                        "ask" => RemoteImages::Ask,
+                        _ => RemoteImages::Always,
+                    };
+                    store.update(cx, |store, cx| {
+                        store.update(cx, |s| s.load_remote_images = choice)
+                    });
+                },
+            )
+        };
+        let images_hint = match settings.load_remote_images {
+            RemoteImages::Always => {
+                "Images from other sites show in messages and previews, \
+                 through your server's image proxy when it has one."
+            }
+            RemoteImages::Ask => "Images from other sites wait until you click them.",
+        };
         let threads = self
             .collapsed_threads
             .filter(|(choice, _)| *choice)
@@ -874,6 +906,12 @@ impl MainWindow {
                 &theme,
             ))
             .child(previews)
+            .child(group(
+                "Load remote images",
+                hinted(images_group, images_hint, &theme),
+                false,
+                &theme,
+            ))
             .children(threads)
             .into_any_element()
     }
@@ -956,6 +994,7 @@ impl MainWindow {
             format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
         };
         page(&theme)
+            .child(group("Status", self.dnd_row(cx), true, &theme))
             .child(group(
                 "Desktop notifications",
                 stack(&theme)
@@ -975,6 +1014,20 @@ impl MainWindow {
                         user.desktop_sound,
                         "desktop_sound",
                         ("true", "false"),
+                    ))
+                    .child(labelled_row(
+                        "Notification sound".into(),
+                        "Choosing one plays it.".into(),
+                        div()
+                            .flex_shrink_0()
+                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
+                            .child(
+                                Select::new(&self.sound)
+                                    .aria_label("Notification sound")
+                                    .disabled(!user.desktop_sound),
+                            )
+                            .into_any_element(),
+                        &theme,
                     )),
                 true,
                 &theme,
@@ -1015,6 +1068,37 @@ impl MainWindow {
                 ))
             })
             .into_any_element()
+    }
+
+    /// Do not disturb as the status menu set it, with a switch (#158). On
+    /// turns it on until the user turns it off; a set time is the status
+    /// menu's job, with its durations and custom picker (#190).
+    fn dnd_row(&self, cx: &mut Context<Self>) -> Div {
+        let theme = UiTheme::read(cx).clone();
+        let account = self.account.read(cx).account();
+        let dnd = account.presence == Presence::Dnd;
+        let now = jiff::Zoned::now();
+        let on = dnd::is_on(dnd, account.dnd_end, &now);
+        let detail = dnd::preferences_detail(dnd, account.dnd_end, &now, ClockFormat::current(cx));
+        let (view, account) = (cx.entity().downgrade(), self.account.clone());
+        labelled_row(
+            "Do not disturb".into(),
+            detail.into(),
+            Switch::new("preferences.dnd")
+                .checked(on)
+                .aria_label("Do not disturb")
+                .on_change(move |next, _, _, cx| {
+                    let presence = if next {
+                        Presence::Dnd
+                    } else {
+                        Presence::Online
+                    };
+                    account.update(cx, |account, cx| account.set_presence(presence, None, cx));
+                    view.update(cx, |_, cx| cx.notify()).ok();
+                })
+                .into_any_element(),
+            &theme,
+        )
     }
 
     /// A keyword list in Preferences: its field and its tags (#192).

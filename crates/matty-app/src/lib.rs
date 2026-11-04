@@ -24,6 +24,7 @@ pub mod drafts;
 pub mod embeds;
 pub mod emoji;
 pub mod forward;
+pub mod instance;
 pub mod links;
 pub mod live;
 pub mod logging;
@@ -35,6 +36,7 @@ pub mod preview;
 pub mod profile;
 pub mod profile_editor;
 pub mod rail;
+pub mod remote_images;
 pub mod right_pane;
 pub mod secrets;
 pub mod servers;
@@ -73,10 +75,27 @@ const DEFAULT_WINDOW: (f32, f32) = (1200., 800.);
 
 static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether `matty --offline` started the app: the last account's cache
-/// opens without signing in.
+static DEMO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DEMO_SNAPSHOT: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+
+/// Whether `matty --offline` started the app, or the web demo is open: the
+/// cache shows without signing in, and nothing connects.
 pub fn offline() -> bool {
-    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed) || demo()
+}
+
+/// Whether the web demo's sample workspace is open.
+pub(crate) fn demo() -> bool {
+    DEMO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn set_demo(on: bool) {
+    DEMO.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The web demo's snapshot, which opens when no account is saved.
+pub(crate) fn demo_snapshot() -> Option<&'static [u8]> {
+    DEMO_SNAPSHOT.get().copied()
 }
 
 /// [`run`] with the cache of the last account and no network.
@@ -93,16 +112,17 @@ pub fn run() {
     run_with_links(Vec::new());
 }
 
-/// [`run`], then handles `links` (a `mattermost://` URL given on the command
-/// line) as if the OS had opened them. Links the OS opens later arrive the
-/// same way. A second launch on Linux and Windows does not forward its link
-/// to the first yet (#84).
+/// [`run`], then handles `links` (a `mattermost://` or `matty://` URL given
+/// on the command line) as if the OS had opened them. Links the OS opens
+/// later arrive the same way, and so do later launches' links, through
+/// [`instance`] (#84).
 #[cfg(not(target_family = "wasm"))]
 pub fn run_with_links(links: Vec<String>) {
     let (links_tx, links_rx) = async_channel::unbounded::<String>();
     for link in links {
         let _ = links_tx.try_send(link);
     }
+    instance::listen(links_tx.clone());
     let app = gpui_kit::platform::application().with_assets(LucideAssetSource);
     // macOS calls this for a URL-scheme open, at launch or while running.
     app.on_open_urls(move |urls| {
@@ -125,8 +145,14 @@ pub fn run_with_links(links: Vec<String>) {
 /// GPUI's web text system has no system fonts and falls back to IBM Plex
 /// Sans for `.SystemUIFont`, which inputs use before the first render sets
 /// Geist, so the page passes that font in. `webgl` skips WebGPU.
+///
+/// `demo` is a sample workspace `matty-demo` wrote; it opens instead of the
+/// sign-in card while no account is saved.
 #[cfg(target_family = "wasm")]
-pub fn run_web(fallback_font: &'static [u8], webgl: bool) {
+pub fn run_web(fallback_font: &'static [u8], webgl: bool, demo: Option<&'static [u8]>) {
+    if let Some(demo) = demo {
+        let _ = DEMO_SNAPSHOT.set(demo);
+    }
     gpui_kit::platform::web_init();
     let backend = if webgl {
         gpui_kit::platform::WebBackendPreference::WebGl

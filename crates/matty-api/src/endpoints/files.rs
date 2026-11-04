@@ -10,6 +10,8 @@ use futures_util::stream;
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 
+use url::Url;
+
 use crate::{ApiError, Client, Fetched, models::FileInfo};
 
 /// Bytes handed to the connection between progress reports.
@@ -172,5 +174,110 @@ impl Client {
     pub async fn proxied_image(&self, url: &str) -> Result<Fetched, ApiError> {
         self.get_bytes_query("image", &[("url", url.to_owned())], None)
             .await
+    }
+
+    /// Where an image a message shows from outside the server is fetched
+    /// from (#159), as the webapp's `getImageSrc` decides: through the
+    /// server's image proxy, `api/v4/image?url=`, when `proxy` is on and
+    /// the image is not on this server; the image's own URL otherwise.
+    /// Only `http` and `https` images are taken.
+    pub fn remote_image_url(&self, url: &str, proxy: bool) -> Result<Url, ApiError> {
+        let (parsed, proxied) = self.remote_image_route(url, proxy)?;
+        if !proxied {
+            return Ok(parsed);
+        }
+        let mut through = self.api_url("image")?;
+        through.query_pairs_mut().append_pair("url", url);
+        Ok(through)
+    }
+
+    /// An image from outside the server, from where
+    /// [`Client::remote_image_url`] says: [`Client::proxied_image`] with
+    /// the session, or [`Client::outside_image`] without it.
+    pub async fn remote_image(&self, url: &str, proxy: bool) -> Result<Fetched, ApiError> {
+        if self.remote_image_route(url, proxy)?.1 {
+            self.proxied_image(url).await
+        } else {
+            self.outside_image(url).await
+        }
+    }
+
+    /// `url` parsed, and whether it goes through the proxy.
+    fn remote_image_route(&self, url: &str, proxy: bool) -> Result<(Url, bool), ApiError> {
+        let parsed = Url::parse(url).map_err(|e| ApiError::InvalidUrl(e.to_string()))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(ApiError::InvalidUrl(format!("not a web link: {url}")));
+        }
+        let on_server = parsed.as_str().starts_with(self.base_url().as_str());
+        Ok((parsed, proxy && !on_server))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ApiError, Client};
+
+    fn client() -> Client {
+        Client::new("https://chat.example.com/team-chat").unwrap()
+    }
+
+    #[test]
+    fn with_the_proxy_on_an_outside_image_goes_through_the_server() {
+        let url = client()
+            .remote_image_url("https://cdn.example.org/a b.png?size=2&x=y", true)
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://chat.example.com/team-chat/api/v4/image?\
+             url=https%3A%2F%2Fcdn.example.org%2Fa+b.png%3Fsize%3D2%26x%3Dy"
+        );
+        let back: Vec<_> = url.query_pairs().collect();
+        assert_eq!(back[0].1, "https://cdn.example.org/a b.png?size=2&x=y");
+    }
+
+    #[test]
+    fn with_the_proxy_off_an_outside_image_loads_directly() {
+        let url = client()
+            .remote_image_url("http://cdn.example.org/a.png", false)
+            .unwrap();
+        assert_eq!(url.as_str(), "http://cdn.example.org/a.png");
+    }
+
+    #[test]
+    fn an_image_on_the_server_never_goes_through_the_proxy() {
+        let on_server = "https://chat.example.com/team-chat/static/logo.png";
+        for proxy in [true, false] {
+            let url = client().remote_image_url(on_server, proxy).unwrap();
+            assert_eq!(url.as_str(), on_server);
+        }
+        // The same host under another path is not this server.
+        let beside = "https://chat.example.com/other/logo.png";
+        assert!(
+            client()
+                .remote_image_url(beside, true)
+                .unwrap()
+                .path()
+                .ends_with("/api/v4/image")
+        );
+    }
+
+    #[test]
+    fn only_web_images_are_taken() {
+        for url in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:image/png;base64,AA",
+            "nope",
+        ] {
+            for proxy in [true, false] {
+                assert!(
+                    matches!(
+                        client().remote_image_url(url, proxy),
+                        Err(ApiError::InvalidUrl(_))
+                    ),
+                    "{url} {proxy}"
+                );
+            }
+        }
     }
 }

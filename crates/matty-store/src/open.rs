@@ -33,6 +33,23 @@ impl Store {
         Self::setup(Connection::open_in_memory()?, LATEST_VERSION)
     }
 
+    /// A database in memory holding a copy of `snapshot`, the bytes of a
+    /// database file, migrated to the latest schema. The web demo opens its
+    /// sample workspace this way.
+    pub fn open_snapshot(snapshot: &[u8]) -> Result<Self> {
+        let mut bytes = snapshot.to_vec();
+        // A WAL file's header (bytes 18 and 19 = 2) asks for a -wal file
+        // that memory does not have; its pages are all in the main file
+        // once closed, so read it as a rollback-journal one.
+        if bytes.get(18..20) == Some(&[2, 2]) {
+            bytes[18] = 1;
+            bytes[19] = 1;
+        }
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, bytes.as_slice(), bytes.len(), false)?;
+        Self::setup(conn, LATEST_VERSION)
+    }
+
     /// Opens `path` migrated only to `version`, for upgrade tests.
     #[doc(hidden)]
     pub fn open_at_version(path: &Path, version: i64) -> Result<Self> {

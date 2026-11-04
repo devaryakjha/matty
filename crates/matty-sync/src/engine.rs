@@ -286,6 +286,26 @@ pub enum Command {
         /// Up (towards the top) or down.
         up: bool,
     },
+    /// Puts a category at `index` in its team's sidebar, as dragging its
+    /// header does; [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar)
+    /// follows.
+    PlaceCategory {
+        /// The category to move.
+        category_id: String,
+        /// Its place once moved, counted from the top.
+        index: usize,
+    },
+    /// Puts a channel at `index` in a category, its own or another, as
+    /// dragging its row does. The category then sorts by hand;
+    /// [`ChangeSet::Sidebar`](crate::ChangeSet::Sidebar) follows.
+    PlaceChannel {
+        /// The channel.
+        channel_id: String,
+        /// The category it ends up in.
+        category_id: String,
+        /// Its place there once moved, counted from the top.
+        index: usize,
+    },
     /// Changes the user's own names, nickname, position or username;
     /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
     UpdateProfile {
@@ -760,6 +780,8 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::MoveCategory { .. } => f.write_str("MoveCategory"),
             Self::MoveChannel { .. } => f.write_str("MoveChannel"),
+            Self::PlaceCategory { .. } => f.write_str("PlaceCategory"),
+            Self::PlaceChannel { .. } => f.write_str("PlaceChannel"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -1705,6 +1727,29 @@ impl Engine {
                         writes.push(category_write(self.me.as_deref(), category));
                     }
                 }
+                Message::Command(Command::PlaceCategory { category_id, index }) => {
+                    if let Some(category) = sidebar::category(&tx, &category_id)? {
+                        let mut order = sidebar::category_order(&tx, &category.team_id)?;
+                        if place(&mut order, category_id, index) {
+                            writes.push(Write::CategoryOrder {
+                                team_id: category.team_id,
+                                order,
+                            });
+                        }
+                    }
+                }
+                Message::Command(Command::PlaceChannel {
+                    channel_id,
+                    category_id,
+                    index,
+                }) => {
+                    if let Some(mut category) = sidebar::category(&tx, &category_id)?
+                        && place(&mut category.channel_ids, channel_id, index)
+                    {
+                        category.sorting = "manual".into();
+                        writes.push(category_write(self.me.as_deref(), category));
+                    }
+                }
                 Message::Command(Command::DeleteCategory { category_id }) => {
                     if let Some(category) = sidebar::category(&tx, &category_id)? {
                         writes.push(Write::DeleteCategory {
@@ -2258,11 +2303,8 @@ impl Engine {
         let client = session.client.clone();
         let results = self.loaded.clone();
         matty_api::rt::spawn(async move {
-            let fetched = if proxy {
-                client.proxied_image(&url).await
-            } else {
-                client.outside_image(&url).await
-            };
+            // Through the server's image proxy when it has one (#159).
+            let fetched = client.remote_image(&url, proxy).await;
             let image = match fetched {
                 Ok(matty_api::Fetched::Fresh {
                     bytes,
@@ -3944,6 +3986,16 @@ fn step(ids: &mut [String], id: &str, up: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// Puts `id` at `index` in `ids` (clamped to the end), taking it out of
+/// wherever it was; false when it is already there.
+fn place(ids: &mut Vec<String>, id: String, index: usize) -> bool {
+    let before = ids.clone();
+    ids.retain(|other| *other != id);
+    let index = index.min(ids.len());
+    ids.insert(index, id);
+    *ids != before
 }
 
 fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCategory) -> Write {

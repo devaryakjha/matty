@@ -148,6 +148,15 @@ pub fn queued(post: &Post, away: bool) -> bool {
     post.status == PostStatus::Pending && away
 }
 
+/// Whether the user may delete the post: their own, sent or waiting to
+/// send, or anyone's sent post when `delete_others` (#106).
+pub(crate) fn deletable(post: &Post, away: bool, delete_others: bool) -> bool {
+    if post.mine {
+        return post.status == PostStatus::Sent || waiting_to_send(post, away);
+    }
+    delete_others && post.status == PostStatus::Sent && post.kind == PostKind::Regular
+}
+
 /// The clock in a queued post's header (#195).
 pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
     lucide(LucideIcon::Clock)
@@ -550,6 +559,11 @@ pub struct ChannelModel {
     /// The user may archive the channel or make it private: a channel or
     /// system admin (#208). The server has the last word.
     pub can_manage: bool,
+    /// The user may delete other people's posts: a system admin, as
+    /// Mattermost's default `delete_others_posts` allows (#106). Team
+    /// admins may too, but their role is not kept. The server has the
+    /// last word.
+    pub delete_others: bool,
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
@@ -1215,7 +1229,9 @@ impl ChannelView {
                         })
                         .unwrap_or(false);
                 }
-                if keystroke.key != "up" {
+                // Up and Shift+Up only: Alt+Shift+Up is the unread jump.
+                let mods = &keystroke.modifiers;
+                if keystroke.key != "up" || mods.alt || mods.control || mods.platform {
                     return false;
                 }
                 keys.update(cx, |this, cx| {
@@ -1877,22 +1893,15 @@ impl ChannelView {
 
     /// Sync loaded the channel's header, purpose and counts; the scroll
     /// stays where it is.
-    pub fn set_details(
-        &mut self,
-        header: Option<SharedString>,
-        purpose: Option<SharedString>,
-        members: usize,
-        pinned: usize,
-        can_manage: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_details(&mut self, details: crate::live::Details, cx: &mut Context<Self>) {
         if let Some(model) = self.model.as_mut() {
-            model.header = header;
-            model.purpose = purpose;
-            model.members = members;
-            model.pinned = pinned;
-            let menu_changed = model.can_manage != can_manage;
-            model.can_manage = can_manage;
+            model.header = details.header;
+            model.purpose = details.purpose;
+            model.members = details.members;
+            model.pinned = details.pinned;
+            let menu_changed = model.can_manage != details.can_manage;
+            model.can_manage = details.can_manage;
+            model.delete_others = details.delete_others;
             if menu_changed {
                 let model = self.model.clone();
                 self.refresh_header_menu(model.as_ref(), cx);
@@ -2859,7 +2868,12 @@ impl ChannelView {
 
     /// The "More" menu. A post the server does not have yet only offers
     /// its text, plus Edit and Discard while it waits to send (#195).
-    fn more_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn more_items_for(
+        post: &Post,
+        away: bool,
+        delete_others: bool,
+        cx: &Context<Self>,
+    ) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: SharedString, run: MenuAction| {
@@ -2985,15 +2999,19 @@ impl ChannelView {
                 })
             }),
         ));
+        if post.mine || deletable(post, away, delete_others) {
+            items.push(MenuItem::separator());
+        }
         if post.mine {
             let edit_id = id.clone();
-            let delete_id = id.clone();
-            items.push(MenuItem::separator());
             items.push(act(
                 "edit",
                 "Edit".into(),
                 Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
             ));
+        }
+        if deletable(post, away, delete_others) {
+            let delete_id = id.clone();
             items.push(act(
                 "delete",
                 "Delete…".into(),
@@ -3005,10 +3023,15 @@ impl ChannelView {
 
     /// The right-click menu: reply and react first, then everything the
     /// "More" button offers, with "Mark as unread" after Save.
-    fn context_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn context_items_for(
+        post: &Post,
+        away: bool,
+        delete_others: bool,
+        cx: &Context<Self>,
+    ) -> Vec<MenuItem> {
         // The server does not have it yet: nothing to reply to or react to.
         if post.status != PostStatus::Sent {
-            return Self::more_items_for(post, away, cx);
+            return Self::more_items_for(post, away, delete_others, cx);
         }
         let view = cx.entity().downgrade();
         let id = post.id.clone();
@@ -3038,7 +3061,7 @@ impl ChannelView {
             ),
             MenuItem::separator(),
         ];
-        let more = Self::more_items_for(post, away, cx);
+        let more = Self::more_items_for(post, away, delete_others, cx);
         // `more` is copy, copy as Markdown, copy link, pin, save, then the
         // owner's edit and delete.
         let (keep, own) = more.split_at(5.min(more.len()));
@@ -3663,7 +3686,13 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed, profile_card): (bool, bool, bool, usize),
+        (menu_open, away, previews_collapsed, delete_others, profile_card): (
+            bool,
+            bool,
+            bool,
+            bool,
+            usize,
+        ),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -3672,7 +3701,7 @@ impl ChannelView {
         let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, away, cx);
+        let more_items = Self::more_items_for(post, away, delete_others, cx);
         let save_id = id.clone();
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
@@ -3899,7 +3928,7 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, away, cx);
+        let context_items = Self::context_items_for(post, away, delete_others, cx);
         div()
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
@@ -4199,6 +4228,8 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let delete_others =
+                            this.model.as_ref().is_some_and(|model| model.delete_others);
                         let previews_collapsed = SettingsStore::global(cx)
                             .read(cx)
                             .get()
@@ -4208,7 +4239,13 @@ impl ChannelView {
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away, previews_collapsed, this.profile_cards),
+                            (
+                                menu_open,
+                                away,
+                                previews_collapsed,
+                                delete_others,
+                                this.profile_cards,
+                            ),
                             cx,
                         )
                         .into_any_element()
@@ -4310,8 +4347,11 @@ impl ChannelView {
                 self.start_edit(id, window, cx);
             }
             "delete" | "backspace"
-                if post.mine
-                    && (post.status == PostStatus::Sent || waiting_to_send(&post, self.away)) =>
+                if deletable(
+                    &post,
+                    self.away,
+                    self.model.as_ref().is_some_and(|model| model.delete_others),
+                ) =>
             {
                 self.ask_delete(id, window, cx)
             }
@@ -5177,6 +5217,31 @@ mod tests {
     }
 
     #[test]
+    fn admins_may_delete_other_peoples_posts() {
+        let theirs = post("p1", "Today");
+        let mine = Post {
+            mine: true,
+            ..post("p2", "Today")
+        };
+        // A member deletes only their own.
+        assert!(deletable(&mine, false, false));
+        assert!(!deletable(&theirs, false, false));
+        // A system admin deletes anyone's sent post.
+        assert!(deletable(&theirs, false, true));
+        // Not a system row, and not someone else's post still sending.
+        let system = Post {
+            kind: PostKind::System { activity: false },
+            ..post("p3", "Today")
+        };
+        assert!(!deletable(&system, false, true));
+        let sending = Post {
+            status: PostStatus::Pending,
+            ..post("p4", "Today")
+        };
+        assert!(!deletable(&sending, false, true));
+    }
+
+    #[test]
     fn only_a_waiting_send_of_ones_own_can_be_changed() {
         let mine = |status| Post {
             mine: true,
@@ -5231,6 +5296,7 @@ mod tests {
             posts: vec![],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5298,6 +5364,7 @@ mod tests {
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5377,6 +5444,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -5418,6 +5486,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -5478,6 +5547,7 @@ mod tests {
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
             can_manage: false,
+            delete_others: false,
         };
         assert_eq!(
             channel.rows(),
@@ -5520,6 +5590,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            delete_others: false,
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
