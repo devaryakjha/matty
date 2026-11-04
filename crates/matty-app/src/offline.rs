@@ -31,6 +31,7 @@ pub fn refusal(action: &str) -> Option<&'static str> {
         "unpin message" => "Couldn't unpin the message.",
         "mark unread" => "Couldn't mark the message unread.",
         "set reminder" => "Couldn't set the reminder.",
+        "run action" => "Couldn't send your choice to the integration.",
         "follow thread" => "Couldn't follow the thread.",
         "unfollow thread" => "Couldn't unfollow the thread.",
         "open direct message" => "Couldn't open the conversation.",

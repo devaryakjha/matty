@@ -1158,6 +1158,14 @@ impl PopOutView {
             }
             return;
         };
+        match event {
+            ChannelEvent::PostAction(choice) => {
+                let update = live.run_post_action(choice);
+                return self.apply_update(update, window, cx);
+            }
+            ChannelEvent::DismissEphemeral(post) => return live.dismiss_ephemeral(post),
+            _ => {}
+        }
         let channel_id = channel.to_string();
         let command = match event {
             ChannelEvent::Send {

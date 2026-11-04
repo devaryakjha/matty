@@ -123,7 +123,12 @@ pub fn channel_model(
             continue;
         }
         activity.clear();
-        if is_system(&post.kind) {
+        let ephemeral = crate::interactive::is_ephemeral(post);
+        // An ephemeral message with nothing to say shows nothing.
+        if ephemeral && post.message.trim().is_empty() && post.attachments().is_empty() {
+            continue;
+        }
+        if is_system(&post.kind) && !ephemeral {
             // A system row breaks the run of one author's posts.
             previous = None;
             thread = None;
@@ -145,12 +150,15 @@ pub fn channel_model(
             })
             .flatten();
         thread = Some(root_id);
-        // A reply under its own "Commented on" line starts a new run.
+        // A reply under its own "Commented on" line starts a new run, and
+        // an ephemeral message always shows who it is from and that only
+        // the viewer sees it.
         let continues = reply_to.is_none()
+            && !ephemeral
             && previous.as_ref().is_some_and(|(user, at, last_day)| {
                 *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
             });
-        previous = Some((&post.user_id, post.create_at, day.clone()));
+        previous = (!ephemeral).then(|| (post.user_id.as_str(), post.create_at, day.clone()));
         let mut shown = display_post(post, users, viewer, mention, stamp, continues);
         shown.reply_to = reply_to;
         if viewer.collapsed_threads && post.reply_count > 0 {
@@ -241,11 +249,18 @@ fn display_post(
     (time, day, date): (u16, SharedString, SharedString),
     continues: bool,
 ) -> Post {
-    let author = users
-        .get(&post.user_id)
-        .map(|user| display_name_as(user, viewer.names))
-        .unwrap_or_else(|| "Someone".into());
-    let kind = if is_regular(&post.kind) {
+    let ephemeral = crate::interactive::is_ephemeral(post);
+    let known = users.get(&post.user_id);
+    // The server's own ephemeral replies, such as a slash command's error,
+    // come in the viewer's name; they read as from the system, as in the
+    // web app. An integration's come from its bot.
+    let from_system = ephemeral && (known.is_none() || post.user_id == viewer.user_id);
+    let author = match known {
+        _ if from_system => "System".into(),
+        Some(user) => display_name_as(user, viewer.names),
+        None => "Someone".into(),
+    };
+    let kind = if is_regular(&post.kind) || ephemeral {
         PostKind::Regular
     } else if is_system(&post.kind) {
         PostKind::System { activity: false }
@@ -261,7 +276,11 @@ fn display_post(
     Post {
         id: post.id.clone().into(),
         author: author.into(),
-        author_id: post.user_id.clone().into(),
+        author_id: if from_system {
+            SharedString::default()
+        } else {
+            post.user_id.clone().into()
+        },
         kind,
         time,
         day,
@@ -271,12 +290,14 @@ fn display_post(
         mentions_me: mention.mentioned(&post.message) || mention.highlighted(&post.message),
         edited: post.edit_at != 0,
         continues,
-        mine: post.user_id == viewer.user_id,
+        mine: post.user_id == viewer.user_id && !ephemeral,
         saved: viewer.saved.contains(&post.id),
         pinned: post.is_pinned,
         // Sync's optimistic copy of a send keeps the client's id until
         // the server's post replaces it.
-        status: if !post.pending_post_id.is_empty() && post.id == post.pending_post_id {
+        status: if ephemeral {
+            PostStatus::Ephemeral
+        } else if !post.pending_post_id.is_empty() && post.id == post.pending_post_id {
             PostStatus::Pending
         } else {
             PostStatus::Sent

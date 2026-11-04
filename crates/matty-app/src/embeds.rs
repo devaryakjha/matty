@@ -153,6 +153,13 @@ pub struct AttachmentCard {
     pub fields: Vec<AttachmentFieldCard>,
     pub footer: SharedString,
     pub image: Option<EmbedImage>,
+    /// The small round pictures beside the author and the footer, and the
+    /// square on the right.
+    pub author_icon: Option<EmbedImage>,
+    pub footer_icon: Option<EmbedImage>,
+    pub thumb: Option<EmbedImage>,
+    /// Buttons and menus (#211).
+    pub actions: Vec<crate::interactive::ActionCard>,
 }
 
 /// One field of an attachment.
@@ -255,8 +262,22 @@ fn attachment_card(
             .collect(),
         footer: attachment.footer.clone().into(),
         image: EmbedImage::new(&attachment.image_url, images, (0, 0)),
+        // Icons draw at a fixed size, so one the server did not measure
+        // still gets a box.
+        author_icon: EmbedImage::new(&attachment.author_icon, images, (ICON, ICON)),
+        footer_icon: EmbedImage::new(&attachment.footer_icon, images, (ICON, ICON)),
+        thumb: EmbedImage::new(&attachment.thumb_url, images, (ICON, ICON)),
+        actions: attachment
+            .actions
+            .iter()
+            .filter(|action| !action.id.is_empty())
+            .map(crate::interactive::ActionCard::from_api)
+            .collect(),
     }
 }
+
+/// The size an unmeasured icon is taken to have.
+const ICON: i64 = 64;
 
 impl Embed {
     /// The card's image, if it has one.
@@ -269,13 +290,38 @@ impl Embed {
         }
     }
 
-    /// The card's image, to fill in once fetched.
-    pub fn image_mut(&mut self) -> Option<&mut EmbedImage> {
+    /// Every outside image the card shows: its image, and an attachment's
+    /// icons and thumbnail.
+    pub fn images(&self) -> Vec<&EmbedImage> {
         match self {
-            Self::Link(link) => link.image.as_mut(),
-            Self::Attachment(attachment) => attachment.image.as_mut(),
-            Self::Permalink(_) => None,
-            Self::Image(image) => Some(image),
+            Self::Attachment(attachment) => [
+                &attachment.image,
+                &attachment.author_icon,
+                &attachment.footer_icon,
+                &attachment.thumb,
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            other => other.image().into_iter().collect(),
+        }
+    }
+
+    /// [`Embed::images`], to fill in once fetched.
+    pub fn images_mut(&mut self) -> Vec<&mut EmbedImage> {
+        match self {
+            Self::Link(link) => link.image.iter_mut().collect(),
+            Self::Attachment(attachment) => [
+                &mut attachment.image,
+                &mut attachment.author_icon,
+                &mut attachment.footer_icon,
+                &mut attachment.thumb,
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            Self::Permalink(_) => Vec::new(),
+            Self::Image(image) => vec![image],
         }
     }
 
@@ -325,6 +371,12 @@ fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
     let image = image?;
     let loaded = image.loaded.clone().unwrap_or_else(|| PENDING.clone());
     Some((ImageSource::Image(loaded), image.width, image.height))
+}
+
+/// A small icon once it has come; nothing meanwhile, as it has no box to
+/// keep.
+fn loaded(image: Option<&EmbedImage>) -> Option<ImageSource> {
+    image?.loaded.clone().map(ImageSource::Image)
 }
 
 /// The click-to-load stand-in for `image` when the person is asked before
@@ -419,9 +471,17 @@ fn opens(url: &str) -> bool {
 pub type OnJump =
     std::rc::Rc<dyn Fn(&SharedString, &SharedString, &mut gpui_kit::Window, &mut App)>;
 
+/// An attachment's menus and what runs a button press or menu choice
+/// (#211).
+pub type Interactive<'a> = (
+    &'a crate::interactive::Menus,
+    crate::interactive::ActionHandler,
+);
+
 /// The cards under the post `id`. `collapsed` hides their images, as the
 /// web app's per-post preview toggle does; `on_toggle` flips it.
 /// `on_image` opens a linked image in the lightbox (#152).
+#[allow(clippy::too_many_arguments)]
 pub fn post_embeds(
     id: &str,
     embeds: &[Embed],
@@ -429,6 +489,7 @@ pub fn post_embeds(
     on_toggle: ToggleHandler,
     on_image: ImageHandler,
     on_jump: OnJump,
+    (menus, on_action): Interactive<'_>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = crate::ui::theme::UiTheme::read(cx).clone();
@@ -463,7 +524,25 @@ pub fn post_embeds(
                     card.into_any_element()
                 }
                 Embed::Attachment(attachment) => {
-                    attachment_element(element_id, id, index, attachment, density, cx)
+                    let actions = crate::interactive::actions_row(
+                        &element_id,
+                        id,
+                        &attachment.actions,
+                        menus,
+                        &on_action,
+                        cx,
+                    );
+                    let card = attachment_element(element_id, id, index, attachment, density, cx);
+                    match actions {
+                        Some(actions) => div()
+                            .flex()
+                            .flex_col()
+                            .gap(theme.space(1.5))
+                            .child(card)
+                            .child(actions)
+                            .into_any_element(),
+                        None => card,
+                    }
                 }
                 Embed::Permalink(quoted) => {
                     quoted_element(element_id, id, index, quoted, on_jump.clone(), cx)
@@ -645,6 +724,17 @@ fn attachment_element(
     }
     if !attachment.pretext.is_empty() {
         card = card.pretext(markdown(text_id("pretext"), attachment.pretext.clone(), cx));
+    }
+    if let Some(icon) = loaded(attachment.author_icon.as_ref()) {
+        card = card.author_icon(icon);
+    }
+    if let Some(icon) = loaded(attachment.footer_icon.as_ref()) {
+        card = card.footer_icon(icon);
+    }
+    if let Some(waiting) = attachment.thumb.as_ref().and_then(|i| placeholder(i, cx)) {
+        card = card.thumbnail_placeholder(waiting);
+    } else if let Some((source, _, _)) = shown(attachment.thumb.as_ref()) {
+        card = card.thumbnail(source);
     }
     if !attachment.author.is_empty() {
         card = card.author(attachment.author.clone());
@@ -938,6 +1028,7 @@ mod tests {
                 Rc::new(move |collapsed, _, _| toggled.set(Some(collapsed))),
                 Rc::new(move |url, _, _| opened.borrow_mut().push(url)),
                 Rc::new(|_, _, _, _| {}),
+                (&crate::interactive::Menus::default(), Rc::new(|_, _, _| {})),
                 cx,
             ))
         }
@@ -991,7 +1082,7 @@ mod tests {
 
         cx.update(|_, cx| {
             probe.update(cx, |probe, cx| {
-                if let Some(image) = probe.embeds[0].image_mut() {
+                if let Some(image) = probe.embeds[0].images_mut().into_iter().next() {
                     image.loaded = Some(crate::attachments::png(&PENDING_PNG));
                 }
                 cx.notify();
