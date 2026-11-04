@@ -48,7 +48,7 @@ pub(crate) enum Section {
     Messages,
     /// Desktop notifications and what counts as a mention.
     Notifications,
-    /// Logs.
+    /// Logs and signing out.
     Advanced,
 }
 
@@ -937,7 +937,7 @@ impl MainWindow {
 
     fn advanced(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = UiTheme::read(cx).clone();
-        group(
+        let logs = group(
             "Logs",
             stack(&theme)
                 .child(labelled_row(
@@ -969,8 +969,29 @@ impl MainWindow {
                 )),
             false,
             &theme,
-        )
-        .into_any_element()
+        );
+        let sign_out = labelled_row(
+            "Sign out".into(),
+            "Removes Matty's copy of your messages and files from this computer.".into(),
+            Button::new("preferences.sign-out")
+                .variant(ButtonVariant::Destructive)
+                .size(ButtonSize::Sm)
+                .aria_label("Sign out")
+                .label("Sign out…")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    // The confirmation is the account menu's own, over the
+                    // window rather than over this sheet.
+                    this.preferences.close(window, cx);
+                    let dialog = this.account.read(cx).sign_out_dialog_handle();
+                    dialog.open(window, cx);
+                }))
+                .into_any_element(),
+            &theme,
+        );
+        page(&theme)
+            .child(logs)
+            .child(group("Account", sign_out, false, &theme))
+            .into_any_element()
     }
 
     /// A switch for a local setting, with its title and one line on it.

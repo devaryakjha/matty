@@ -207,8 +207,8 @@ pub struct Update {
     pub search: Option<crate::right_pane::SearchModel>,
     /// A file's full-size image, for the lightbox.
     pub full_image: Option<(SharedString, Arc<gpui_kit::Image>)>,
-    /// A file saved to the download folder, or the failure.
-    pub download: Option<matty_sync::DownloadState>,
+    /// A download's progress, where it was saved, or the failure, by file id.
+    pub download: Option<(SharedString, matty_sync::DownloadState)>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
     /// The server's `MaxFileSize`, for the trays to check files against.
@@ -1224,7 +1224,9 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
-            ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
+            ChangeSet::Download { file_id, state } => {
+                update.download = Some((file_id.as_str().into(), state.clone()));
+            }
             ChangeSet::Image {
                 file_id,
                 size,
@@ -1861,7 +1863,7 @@ fn probe_error(url: &str, error: &ProbeError) -> String {
 }
 
 /// `chat.example.com` from `https://chat.example.com/sub`.
-fn url_host(url: &str) -> &str {
+pub(crate) fn url_host(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }

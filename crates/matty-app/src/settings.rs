@@ -486,6 +486,26 @@ mod tests {
     }
 
     #[test]
+    fn the_download_folder_and_log_level_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Settings {
+            download_folder: Some(dir.path().join("Saved files")),
+            log_level: LogLevel::Debug,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let (again, loaded) = load(&path);
+        assert_eq!(loaded, Loaded::Read);
+        assert_eq!(again.download_folder, settings.download_folder);
+        assert_eq!(again.log_level, LogLevel::Debug);
+        // Unset, downloads go to the system's folder and logs stay at Info.
+        let (defaults, _) = load(&dir.path().join("missing.json"));
+        assert_eq!(defaults.download_folder, None);
+        assert_eq!(defaults.log_level, LogLevel::Info);
+    }
+
+    #[test]
     fn code_blocks_only_holds_enter_inside_an_open_fence() {
         let key = SendKey::CodeBlocks;
         assert!(key.submits_on_enter("plain text"));

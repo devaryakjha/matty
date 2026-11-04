@@ -203,6 +203,25 @@ pub fn file_name(file_id: &str) -> Option<String> {
         .map(|file| file.name.to_string())
 }
 
+/// The review notes' download, for its card (#151):
+/// `MATTY_PREVIEW=downloading` shows it arriving, `downloaded` saved, and
+/// `download-failed` failed; any other preview shows none.
+pub fn downloads() -> crate::attachments::Downloads {
+    use crate::attachments::{Downloads, FileDownload};
+    let state = match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+        Some("downloading") => FileDownload::Downloading {
+            received: 1_056_965,
+            total: Some(2_516_582),
+        },
+        Some("downloaded") => {
+            FileDownload::Saved(crate::main_window::download_folder(None).join("review-notes.pdf"))
+        }
+        Some("download-failed") => FileDownload::Failed,
+        _ => return Downloads::default(),
+    };
+    Downloads([("f-notes".into(), state)].into_iter().collect())
+}
+
 /// `MATTY_PREVIEW_POSTS=<n>` fills `general` with `n` posts, the fixtures
 /// over and over, for scrolling a long channel (`scripts/perf-run`, #174).
 pub fn long_posts() -> Option<usize> {

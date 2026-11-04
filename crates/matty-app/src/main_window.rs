@@ -211,9 +211,6 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
-    /// Files asked for and not yet saved, oldest first, so a failed
-    /// download can offer Retry when only one was in flight.
-    downloads: std::collections::VecDeque<SharedString>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
@@ -323,6 +320,7 @@ impl MainWindow {
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
+            cx.set_global(crate::preview::downloads());
         }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
@@ -878,7 +876,6 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
-            downloads: Default::default(),
             threads_open: false,
             drafts,
             drafts_open: false,
@@ -1061,14 +1058,26 @@ impl MainWindow {
     }
 
     /// Saves a post's file to the download folder; it opens once saved
-    /// (see [`open_download`]).
+    /// (see [`open_download`]). A file already saved this run opens again
+    /// from where it went, and one on its way is left to arrive (#151).
     fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
+        use crate::attachments::{Downloads, FileDownload};
+        match Downloads::get(cx, file_id) {
+            Some(FileDownload::Downloading { .. }) => return,
+            Some(FileDownload::Saved(path)) if path.exists() => {
+                let path = path.clone();
+                open_download(&path, cx);
+                return;
+            }
+            _ => {}
+        }
         let Some(live) = &self.live else {
             if let Some(name) = crate::preview::file_name(file_id) {
-                // Preview has no server: show the toast a finished download
-                // would.
-                let folder = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-                self.push_download_toast(&folder.join(name), cx);
+                // Preview has no server: show the card and toast a finished
+                // download would.
+                let path = download_folder(None).join(name);
+                self.set_download(file_id.clone(), FileDownload::Saved(path.clone()), cx);
+                self.push_download_toast(&path, cx);
             }
             return;
         };
@@ -1076,21 +1085,63 @@ impl MainWindow {
             tracing::warn!(%file_id, "no such file on screen");
             return;
         };
-        let folder = self
-            .settings
-            .read(cx)
-            .get()
-            .download_folder
-            .clone()
-            .or_else(dirs::download_dir)
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(std::env::temp_dir);
-        self.downloads.push_back(file_id.clone());
+        let folder = download_folder(self.settings.read(cx).get().download_folder.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
             folder,
             name,
         });
+        let starting = FileDownload::Downloading {
+            received: 0,
+            total: None,
+        };
+        self.set_download(file_id.clone(), starting, cx);
+    }
+
+    /// Records where a download is and redraws the cards that show it.
+    fn set_download(
+        &mut self,
+        file_id: SharedString,
+        state: crate::attachments::FileDownload,
+        cx: &mut Context<Self>,
+    ) {
+        crate::attachments::Downloads::set(cx, file_id, state);
+        self.channel.update(cx, |_, cx| cx.notify());
+        self.right_pane.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Takes sync's report on a download: progress on the card, then the
+    /// saved file opened with a toast, or a failure with Retry.
+    fn on_download(
+        &mut self,
+        file_id: SharedString,
+        state: matty_sync::DownloadState,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attachments::FileDownload;
+        match state {
+            matty_sync::DownloadState::Progress { received, total } => {
+                self.set_download(file_id, FileDownload::Downloading { received, total }, cx);
+            }
+            matty_sync::DownloadState::Done(path) => {
+                self.set_download(file_id, FileDownload::Saved(path.clone()), cx);
+                open_download(&path, cx);
+                self.push_download_toast(&path, cx);
+            }
+            matty_sync::DownloadState::Failed(error) => {
+                tracing::warn!(%error, %file_id, "download failed");
+                self.set_download(file_id.clone(), FileDownload::Failed, cx);
+                let view = cx.entity().downgrade();
+                self.push_error_with(
+                    format!("Couldn't download the file: {error}"),
+                    Some(Box::new(move |_, cx| {
+                        view.update(cx, |this, cx| this.download_file(&file_id, cx))
+                            .ok();
+                    })),
+                    cx,
+                );
+            }
+        }
     }
 
     /// Tells the user a file was saved: the file name as the title, the
@@ -1354,40 +1405,8 @@ impl MainWindow {
             self.channel
                 .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
-        if let Some(download) = update.download {
-            match download {
-                matty_sync::DownloadState::Done(path) => {
-                    self.downloads.pop_front();
-                    open_download(&path, cx);
-                    self.push_download_toast(&path, cx);
-                }
-                matty_sync::DownloadState::Failed(error) => {
-                    tracing::warn!(%error, "download failed");
-                    // Sync does not say which file failed, so Retry only
-                    // shows when there was one.
-                    let only = (self.downloads.len() == 1)
-                        .then(|| self.downloads.pop_front())
-                        .flatten();
-                    if only.is_none() {
-                        self.downloads.pop_front();
-                    }
-                    let text = format!("Couldn't download the file: {error}");
-                    match only {
-                        Some(file_id) => {
-                            let view = cx.entity().downgrade();
-                            self.push_error_with(
-                                text,
-                                Some(Box::new(move |_, cx| {
-                                    view.update(cx, |this, cx| this.download_file(&file_id, cx))
-                                        .ok();
-                                })),
-                                cx,
-                            );
-                        }
-                        None => self.push_error(text, cx),
-                    }
-                }
-            }
+        if let Some((file_id, state)) = update.download {
+            self.on_download(file_id, state, cx);
         }
         if let Some((id, status)) = update.upload {
             self.set_upload_status(&id, status, window, cx);
@@ -3692,6 +3711,15 @@ fn sync_drawer(
         *shown = false;
     }
     false
+}
+
+/// Where downloads go: the chosen folder, else the system's Downloads
+/// folder, else home, else the temporary folder.
+pub(crate) fn download_folder(chosen: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    chosen
+        .or_else(dirs::download_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// Opens a saved file in its app when it is a kind that only shows
