@@ -745,6 +745,19 @@ pub struct ChannelView {
 
 impl EventEmitter<ChannelEvent> for ChannelView {}
 
+/// Points Enter in `composer` at sending or at a new line, for the send
+/// key the user chose and the text typed so far (#157).
+pub(crate) fn follow_send_key(
+    composer: &Entity<ComposerState>,
+    send_on: SendKey,
+    cx: &mut gpui_kit::App,
+) {
+    composer.update(cx, |composer, cx| {
+        let submit = send_on.submits_on_enter(&composer.value(cx));
+        composer.set_submit_on_enter(submit);
+    });
+}
+
 impl ChannelView {
     pub fn new(
         model: Option<ChannelModel>,
@@ -756,9 +769,7 @@ impl ChannelView {
             &SettingsStore::global(cx),
             |this, store, _: &SettingsChanged, cx| {
                 let send_on = store.read(cx).get().send_on;
-                this.composer.update(cx, |composer, _| {
-                    composer.set_submit_on_enter(send_on == SendKey::Enter)
-                });
+                crate::channel::follow_send_key(&this.composer, send_on, cx);
                 // Display density changes every row's height.
                 this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
@@ -774,7 +785,7 @@ impl ChannelView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
             state.set_triggers(['@', '~', ':'], cx);
-            state.set_submit_on_enter(send_on == SendKey::Enter);
+            state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Up in an empty composer edits the last own post, Shift+Up
             // replies to the newest one; the editor sees arrows first, so
             // the keymap rows alone never fire. Ctrl+Enter (Cmd+Enter on
@@ -929,6 +940,8 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                        follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
@@ -4148,5 +4161,52 @@ mod tests {
         assert_eq!(channel.first_unread, Some(3));
         assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
         assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
+    }
+
+    #[gpui_kit::test]
+    fn enter_follows_the_send_key_as_the_text_changes(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let (composer, cx) =
+            cx.add_window_view(|window, cx| super::ComposerState::new(4, window, cx));
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|window, cx| {
+            let sent = sent.clone();
+            cx.subscribe(&composer, move |_, event: &super::ComposerEvent, _| {
+                if let super::ComposerEvent::Submit(text) = event {
+                    sent.borrow_mut().push(text.to_string());
+                }
+            })
+            .detach();
+            let input = composer.read(cx).input().clone();
+            let focus = input.read(cx).focus_handle(cx);
+            focus.focus(window, cx);
+        });
+        let mut type_then_enter = |text: &str, send_on: super::SendKey| {
+            cx.update(|window, cx| {
+                composer.update(cx, |composer, cx| composer.set_value(text, window, cx));
+                super::follow_send_key(&composer, send_on, cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.simulate_keystrokes("enter");
+            sent.borrow_mut().pop()
+        };
+        assert_eq!(
+            type_then_enter("hi", super::SendKey::Enter).as_deref(),
+            Some("hi")
+        );
+        assert_eq!(type_then_enter("hi", super::SendKey::ModEnter), None);
+        assert_eq!(
+            type_then_enter("```rust", super::SendKey::CodeBlocks),
+            None,
+            "Enter is a new line in an open code block"
+        );
+        assert_eq!(
+            type_then_enter("```\nfn x() {}\n```", super::SendKey::CodeBlocks).as_deref(),
+            Some("```\nfn x() {}\n```")
+        );
     }
 }

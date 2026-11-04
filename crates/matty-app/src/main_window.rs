@@ -8,8 +8,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     Action, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::account::{Account, AccountEvent, AccountView};
@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    ClockFormat, LogLevel, MessageDisplay, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX,
-    SIDEBAR_MIN, SendKey, SettingsChanged, SettingsStore, ThemeChoice, WindowGeometry, ZOOM_STEP,
+    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
+    SettingsStore, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -39,18 +39,14 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
-    field::Field,
     input::{InputEvent, InputState},
     kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
-    scroll_area::ScrollArea,
-    select::{Select, SelectEvent, SelectItem, SelectState},
-    switch::Switch,
+    select::{SelectEvent, SelectItem, SelectState},
     theme::{UiTheme, transition_value},
     title_bar::TitleBar,
     toast::{Notice, ToastState},
-    toggle_group::{ToggleGroup, ToggleGroupItem},
 };
 
 /// The log detail choices: the setting, the picker's value and its label.
@@ -131,7 +127,7 @@ const NARROW_SIDEBAR: f32 = 640.;
 /// The width of gpuicn's Resizable handle, counted when turning the
 /// persisted right-pane width into the channel width the split wants.
 const SPLIT_HANDLE: f32 = 8.;
-/// The text size presets the preferences dialog offers, within the
+/// The text size presets the Preferences sheet offers, within the
 /// 0.8–1.5 range settings accept.
 const TEXT_SIZES: &[(&str, f32)] = &[
     ("small", 0.9),
@@ -146,6 +142,7 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod preferences;
 mod sso;
 
 pub struct MainWindow {
@@ -165,6 +162,8 @@ pub struct MainWindow {
     sidebar_visible: bool,
     shortcuts: DialogHandle,
     preferences: DialogHandle,
+    /// The section Preferences shows (#155).
+    preferences_section: preferences::Section,
     /// Preferences' mention keywords, saved to the server on Enter or when
     /// the field loses focus (#192).
     keywords: Entity<InputState>,
@@ -259,8 +258,13 @@ impl MainWindow {
         cx.subscribe_in(
             &settings,
             window,
-            |_, _, _: &SettingsChanged, window, cx| {
+            |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
+                let names = store.read(cx).get().name_format;
+                if let Some(live) = this.live.as_mut() {
+                    let update = live.set_names(names);
+                    this.apply_update(update, window, cx);
+                }
                 cx.notify();
             },
         )
@@ -784,6 +788,7 @@ impl MainWindow {
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
+            preferences_section: preferences::Section::default(),
             keywords,
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
@@ -881,6 +886,9 @@ impl MainWindow {
             }
         };
         cx.set_global(live.avatars());
+        let mut live = live;
+        // Nothing is on screen yet, so the update has nothing to show.
+        let _ = live.set_names(self.settings.read(cx).get().name_format);
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
@@ -1131,6 +1139,16 @@ impl MainWindow {
             return;
         };
         let update = live.apply(change);
+        self.apply_update(update, window, cx);
+    }
+
+    /// Shows what sync's latest change means for the window.
+    fn apply_update(
+        &mut self,
+        update: crate::live::Update,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(name) = update.team_name {
             self.browse
                 .update(cx, |browse, cx| browse.set_team_name(name.clone(), cx));
@@ -1306,6 +1324,9 @@ impl MainWindow {
         if let Some(threads) = update.collapsed_threads {
             self.collapsed_threads = Some(threads);
             cx.notify();
+        }
+        if let Some(preferences) = update.account_preferences {
+            self.mirror_account_preferences(&preferences, cx);
         }
         if let Some(thread) = update.thread {
             if self.threads_open {
@@ -2816,9 +2837,6 @@ impl MainWindow {
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
     }
 
-    /// Preferences (DESIGN.md §5): appearance first, with every control a
-    /// gpuicn one and every change written to settings straight away so
-    /// the window re-themes behind the dialog.
     /// Escape in the channel (#147): closes the right pane when one is
     /// open, else views the open channel on the server and clears its
     /// unread mark.
@@ -2921,661 +2939,6 @@ impl MainWindow {
 
     fn username(&self, cx: &gpui_kit::App) -> String {
         self.account.read(cx).account().username.to_string()
-    }
-
-    /// Sends the typed keywords when they differ from the server's.
-    fn save_keywords(&mut self, cx: &mut Context<Self>) {
-        let (Some(live), Some(props)) = (&self.live, &self.notify_props) else {
-            return;
-        };
-        let typed = self.keywords.read(cx).value().to_string();
-        let next = matty_notify::mention::with_keywords(&self.username(cx), props, &typed);
-        if next != *props {
-            live.send(matty_sync::Command::SetNotifyProps {
-                notify_props: next.clone(),
-            });
-            self.notify_props = Some(next);
-        }
-    }
-
-    /// Writes one of the user's `notify_props` to the server (#158). The
-    /// server sends the user back, which updates the policy's preferences.
-    fn set_notify_prop(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
-        let Some(props) = &self.notify_props else {
-            return;
-        };
-        if props.get(key).map(String::as_str) == Some(value) {
-            return;
-        }
-        let mut next = props.clone();
-        next.insert(key.to_owned(), value.to_owned());
-        if let Some(live) = &self.live {
-            live.send(matty_sync::Command::SetNotifyProps {
-                notify_props: next.clone(),
-            });
-        }
-        self.notify_props = Some(next);
-        cx.notify();
-    }
-
-    /// Turns collapsed reply threads on or off for the user (#157). The
-    /// server's preferences come back and every count follows.
-    fn set_collapsed_threads(&mut self, on: bool, cx: &mut Context<Self>) {
-        let Some((choice, current)) = self.collapsed_threads else {
-            return;
-        };
-        if current == on {
-            return;
-        }
-        if let Some(live) = &self.live {
-            live.send(matty_sync::Command::SetCollapsedThreads { on });
-        }
-        self.collapsed_threads = Some((choice, on));
-        cx.notify();
-    }
-
-    /// Asks for a folder and saves downloads there from now on (#160).
-    fn choose_download_folder(&mut self, cx: &mut Context<Self>) {
-        let answer = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose".into()),
-        });
-        let settings = self.settings.clone();
-        cx.spawn(async move |_, cx| {
-            let Ok(Ok(Some(paths))) = answer.await else {
-                return;
-            };
-            let Some(folder) = paths.into_iter().next() else {
-                return;
-            };
-            settings.update(cx, |store, cx| {
-                store.update(cx, |s| s.download_folder = Some(folder))
-            });
-        })
-        .detach();
-    }
-
-    /// Preferences' Notifications section, from the user's `notify_props`
-    /// with Mattermost's defaults (#158).
-    fn notification_prefs(
-        &self,
-        props: &std::collections::HashMap<String, String>,
-        labelled_row: &dyn Fn(SharedString, SharedString, gpui_kit::AnyElement) -> gpui_kit::Div,
-        section: &dyn Fn(&'static str, gpui_kit::AnyElement) -> gpui_kit::Div,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Div {
-        let theme = UiTheme::read(cx).clone();
-        let user = matty_notify::UserPrefs::from_props(&self.username(cx), "", props);
-        let level: SharedString = match user.desktop {
-            matty_notify::Level::All => "all",
-            matty_notify::Level::Mention => "mention",
-            matty_notify::Level::None => "none",
-        }
-        .into();
-        let view = cx.entity().downgrade();
-        let item = |id: &'static str, value: &'static str, text: &'static str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text)
-                .flex_1()
-                .child(text)
-        };
-        let desktop = ToggleGroup::new("preferences.desktop")
-            .aria_label("Notify me about")
-            .joined(true)
-            .w_full()
-            .value([level])
-            .item(item("preferences.desktop.all", "all", "All messages"))
-            .item(item("preferences.desktop.mention", "mention", "Mentions"))
-            .item(item("preferences.desktop.none", "none", "Nothing"))
-            .on_change({
-                let view = view.clone();
-                move |next, _, cx| {
-                    let value = next.first().map(|v| v.to_string());
-                    view.update(cx, |this, cx| {
-                        this.set_notify_prop("desktop", value.as_deref().unwrap_or("mention"), cx)
-                    })
-                    .ok();
-                }
-            });
-        let on = |key: &str, default: bool| props.get(key).map_or(default, |v| v == "true");
-        let switch = |id: &'static str,
-                      title: &'static str,
-                      detail: SharedString,
-                      checked: bool,
-                      key: &'static str,
-                      values: (&'static str, &'static str)| {
-            let view = view.clone();
-            labelled_row(
-                title.into(),
-                detail,
-                Switch::new(id)
-                    .checked(checked)
-                    .aria_label(title)
-                    .on_change(move |next, _, _, cx| {
-                        let value = if next { values.0 } else { values.1 };
-                        view.update(cx, |this, cx| this.set_notify_prop(key, value, cx))
-                            .ok();
-                    })
-                    .into_any_element(),
-            )
-        };
-        let first_name = self.account.read(cx).account().display_name.clone();
-        let first_name = first_name
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        let first_name_detail: SharedString = if first_name.is_empty() {
-            "Your first name counts as a mention.".into()
-        } else {
-            format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(5.))
-            .child(section(
-                "Notifications",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(3.))
-                    .child(desktop)
-                    .child(switch(
-                        "preferences.desktop-threads",
-                        "Replies in threads I follow",
-                        "Notify for every reply, not only mentions.".into(),
-                        user.desktop_threads == matty_notify::Level::All,
-                        "desktop_threads",
-                        ("all", "mention"),
-                    ))
-                    .child(switch(
-                        "preferences.desktop-sound",
-                        "Sound",
-                        "Play a sound with each notification.".into(),
-                        user.desktop_sound,
-                        "desktop_sound",
-                        ("true", "false"),
-                    ))
-                    .into_any_element(),
-            ))
-            .child(section(
-                "Mentions",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.space(3.))
-                    .child(switch(
-                        "preferences.first-name",
-                        "First name",
-                        first_name_detail,
-                        on("first_name", false),
-                        "first_name",
-                        ("true", "false"),
-                    ))
-                    .child(switch(
-                        "preferences.channel-wide",
-                        "@channel, @all and @here",
-                        "Messages to the whole channel count as mentions.".into(),
-                        on("channel", true),
-                        "channel",
-                        ("true", "false"),
-                    ))
-                    .child(
-                        Field::new("preferences.keywords", &self.keywords)
-                            .label("Keywords")
-                            .description(
-                                "Words that count as mentioning you, separated by commas. \
-                                 @username always does.",
-                            ),
-                    )
-                    .into_any_element(),
-            ))
-    }
-
-    fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = UiTheme::read(cx).clone();
-        let settings = self.settings.read(cx).get().clone();
-        let store = self.settings.clone();
-        let label = |text: &'static str| {
-            div()
-                .type_style(style::LABEL, &theme)
-                .text_color(theme.colors.muted_foreground)
-                .child(text.to_uppercase())
-        };
-        let section = |title: &'static str, control: gpui_kit::AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(theme.space(2.))
-                .child(label(title))
-                .child(control)
-        };
-        let theme_value: SharedString = match settings.theme {
-            ThemeChoice::System => "system",
-            ThemeChoice::Light => "light",
-            ThemeChoice::Dark => "dark",
-        }
-        .into();
-        let theme_item = |id: &'static str, value: &'static str, glyph: LucideIcon, text: &str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text.to_string())
-                .flex_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(theme.space(1.5))
-                        .child(lucide(glyph).size(scaled(&theme, metrics::ICON_SMALL)))
-                        .child(text.to_string()),
-                )
-        };
-        let theme_store = store.clone();
-        let theme_group = ToggleGroup::new("preferences.theme")
-            .aria_label("Theme")
-            .joined(true)
-            .w_full()
-            .value([theme_value])
-            .item(theme_item(
-                "preferences.theme.system",
-                "system",
-                LucideIcon::Monitor,
-                "System",
-            ))
-            .item(theme_item(
-                "preferences.theme.light",
-                "light",
-                LucideIcon::Sun,
-                "Light",
-            ))
-            .item(theme_item(
-                "preferences.theme.dark",
-                "dark",
-                LucideIcon::Moon,
-                "Dark",
-            ))
-            .on_change(move |next, _, cx| {
-                let choice = match next.first().map(|v| v.as_ref()) {
-                    Some("light") => ThemeChoice::Light,
-                    Some("dark") => ThemeChoice::Dark,
-                    _ => ThemeChoice::System,
-                };
-                theme_store.update(cx, |store, cx| store.update(cx, |s| s.theme = choice));
-            });
-        let size_value: SharedString = TEXT_SIZES
-            .iter()
-            .min_by(|a, b| {
-                (a.1 - settings.text_scale)
-                    .abs()
-                    .total_cmp(&(b.1 - settings.text_scale).abs())
-            })
-            .map(|(name, _)| *name)
-            .unwrap_or("default")
-            .into();
-        let size_store = store.clone();
-        let mut size_group = ToggleGroup::new("preferences.text-size")
-            .aria_label("Text size")
-            .joined(true)
-            .w_full()
-            .value([size_value]);
-        for (name, scale) in TEXT_SIZES {
-            let text = format!("{}%", (scale * 100.).round());
-            size_group = size_group.item(
-                ToggleGroupItem::new(
-                    gpui_kit::ElementId::Name(format!("preferences.text-size.{name}").into()),
-                    *name,
-                )
-                .aria_label(format!("Text size {text}"))
-                .flex_1()
-                .child(text),
-            );
-        }
-        let size_group = size_group.on_change(move |next, _, cx| {
-            let scale = TEXT_SIZES
-                .iter()
-                .find(|(name, _)| next.first().map(|v| v.as_ref()) == Some(*name))
-                .map(|(_, scale)| *scale)
-                .unwrap_or(1.);
-            size_store.update(cx, |store, cx| store.update(cx, |s| s.text_scale = scale));
-        });
-        let clock_value: SharedString = match settings.clock {
-            ClockFormat::TwelveHour => "12",
-            ClockFormat::TwentyFourHour => "24",
-        }
-        .into();
-        let clock_store = store.clone();
-        let clock_item = |id: &'static str, value: &'static str, text: &'static str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text)
-                .flex_1()
-                .child(text)
-        };
-        let clock_group = ToggleGroup::new("preferences.clock")
-            .aria_label("Clock")
-            .joined(true)
-            .w_full()
-            .value([clock_value])
-            .item(clock_item("preferences.clock.12", "12", "12-hour"))
-            .item(clock_item("preferences.clock.24", "24", "24-hour"))
-            .on_change(move |next, _, cx| {
-                let clock = match next.first().map(|v| v.as_ref()) {
-                    Some("12") => ClockFormat::TwelveHour,
-                    _ => ClockFormat::TwentyFourHour,
-                };
-                clock_store.update(cx, |store, cx| store.update(cx, |s| s.clock = clock));
-            });
-        let send_value: SharedString = match settings.send_on {
-            SendKey::Enter => "enter",
-            SendKey::ModEnter => "mod-enter",
-        }
-        .into();
-        let mod_enter_label = match Platform::current() {
-            Platform::MacOs => "Cmd+Enter",
-            Platform::Other => "Ctrl+Enter",
-        };
-        let send_store = store.clone();
-        let send_group = ToggleGroup::new("preferences.send")
-            .aria_label("Send message with")
-            .joined(true)
-            .w_full()
-            .value([send_value])
-            .item(clock_item("preferences.send.enter", "enter", "Enter"))
-            .item(clock_item(
-                "preferences.send.mod-enter",
-                "mod-enter",
-                mod_enter_label,
-            ))
-            .on_change(move |next, _, cx| {
-                let send_on = match next.first().map(|v| v.as_ref()) {
-                    Some("mod-enter") => SendKey::ModEnter,
-                    _ => SendKey::Enter,
-                };
-                send_store.update(cx, |store, cx| store.update(cx, |s| s.send_on = send_on));
-            });
-        let display_value: SharedString = match settings.display {
-            MessageDisplay::Standard => "standard",
-            MessageDisplay::Compact => "compact",
-        }
-        .into();
-        let display_store = store.clone();
-        let display_group = ToggleGroup::new("preferences.display")
-            .aria_label("Message display")
-            .joined(true)
-            .w_full()
-            .value([display_value])
-            .item(clock_item(
-                "preferences.display.standard",
-                "standard",
-                "Standard",
-            ))
-            .item(clock_item(
-                "preferences.display.compact",
-                "compact",
-                "Compact",
-            ))
-            .on_change(move |next, _, cx| {
-                let display = match next.first().map(|v| v.as_ref()) {
-                    Some("compact") => MessageDisplay::Compact,
-                    _ => MessageDisplay::Standard,
-                };
-                display_store.update(cx, |store, cx| store.update(cx, |s| s.display = display));
-            });
-        let display_hint = match settings.display {
-            MessageDisplay::Standard => "Avatars and a name line above each message.",
-            MessageDisplay::Compact => "One line per message, with the time in the margin.",
-        };
-        let display_section = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .child(display_group)
-            .child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(display_hint),
-            );
-        let send_hint = match settings.send_on {
-            SendKey::Enter => "Shift+Enter starts a new line.",
-            SendKey::ModEnter => "Enter starts a new line.",
-        };
-        let send_section = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(2.))
-            .child(send_group)
-            .child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(send_hint),
-            );
-        let labelled_row =
-            |title: SharedString, detail: SharedString, control: gpui_kit::AnyElement| {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(theme.space(4.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(0.5))
-                            .child(
-                                div()
-                                    .type_style(style::UI, &theme)
-                                    .text_color(theme.colors.foreground)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .type_style(style::META, &theme)
-                                    .text_color(theme.colors.muted_foreground)
-                                    .child(detail),
-                            ),
-                    )
-                    .child(control)
-            };
-        let switch_row =
-            |id: &'static str,
-             title: &'static str,
-             detail: &'static str,
-             checked: bool,
-             write: fn(&mut crate::settings::Settings, bool)| {
-                let store = store.clone();
-                labelled_row(
-                    title.into(),
-                    detail.into(),
-                    Switch::new(id)
-                        .checked(checked)
-                        .aria_label(title)
-                        .on_change(move |next, _, _, cx| {
-                            store.update(cx, |store, cx| store.update(cx, |s| write(s, next)))
-                        })
-                        .into_any_element(),
-                )
-            };
-        let threads = self
-            .collapsed_threads
-            .filter(|(choice, _)| *choice)
-            .map(|(_, on)| {
-                let view = cx.entity().downgrade();
-                section(
-                    "Threads",
-                    labelled_row(
-                        "Collapsed reply threads".into(),
-                        "Replies stay in their thread instead of the channel.".into(),
-                        Switch::new("preferences.collapsed-threads")
-                            .checked(on)
-                            .aria_label("Collapsed reply threads")
-                            .on_change(move |next, _, _, cx| {
-                                view.update(cx, |this, cx| this.set_collapsed_threads(next, cx))
-                                    .ok();
-                            })
-                            .into_any_element(),
-                    )
-                    .into_any_element(),
-                )
-            });
-        let download_folder = settings
-            .download_folder
-            .clone()
-            .or_else(dirs::download_dir)
-            .map(|path| SharedString::from(path.display().to_string()))
-            .unwrap_or_else(|| "Your Downloads folder".into());
-        let files = div()
-            .flex()
-            .flex_col()
-            .gap(theme.space(3.))
-            .child(
-                // A path can be long: one truncated line, the whole path
-                // in a tooltip.
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(theme.space(4.))
-                    .child(
-                        div()
-                            .id("preferences.download-folder.path")
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(0.5))
-                            .tooltip({
-                                let path = download_folder.clone();
-                                move |_, cx| crate::ui::tooltip::text_tooltip(path.clone(), cx)
-                            })
-                            .child(
-                                div()
-                                    .type_style(style::UI, &theme)
-                                    .text_color(theme.colors.foreground)
-                                    .child("Download folder"),
-                            )
-                            .child(
-                                div()
-                                    .type_style(style::META, &theme)
-                                    .text_color(theme.colors.muted_foreground)
-                                    .truncate()
-                                    .child(download_folder),
-                            ),
-                    )
-                    .child(
-                        Button::new("preferences.download-folder")
-                            .variant(ButtonVariant::Outline)
-                            .size(ButtonSize::Sm)
-                            .aria_label("Change download folder")
-                            .label("Change…")
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.choose_download_folder(cx)),
-                            ),
-                    ),
-            )
-            .child(labelled_row(
-                "Log detail".into(),
-                "How much goes into the logs.".into(),
-                div()
-                    .flex_shrink_0()
-                    .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                    .child(Select::new(&self.log_level).aria_label("Log detail"))
-                    .into_any_element(),
-            ))
-            .child(labelled_row(
-                "Logs".into(),
-                "Attach them when you report a problem.".into(),
-                Button::new("preferences.open-logs")
-                    .variant(ButtonVariant::Outline)
-                    .size(ButtonSize::Sm)
-                    .aria_label("Open logs folder")
-                    .label("Open folder")
-                    .on_click(|_, _, cx| {
-                        if let Some(dir) = crate::logging::default_dir() {
-                            let _ = std::fs::create_dir_all(&dir);
-                            cx.open_with_system(&dir);
-                        }
-                    })
-                    .into_any_element(),
-            ));
-        let notifications = self
-            .notify_props
-            .as_ref()
-            .map(|props| self.notification_prefs(props, &labelled_row, &section, cx));
-        // The sections scroll inside the popup, which stays within the
-        // window: the title and Done above them take about space(24.).
-        let body_height = theme
-            .space(158.)
-            .min(window.viewport_size().height - theme.space(40.));
-        let popup = dialog_popup("preferences.popup", "Preferences", cx)
-            .child(dialog_title("preferences.title", cx).child("Preferences"))
-            .child(
-                dialog_description("preferences.description", cx)
-                    .child("Changes apply right away and are saved for next time."),
-            )
-            .child(
-                ScrollArea::new("preferences.body")
-                    .aria_label("Preferences")
-                    .h(body_height)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(5.))
-                            .pt(theme.space(1.))
-                            // Room for the scrollbar beside the switches.
-                            .pr(theme.space(3.))
-                            .child(section("Theme", theme_group.into_any_element()))
-                            .child(section("Text size", size_group.into_any_element()))
-                            .child(section("Clock", clock_group.into_any_element()))
-                            .child(section(
-                                "Send message with",
-                                send_section.into_any_element(),
-                            ))
-                            .child(section(
-                                "Message display",
-                                display_section.into_any_element(),
-                            ))
-                            .children(threads)
-                            .children(notifications)
-                            .child(section(
-                                "Window",
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(theme.space(3.))
-                                    .child(switch_row(
-                                        "preferences.close-to-tray",
-                                        "Keep running when closed",
-                                        "Closing the window leaves Matty in the tray.",
-                                        settings.close_to_tray,
-                                        |s, v| s.close_to_tray = v,
-                                    ))
-                                    .child(switch_row(
-                                        "preferences.launch-at-login",
-                                        "Open at login",
-                                        "Start Matty when you sign in.",
-                                        settings.launch_at_login,
-                                        |s, v| s.launch_at_login = v,
-                                    ))
-                                    .child(switch_row(
-                                        "preferences.reduce-motion",
-                                        "Reduce motion",
-                                        "Panes and banners change without sliding.",
-                                        settings.reduce_motion,
-                                        |s, v| s.reduce_motion = v,
-                                    ))
-                                    .into_any_element(),
-                            ))
-                            .child(section("Files and logs", files.into_any_element())),
-                    ),
-            )
-            .child(dialog_close("preferences.close", cx).label("Done"));
-        dialog("preferences", &self.preferences, popup, window, cx)
     }
 
     fn browse(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
