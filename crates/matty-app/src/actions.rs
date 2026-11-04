@@ -536,6 +536,18 @@ pub fn bind(cx: &mut App) {
     // cursor, which would swallow the unread jump from the composer. The
     // jump wins there, as in Mattermost; bound after the field's own keys,
     // these take precedence at the same depth.
+    // A text field takes Cmd+Alt+Up/Down on macOS and Ctrl+Alt+Up/Down on
+    // Windows to add a cursor, which would swallow the team keys from the
+    // composer. Switching team wins, as in Mattermost.
+    let (previous_team, next_team) = if platform == Platform::MacOs {
+        ("cmd-alt-up", "cmd-alt-down")
+    } else {
+        ("ctrl-alt-up", "ctrl-alt-down")
+    };
+    cx.bind_keys([
+        KeyBinding::new(previous_team, PreviousTeam, Some("Composer > Input")),
+        KeyBinding::new(next_team, NextTeam, Some("Composer > Input")),
+    ]);
     if platform != Platform::MacOs {
         cx.bind_keys([
             KeyBinding::new(
