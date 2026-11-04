@@ -1467,10 +1467,10 @@ impl Live {
         }
     }
 
-    /// The ready channel's id once its row is in the shown sidebar.
+    /// The ready channel's id once its row is in a team's sidebar.
     fn take_ready(&mut self) -> Option<SharedString> {
         let id = self.ready.as_deref()?;
-        self.row(id)?;
+        self.team_of(id)?;
         self.ready.take().map(Into::into)
     }
 
@@ -1530,8 +1530,8 @@ impl Live {
                 self.sections.insert(team_id.clone(), sections.clone());
                 if self.team.as_ref() == Some(team_id) {
                     update.categories = Some(self.categories(sections));
-                    update.ready = self.take_ready();
                 }
+                update.ready = self.take_ready();
             }
             ChangeSet::Unreads { teams } => {
                 self.teams = teams.to_vec();

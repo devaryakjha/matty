@@ -180,6 +180,7 @@ mod background;
 mod drafts;
 mod other_servers;
 mod preferences;
+mod quick_switch;
 mod servers;
 mod sounds;
 mod sso;
@@ -366,14 +367,7 @@ impl MainWindow {
         cx.subscribe_in(
             &switcher,
             window,
-            |this, _, event: &SwitcherEvent, window, cx| match event {
-                SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
-                SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
-                SwitcherEvent::Forward { post, channel } => {
-                    this.ask_forward(post.clone(), channel.clone(), window, cx)
-                }
-                SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
-            },
+            |this, _, event: &SwitcherEvent, window, cx| this.on_switcher_event(event, window, cx),
         )
         .detach();
         let directory: Vec<_> = model
@@ -4223,7 +4217,6 @@ impl Render for MainWindow {
         };
         let shortcuts = self.shortcuts.clone();
         let preferences = self.preferences.clone();
-        let switcher = self.switcher.clone();
         let switcher_element = self.switcher.update(cx, |switcher, cx| {
             switcher.element(window, cx).into_any_element()
         });
@@ -4278,9 +4271,9 @@ impl Render for MainWindow {
             .on_action(
                 cx.listener(|this, _: &crate::menu::SignOut, window, cx| this.sign_out(window, cx)),
             )
-            .on_action(move |_: &QuickSwitcher, window, cx| {
-                switcher.update(cx, |switcher, cx| switcher.open(window, cx))
-            })
+            .on_action(
+                cx.listener(|this, _: &QuickSwitcher, window, cx| this.open_switcher(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleRightPane, _, cx| {
                 this.right_pane_open = !this.right_pane_open;
                 cx.notify();

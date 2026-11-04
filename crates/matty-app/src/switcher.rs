@@ -1,11 +1,12 @@
 //! The quick switcher (Cmd/Ctrl+K): a command palette over the sidebar's
-//! channels and people, DESIGN.md §4. Typing filters by name and keyword;
-//! Enter opens the highlighted row.
+//! channels and people, DESIGN.md §4, with the user's other teams and
+//! their channels (#90) and, on request, other servers' channels (#206).
+//! Typing filters by name and keyword; Enter opens the highlighted row.
 
 use gpui_icons::LucideIcon;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Subscription, Window, div,
+    SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::sidebar::{ChannelKind, Presence, SidebarModel};
@@ -18,11 +19,25 @@ use crate::ui::{
     theme::UiTheme,
 };
 
+mod places;
+
+use places::{ALL_SERVERS, NO_SERVER_MATCH, SERVER_PREFIX, TEAM_PREFIX, Trailing};
+pub use places::{Elsewhere, ServerChannels, TeamChannels};
+
 /// What the switcher asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SwitcherEvent {
-    /// The user picked a channel by id.
+    /// The user picked a channel by id, of any of their teams on the shown
+    /// server.
     Open(SharedString),
+    /// The user picked one of their other teams (#90).
+    Team(SharedString),
+    /// The user picked a channel of another saved server, by the server's
+    /// key on the rail (#206).
+    OpenOnServer {
+        server: SharedString,
+        channel: SharedString,
+    },
     /// The user chose "Search messages for …" with this query.
     Search(SharedString),
     /// The user picked where to forward `post` (#213).
@@ -38,12 +53,18 @@ pub enum SwitcherEvent {
 const SEARCH_PREFIX: &str = "~search:";
 /// The value of the open-link row; the link follows it.
 const LINK_PREFIX: &str = "~link:";
+const PLACEHOLDER: &str = "Jump to a channel, person or team\u{2026}";
 
 pub struct Switcher {
     handle: DialogHandle,
     command: Entity<CommandState>,
-    /// The channel rows; the search row is added behind them per query.
-    items: Vec<CommandItem>,
+    /// The shown team's sidebar.
+    model: SidebarModel,
+    /// Other teams, recent channels and other servers, from the window.
+    elsewhere: Elsewhere,
+    /// "Search all servers" was chosen: other servers' channels list too.
+    all_servers: bool,
+    query: SharedString,
     /// The post being forwarded, while the switcher picks its destination.
     forwarding: Option<SharedString>,
     _subscription: Subscription,
@@ -55,30 +76,28 @@ impl Switcher {
     pub fn new(model: &SidebarModel, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let handle = DialogHandle::new(false);
         let command = cx.new(|cx| {
-            let mut state = CommandState::new(Self::items(model), window, cx);
-            state.set_placeholder("Jump to a channel or person…", window, cx);
+            let mut state = CommandState::new(Vec::new(), window, cx);
+            // The switcher matches and ranks the rows itself.
+            state.set_filter(false, cx);
+            state.set_placeholder(PLACEHOLDER, window, cx);
             state
         });
-        Self::install_slots(&command, model, cx);
         let close = handle.clone();
         let subscription =
             cx.subscribe_in(
                 &command,
                 window,
                 move |this, _, event, window, cx| match event {
+                    CommandEvent::Confirm(value) if value.as_ref() == ALL_SERVERS => {
+                        // Stays open, now listing the other servers' channels.
+                        this.all_servers = true;
+                        this.refresh(cx);
+                    }
+                    CommandEvent::Confirm(value) if value.as_ref() == NO_SERVER_MATCH => {}
                     CommandEvent::Confirm(value) => {
                         close.close(window, cx);
-                        if let Some(post) = this.forwarding.take() {
-                            cx.emit(SwitcherEvent::Forward {
-                                post,
-                                channel: value.clone(),
-                            });
-                        } else if let Some(query) = value.strip_prefix(SEARCH_PREFIX) {
-                            cx.emit(SwitcherEvent::Search(query.into()));
-                        } else if let Some(url) = value.strip_prefix(LINK_PREFIX) {
-                            cx.emit(SwitcherEvent::OpenLink(url.into()));
-                        } else {
-                            cx.emit(SwitcherEvent::Open(value.clone()));
+                        if let Some(event) = this.event_for(value) {
+                            cx.emit(event);
                         }
                         this.reset(window, cx);
                     }
@@ -87,23 +106,64 @@ impl Switcher {
                         this.forwarding = None;
                         this.reset(window, cx);
                     }
-                    CommandEvent::Query(query) => this.offer_search(query.clone(), cx),
+                    CommandEvent::Query(query) => {
+                        this.query = query.clone();
+                        this.refresh(cx);
+                    }
                 },
             );
-        Self {
+        let mut switcher = Self {
             handle,
             command,
-            items: Self::items(model),
+            model: model.clone(),
+            elsewhere: Elsewhere::default(),
+            all_servers: false,
+            query: SharedString::default(),
             forwarding: None,
             _subscription: subscription,
-        }
+        };
+        switcher.refresh(cx);
+        switcher
     }
 
-    /// Any typed query also offers a message search, last in the list; a
-    /// pasted link offers to open it, first.
-    fn offer_search(&mut self, query: SharedString, cx: &mut Context<Self>) {
-        let query = query.trim().to_string();
-        let mut items = self.items.clone();
+    /// What picking the row `value` asks of the window.
+    fn event_for(&mut self, value: &SharedString) -> Option<SwitcherEvent> {
+        if let Some(post) = self.forwarding.take() {
+            return Some(SwitcherEvent::Forward {
+                post,
+                channel: value.clone(),
+            });
+        }
+        Some(if let Some(query) = value.strip_prefix(SEARCH_PREFIX) {
+            SwitcherEvent::Search(query.into())
+        } else if let Some(url) = value.strip_prefix(LINK_PREFIX) {
+            SwitcherEvent::OpenLink(url.into())
+        } else if let Some(team) = value.strip_prefix(TEAM_PREFIX) {
+            SwitcherEvent::Team(team.into())
+        } else if let Some(rest) = value.strip_prefix(SERVER_PREFIX) {
+            let (index, channel) = rest.split_once(':')?;
+            let server = self.elsewhere.servers.get(index.parse::<usize>().ok()?)?;
+            SwitcherEvent::OpenOnServer {
+                server: server.key.clone(),
+                channel: channel.into(),
+            }
+        } else {
+            SwitcherEvent::Open(value.clone())
+        })
+    }
+
+    /// Lists the rows for the query: the channels ranked, a pasted link's
+    /// "Open link" first, and "Search messages for …" last.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let query = self.query.trim().to_string();
+        // Forwarding picks among the shown team's conversations alone.
+        let none = Elsewhere::default();
+        let elsewhere = if self.forwarding.is_some() {
+            &none
+        } else {
+            &self.elsewhere
+        };
+        let (mut items, trailing) = places::items(&self.model, elsewhere, &query, self.all_servers);
         if self.forwarding.is_none() && crate::links::looks_like_link(&query) {
             items.insert(
                 0,
@@ -126,15 +186,20 @@ impl Switcher {
         }
         self.command
             .update(cx, |state, cx| state.set_items(items, cx));
+        Self::install_slots(&self.command, &self.model, trailing, cx);
     }
 
     /// Rebuilds the rows from a new sidebar snapshot.
     pub fn set_model(&mut self, model: &SidebarModel, cx: &mut Context<Self>) {
-        self.items = Self::items(model);
-        let items = self.items.clone();
-        self.command
-            .update(cx, |state, cx| state.set_items(items, cx));
-        Self::install_slots(&self.command, model, cx);
+        self.model = model.clone();
+        self.refresh(cx);
+    }
+
+    /// Takes what the window gathered of other teams, recent channels and
+    /// other servers, as the switcher opens.
+    pub fn set_elsewhere(&mut self, elsewhere: Elsewhere, cx: &mut Context<Self>) {
+        self.elsewhere = elsewhere;
+        self.refresh(cx);
     }
 
     pub fn open(&self, window: &mut Window, cx: &mut App) {
@@ -154,62 +219,29 @@ impl Switcher {
         cx: &mut Context<Self>,
     ) {
         self.forwarding = Some(post);
+        self.refresh(cx);
         self.command.update(cx, |state, cx| {
             state.set_placeholder("Forward to a channel or person\u{2026}", window, cx)
         });
         self.open(window, cx);
     }
 
-    fn reset(&self, window: &mut Window, cx: &mut App) {
+    fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.all_servers = false;
         self.command.update(cx, |state, cx| {
             state.set_query("", window, cx);
-            state.set_placeholder("Jump to a channel or person\u{2026}", window, cx);
+            state.set_placeholder(PLACEHOLDER, window, cx);
         });
     }
 
-    /// One row per sidebar channel, grouped as the sidebar groups them.
-    fn items(model: &SidebarModel) -> Vec<CommandItem> {
-        model
-            .categories
-            .iter()
-            .flat_map(|category| {
-                category.rows.iter().map(move |row| {
-                    let icon = match row.kind {
-                        ChannelKind::Public => LucideIcon::Hash,
-                        ChannelKind::Private => LucideIcon::Lock,
-                        ChannelKind::Direct { .. } => LucideIcon::User,
-                        ChannelKind::Group { .. } => LucideIcon::Users,
-                    };
-                    let mut item = CommandItem::new(row.id.clone(), row.name.clone())
-                        .group(category.name.clone())
-                        .icon(icon);
-                    // `keywords` replaces, so the words go in one call: "unread"
-                    // and, for a direct message, the person's username, which
-                    // finds the row whatever the name format shows (#156).
-                    let keywords: Vec<SharedString> = row
-                        .unread
-                        .then(|| SharedString::from("unread"))
-                        .into_iter()
-                        .chain(row.handle.clone())
-                        .collect();
-                    if !keywords.is_empty() {
-                        item = item.keywords(keywords);
-                    }
-                    item
-                })
-            })
-            .collect()
-    }
-
-    /// Mention counts at the trailing edge, as in the sidebar.
-    fn install_slots(command: &Entity<CommandState>, model: &SidebarModel, cx: &mut App) {
-        let mentions: Vec<(SharedString, usize)> = model
-            .categories
-            .iter()
-            .flat_map(|category| category.rows.iter())
-            .filter(|row| row.mentions > 0)
-            .map(|row| (row.id.clone(), row.mentions))
-            .collect();
+    /// Direct messages lead with the person's avatar; mention counts, and
+    /// the team of a row from another, sit at the trailing edge.
+    fn install_slots(
+        command: &Entity<CommandState>,
+        model: &SidebarModel,
+        trailing: Vec<(SharedString, Trailing)>,
+        cx: &mut App,
+    ) {
         // Direct messages lead with the person's avatar and presence (#135).
         let people: Vec<(SharedString, SharedString, Presence)> = model
             .categories
@@ -260,18 +292,32 @@ impl Switcher {
             state.set_trailing(
                 move |item, _, cx| {
                     let theme = UiTheme::read(cx);
-                    mentions
-                        .iter()
-                        .find(|(id, _)| *id == item.value)
-                        .map(|(_, count)| {
-                            Badge::count(*count, 99)
-                                .h(theme.space(4.5))
-                                .min_w(theme.space(4.5))
-                                .px(theme.space(1.5))
-                                .text_size(theme.text(11.))
-                                .line_height(theme.text(11.))
-                                .into_any_element()
-                        })
+                    let (_, trailing) = trailing.iter().find(|(value, _)| *value == item.value)?;
+                    Some(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme.space(2.))
+                            .when_some(trailing.note.clone(), |row, note| {
+                                row.child(
+                                    div()
+                                        .text_size(theme.text(12.))
+                                        .text_color(theme.colors.muted_foreground)
+                                        .child(note),
+                                )
+                            })
+                            .when(trailing.mentions > 0, |row| {
+                                row.child(
+                                    Badge::count(trailing.mentions, 99)
+                                        .h(theme.space(4.5))
+                                        .min_w(theme.space(4.5))
+                                        .px(theme.space(1.5))
+                                        .text_size(theme.text(11.))
+                                        .line_height(theme.text(11.)),
+                                )
+                            })
+                            .into_any_element(),
+                    )
                 },
                 cx,
             );
@@ -310,11 +356,13 @@ mod tests {
             categories: vec![Category::new("dms", "Direct messages", vec![dm])],
             ..SidebarModel::default()
         };
-        let items = Switcher::items(&model);
+        let (items, _) = places::items(&model, &Elsewhere::default(), "", false);
         assert_eq!(items[0].label.as_ref(), "Ada Lovelace");
         assert_eq!(
             items[0].keywords,
             vec![SharedString::from("unread"), "ada".into()]
         );
+        let (items, _) = places::items(&model, &Elsewhere::default(), "ada", false);
+        assert_eq!(items[0].value.as_ref(), "d1");
     }
 }
