@@ -210,6 +210,9 @@ pub enum ChangeSet {
     /// Whether collapsed reply threads are on for the user, at sign-in and
     /// whenever the preferences or the server's config change.
     CollapsedThreads(bool),
+    /// Whether link previews show for the user: the server allows them
+    /// and the user's `display_settings/link_previews` is not off (#187).
+    LinkPreviews(bool),
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
 }

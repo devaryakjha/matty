@@ -23,6 +23,9 @@ pub struct Viewer<'a> {
     pub keys: &'a MentionKeys,
     pub zone: &'a TimeZone,
     pub now: Timestamp,
+    /// Whether link previews show: the server allows them and the user
+    /// has not turned them off (#187). Message attachments always show.
+    pub link_previews: bool,
 }
 
 /// The name Mattermost shows by default: nickname, then full name, then
@@ -129,7 +132,10 @@ fn display_post(
                 height: u32::try_from(file.height).unwrap_or(0),
             })
             .collect(),
-        embeds: crate::embeds::from_post(post),
+        embeds: crate::embeds::from_post(post)
+            .into_iter()
+            .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
+            .collect(),
     }
 }
 
@@ -249,6 +255,7 @@ mod tests {
             zone,
             // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),
+            link_previews: true,
         }
     }
 

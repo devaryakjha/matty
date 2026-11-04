@@ -54,6 +54,8 @@ pub struct Live {
     /// whether they are on for the user, once each is known (#157).
     threads_choice: Option<bool>,
     threads_on: Option<bool>,
+    /// Whether link previews show (#187); until sync says, they do.
+    link_previews: bool,
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
@@ -416,6 +418,7 @@ impl Live {
                 thread: None,
                 threads_choice: None,
                 threads_on: None,
+                link_previews: true,
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
@@ -536,6 +539,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let mut model = crate::transcript::channel_model(
             row,
@@ -729,6 +733,11 @@ impl Live {
         }
     }
 
+    /// Whether a draft's link is worth asking the server about (#187).
+    pub fn link_previews(&self) -> bool {
+        self.link_previews
+    }
+
     /// The open thread's channel, for a reply: the root's own.
     pub fn thread_channel(&self) -> Option<String> {
         let (_, posts) = self.thread.as_ref()?;
@@ -747,6 +756,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -779,6 +789,7 @@ impl Live {
             keys: &self.prefs.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
         };
         Some(crate::right_pane::SearchModel {
             query: terms.clone().into(),
@@ -1157,6 +1168,13 @@ impl Live {
             ChangeSet::CollapsedThreads(on) => {
                 self.threads_on = Some(*on);
                 update.collapsed_threads = self.threads();
+            }
+            ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
+                self.link_previews = *on;
+                if self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
+                update.thread = self.thread_model();
             }
             ChangeSet::Connection(connection) => match connection {
                 Connection::Socket(matty_api::ws::ConnectionState::Unauthorized)
@@ -1849,6 +1867,46 @@ mod tests {
         assert_eq!(live.apply(&thread("other")).thread, None);
         live.close_thread();
         assert_eq!(live.apply(&thread("root")).thread, None, "closed");
+    }
+
+    #[test]
+    fn turning_link_previews_off_drops_the_cards_in_place() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let post = matty_api::models::Post {
+            id: "p1".into(),
+            user_id: "ada".into(),
+            message: "https://github.com/a".into(),
+            metadata: matty_api::models::PostMetadata {
+                embeds: vec![matty_api::models::PostEmbed {
+                    kind: matty_api::models::EmbedKind::OpenGraph,
+                    url: "https://github.com/a".into(),
+                    data: Some(serde_json::json!({"title": "Repo", "site_name": "GitHub"})),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let update = live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![post]),
+        });
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("the channel shows");
+        };
+        assert_eq!(model.posts[0].embeds.len(), 1);
+        let update = live.apply(&ChangeSet::LinkPreviews(false));
+        let Some(ChannelUpdate::Patch { updated, .. }) = update.channel else {
+            panic!("patched in place");
+        };
+        assert!(updated[0].embeds.is_empty());
+        assert!(!live.link_previews());
+        assert!(
+            live.apply(&ChangeSet::LinkPreviews(false))
+                .channel
+                .is_none(),
+            "no change"
+        );
     }
 
     fn opened(live: &mut Live) {
