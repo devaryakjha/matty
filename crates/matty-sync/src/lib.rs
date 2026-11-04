@@ -23,6 +23,8 @@ mod netwatch;
 mod outbox;
 mod presence;
 mod typing;
+#[cfg(not(target_family = "wasm"))]
+mod wake;
 #[cfg(target_family = "wasm")]
 mod web;
 
