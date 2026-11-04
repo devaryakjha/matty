@@ -5,6 +5,8 @@
 //!
 //! Clicks come back through a delegate object, which is an Objective-C
 //! class of our own: defining one is the module's only `unsafe`.
+//!
+//! The dock badge (#141) needs no bundle, so it is set either way.
 
 #![allow(unsafe_code)]
 
@@ -14,7 +16,8 @@ use std::sync::Mutex;
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
+use objc2_app_kit::NSApplication;
 use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
@@ -22,7 +25,7 @@ use objc2_user_notifications::{
     UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
-use crate::backend::Clicked;
+use crate::backend::{Badge, Clicked, Logged};
 use crate::{Notification, Notifier};
 
 /// What the delegate holds: where clicks go.
@@ -173,4 +176,38 @@ impl Notifier for Center {
         center.removeDeliveredNotificationsWithIdentifiers(&ids);
         center.removePendingNotificationRequestsWithIdentifiers(&ids);
     }
+
+    fn set_badge(&self, badge: Badge) {
+        set_dock_badge(badge);
+    }
+}
+
+/// Outside a bundle: notifications are logged, the dock badge still shows.
+pub struct DockOnly;
+
+impl Notifier for DockOnly {
+    fn show(&self, notification: &Notification) {
+        Logged.show(notification);
+    }
+
+    fn withdraw(&self, channel_id: &str) {
+        Logged.withdraw(channel_id);
+    }
+
+    fn set_badge(&self, badge: Badge) {
+        set_dock_badge(badge);
+    }
+}
+
+/// Puts `badge` on the dock icon. AppKit allows this only on the main
+/// thread, where the app calls it; elsewhere it is skipped with a warning.
+fn set_dock_badge(badge: Badge) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        tracing::warn!("the dock badge can only be set on the main thread");
+        return;
+    };
+    let label = badge.label().map(|label| NSString::from_str(&label));
+    NSApplication::sharedApplication(mtm)
+        .dockTile()
+        .setBadgeLabel(label.as_deref());
 }

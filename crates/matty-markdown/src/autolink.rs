@@ -29,6 +29,17 @@ pub(crate) fn autolink(text: &str, out: &mut Vec<Inline>) {
     }
 }
 
+/// The byte ranges of the URLs and emails in `text`.
+pub(crate) fn link_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    while let Some(found) = next_link(&text[offset..]) {
+        spans.push(offset + found.start..offset + found.end);
+        offset += found.end;
+    }
+    spans
+}
+
 fn push_text(out: &mut Vec<Inline>, text: &str) {
     if let Some(Inline::Text(last)) = out.last_mut() {
         last.push_str(text);

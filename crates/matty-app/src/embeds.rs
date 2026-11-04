@@ -1,17 +1,26 @@
 //! Cards under a post (#187): a link preview from the server's Open Graph
-//! data, and the message attachments integrations and bots send. Their
-//! images come from outside the server (#159): sync fetches them and the
-//! cards show them once they are here.
+//! data, an image a message links to, and the message attachments
+//! integrations and bots send. Their images come from outside the server
+//! (#159): sync fetches them, and until they are here each keeps the box
+//! its size reserves, so nothing moves when one arrives.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, LazyLock};
 
-use gpui_kit::{App, ImageSource, IntoElement, ParentElement as _, SharedString, Styled as _, div};
+use gpui_icons::{LucideIcon, lucide};
+use gpui_kit::{
+    App, ImageSource, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Styled as _, Window, div,
+};
 use matty_api::models::{EmbedKind, MessageAttachment, Post, PostImage};
 use serde_json::Value;
 
+use crate::ui::attachment::Attachment;
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::embed::{LinkPreview, MessageEmbed};
 use crate::ui::markdown::markdown;
+use crate::ui::theme::{UiTheme, primitives::text};
 
 /// One card under a post.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +29,8 @@ pub enum Embed {
     Link(LinkCard),
     /// A message attachment from `props.attachments`.
     Attachment(AttachmentCard),
+    /// An image the message links to, shown inline.
+    Image(EmbedImage),
     /// Another post quoted through its permalink, as a forward sends it.
     Permalink(QuotedPost),
 }
@@ -135,7 +146,8 @@ pub struct AttachmentFieldCard {
 }
 
 /// The cards for `post`. Attachments win over a link preview, and only the
-/// first link gets one, as in the web app.
+/// first link gets one, as in the web app: an Open Graph card, or the image
+/// itself when the link is to one.
 pub fn from_post(post: &Post) -> Vec<Embed> {
     let attachments = post.attachments();
     if !attachments.is_empty() {
@@ -150,35 +162,46 @@ pub fn from_post(post: &Post) -> Vec<Embed> {
     if post.props.get(REMOVE_LINK_PREVIEW).and_then(Value::as_str) == Some("true") {
         return Vec::new();
     }
+    let images = &post.metadata.images;
     post.metadata
         .embeds
         .iter()
-        .filter(|embed| embed.kind == EmbedKind::OpenGraph)
-        .find_map(|embed| {
-            let graph = embed.opengraph()?;
-            let title = if graph.title.is_empty() {
-                embed.url.clone()
-            } else {
-                graph.title
-            };
-            let image = graph.images.first().and_then(|image| {
-                let url = if image.secure_url.is_empty() {
-                    &image.url
-                } else {
-                    &image.secure_url
-                };
-                EmbedImage::new(url, &post.metadata.images, (image.width, image.height))
-            });
-            Some(Embed::Link(LinkCard {
-                url: embed.url.clone().into(),
-                site_name: graph.site_name.into(),
-                title: title.into(),
-                description: graph.description.into(),
-                image,
-            }))
+        .find_map(|embed| match embed.kind {
+            EmbedKind::OpenGraph => open_graph(embed, images),
+            // The server measures a linked image into `metadata.images`;
+            // without that size the box cannot be reserved, so no card.
+            EmbedKind::Image => EmbedImage::new(&embed.url, images, (0, 0)).map(Embed::Image),
+            _ => None,
         })
         .into_iter()
         .collect()
+}
+
+fn open_graph(
+    embed: &matty_api::models::PostEmbed,
+    images: &HashMap<String, PostImage>,
+) -> Option<Embed> {
+    let graph = embed.opengraph()?;
+    let title = if graph.title.is_empty() {
+        embed.url.clone()
+    } else {
+        graph.title
+    };
+    let image = graph.images.first().and_then(|image| {
+        let url = if image.secure_url.is_empty() {
+            &image.url
+        } else {
+            &image.secure_url
+        };
+        EmbedImage::new(url, images, (image.width, image.height))
+    });
+    Some(Embed::Link(LinkCard {
+        url: embed.url.clone().into(),
+        site_name: graph.site_name.into(),
+        title: title.into(),
+        description: graph.description.into(),
+        image,
+    }))
 }
 
 fn attachment_card(
@@ -223,6 +246,7 @@ impl Embed {
             Self::Link(link) => link.image.as_ref(),
             Self::Attachment(attachment) => attachment.image.as_ref(),
             Self::Permalink(_) => None,
+            Self::Image(image) => Some(image),
         }
     }
 
@@ -232,6 +256,7 @@ impl Embed {
             Self::Link(link) => link.image.as_mut(),
             Self::Attachment(attachment) => attachment.image.as_mut(),
             Self::Permalink(_) => None,
+            Self::Image(image) => Some(image),
         }
     }
 }
@@ -245,12 +270,46 @@ fn field_value(value: &Value) -> String {
     }
 }
 
-/// A fetched image and its size, for a card.
+/// A 1×1 transparent PNG: what a card draws until sync brings an image,
+/// so the card keeps the image's box, showing its muted fill, meanwhile.
+const PENDING_PNG: [u8; 68] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x00, 0x02, 0x00,
+    0x00, 0x05, 0x00, 0x01, 0x7a, 0x5e, 0xab, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
+
+static PENDING: LazyLock<Arc<gpui_kit::Image>> =
+    LazyLock::new(|| crate::attachments::png(&PENDING_PNG));
+
+/// A card's image and its size: the fetched image, or a blank one of the
+/// same size while it loads.
 fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
     let image = image?;
-    let loaded = image.loaded.clone()?;
+    let loaded = image.loaded.clone().unwrap_or_else(|| PENDING.clone());
     Some((ImageSource::Image(loaded), image.width, image.height))
 }
+
+/// The name an image link shows: the last part of its path.
+fn image_name(url: &str) -> SharedString {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let path = after_scheme.split_once('/').map_or("", |(_, path)| path);
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    if name.is_empty() {
+        "Image".into()
+    } else {
+        name.to_owned().into()
+    }
+}
+
+/// Collapses or expands a post's previews; gets the new collapsed state.
+pub type ToggleHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 /// The card for what the server read from a link.
 pub fn link_card(url: &str, graph: &matty_api::models::OpenGraph) -> LinkCard {
@@ -305,10 +364,13 @@ fn opens(url: &str) -> bool {
 pub type OnJump =
     std::rc::Rc<dyn Fn(&SharedString, &SharedString, &mut gpui_kit::Window, &mut App)>;
 
-/// The cards under the post `id`.
+/// The cards under the post `id`. `collapsed` hides their images, as the
+/// web app's per-post preview toggle does; `on_toggle` flips it.
 pub fn post_embeds(
     id: &str,
     embeds: &[Embed],
+    collapsed: bool,
+    on_toggle: ToggleHandler,
     on_jump: OnJump,
     cx: &App,
 ) -> impl IntoElement + use<> {
@@ -323,9 +385,12 @@ pub fn post_embeds(
             let element_id = gpui_kit::ElementId::Name(format!("post.{id}.embed.{index}").into());
             match embed {
                 Embed::Link(link) => {
+                    let toggle = on_toggle.clone();
                     let mut card = LinkPreview::new(element_id, link.title.clone())
                         .density(density)
-                        .site_name(link.site_name.clone());
+                        .site_name(link.site_name.clone())
+                        .collapsed(collapsed)
+                        .on_toggle(move |collapsed, window, cx| toggle(*collapsed, window, cx));
                     if !link.description.is_empty() {
                         card = card.description(link.description.clone());
                     }
@@ -368,8 +433,80 @@ pub fn post_embeds(
                     }
                     card.into_any_element()
                 }
+                Embed::Image(image) => {
+                    image_element(element_id, image, collapsed, on_toggle.clone(), &theme)
+                }
             }
         }))
+}
+
+/// An image the message links to: its name and a collapse toggle above
+/// it, as in the web app, and the image in a box its size reserves.
+fn image_element(
+    element_id: gpui_kit::ElementId,
+    image: &EmbedImage,
+    collapsed: bool,
+    on_toggle: ToggleHandler,
+    theme: &UiTheme,
+) -> gpui_kit::AnyElement {
+    let name = image_name(&image.url);
+    let (icon, label) = if collapsed {
+        (LucideIcon::ChevronRight, "Expand image")
+    } else {
+        (LucideIcon::ChevronDown, "Collapse image")
+    };
+    let toggle = Button::new((element_id.clone(), "toggle"))
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::IconXs)
+        .aria_label(label)
+        .on_click(move |_, window, cx| on_toggle(!collapsed, window, cx))
+        .child(
+            lucide(icon)
+                .size(theme.space(3.5))
+                .text_color(theme.colors.muted_foreground),
+        );
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(theme.space(1.))
+        .max_w(theme.space(120.))
+        .child(
+            text::xs(div(), theme)
+                .min_w_0()
+                .text_color(theme.colors.muted_foreground)
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(name.clone()),
+        )
+        .child(
+            div()
+                .debug_selector(|| "post-image-toggle".into())
+                .child(toggle),
+        );
+    let picture = shown(Some(image))
+        .filter(|_| !collapsed)
+        .map(|(source, width, height)| {
+            let mut picture = Attachment::new((element_id.clone(), "image"), name)
+                .image(source)
+                .dimensions(width, height)
+                // The web app's inline image cap: the card width, 350px tall.
+                .max_size(theme.space(120.), theme.space(87.5));
+            if opens(&image.url) {
+                let url = image.url.clone();
+                picture = picture.on_click(move |_, _, cx| cx.open_url(&url));
+            }
+            div().debug_selector(|| "post-image".into()).child(picture)
+        });
+    div()
+        .id(element_id)
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(theme.space(1.))
+        .child(header)
+        .children(picture)
+        .into_any_element()
 }
 
 fn attachment_element(
@@ -567,6 +704,184 @@ mod tests {
         let props = serde_json::to_value(send_props(false)).unwrap();
         let removed = from_post(&post(props, vec![graph("https://github.com/a", "Repo A")]));
         assert_eq!(removed, []);
+    }
+
+    fn image_post(url: &str, measured: Option<(i64, i64)>) -> Post {
+        let mut post = post(
+            json!({}),
+            vec![PostEmbed {
+                kind: EmbedKind::Image,
+                url: url.into(),
+                data: None,
+            }],
+        );
+        if let Some((width, height)) = measured {
+            post.metadata.images.insert(
+                url.into(),
+                PostImage {
+                    width,
+                    height,
+                    ..PostImage::default()
+                },
+            );
+        }
+        post
+    }
+
+    #[test]
+    fn a_linked_image_shows_inline_at_its_measured_size() {
+        let url = "https://example.com/shots/a.png";
+        let embeds = from_post(&image_post(url, Some((640, 400))));
+        assert_eq!(
+            embeds,
+            [Embed::Image(EmbedImage {
+                url: url.into(),
+                width: 640,
+                height: 400,
+                loaded: None,
+            })]
+        );
+        assert_eq!(embeds[0].image().map(|image| image.url.as_ref()), Some(url));
+    }
+
+    #[test]
+    fn an_unmeasured_or_removed_image_gets_no_card() {
+        let url = "https://example.com/a.png";
+        assert_eq!(from_post(&image_post(url, None)), []);
+        assert_eq!(from_post(&image_post(url, Some((0, 400)))), []);
+        let mut removed = image_post(url, Some((640, 400)));
+        removed.props =
+            serde_json::from_value(serde_json::to_value(send_props(false)).unwrap()).unwrap();
+        assert_eq!(from_post(&removed), []);
+    }
+
+    #[test]
+    fn an_image_is_named_by_its_path() {
+        assert_eq!(
+            image_name("https://example.com/shots/a%20b.png?w=2#x").as_ref(),
+            "a%20b.png"
+        );
+        assert_eq!(image_name("https://example.com/").as_ref(), "Image");
+        assert_eq!(image_name("https://example.com").as_ref(), "Image");
+    }
+
+    #[test]
+    fn a_pending_image_keeps_its_size() {
+        let mut image = EmbedImage {
+            url: "https://example.com/a.png".into(),
+            width: 640,
+            height: 400,
+            loaded: None,
+        };
+        let (_, width, height) = shown(Some(&image)).expect("a pending image still draws");
+        assert_eq!((width, height), (640, 400));
+        image.loaded = Some(crate::attachments::png(&PENDING_PNG));
+        assert_eq!(
+            shown(Some(&image)).map(|(_, w, h)| (w, h)),
+            Some((640, 400))
+        );
+    }
+
+    struct Probe {
+        embeds: Vec<Embed>,
+        collapsed: bool,
+        toggled: Rc<std::cell::Cell<Option<bool>>>,
+    }
+
+    impl gpui_kit::Render for Probe {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl IntoElement {
+            let toggled = self.toggled.clone();
+            div().w(gpui_kit::px(800.)).child(post_embeds(
+                "p1",
+                &self.embeds,
+                self.collapsed,
+                Rc::new(move |collapsed, _, _| toggled.set(Some(collapsed))),
+                Rc::new(|_, _, _, _| {}),
+                cx,
+            ))
+        }
+    }
+
+    fn probe(
+        cx: &mut gpui_kit::TestAppContext,
+        embeds: Vec<Embed>,
+        collapsed: bool,
+    ) -> (
+        gpui_kit::Entity<Probe>,
+        Rc<std::cell::Cell<Option<bool>>>,
+        gpui_kit::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let toggled = Rc::new(std::cell::Cell::new(None));
+        let window = cx.add_window({
+            let toggled = toggled.clone();
+            move |_, _| Probe {
+                embeds,
+                collapsed,
+                toggled,
+            }
+        });
+        let entity = window.root(cx).unwrap();
+        (
+            entity,
+            toggled,
+            gpui_kit::VisualTestContext::from_window(window.into(), cx),
+        )
+    }
+
+    #[gpui_kit::test]
+    fn an_image_reserves_its_box_before_it_loads(cx: &mut gpui_kit::TestAppContext) {
+        let pending = Embed::Image(EmbedImage {
+            url: "https://example.com/a.png".into(),
+            width: 1280,
+            height: 800,
+            loaded: None,
+        });
+        let (probe, _, mut cx) = probe(cx, vec![pending], false);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let before = cx.debug_bounds("post-image").expect("drawn while loading");
+        // 1280 × 800 scaled down into the 480 × 350 cap keeps 8:5.
+        assert_eq!(before.size.width, gpui_kit::px(480.));
+        assert_eq!(before.size.height, gpui_kit::px(300.));
+
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                if let Some(image) = probe.embeds[0].image_mut() {
+                    image.loaded = Some(crate::attachments::png(&PENDING_PNG));
+                }
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let after = cx.debug_bounds("post-image").unwrap();
+        assert_eq!(after, before, "nothing moves when the image arrives");
+    }
+
+    #[gpui_kit::test]
+    fn the_toggle_collapses_a_posts_image(cx: &mut gpui_kit::TestAppContext) {
+        let image = Embed::Image(EmbedImage {
+            url: "https://example.com/a.png".into(),
+            width: 640,
+            height: 400,
+            loaded: None,
+        });
+        let (_, toggled, mut cx) = probe(cx, vec![image], true);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("post-image").is_none(), "collapsed");
+        let toggle = cx.debug_bounds("post-image-toggle").unwrap();
+        cx.simulate_click(toggle.center(), Default::default());
+        assert_eq!(
+            toggled.get(),
+            Some(false),
+            "expanding reports collapsed = false"
+        );
     }
 
     #[test]
