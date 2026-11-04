@@ -544,6 +544,7 @@ impl MainWindow {
             &channel,
             window,
             |this, _, event: &ChannelEvent, window, cx| match event {
+                ChannelEvent::Offline(action) => this.say_offline(action, cx),
                 ChannelEvent::OpenThread(post_id) => this.open_thread(post_id.clone(), cx),
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
                 ChannelEvent::OpenInfo => this.show_channel_info(cx),
@@ -1056,7 +1057,7 @@ impl MainWindow {
         {
             if crate::offline() {
                 this.login = None;
-                this.connection = ConnectionState::Offline;
+                this.set_connection(ConnectionState::Offline, cx);
                 this.start_live(&account, window, cx);
                 if let Some(live) = &this.live {
                     live.send(matty_sync::Command::ShowCache);
@@ -1424,6 +1425,9 @@ impl MainWindow {
 
     /// Marks the channel unread from `post` on, here and on the server.
     fn mark_unread(&mut self, post: &str, cx: &mut Context<Self>) {
+        if self.refused_offline("mark unread", cx) {
+            return;
+        }
         if let Some(live) = &self.live {
             live.send(matty_sync::Command::MarkUnread {
                 post_id: post.to_string(),
@@ -1450,6 +1454,9 @@ impl MainWindow {
 
     /// Asks the server to remind the user of a post, and says when.
     fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
+        if self.refused_offline("set reminder", cx) {
+            return;
+        }
         let Some(live) = &self.live else {
             if !crate::preview::enabled() {
                 self.push_error(
@@ -1521,6 +1528,31 @@ impl MainWindow {
                 Notice::new("Link copied").timeout(std::time::Duration::from_secs(4)),
                 cx,
             );
+        });
+    }
+
+    /// Offline (the banner says so), refuses an action that needs the
+    /// server and says so; `true` when refused (#163).
+    fn refused_offline(&mut self, action: &str, cx: &mut Context<Self>) -> bool {
+        let offline = self.connection == ConnectionState::Offline;
+        if offline {
+            self.say_offline(action, cx);
+        }
+        offline
+    }
+
+    /// "You're offline" and what did not happen, for an action that needs
+    /// the server; quiet for one the user did not ask for (#163).
+    fn say_offline(&mut self, action: &str, cx: &mut Context<Self>) {
+        let Some((title, text)) = crate::offline::notice(action) else {
+            return;
+        };
+        let notice = Notice::new(title)
+            .description(text)
+            .timeout(std::time::Duration::from_secs(8))
+            .cancel("Dismiss");
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(format!("offline.{action}"), notice, cx);
         });
     }
 
@@ -1845,6 +1877,9 @@ impl MainWindow {
         }
         if let Some(state) = update.connection {
             self.set_connection(state, cx);
+        }
+        if let Some(action) = update.offline_refused {
+            self.say_offline(action, cx);
         }
         if let Some(id) = update.ready {
             self.open_channel(id, window, cx);
@@ -2612,6 +2647,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         match event {
+            RightPaneEvent::Offline(action) => self.say_offline(action, cx),
             RightPaneEvent::Close => {
                 self.leave_thread();
                 self.right_pane_open = false;
@@ -2620,12 +2656,26 @@ impl MainWindow {
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
             RightPaneEvent::CopyLink(post) => self.copy_link(post, cx),
             RightPaneEvent::SetSaved { post, saved } => {
-                if let Some(live) = self.live.as_mut() {
+                let action = if *saved {
+                    "save message"
+                } else {
+                    "unsave message"
+                };
+                if !self.refused_offline(action, cx)
+                    && let Some(live) = self.live.as_mut()
+                {
                     live.set_saved(post, *saved);
                 }
             }
             RightPaneEvent::SetPinned { post, pinned } => {
-                if let Some(live) = self.live.as_mut() {
+                let action = if *pinned {
+                    "pin message"
+                } else {
+                    "unpin message"
+                };
+                if !self.refused_offline(action, cx)
+                    && let Some(live) = self.live.as_mut()
+                {
                     live.set_pinned(post, *pinned);
                 }
             }
@@ -2833,8 +2883,11 @@ impl MainWindow {
                 store.update(cx, |settings| settings.remember_search(&query))
             });
         }
+        // Offline, search does not run: the pane says it needs the server.
+        let offline = self.connection == ConnectionState::Offline;
         if let Some(live) = self.live.as_mut()
             && !query.is_empty()
+            && !offline
         {
             live.search(&query);
         }
@@ -2842,12 +2895,12 @@ impl MainWindow {
         let model = SearchModel {
             more: false,
             loading_more: false,
-            results: if preview {
+            results: if preview && !offline {
                 crate::preview::search(&query)
             } else {
                 vec![]
             },
-            searching: !preview && !query.is_empty(),
+            searching: !preview && !offline && !query.is_empty(),
             query,
         };
         self.threads_open = false;
@@ -3355,9 +3408,15 @@ impl MainWindow {
             }
             self.connection = state;
             let away = self.connection != ConnectionState::Online;
-            self.channel.update(cx, |view, cx| view.set_away(away, cx));
-            self.right_pane
-                .update(cx, |view, cx| view.set_away(away, cx));
+            let offline = self.connection == ConnectionState::Offline;
+            self.channel.update(cx, |view, cx| {
+                view.set_away(away, cx);
+                view.set_offline(offline);
+            });
+            self.right_pane.update(cx, |view, cx| {
+                view.set_away(away, cx);
+                view.set_offline(offline, cx);
+            });
             cx.notify();
         }
     }

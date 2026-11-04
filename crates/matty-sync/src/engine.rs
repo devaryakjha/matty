@@ -1313,7 +1313,9 @@ impl Engine {
                     props,
                 }) => {
                     let Some(me) = self.me.clone() else {
-                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
+                        dirty
+                            .direct
+                            .push(ChangeSet::Failed(CommandError::Offline { action: "send" }));
                         continue;
                     };
                     let now = posts::now_ms();
@@ -1424,13 +1426,18 @@ impl Engine {
                     post_id,
                     emoji_name,
                 }) => {
-                    let Some(me) = self.me.clone() else {
-                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
-                        continue;
-                    };
+                    let me = self.me.clone().unwrap_or_default();
                     let add = !posts::reactions(&tx, &post_id)?
                         .iter()
                         .any(|r| r.user_id == me && r.emoji_name == emoji_name);
+                    // Offline it would show here and never reach the
+                    // server, so nothing changes (#163).
+                    if me.is_empty() || !connected(self.session.as_ref()) {
+                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline {
+                            action: reaction_action(add),
+                        }));
+                        continue;
+                    }
                     let reaction = Reaction {
                         user_id: me,
                         post_id,
@@ -1758,10 +1765,22 @@ impl Engine {
                     target_time,
                 }),
                 Message::Command(Command::LoadListing(listing)) => {
-                    writes.push(Write::Listing(listing));
+                    if connected(self.session.as_ref()) {
+                        writes.push(Write::Listing(listing));
+                    } else {
+                        dirty.direct.push(cached_listing(&tx, listing)?);
+                    }
                 }
                 Message::Command(Command::SetSaved { post_id, saved }) => {
-                    if let Some(me) = &self.me {
+                    if !connected(self.session.as_ref()) {
+                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline {
+                            action: if saved {
+                                "save message"
+                            } else {
+                                "unsave message"
+                            },
+                        }));
+                    } else if let Some(me) = &self.me {
                         let preference = Preference {
                             user_id: me.clone(),
                             category: SAVED_CATEGORY.into(),
@@ -2352,7 +2371,9 @@ impl Engine {
     /// [`Loaded`] and is applied like the matching event.
     fn write(&self, write: Write, dirty: &mut Dirty) {
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
-            dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
+            dirty.direct.push(ChangeSet::Failed(CommandError::Offline {
+                action: write.action(),
+            }));
             return;
         };
         matty_api::rt::spawn(commands::run(
@@ -3209,25 +3230,46 @@ impl Engine {
                 error,
             } => {
                 react_locally(self.store.conn(), &reaction, !added, dirty)?;
-                dirty.direct.push(ChangeSet::Failed(CommandError::Server {
-                    action: if added {
-                        "add reaction"
-                    } else {
-                        "remove reaction"
+                let action = reaction_action(added);
+                dirty.direct.push(ChangeSet::Failed(match error {
+                    None => CommandError::Offline { action },
+                    Some(error) => CommandError::Server {
+                        action,
+                        target: reaction.post_id.clone(),
+                        error,
                     },
-                    target: reaction.post_id.clone(),
-                    error,
                 }));
             }
             Loaded::WriteFailed {
                 action,
                 target,
                 error,
-            } => dirty.direct.push(ChangeSet::Failed(CommandError::Server {
-                action,
-                target,
-                error,
-            })),
+            } => {
+                // An edit or delete the view already showed goes back to
+                // what the cache holds.
+                if matches!(action, "edit" | "delete")
+                    && let Some(post) = posts::post(self.store.conn(), &target)?
+                {
+                    dirty.channels.insert(post.channel_id);
+                    if self.open_threads.contains(&post.root_id) {
+                        dirty.threads.insert(post.root_id);
+                    } else if self.open_threads.contains(&post.id) {
+                        dirty.threads.insert(post.id);
+                    }
+                }
+                dirty.direct.push(ChangeSet::Failed(match error {
+                    None => CommandError::Offline { action },
+                    Some(error) => CommandError::Server {
+                        action,
+                        target,
+                        error,
+                    },
+                }));
+            }
+            Loaded::ListingOffline(listing) => {
+                let change = cached_listing(self.store.conn(), listing)?;
+                dirty.direct.push(change);
+            }
             Loaded::Resynced => {
                 dirty
                     .direct
@@ -3633,6 +3675,52 @@ fn quoted_authors(post: &matty_api::models::Post) -> impl Iterator<Item = String
             let id = embed.data.as_ref()?.get("post")?.get("user_id")?.as_str()?;
             (!id.is_empty()).then(|| id.to_owned())
         })
+}
+
+/// Whether there is a signed-in session to call the server with.
+/// `matty --offline` has none; a dropped network still has one, and its
+/// calls fail as [`CommandError::Offline`].
+fn connected(session: Option<&Session>) -> bool {
+    session.is_some_and(|s| !s.user_id.is_empty())
+}
+
+/// What toggling a reaction asked, for [`CommandError`].
+fn reaction_action(add: bool) -> &'static str {
+    if add {
+        "add reaction"
+    } else {
+        "remove reaction"
+    }
+}
+
+/// A listing answered from the cache, for when the server cannot be
+/// reached (#163): the saved posts and a channel's pins this computer
+/// holds, newest first. Recent mentions need the server's search.
+fn cached_listing(conn: &Db, listing: crate::Listing) -> Result<ChangeSet, StoreError> {
+    let mut found = match &listing {
+        crate::Listing::Saved => {
+            let mut found = Vec::new();
+            for id in saved_post_ids(conn)? {
+                if let Some(post) = posts::post(conn, &id)?
+                    && post.delete_at == 0
+                {
+                    found.push(post);
+                }
+            }
+            found
+        }
+        crate::Listing::Pinned { channel_id } => posts::pinned(conn, channel_id)?,
+        crate::Listing::Mentions { .. } => {
+            return Ok(ChangeSet::Failed(CommandError::Offline {
+                action: "load recent mentions",
+            }));
+        }
+    };
+    found.sort_by(|a, b| (b.create_at, &b.id).cmp(&(a.create_at, &a.id)));
+    Ok(ChangeSet::Listing {
+        listing,
+        posts: Arc::from(found),
+    })
 }
 
 /// The preference category Mattermost keeps saved ("flagged") posts in.

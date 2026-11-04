@@ -884,6 +884,9 @@ pub fn message_density(cx: &App) -> MessageDensity {
 /// What the channel view asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelEvent {
+    /// Offline, the user asked for this action (as sync names it), which
+    /// needs the server; nothing changed, and the window says so (#163).
+    Offline(&'static str),
     /// The user typed `@` and this much of a name; sync asks the server who
     /// matches and [`ChannelView::set_suggested`] takes the answer.
     SuggestPeople(SharedString),
@@ -1134,6 +1137,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
+    /// The banner says the user is offline: actions that need the server
+    /// are refused before the transcript changes (#163).
+    offline: bool,
     /// Posts whose preview images the user collapsed (#187), as the web
     /// app's per-post toggle; they expand again with the toggle.
     _subscriptions: Vec<gpui_kit::Subscription>,
@@ -1414,6 +1420,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1640,6 +1647,25 @@ impl ChannelView {
             self.list.update(cx, |list, cx| list.remeasure(cx));
             cx.notify();
         }
+    }
+
+    /// The banner went to or from "You're offline" (#163).
+    pub fn set_offline(&mut self, offline: bool) {
+        self.offline = offline;
+    }
+
+    /// Offline, refuses an action that needs the server before anything
+    /// changes here, and asks the window to say so; `true` when refused.
+    fn refused_offline(&self, action: &'static str, cx: &mut Context<Self>) -> bool {
+        if self.offline {
+            cx.emit(ChannelEvent::Offline(action));
+        }
+        self.offline
+    }
+
+    /// The post `id` in the model.
+    fn shown_post(&self, id: &str) -> Option<&Post> {
+        self.model.as_ref()?.posts.iter().find(|post| post.id == id)
     }
 
     /// The jump pill while the newest posts are not loaded: asks sync for
@@ -2554,6 +2580,14 @@ impl ChannelView {
             self.cancel_edit(window, cx);
             return;
         }
+        // A waiting send takes the new text offline (#195); a sent one
+        // keeps its editor open for another try.
+        let sent = self
+            .shown_post(&id)
+            .is_some_and(|post| post.status == PostStatus::Sent);
+        if sent && self.refused_offline("edit", cx) {
+            return;
+        }
         self.mutate_post(
             &id,
             |post| {
@@ -2703,6 +2737,21 @@ impl ChannelView {
     }
 
     fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
+        let mine = self.shown_post(&id).is_some_and(|post| {
+            post.reactions
+                .iter()
+                .any(|reaction| reaction.emoji == emoji && reaction.mine)
+        });
+        if self.refused_offline(
+            if mine {
+                "remove reaction"
+            } else {
+                "add reaction"
+            },
+            cx,
+        ) {
+            return;
+        }
         let changed = self.mutate_post(
             &id,
             |post| {
@@ -2758,12 +2807,34 @@ impl ChannelView {
     }
 
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let saved = self.shown_post(&id).is_some_and(|post| post.saved);
+        if self.refused_offline(
+            if saved {
+                "unsave message"
+            } else {
+                "save message"
+            },
+            cx,
+        ) {
+            return;
+        }
         if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
             cx.emit(ChannelEvent::ToggleSave(id));
         }
     }
 
     fn toggle_pin(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let pinned = self.shown_post(&id).is_some_and(|post| post.pinned);
+        if self.refused_offline(
+            if pinned {
+                "unpin message"
+            } else {
+                "pin message"
+            },
+            cx,
+        ) {
+            return;
+        }
         let mut now_pinned = false;
         let changed = self.mutate_post(
             &id,
@@ -4121,6 +4192,20 @@ impl ChannelView {
     }
 
     fn toggle_follow(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        let following_now = self
+            .shown_post(&id)
+            .and_then(|post| post.replies.as_ref())
+            .is_some_and(|summary| summary.following);
+        if self.refused_offline(
+            if following_now {
+                "unfollow thread"
+            } else {
+                "follow thread"
+            },
+            cx,
+        ) {
+            return;
+        }
         let mut following = None;
         self.mutate_post(
             &id,
@@ -4318,6 +4403,13 @@ impl ChannelView {
 
     /// Opens "Delete message?" for `id` (PLAN §4.5).
     fn ask_delete(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        // A waiting send is discarded here; a sent one needs the server.
+        let sent = self
+            .shown_post(&id)
+            .is_some_and(|post| post.status == PostStatus::Sent);
+        if sent && self.refused_offline("delete", cx) {
+            return;
+        }
         self.deleting = Some(id);
         self.delete.open(window, cx);
         cx.notify();
@@ -5356,6 +5448,99 @@ mod tests {
                 },
                 ChannelEvent::Discard("me:1".into()),
             ]
+        );
+    }
+
+    /// #163: offline, reacting, saving, pinning, editing or deleting a sent
+    /// message is refused before the transcript changes, and the window is
+    /// asked to say so; back online they go through again.
+    #[gpui_kit::test]
+    fn offline_server_actions_are_refused_before_anything_changes(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let mine = Post {
+            mine: true,
+            body: "Shipped.".into(),
+            ..post("p1", "Today")
+        };
+        let model = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![mine],
+            first_unread: None,
+            can_manage: false,
+        };
+        let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let shown = |view: &ChannelView| view.shown_post("p1").cloned().unwrap();
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_away(true, cx);
+                view.set_offline(true);
+                view.toggle_reaction("p1".into(), "👍".into(), cx);
+                view.toggle_save("p1".into(), cx);
+                view.toggle_pin("p1".into(), cx);
+                view.ask_delete("p1".into(), window, cx);
+                assert_eq!(view.deleting, None, "no confirmation for a refused delete");
+                view.start_edit("p1".into(), window, cx);
+                view.save_edit("Shipped today.".into(), window, cx);
+                assert!(view.editing.is_some(), "the edit stays open to try again");
+                let post = shown(view);
+                assert!(post.reactions.is_empty() && !post.saved && !post.pinned);
+                assert_eq!((post.body.as_ref(), post.edited), ("Shipped.", false));
+            })
+        });
+        assert_eq!(
+            *events.borrow(),
+            [
+                ChannelEvent::Offline("add reaction"),
+                ChannelEvent::Offline("save message"),
+                ChannelEvent::Offline("pin message"),
+                ChannelEvent::Offline("delete"),
+                ChannelEvent::Offline("edit"),
+            ]
+        );
+
+        events.borrow_mut().clear();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.set_offline(false);
+                view.toggle_reaction("p1".into(), "👍".into(), cx);
+            })
+        });
+        assert_eq!(
+            *events.borrow(),
+            [ChannelEvent::ToggleReaction {
+                post: "p1".into(),
+                emoji: "👍".into(),
+            }]
         );
     }
 

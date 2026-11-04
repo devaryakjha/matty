@@ -214,6 +214,35 @@ fn a_fetched_post_takes_the_place_of_its_optimistic_row() {
     assert_eq!(ids(&window), ["p-2", "p-3", "real-1", "real-9"]);
 }
 
+/// #163: the Pinned pane offline lists a channel's live pins as cached.
+#[test]
+fn pinned_lists_a_channels_live_pins_with_reactions() {
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let pin = |id: &str, channel: &str, at: i64| Post {
+        is_pinned: true,
+        ..post(id, channel, at)
+    };
+    let mut reacted = pin("a", "c", 10);
+    reacted.metadata.reactions = vec![reaction("a", "u2", "+1", 1)];
+    posts::insert_posts(
+        conn,
+        &[
+            reacted,
+            pin("gone", "c", 20),
+            post("plain", "c", 30),
+            pin("other", "d", 40),
+        ],
+    )
+    .unwrap();
+    posts::mark_deleted(conn, "gone", 99).unwrap();
+
+    let pinned = posts::pinned(conn, "c").unwrap();
+    assert_eq!(ids(&pinned), ["a"]);
+    assert_eq!(pinned[0].metadata.reactions.len(), 1);
+    assert!(posts::pinned(conn, "e").unwrap().is_empty());
+}
+
 #[test]
 fn deleted_posts_leave_the_window_but_stay_stored() {
     let store = Store::open_in_memory().unwrap();

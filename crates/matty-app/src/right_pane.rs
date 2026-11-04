@@ -179,6 +179,9 @@ pub enum RightPaneContent {
 /// What the pane asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneEvent {
+    /// Offline, the user asked for this action (as sync names it), which
+    /// needs the server; nothing changed, and the window says so (#163).
+    Offline(&'static str),
     Close,
     /// The user confirmed deleting their sent reply; the pane already
     /// dropped it.
@@ -363,6 +366,10 @@ pub struct RightPaneView {
     leave: DialogHandle,
     /// The connection is down, so pending replies wait for it (#195).
     away: bool,
+    /// The banner says the user is offline: actions that need the server
+    /// are refused before the pane changes, and empty listings say why
+    /// (#163).
+    offline: bool,
     /// The reply being edited in place, waiting to send (#195).
     editing: Option<ReplyEdit>,
     /// "Discard this message?" and the reply it is about.
@@ -562,6 +569,7 @@ impl RightPaneView {
             lightbox_files: Vec::new(),
             leave: DialogHandle::new(false),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             editing: None,
             discard: DialogHandle::new(false),
             discarding: None,
@@ -954,6 +962,35 @@ impl RightPaneView {
         });
     }
 
+    /// The banner went to or from "You're offline" (#163).
+    pub fn set_offline(&mut self, offline: bool, cx: &mut Context<Self>) {
+        if self.offline != offline {
+            self.offline = offline;
+            // The older-replies row changes, and asks for its page once back.
+            self.list.update(cx, |list, cx| list.remeasure(cx));
+            cx.notify();
+        }
+    }
+
+    /// Offline, refuses an action that needs the server before anything
+    /// changes here, and asks the window to say so; `true` when refused.
+    fn refused_offline(&self, action: &'static str, cx: &mut Context<Self>) -> bool {
+        if self.offline {
+            cx.emit(RightPaneEvent::Offline(action));
+        }
+        self.offline
+    }
+
+    /// The thread's root or one of its replies.
+    fn thread_post(&self, id: &SharedString) -> Option<&Post> {
+        match self.content.as_ref()? {
+            RightPaneContent::Thread(thread) => std::iter::once(&thread.root)
+                .chain(thread.replies.iter())
+                .find(|post| &post.id == id),
+            _ => None,
+        }
+    }
+
     /// The connection went down or came back: waiting replies read "Will
     /// send when back online" meanwhile (#195).
     pub fn set_away(&mut self, away: bool, cx: &mut Context<Self>) {
@@ -967,9 +1004,31 @@ impl RightPaneView {
     /// Opens "Discard this message?" for a reply waiting to send, or
     /// "Delete this message?" for one sent.
     fn ask_discard(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        // A waiting reply is discarded here; a sent one needs the server.
+        let sent = self
+            .thread_post(&id)
+            .is_some_and(|post| post.status == PostStatus::Sent);
+        if sent && self.refused_offline("delete", cx) {
+            return;
+        }
         self.discarding = Some(id);
         self.discard.open(window, cx);
         cx.notify();
+    }
+
+    /// The presence of a post's author among the pane's people.
+    fn presence_of(&self, author: &str) -> Option<Presence> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.display_name == author)
+            .map(|profile| profile.presence)
+    }
+
+    /// [`Self::presence_of`] from a row drawn outside the pane's own render;
+    /// inside it the pane is being updated and cannot be read.
+    fn presence_in(view: &gpui_kit::WeakEntity<Self>, author: &str, cx: &App) -> Option<Presence> {
+        view.upgrade()
+            .and_then(|pane| pane.read(cx).presence_of(author))
     }
 
     fn reply_post(&self, id: &SharedString) -> Option<&Post> {
@@ -1046,6 +1105,13 @@ impl RightPaneView {
             self.cancel_edit(window, cx);
             return;
         }
+        // Offline a sent reply keeps its editor open for another try.
+        let sent = self
+            .thread_post(&id)
+            .is_some_and(|post| post.status == PostStatus::Sent);
+        if sent && self.refused_offline("edit", cx) {
+            return;
+        }
         // A waiting send just goes with the new text, without "(edited)".
         self.mutate_reply(
             &id,
@@ -1088,6 +1154,21 @@ impl RightPaneView {
     }
 
     fn toggle_reaction(&mut self, id: SharedString, emoji: SharedString, cx: &mut Context<Self>) {
+        let mine = self.thread_post(&id).is_some_and(|post| {
+            post.reactions
+                .iter()
+                .any(|reaction| reaction.emoji == emoji && reaction.mine)
+        });
+        if self.refused_offline(
+            if mine {
+                "remove reaction"
+            } else {
+                "add reaction"
+            },
+            cx,
+        ) {
+            return;
+        }
         let changed = self.mutate_reply(
             &id,
             |post| {
@@ -1113,6 +1194,20 @@ impl RightPaneView {
     }
 
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        let following = match self.content.as_ref() {
+            Some(RightPaneContent::Thread(thread)) => thread.following,
+            _ => return,
+        };
+        if self.refused_offline(
+            if following {
+                "unfollow thread"
+            } else {
+                "follow thread"
+            },
+            cx,
+        ) {
+            return;
+        }
         let Some(thread) = self.thread_mut() else {
             return;
         };
@@ -1438,7 +1533,8 @@ impl RightPaneView {
         let Some(RightPaneContent::Thread(thread)) = &self.content else {
             return;
         };
-        if !thread.older || thread.failed_older || self.loading_older {
+        // Offline the page could only fail: the row waits instead (#163).
+        if !thread.older || thread.failed_older || self.loading_older || self.offline {
             return;
         }
         self.loading_older = true;
@@ -1477,7 +1573,17 @@ impl RightPaneView {
             .text_size(theme.text(12.))
             .text_color(theme.colors.muted_foreground)
             .debug_selector(|| "right-pane.older".into());
-        if thread.failed_older {
+        if self.offline && !self.loading_older {
+            // Not a spinner that never ends: what is cached shows, and the
+            // rest when the connection is back (#163).
+            row.child(
+                lucide(LucideIcon::WifiOff)
+                    .size(theme.space(3.5))
+                    .text_color(theme.colors.muted_foreground),
+            )
+            .child("Older replies load when you're back online.")
+            .into_any_element()
+        } else if thread.failed_older {
             row.child("Couldn't load older replies.")
                 .child(
                     div()
@@ -1959,16 +2065,10 @@ impl RightPaneView {
         root: bool,
         highlight: MessageHighlight,
         (away, editor): (bool, Option<&ReplyEditor>),
+        presence: Option<Presence>,
         cx: &mut App,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let presence = view.upgrade().and_then(|pane| {
-            pane.read(cx)
-                .profiles
-                .iter()
-                .find(|profile| profile.display_name == post.author)
-                .map(|profile| profile.presence)
-        });
         let time = post_time(post, away, cx);
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
@@ -2170,6 +2270,7 @@ impl RightPaneView {
                         true,
                         highlight(0, &model.root),
                         (away, None),
+                        Self::presence_in(&view, &model.root.author, cx),
                         cx,
                     )
                     .into_any_element(),
@@ -2192,6 +2293,7 @@ impl RightPaneView {
                                 false,
                                 highlight(index, reply),
                                 (away, editor),
+                                Self::presence_in(&view, &reply.author, cx),
                                 cx,
                             )
                             .into_any_element()
@@ -2360,6 +2462,10 @@ impl RightPaneView {
                 .child("Loading\u{2026}")
                 .into_any_element();
         }
+        if items.is_empty() && self.offline {
+            let (title, text) = crate::offline::pane_empty(id.rsplit('.').next().unwrap_or(id));
+            return style::centered_empty(LucideIcon::WifiOff, title, text, cx).into_any_element();
+        }
         if items.is_empty() {
             return style::centered_empty(empty.0, empty.1, empty.2, cx).into_any_element();
         }
@@ -2420,6 +2526,7 @@ impl RightPaneView {
                         true,
                         MessageHighlight::None,
                         (false, None),
+                        self.presence_of(&item.post.author),
                         cx,
                     ))
             }))
@@ -3148,6 +3255,12 @@ impl Render for RightPaneView {
                     )),
                 )
             }
+            // Offline, a thread that is not cached never arrives (#163).
+            None if self.offline => {
+                let (title, text) = crate::offline::pane_empty("thread");
+                root.child(self.header("Thread".into(), None, cx))
+                    .child(style::centered_empty(LucideIcon::WifiOff, title, text, cx))
+            }
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
@@ -3270,6 +3383,86 @@ mod tests {
 
     fn draw(cx: &mut gpui_kit::VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// A listing draws inside the pane's own render, where the pane cannot
+    /// read itself: its authors' presence comes from the pane directly.
+    /// Before, opening Saved, Pinned, Mentions or a search with results
+    /// panicked.
+    #[gpui_kit::test]
+    fn a_listing_draws_with_its_authors_presence(cx: &mut gpui_kit::TestAppContext) {
+        let (view, _, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_profiles(
+                    vec![UserProfile {
+                        user_id: "ada".into(),
+                        username: "ada".into(),
+                        display_name: "Ada".into(),
+                        position: None,
+                        presence: Presence::Online,
+                        status_text: None,
+                        time_zone: None,
+                    }],
+                    cx,
+                );
+                pane.set_content(
+                    Some(RightPaneContent::Saved(vec![ListedPost {
+                        channel_id: "c-town".into(),
+                        channel_name: "town".into(),
+                        post: post("s1"),
+                    }])),
+                    cx,
+                );
+            })
+        });
+        draw(&mut cx);
+        assert_eq!(
+            view.read_with(&cx, |pane, _| pane.presence_of("Ada")),
+            Some(Presence::Online)
+        );
+    }
+
+    /// #163: offline, a reaction or an edit to a sent reply is refused
+    /// before the thread changes, and older replies wait for the
+    /// connection instead of a spinner that never ends.
+    #[gpui_kit::test]
+    fn offline_the_thread_refuses_server_actions_and_waits(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_offline(true, cx);
+                pane.set_thread(thread(0..3, true, false), cx);
+            })
+        });
+        draw(&mut cx);
+        cx.update(|window, cx| {
+            view.update(cx, |pane, cx| {
+                pane.toggle_reaction("r1".into(), "👍".into(), cx);
+                pane.toggle_follow(cx);
+                pane.ask_discard("r2".into(), window, cx);
+                assert_eq!(pane.discarding, None);
+            })
+        });
+        assert_eq!(
+            *events.borrow(),
+            [
+                RightPaneEvent::Offline("add reaction"),
+                RightPaneEvent::Offline("follow thread"),
+                RightPaneEvent::Offline("delete"),
+            ],
+            "no page of older replies was asked for"
+        );
+        assert!(view.read_with(&cx, |pane, _| !pane.loading_older));
+
+        // Back online, the older page is asked for.
+        events.borrow_mut().clear();
+        cx.update(|_, cx| view.update(cx, |pane, cx| pane.set_offline(false, cx)));
+        draw(&mut cx);
+        assert_eq!(
+            *events.borrow(),
+            [RightPaneEvent::LoadOlderReplies("root".into())]
+        );
     }
 
     /// #122, with S1's measurement: a 500-reply thread opens on its newest

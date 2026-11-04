@@ -32,11 +32,20 @@ pub async fn server() -> MockServer {
 
 /// [`server`], with `overrides` laid over the recorded client config.
 pub async fn server_with_config(overrides: Value) -> MockServer {
+    account_on(MockServer::start().await, overrides).await
+}
+
+/// [`server`] on a server of its own rather than one from wiremock's pool,
+/// so dropping it closes its port, as a network that went away (#163).
+pub async fn server_unpooled() -> MockServer {
+    account_on(MockServer::builder().start().await, json!({})).await
+}
+
+async fn account_on(server: MockServer, overrides: Value) -> MockServer {
     let mut config = fixture("config_client");
     for (key, value) in overrides.as_object().unwrap() {
         config[key] = value.clone();
     }
-    let server = MockServer::start().await;
     for mock in [
         get("users/me", json!({"id": ME, "username": "me"})),
         get("config/client", config),
