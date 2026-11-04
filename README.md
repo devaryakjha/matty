@@ -81,6 +81,14 @@ To try the interface without a server, run it with the preview fixtures:
 MATTY_PREVIEW=1 cargo run -p matty
 ```
 
+On macOS, notifications only show from an app bundle. `scripts/dev-bundle`
+builds an ad-hoc signed `target/Matty Dev.app` with its own bundle id and
+URL schemes, so it can sit next to a release install:
+
+```sh
+scripts/dev-bundle && open "target/Matty Dev.app"
+```
+
 ## Development
 
 - [docs/PLAN.md](docs/PLAN.md): goals, milestones and architecture.

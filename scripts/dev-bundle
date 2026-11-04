@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Builds "target/Matty Dev.app": the debug binary in an ad-hoc signed bundle
+# with its own id and URL schemes, so notifications and links work in
+# development (#143) and it never fights a release install.
+#
+#   scripts/dev-bundle             build the debug binary and bundle it
+#   scripts/dev-bundle --release   the same with a release build
+#   MATTY_BIN=path scripts/dev-bundle   bundle a binary built elsewhere
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+profile=debug
+if [[ "${1:-}" == "--release" ]]; then
+	profile=release
+fi
+
+bin="${MATTY_BIN:-}"
+if [[ -z "$bin" ]]; then
+	if [[ "$profile" == release ]]; then
+		cargo build --release -p matty
+	else
+		cargo build -p matty
+	fi
+	bin="target/$profile/matty"
+fi
+[[ -x "$bin" ]] || { echo "no binary at $bin" >&2; exit 1; }
+
+name="Matty Dev"
+bundle_id="dev.arya.matty.dev"
+schemes=(mattermost-dev matty-dev)
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+
+app="target/$name.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$bin" "$app/Contents/MacOS/matty"
+
+scheme_lines=""
+for scheme in "${schemes[@]}"; do
+	scheme_lines+=$'\t\t\t\t'"<string>$scheme</string>"$'\n'
+done
+scheme_lines="${scheme_lines%$'\n'}"
+
+template="packaging/macos/Info.plist.in"
+plist="$app/Contents/Info.plist"
+while IFS= read -r line || [[ -n "$line" ]]; do
+	if [[ "$line" == "@SCHEMES@" ]]; then
+		printf '%s\n' "$scheme_lines"
+	else
+		line="${line//@NAME@/$name}"
+		line="${line//@BUNDLE_ID@/$bundle_id}"
+		line="${line//@VERSION@/$version}"
+		printf '%s\n' "$line"
+	fi
+done <"$template" >"$plist"
+printf 'APPL????' >"$app/Contents/PkgInfo"
+
+if [[ "$(uname)" == Darwin ]]; then
+	plutil -lint "$plist" >/dev/null
+	# Ad hoc: no certificate, but macOS then gives the bundle a stable
+	# identity for notifications.
+	codesign --force --sign - --timestamp=none "$app"
+	codesign --verify --strict "$app"
+else
+	echo "not on macOS: $app is unsigned" >&2
+fi
+echo "$app"
