@@ -244,6 +244,9 @@ pub struct MainWindow {
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
+    /// "Forward to …" with an optional comment, once the switcher picked
+    /// where (#213).
+    forward: Entity<crate::forward::ForwardView>,
     link_join_offer: Option<crate::links::JoinOffer>,
     /// A permalink's post to show once its channel, just joined, opens.
     link_jump: Option<(SharedString, SharedString)>,
@@ -294,7 +297,9 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
-                SwitcherEvent::Forward { post, channel } => this.forward(post, channel, cx),
+                SwitcherEvent::Forward { post, channel } => {
+                    this.ask_forward(post.clone(), channel.clone(), window, cx)
+                }
                 SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
             },
         )
@@ -747,6 +752,14 @@ impl MainWindow {
             },
         )
         .detach();
+        let forward = cx.new(|cx| crate::forward::ForwardView::new(window, cx));
+        cx.subscribe(
+            &forward,
+            |this, _, event: &crate::forward::ForwardEvent, cx| {
+                this.forward(&event.post, &event.to, &event.comment, cx)
+            },
+        )
+        .detach();
         let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
         let keywords = cx.new(|cx| {
             let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
@@ -853,6 +866,7 @@ impl MainWindow {
             kept_unread: None,
             link_asked: None,
             link_join: DialogHandle::new(false),
+            forward,
             link_join_offer: None,
             link_jump: None,
             login_server: None,
@@ -1085,8 +1099,10 @@ impl MainWindow {
 
     /// Forwards a post from the open channel as a new post holding its
     /// permalink, which the server and the webapp show as the quoted post.
-    fn forward(&mut self, post_id: &str, to: &SharedString, cx: &mut Context<Self>) {
-        let link = self.permalink(post_id);
+    fn forward(&mut self, post_id: &str, to: &SharedString, comment: &str, cx: &mut Context<Self>) {
+        let link = self
+            .permalink(post_id)
+            .map(|link| crate::forward::message(comment, &link));
         let (Some(live), Some(link)) = (&self.live, link) else {
             self.push_error(
                 "Couldn't forward the message. Try again once you're connected.",
@@ -1102,15 +1118,7 @@ impl MainWindow {
             file_ids: Vec::new(),
             props: crate::embeds::send_props(true),
         });
-        let name: SharedString = self
-            .sidebar
-            .read(cx)
-            .model()
-            .categories
-            .iter()
-            .flat_map(|category| category.rows.iter())
-            .find(|row| row.id == *to)
-            .map_or_else(|| "the channel".into(), |row| row.name.clone());
+        let name = self.channel_name(to, cx);
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(
                 "forward",
@@ -1119,6 +1127,47 @@ impl MainWindow {
                 cx,
             );
         });
+    }
+
+    /// The sidebar's name for `channel`, or "the channel".
+    fn channel_name(&self, channel: &SharedString, cx: &gpui_kit::App) -> SharedString {
+        self.sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| row.id == *channel)
+            .map_or_else(|| "the channel".into(), |row| row.name.clone())
+    }
+
+    /// Asks for an optional comment before forwarding `post` to `to`.
+    fn ask_forward(
+        &mut self,
+        post: SharedString,
+        to: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.channel_name(&to, cx);
+        let forward = self.forward.clone();
+        // After the switcher has closed and handed focus back.
+        cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(200))
+                .await;
+            forward
+                .update_in(cx, |view, window, cx| view.open(post, to, name, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn forward_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = self.forward.read(cx).handle().clone();
+        let popup =
+            dialog_popup("forward.popup", "Forward message", cx).child(self.forward.clone());
+        dialog("forward", &handle, popup, window, cx)
     }
 
     /// Marks the channel unread from `post` on, here and on the server.
@@ -3648,6 +3697,7 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(self.link_join_dialog(window, cx))
+            .child(self.forward_dialog(window, cx))
             .child(switcher_element)
             .child(self.toasts.clone())
     }
