@@ -424,6 +424,19 @@ pub struct PostFile {
 }
 
 impl PostFile {
+    /// A posted file from the server's file metadata; sync fills its
+    /// thumbnail later.
+    pub fn from_info(file: &matty_api::models::FileInfo) -> Self {
+        Self {
+            id: file.id.clone().into(),
+            name: file.name.clone().into(),
+            size: u64::try_from(file.size).unwrap_or(0),
+            preview: None,
+            width: u32::try_from(file.width).unwrap_or(0),
+            height: u32::try_from(file.height).unwrap_or(0),
+        }
+    }
+
     /// The posted form of a tray upload.
     pub fn from_upload(upload: Upload) -> Self {
         let preview = is_image(&upload.name).then_some(upload.source);

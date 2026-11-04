@@ -736,7 +736,12 @@ impl Live {
                 post.status = crate::channel::PostStatus::Failed;
             }
         }
-        for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
+        for file in model.posts.iter_mut().flat_map(|post| {
+            let crate::channel::Post { files, embeds, .. } = post;
+            files
+                .iter_mut()
+                .chain(embeds.iter_mut().flat_map(crate::embeds::Embed::files_mut))
+        }) {
             if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
                 file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
             }
@@ -804,7 +809,11 @@ impl Live {
 
     /// Asks sync for the thumbnails of image files not yet asked for.
     fn ask_thumbnails(&mut self, posts: &[Post]) {
-        for file in posts.iter().flat_map(|post| &post.files) {
+        for file in posts.iter().flat_map(|post| {
+            post.files
+                .iter()
+                .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
+        }) {
             if crate::attachments::is_image(&file.name)
                 && self.asked_thumbnails.insert(file.id.to_string())
             {
