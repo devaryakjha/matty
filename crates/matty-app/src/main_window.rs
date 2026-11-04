@@ -576,6 +576,7 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
+                ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -996,17 +997,33 @@ impl MainWindow {
         });
     }
 
-    /// Puts a post's permalink on the clipboard and says so (#133).
-    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+    /// A post's permalink in the open channel, or the preview's stand-in.
+    fn permalink(&self, post_id: &str) -> Option<String> {
         let link = self.live.as_ref().and_then(|live| {
             let channel = self.selected_channel.as_ref()?;
             live.permalink(channel, post_id)
         });
-        let link = link.or_else(|| {
+        link.or_else(|| {
             crate::preview::enabled()
                 .then(|| format!("https://chat.example.com/matty/pl/{post_id}"))
-        });
-        let Some(link) = link else {
+        })
+    }
+
+    /// Opens a post Matty cannot draw in the web app (#104).
+    fn open_in_browser(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        match self.permalink(post_id) {
+            Some(link) => cx.open_url(&link),
+            None => self.push_error_with(
+                "Couldn't open the message. Try again once you're connected.",
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// Puts a post's permalink on the clipboard and says so (#133).
+    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        let Some(link) = self.permalink(post_id) else {
             self.push_error_with(
                 "Couldn't copy the link. Try again once you're connected.",
                 None,
