@@ -149,6 +149,21 @@ pub enum RightPaneEvent {
     Search(SharedString),
     /// The user asked for the search's next page.
     SearchMore,
+    /// Message menu actions on a thread post, as in the channel (#213).
+    CopyLink(SharedString),
+    SetSaved {
+        post: SharedString,
+        saved: bool,
+    },
+    SetPinned {
+        post: SharedString,
+        pinned: bool,
+    },
+    Forward(SharedString),
+    Remind {
+        post: SharedString,
+        at: crate::channel::RemindAt,
+    },
     /// The user replied under `root`; the pane already shows the reply
     /// pending (PLAN §4.3).
     Reply {
@@ -822,6 +837,70 @@ impl RightPaneView {
                 },
             ),
         ];
+        if post.status == PostStatus::Sent {
+            let emit = |name: &str, label: SharedString, event: RightPaneEvent| {
+                let view = view.clone();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("thread.context.{name}").into()),
+                    label,
+                )
+                .on_click(move |_, _, cx| {
+                    let event = event.clone();
+                    view.update(cx, |_, cx| cx.emit(event)).ok();
+                })
+            };
+            let id = post.id.clone();
+            items.extend([
+                emit(
+                    "copy-link",
+                    "Copy link".into(),
+                    RightPaneEvent::CopyLink(id.clone()),
+                ),
+                emit(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    RightPaneEvent::SetPinned {
+                        post: id.clone(),
+                        pinned: !post.pinned,
+                    },
+                ),
+                emit(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    RightPaneEvent::SetSaved {
+                        post: id.clone(),
+                        saved: !post.saved,
+                    },
+                ),
+                emit(
+                    "forward",
+                    "Forward\u{2026}".into(),
+                    RightPaneEvent::Forward(id.clone()),
+                ),
+                MenuItem::submenu(
+                    "thread.context.remind",
+                    "Remind me",
+                    crate::channel::RemindAt::ALL.map(|at| {
+                        emit(
+                            &format!("remind.{at:?}"),
+                            at.label().into(),
+                            RightPaneEvent::Remind {
+                                post: id.clone(),
+                                at,
+                            },
+                        )
+                    }),
+                ),
+            ]);
+        }
         if post.status == PostStatus::Failed {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
             let (delete_view, delete_id) = (view.clone(), post.id.clone());

@@ -937,6 +937,23 @@ impl Live {
     }
 
     /// The right pane moved on from the thread.
+    /// The channel of a post on screen: in the open thread, the channel or
+    /// the listing.
+    pub fn post_channel(&self, post_id: &str) -> Option<String> {
+        let thread = self.thread.as_ref().and_then(|(_, posts)| posts.as_deref());
+        let listing = self
+            .listing
+            .as_ref()
+            .and_then(|(_, posts)| posts.as_deref());
+        thread
+            .into_iter()
+            .chain(self.posts.as_deref())
+            .chain(listing)
+            .flat_map(|posts| posts.iter())
+            .find(|post| post.id == post_id)
+            .map(|post| post.channel_id.clone())
+    }
+
     pub fn close_thread(&mut self) {
         if let Some((root_id, _)) = self.thread.take() {
             self.send(Command::CloseThread { root_id });

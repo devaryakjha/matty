@@ -1040,8 +1040,10 @@ impl MainWindow {
     /// permalink, which the server and the webapp show as the quoted post.
     fn forward(&mut self, post_id: &str, to: &SharedString, cx: &mut Context<Self>) {
         let link = self.live.as_ref().and_then(|live| {
-            let from = self.selected_channel.as_ref()?;
-            live.permalink(from, post_id)
+            let from = live
+                .post_channel(post_id)
+                .or_else(|| self.selected_channel.as_ref().map(|id| id.to_string()))?;
+            live.permalink(&from, post_id)
         });
         let (Some(live), Some(link)) = (&self.live, link) else {
             self.push_error(
@@ -1110,8 +1112,10 @@ impl MainWindow {
 
     fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
         let link = self.live.as_ref().and_then(|live| {
-            let channel = self.selected_channel.as_ref()?;
-            live.permalink(channel, post_id)
+            let channel = live
+                .post_channel(post_id)
+                .or_else(|| self.selected_channel.as_ref().map(|id| id.to_string()))?;
+            live.permalink(&channel, post_id)
         });
         let link = link.or_else(|| {
             crate::preview::enabled()
@@ -2114,6 +2118,25 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
+            RightPaneEvent::CopyLink(post) => self.copy_link(post, cx),
+            RightPaneEvent::SetSaved { post, saved } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_saved(post, *saved);
+                }
+            }
+            RightPaneEvent::SetPinned { post, pinned } => {
+                if let Some(live) = self.live.as_mut() {
+                    live.set_pinned(post, *pinned);
+                }
+            }
+            RightPaneEvent::Forward(post) => {
+                let post = post.clone();
+                let switcher = self.switcher.clone();
+                window.on_next_frame(move |window, cx| {
+                    switcher.update(cx, |switcher, cx| switcher.open_forward(post, window, cx));
+                });
+            }
+            RightPaneEvent::Remind { post, at } => self.remind(post, *at, cx),
             RightPaneEvent::SearchMore => {
                 if let Some(model) = self.live.as_mut().and_then(|live| live.search_more()) {
                     self.right_pane
