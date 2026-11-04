@@ -1,8 +1,8 @@
 //! Every saved server stays connected (#206, PLAN §3 M2). Each runs its own
-//! sync engine, followed by a [`ServerWatch`] for the rail's badges and the
-//! dock's total; the shown server's [`Live`] runs over the same engine, so a
-//! switch shows the other server at once, from what its watch kept, with
-//! no new connection.
+//! sync engine, followed by a [`ServerWatch`] for the rail's badges, the
+//! dock's total and its notifications; the shown server's [`Live`] runs
+//! over the same engine, so a switch shows the other server at once, from
+//! what its watch kept, with no new connection.
 
 use gpui_kit::{Context, Task, Window};
 use matty_sync::{ChangeSet, Command};
@@ -19,7 +19,14 @@ pub(super) struct Watches {
     /// Saved servers with no session to connect with, left alone until
     /// they sign in again.
     idle: std::collections::HashSet<String>,
+    /// The latest notifications from servers not shown, by post id, with
+    /// the server each came from, so a click switches to it.
+    notified: std::collections::VecDeque<(String, String)>,
 }
+
+/// Notifications remembered for a click; older ones open on the shown
+/// server, as before #206.
+const NOTIFIED: usize = 200;
 
 struct Running {
     watch: ServerWatch,
@@ -172,6 +179,78 @@ impl MainWindow {
         self.watches.running.push(Running { watch, _task: task });
     }
 
+    /// Shows a notification for a post on a server that is not shown, as
+    /// its preferences say, its title naming the server. No channel of it
+    /// is on screen, so only its own Do not disturb holds it back.
+    fn notify_from(
+        &mut self,
+        data_key: &str,
+        arrival: &crate::live::Arrival,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(watch) = self.watches.get(data_key) else {
+            return;
+        };
+        let app = matty_notify::AppState {
+            dnd: watch.dnd(jiff::Timestamp::now().as_second()),
+            show_preview: true,
+            ..matty_notify::AppState::default()
+        };
+        let Some(mut notification) = arrival.decide(app) else {
+            return;
+        };
+        let settings = self.settings.read(cx).get();
+        if let Some(server) = settings
+            .servers
+            .iter()
+            .find(|server| server.data_key() == data_key)
+        {
+            notification.title = server_title(&notification.title, server.label());
+        }
+        self.notifier.show(&notification);
+        let notified = &mut self.watches.notified;
+        notified.push_back((notification.post_id, data_key.to_owned()));
+        while notified.len() > NOTIFIED {
+            notified.pop_front();
+        }
+    }
+
+    /// Before a clicked notification opens its post: switches to the server
+    /// it came from when that is not the one shown. `false` when that
+    /// server could not be shown, as when it needs signing in again.
+    pub(super) fn show_notified_server(
+        &mut self,
+        clicked: &matty_notify::Clicked,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(data_key) = self
+            .watches
+            .notified
+            .iter()
+            .rev()
+            .find(|(post_id, _)| *post_id == clicked.post_id)
+            .map(|(_, data_key)| data_key.clone())
+        else {
+            return true;
+        };
+        if self.is_shown(&data_key, cx) {
+            return true;
+        }
+        let index = self
+            .settings
+            .read(cx)
+            .get()
+            .servers
+            .iter()
+            .position(|server| server.data_key() == data_key);
+        let Some(index) = index else {
+            return false;
+        };
+        self.switch_server(index, window, cx);
+        self.is_shown(&data_key, cx) && self.live.is_some()
+    }
+
     /// Whether `data_key` names the server the window shows.
     fn is_shown(&self, data_key: &str, cx: &Context<Self>) -> bool {
         self.settings
@@ -187,7 +266,12 @@ impl MainWindow {
             return;
         };
         match watch.apply(change) {
-            Heard::Nothing | Heard::Arrived(_) => {}
+            Heard::Nothing => {}
+            Heard::Arrived(arrival) => {
+                if !self.is_shown(data_key, cx) {
+                    self.notify_from(data_key, &arrival, cx);
+                }
+            }
             Heard::Unreads => {
                 if !self.is_shown(data_key, cx) {
                     self.show_servers(cx);
@@ -211,5 +295,22 @@ impl MainWindow {
                 self.show_servers(cx);
             }
         }
+    }
+}
+
+/// A notification's title with the server it came from, which another
+/// server's notifications would otherwise not say.
+fn server_title(title: &str, server: &str) -> String {
+    format!("{title} · {server}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_background_notification_names_its_server() {
+        assert_eq!(
+            super::server_title("town-square", "Acme Corp"),
+            "town-square · Acme Corp"
+        );
     }
 }

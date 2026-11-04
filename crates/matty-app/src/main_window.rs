@@ -2187,7 +2187,8 @@ impl MainWindow {
     }
 
     /// Brings Matty forward on the channel a notification was about, at
-    /// its post, or with a thread reply's thread open at the reply.
+    /// its post, or with a thread reply's thread open at the reply; on the
+    /// server it came from, switching first if need be (#206).
     fn open_notification(
         &mut self,
         clicked: matty_notify::Clicked,
@@ -2196,6 +2197,9 @@ impl MainWindow {
     ) {
         cx.activate(true);
         window.activate_window();
+        if !self.show_notified_server(&clicked, window, cx) {
+            return;
+        }
         self.open_channel(clicked.channel_id.into(), window, cx);
         if !clicked.root_id.is_empty() {
             // A thread reply opens its thread at the reply (#141): with

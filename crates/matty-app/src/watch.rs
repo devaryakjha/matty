@@ -425,6 +425,42 @@ mod tests {
     }
 
     #[test]
+    fn a_direct_message_notifies_unless_do_not_disturb() {
+        let mut watch = watch();
+        let dm = ChangeSet::Arrived(Arc::new(matty_sync::Arrived {
+            post: matty_api::models::Post {
+                id: "p1".into(),
+                channel_id: "dm".into(),
+                user_id: "sam".into(),
+                message: "lunch?".into(),
+                ..Default::default()
+            },
+            channel_type: "D".into(),
+            channel_display_name: "sam".into(),
+            sender_name: "@sam".into(),
+            mentioned: false,
+            followed: false,
+            channel_props: HashMap::new(),
+            collapsed_threads: false,
+        }));
+        let Heard::Arrived(arrival) = watch.apply(&dm) else {
+            panic!("a post arrived");
+        };
+        let shown = arrival
+            .decide(matty_notify::AppState::default())
+            .expect("a direct message notifies");
+        assert_eq!(
+            (shown.channel_id.as_str(), shown.post_id.as_str()),
+            ("dm", "p1")
+        );
+        let dnd = matty_notify::AppState {
+            dnd: true,
+            ..matty_notify::AppState::default()
+        };
+        assert_eq!(arrival.decide(dnd), None);
+    }
+
+    #[test]
     fn do_not_disturb_ends_on_time() {
         let mut watch = watch();
         watch.apply(&ChangeSet::Presence(Arc::from(vec![Status {
