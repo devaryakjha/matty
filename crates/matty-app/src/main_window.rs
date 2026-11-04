@@ -28,8 +28,8 @@ use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, 
 use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
-    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SettingsChanged,
-    SettingsStore, WindowGeometry, ZOOM_STEP,
+    LogLevel, RIGHT_PANE_MAX, RIGHT_PANE_MIN, RemoteImages, SIDEBAR_MAX, SIDEBAR_MIN,
+    SettingsChanged, SettingsStore, WindowGeometry, ZOOM_STEP,
 };
 use crate::sidebar::{SidebarEvent, SidebarModel, SidebarView, Step};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -306,9 +306,17 @@ impl MainWindow {
             |this, store, _: &SettingsChanged, window, cx| {
                 crate::apply_theme(window, cx);
                 let names = store.read(cx).get().name_format;
+                let ask_images = store.read(cx).get().load_remote_images == RemoteImages::Ask;
                 if let Some(live) = this.live.as_mut() {
                     let update = live.set_names(names);
                     this.apply_update(update, window, cx);
+                }
+                if let Some(live) = this.live.as_mut() {
+                    let update = live.set_ask_remote_images(ask_images);
+                    this.apply_update(update, window, cx);
+                } else if crate::preview::enabled() {
+                    cx.global::<crate::remote_images::RemoteImages>()
+                        .set_ask_first(ask_images);
                 }
                 cx.notify();
             },
@@ -326,6 +334,15 @@ impl MainWindow {
         .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        if crate::preview::enabled() {
+            // Nothing to fetch in preview: its cards bring their images,
+            // and "Ask" shows the placeholders (#159).
+            let ask = settings.read(cx).get().load_remote_images == RemoteImages::Ask;
+            cx.set_global(crate::remote_images::RemoteImages::new(
+                std::rc::Rc::new(|_: &str| {}),
+                ask,
+            ));
+        }
         let model = if crate::preview::enabled() {
             crate::preview::sidebar()
         } else {
@@ -1152,9 +1169,13 @@ impl MainWindow {
             }
         };
         live.share_pictures(cx);
+        cx.set_global(live.remote_images());
         let mut live = live;
         // Nothing is on screen yet, so the update has nothing to show.
         let _ = live.set_names(self.settings.read(cx).get().name_format);
+        let _ = live.set_ask_remote_images(
+            self.settings.read(cx).get().load_remote_images == RemoteImages::Ask,
+        );
         self.live = Some(live);
         self.account.update(cx, |view, cx| {
             view.set_account(
@@ -1773,14 +1794,7 @@ impl MainWindow {
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {
-                view.set_details(
-                    details.header,
-                    details.purpose,
-                    details.members,
-                    details.pinned,
-                    details.can_manage,
-                    cx,
-                );
+                view.set_details(details, cx);
             });
         }
         if let Some((muted, notifications)) = update.notifications {
@@ -1919,6 +1933,7 @@ impl MainWindow {
         }
         if update.signed_out {
             cx.set_global(crate::avatars::Avatars::default());
+            cx.set_global(crate::remote_images::RemoteImages::default());
             cx.set_global(crate::composer_draft::DraftBook::default());
             self.live = None;
             self._live_task = None;

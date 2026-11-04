@@ -169,7 +169,13 @@ impl AccountView {
         }
     }
 
-    fn set_presence(&mut self, presence: Presence, dnd_end: Option<i64>, cx: &mut Context<Self>) {
+    /// Sets a presence, as the status menu does, and asks sync to save it.
+    pub(crate) fn set_presence(
+        &mut self,
+        presence: Presence,
+        dnd_end: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
         let dnd_end = dnd_end.filter(|_| presence == Presence::Dnd);
         if self.account.presence != presence || self.account.dnd_end != dnd_end {
             self.account.presence = presence;

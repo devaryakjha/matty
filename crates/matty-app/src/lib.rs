@@ -35,6 +35,7 @@ pub mod preview;
 pub mod profile;
 pub mod profile_editor;
 pub mod rail;
+pub mod remote_images;
 pub mod right_pane;
 pub mod secrets;
 pub mod settings;
