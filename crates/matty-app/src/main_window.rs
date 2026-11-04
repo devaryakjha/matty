@@ -14,11 +14,11 @@ use gpui_kit::{
 
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
-    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
-    HistoryForward, MarkAllRead, MarkChannelRead, NextChannel, NextUnreadChannel, OpenPreferences,
-    Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter,
-    UploadFiles, ZoomIn, ZoomOut,
+    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusComposer,
+    FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead, NextChannel,
+    NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
+    QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search, ShowShortcuts,
+    ToggleRightPane, ToggleSidebar, UnreadsFilter, UploadFiles, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -142,6 +142,7 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod drafts;
 mod preferences;
 mod sso;
 
@@ -182,6 +183,10 @@ pub struct MainWindow {
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
     create_channel: Entity<CreateChannelView>,
+    /// Name, rename and delete dialogs for sidebar categories (#208).
+    categories: Entity<crate::categories::CategoryDialogs>,
+    /// "Edit profile…" from the account menu (#212).
+    profile_editor: Entity<crate::profile_editor::ProfileEditor>,
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
@@ -316,6 +321,9 @@ impl MainWindow {
         } else {
             "You"
         };
+        if crate::preview::enabled() {
+            crate::preview::seed_drafts(cx);
+        }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
@@ -336,6 +344,26 @@ impl MainWindow {
             });
         }
         let create_channel = cx.new(|cx| CreateChannelView::new(window, cx));
+        let categories = cx.new(|cx| crate::categories::CategoryDialogs::new(window, cx));
+        cx.subscribe(
+            &categories,
+            |this, _, event: &crate::categories::CategoryEvent, _| {
+                this.category_changed(event);
+            },
+        )
+        .detach();
+        let profile_editor = cx.new(|cx| crate::profile_editor::ProfileEditor::new(window, cx));
+        cx.subscribe(
+            &profile_editor,
+            |this, _, saved: &crate::profile_editor::ProfileSaved, _| {
+                if let Some(live) = &this.live {
+                    live.send(matty_sync::Command::UpdateProfile {
+                        patch: saved.0.clone(),
+                    });
+                }
+            },
+        )
+        .detach();
         let rail = cx.new(|_| {
             let teams = if crate::preview::enabled() {
                 crate::preview::teams()
@@ -372,6 +400,7 @@ impl MainWindow {
                 }
                 // Custom status text has no sync command yet (#136).
                 AccountEvent::SetStatus(_) => {}
+                AccountEvent::EditProfile => this.edit_profile(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
         )
@@ -401,11 +430,15 @@ impl MainWindow {
                     model.drafts = count;
                     sidebar.set_model(model, cx);
                 });
-                if let DraftsEvent::Open(draft) = event {
-                    this.open_channel(draft.channel_id.clone(), window, cx);
-                    if let Some(root) = draft.thread_root.clone() {
-                        this.open_thread(root, cx);
+                match event {
+                    DraftsEvent::Open(draft) => {
+                        this.open_channel(draft.channel_id.clone(), window, cx);
+                        if let Some(root) = draft.thread_root.clone() {
+                            this.open_thread(root, cx);
+                        }
                     }
+                    DraftsEvent::Delete(draft) => this.drop_draft(draft, window, cx),
+                    DraftsEvent::Send(draft) => this.send_draft(draft, window, cx),
                 }
             },
         )
@@ -495,6 +528,7 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::SaveDraft(save) => this.save_draft(save, cx),
                 ChannelEvent::PreviewLink(url) => {
                     if let Some(live) = &this.live {
                         if !live.link_previews() {
@@ -624,6 +658,18 @@ impl MainWindow {
                         this.leave_channel(id, window, cx);
                     }
                 }
+                ChannelEvent::Archive => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.archive_channel(id, window, cx);
+                    }
+                }
+                ChannelEvent::ConvertToPrivate => {
+                    if let (Some(live), Some(id)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::ConvertToPrivate {
+                            channel_id: id.to_string(),
+                        });
+                    }
+                }
                 // Sync picks these up in later changes; the view already
                 // shows the change.
                 ChannelEvent::Upload { id, name, source } => {
@@ -718,6 +764,36 @@ impl MainWindow {
                     }
                     SidebarEvent::Leave(id) => return this.leave_channel(id.clone(), window, cx),
                     SidebarEvent::Close(id) => return this.close_direct(id.clone(), window, cx),
+                    SidebarEvent::NewCategory { channel_id } => {
+                        let channel_id = channel_id.clone();
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.create(channel_id, window, cx));
+                    }
+                    SidebarEvent::RenameCategory { id, name } => {
+                        let (id, name) = (id.clone(), name.clone());
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.rename(id, &name, window, cx));
+                    }
+                    SidebarEvent::DeleteCategory { id, name } => {
+                        let (id, name) = (id.clone(), name.clone());
+                        return this
+                            .categories
+                            .update(cx, |dialogs, cx| dialogs.delete(id, name, window, cx));
+                    }
+                    SidebarEvent::MoveToCategory {
+                        channel_id,
+                        category_id,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::MoveToCategory {
+                                channel_id: channel_id.to_string(),
+                                category_id: category_id.to_string(),
+                            });
+                        }
+                        return;
+                    }
                 };
                 this.open_channel(id, window, cx);
             },
@@ -802,6 +878,8 @@ impl MainWindow {
             browse,
             new_message,
             create_channel,
+            categories,
+            profile_editor,
             joined: Vec::new(),
             rail,
             right_pane_open: false,
@@ -1135,11 +1213,15 @@ impl MainWindow {
                     .await;
                 let left = this.update(cx, |this, cx| {
                     let live = this.live.as_mut()?;
-                    let names = live.expire_typing(std::time::Instant::now());
+                    let (names, thread) = live.expire_typing(std::time::Instant::now());
                     let left = live.is_typing();
                     if let Some(names) = names {
                         this.channel
                             .update(cx, |view, cx| view.set_typing(names, cx));
+                    }
+                    if let Some(names) = thread {
+                        this.right_pane
+                            .update(cx, |pane, cx| pane.set_typing(names, cx));
                     }
                     Some(left)
                 });
@@ -1258,6 +1340,7 @@ impl MainWindow {
                     details.purpose,
                     details.members,
                     details.pinned,
+                    details.can_manage,
                     cx,
                 );
             });
@@ -1268,6 +1351,8 @@ impl MainWindow {
             });
         }
         if let Some(profiles) = update.profiles {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_profiles(profiles.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
         }
@@ -1334,9 +1419,20 @@ impl MainWindow {
                 self.expire_typing_later(cx);
             }
         }
+        if let Some(names) = update.thread_typing {
+            let someone = !names.is_empty();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_typing(names, cx));
+            if someone {
+                self.expire_typing_later(cx);
+            }
+        }
         if let Some(queued) = update.queued {
             self.queued = queued;
             cx.notify();
+        }
+        if let Some((display_name, username)) = update.me {
+            self.renamed(display_name, username, cx);
         }
         if let Some(props) = update.notify_props {
             let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
@@ -1410,12 +1506,16 @@ impl MainWindow {
         }
         if update.signed_out {
             cx.set_global(crate::avatars::Avatars::default());
+            cx.set_global(crate::composer_draft::DraftBook::default());
             self.live = None;
             self._live_task = None;
             self.forget_signed_out(cx);
         }
         if update.expired && self.login.is_none() {
             self.session_expired(window, cx);
+        }
+        if let Some((key, draft)) = update.draft {
+            self.draft_stored(key, draft, window, cx);
         }
     }
 
@@ -1534,6 +1634,9 @@ impl MainWindow {
                     }
                     this.login = None;
                     this.login_server = None;
+                    // The sign-in field that had focus is gone; without
+                    // this, shortcuts like Alt-Down do nothing until a click.
+                    window.focus(&this.focus, cx);
                     cx.notify();
                 }
                 Err(failure) => {
@@ -1916,6 +2019,23 @@ impl MainWindow {
                 channel_id: id.to_string(),
             });
         }
+        self.drop_channel(id, window, cx);
+    }
+
+    /// Archives the channel (#208); like leaving, it goes from the sidebar
+    /// at once.
+    fn archive_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::ArchiveChannel {
+                channel_id: id.to_string(),
+            });
+        }
+        self.drop_channel(id, window, cx);
+    }
+
+    /// Takes a channel the user left or archived off the sidebar and opens
+    /// the first public channel instead.
+    fn drop_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let mut model = self.sidebar.read(cx).model().clone();
         for category in model.categories.iter_mut() {
             category.rows.retain(|row| row.id != id);
@@ -2051,6 +2171,18 @@ impl MainWindow {
         let Some(channel_id) = self.selected_channel.clone() else {
             return;
         };
+        // The thread is in the open channel: its people have the presence
+        // the pane's avatars show.
+        let profiles = self
+            .channel
+            .read(cx)
+            .model()
+            .map(|model| model.profiles.clone())
+            .unwrap_or_default();
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_profiles(profiles, cx);
+            pane.set_typing(Vec::new(), cx);
+        });
         if let Some(live) = &mut self.live {
             // Sync publishes the thread from the cache at once and again as
             // replies arrive; until then the pane is empty.
@@ -2068,7 +2200,10 @@ impl MainWindow {
             pane.set_content(
                 thread.map(|thread| RightPaneContent::Thread(Box::new(thread))),
                 cx,
-            )
+            );
+            if crate::preview::enabled() {
+                pane.set_typing(crate::preview::thread_typing(), cx);
+            }
         });
         self.right_pane_open = true;
         cx.notify();
@@ -2118,6 +2253,14 @@ impl MainWindow {
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
+            RightPaneEvent::RemoveMember { user_id } => {
+                if let (Some(live), Some(channel_id)) = (&self.live, &self.selected_channel) {
+                    live.send(matty_sync::Command::RemoveMember {
+                        channel_id: channel_id.to_string(),
+                        user_id: user_id.to_string(),
+                    });
+                }
+            }
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
             }
@@ -2161,6 +2304,7 @@ impl MainWindow {
                     pane.update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
                 }
             }
+            RightPaneEvent::SaveDraft(save) => self.save_draft(save, cx),
             RightPaneEvent::PreviewLink(url) => {
                 if let Some(live) = &self.live {
                     if !live.link_previews() {
@@ -2852,7 +2996,7 @@ impl MainWindow {
             .justify_center()
             .gap(theme.space(2.))
             .bg(if offline {
-                theme.colors.destructive.opacity(0.1)
+                theme.colors.destructive.opacity(0.08)
             } else {
                 theme.colors.muted
             })
@@ -3019,6 +3163,76 @@ impl MainWindow {
         let handle = self.browse.read(cx).handle().clone();
         let popup = dialog_popup("browse.popup", "Browse channels", cx).child(self.browse.clone());
         dialog("browse", &handle, popup, window, cx)
+    }
+
+    /// The user confirmed a category dialog: sync saves it, and the
+    /// sidebar follows the server's answer.
+    /// The account menu and the saved account follow the user's name.
+    fn renamed(&mut self, display_name: String, username: String, cx: &mut Context<Self>) {
+        self.account.update(cx, |view, cx| {
+            let mut account = view.account().clone();
+            account.display_name = display_name.clone().into();
+            account.username = username.clone().into();
+            view.set_account(account, cx);
+        });
+        self.settings.update(cx, |settings, cx| {
+            settings.update(cx, |s| {
+                if let Some(saved) = &mut s.account
+                    && (saved.display_name != display_name || saved.username != username)
+                {
+                    saved.display_name = display_name;
+                    saved.username = username;
+                }
+            })
+        });
+    }
+
+    /// Opens "Edit profile" with the user's fields from the server, or the
+    /// account menu's names in the preview.
+    fn edit_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::profile_editor::ProfileFields;
+        let fields = match self.live.as_ref().and_then(|live| live.me_user()) {
+            Some(user) => ProfileFields::of(user),
+            None => {
+                let account = self.account.read(cx).account();
+                let mut names = account.display_name.splitn(2, ' ');
+                ProfileFields {
+                    first_name: names.next().unwrap_or_default().to_string(),
+                    last_name: names.next().unwrap_or_default().to_string(),
+                    username: account.username.to_string(),
+                    ..Default::default()
+                }
+            }
+        };
+        self.profile_editor
+            .update(cx, |editor, cx| editor.open(fields, window, cx));
+    }
+
+    fn category_changed(&mut self, event: &crate::categories::CategoryEvent) {
+        use crate::categories::CategoryEvent;
+        let Some(live) = &self.live else {
+            return;
+        };
+        let command = match event {
+            CategoryEvent::Create { name, channel_id } => {
+                let Some(team_id) = live.team() else {
+                    return;
+                };
+                matty_sync::Command::CreateCategory {
+                    team_id: team_id.to_owned(),
+                    name: name.clone(),
+                    channel_id: channel_id.as_ref().map(ToString::to_string),
+                }
+            }
+            CategoryEvent::Rename { category_id, name } => matty_sync::Command::RenameCategory {
+                category_id: category_id.to_string(),
+                name: name.clone(),
+            },
+            CategoryEvent::Delete { category_id } => matty_sync::Command::DeleteCategory {
+                category_id: category_id.to_string(),
+            },
+        };
+        live.send(command);
     }
 
     // Links in messages and the switcher (#85, #103). `links::route`
@@ -3284,6 +3498,8 @@ impl MainWindow {
         let message = self.new_message.read(cx).handle().clone();
         let create = self.create_channel.read(cx).handle().clone();
         div()
+            .child(self.categories.clone())
+            .child(self.profile_editor.clone())
             .child(dialog(
                 "new-message",
                 &message,
@@ -3420,6 +3636,12 @@ impl Render for MainWindow {
             .on_action(
                 cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
             )
+            // From anywhere outside the channel view, such as the sidebar
+            // or right after sign-in.
+            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
+                this.channel
+                    .update(cx, |channel, cx| channel.focus_composer(window, cx))
+            }))
             .size_full()
             .relative()
             .flex()
