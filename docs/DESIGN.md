@@ -427,6 +427,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   gpuicn's list anchors the scroll on the row that was at the top. At the
   oldest post the row reads "This is the start of #channel."; a failed page
   says so and offers Retry (`design-43`). Preview starts at the beginning.
+- **Message display** (PLAN §4.2): Preferences gains "Message display",
+  Standard or Compact, stored as `display` in settings. Compact is gpuicn's
+  `MessageDensity::Compact` from 0.9.0: one line per post, the time always
+  in the gutter, the name starting the body line, tighter rows. It applies
+  to the channel transcript, the thread pane and the listings at once, and
+  the lists remeasure when it changes (`design-44`).
 
 ## 5. Components
 
