@@ -3421,7 +3421,12 @@ impl Render for ChannelView {
             .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))
             // Zero-size host for the shared post menu; it opens at the pointer.
-            .child(Menu::new(&self.menu, "Message actions").context_area(div()))
+            // Disabled so the empty host is not a tab stop.
+            .child(
+                Menu::new(&self.menu, "Message actions")
+                    .context_area(div())
+                    .disabled(true),
+            )
             .child(self.delete_dialog(window, cx))
             .child(self.edit_dialog(window, cx))
             .child(self.notifications_dialog(window, cx))
