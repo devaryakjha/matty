@@ -1,0 +1,16 @@
+{
+  "_source": "Hand-written: the dev server has no integration to open one. Shape from model.OpenDialogRequest and app.DoActionRequest's open_dialog broadcast.",
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "dialog": "{\"trigger_id\":\"t8pz1kq3xbf7tg9kqk3c5g1qce\",\"url\":\"https://integrations.example.com/deploy/dialog\",\"dialog\":{\"callback_id\":\"deploy-1482\",\"title\":\"Approve deploy\",\"introduction_text\":\"Deploy **1482** to `eu-central-1`.\",\"icon_url\":\"\",\"elements\":[{\"display_name\":\"Reason\",\"name\":\"reason\",\"type\":\"textarea\",\"subtype\":\"\",\"default\":\"\",\"placeholder\":\"Why now?\",\"help_text\":\"Shown in the audit log.\",\"optional\":false,\"min_length\":5,\"max_length\":300,\"data_source\":\"\",\"options\":null},{\"display_name\":\"Reviewer\",\"name\":\"reviewer\",\"type\":\"select\",\"subtype\":\"\",\"default\":\"\",\"placeholder\":\"Choose someone\",\"help_text\":\"\",\"optional\":true,\"min_length\":0,\"max_length\":0,\"data_source\":\"users\",\"options\":null},{\"display_name\":\"Notify the channel\",\"name\":\"notify\",\"type\":\"bool\",\"subtype\":\"\",\"default\":\"true\",\"placeholder\":\"Post when it finishes\",\"help_text\":\"\",\"optional\":true,\"min_length\":0,\"max_length\":0,\"data_source\":\"\",\"options\":null},{\"display_name\":\"Traffic\",\"name\":\"traffic\",\"type\":\"radio\",\"subtype\":\"\",\"default\":\"now\",\"placeholder\":\"\",\"help_text\":\"\",\"optional\":false,\"min_length\":0,\"max_length\":0,\"data_source\":\"\",\"options\":[{\"text\":\"Shift now\",\"value\":\"now\"},{\"text\":\"Shift tonight\",\"value\":\"night\"}]}],\"submit_label\":\"Approve\",\"notify_on_cancel\":true,\"state\":\"{\\\"build\\\":1482}\"}}"
+  },
+  "event": "open_dialog",
+  "seq": 12
+}

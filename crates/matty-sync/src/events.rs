@@ -89,6 +89,9 @@ pub(crate) fn apply(
         WsEvent::EphemeralMessage(post) => {
             dirty.direct.push(ChangeSet::Ephemeral(Arc::from(post)));
         }
+        WsEvent::OpenDialog(dialog) => {
+            dirty.direct.push(ChangeSet::OpenDialog(Arc::from(dialog)));
+        }
         WsEvent::ReactionAdded(reaction) => {
             if let Some(post) = posts::post(conn, &reaction.post_id)? {
                 posts::add_reaction(conn, &reaction)?;

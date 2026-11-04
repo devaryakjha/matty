@@ -115,6 +115,9 @@ pub enum WsEvent {
     PostDeleted(Box<Post>),
     /// `ephemeral_message`: a post only this user sees, not stored.
     EphemeralMessage(Box<Post>),
+    /// `open_dialog`: an integration opens an interactive dialog, in
+    /// answer to a button press or slash command of this user's.
+    OpenDialog(Box<crate::models::OpenDialogRequest>),
     /// `post_unread`.
     PostUnread {
         /// Channel.
@@ -413,6 +416,7 @@ fn decode_known(raw: &RawEvent) -> Result<Option<WsEvent>, String> {
         "post_edited" => WsEvent::PostEdited(required(data, "post")?),
         "post_deleted" => WsEvent::PostDeleted(required(data, "post")?),
         "ephemeral_message" => WsEvent::EphemeralMessage(required(data, "post")?),
+        "open_dialog" => WsEvent::OpenDialog(required(data, "dialog")?),
         "post_unread" => WsEvent::PostUnread {
             channel_id: or_broadcast(data, "channel_id", &b.channel_id),
             unread: whole(data)?,

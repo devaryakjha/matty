@@ -421,6 +421,120 @@ fn preview_actions() -> Vec<crate::interactive::ActionCard> {
     ]
 }
 
+/// The buttons and menu on Build Bot's reply in its thread (#211).
+fn thread_actions() -> Vec<crate::interactive::ActionCard> {
+    use crate::interactive::{ActionCard, ActionMenu, MenuSource};
+    let button = |id: &str, name: &str, style: &str| ActionCard {
+        id: id.into(),
+        name: name.into(),
+        style: style.into(),
+        disabled: false,
+        cookie: "".into(),
+        menu: None,
+        pending: false,
+    };
+    vec![
+        button("approve-2", "Approve", "primary"),
+        button("cancel", "Cancel deploy", "danger"),
+        ActionCard {
+            menu: Some(ActionMenu {
+                source: MenuSource::Static,
+                options: vec![
+                    ("now".into(), "Shift traffic now".into()),
+                    ("night".into(), "Shift tonight".into()),
+                ],
+                default: "".into(),
+            }),
+            ..button("when", "When to shift", "")
+        },
+    ]
+}
+
+/// `MATTY_PREVIEW=thread-actions` opens Build Bot's thread, whose replies
+/// carry buttons (#211); `MATTY_PREVIEW=dialog` also opens the
+/// integration's dialog over it.
+pub fn start_thread() -> Option<SharedString> {
+    matches!(value().as_deref(), Some("thread-actions" | "dialog")).then(|| "p3b".into())
+}
+
+/// The dialog Build Bot opens from Approve under `MATTY_PREVIEW=dialog`
+/// (#211): one field of each kind.
+pub fn dialog() -> Option<std::sync::Arc<matty_api::models::OpenDialogRequest>> {
+    use matty_api::models::{Dialog, DialogElement, OpenDialogRequest, PostActionOption};
+    if value().as_deref() != Some("dialog") {
+        return None;
+    }
+    let option = |text: &str, value: &str| PostActionOption {
+        text: text.into(),
+        value: value.into(),
+    };
+    Some(std::sync::Arc::new(OpenDialogRequest {
+        trigger_id: "preview".into(),
+        url: "https://ci.example.com/dialog".into(),
+        dialog: Dialog {
+            callback_id: "deploy-1482".into(),
+            title: "Approve deploy 1482".into(),
+            introduction_text: "Traffic shifts to `eu-central-1` once a second person approves."
+                .into(),
+            elements: vec![
+                DialogElement {
+                    display_name: "Reason".into(),
+                    name: "reason".into(),
+                    kind: "textarea".into(),
+                    placeholder: "What this release fixes".into(),
+                    help_text: "Shown in the audit log.".into(),
+                    min_length: 10,
+                    max_length: 300,
+                    ..DialogElement::default()
+                },
+                DialogElement {
+                    display_name: "Second approver".into(),
+                    name: "approver".into(),
+                    kind: "select".into(),
+                    data_source: "users".into(),
+                    placeholder: "Choose someone".into(),
+                    default: person("Priya Nair").to_string(),
+                    ..DialogElement::default()
+                },
+                DialogElement {
+                    display_name: "Traffic".into(),
+                    name: "traffic".into(),
+                    kind: "radio".into(),
+                    default: "now".into(),
+                    options: vec![option("Shift now", "now"), option("Shift tonight", "night")],
+                    ..DialogElement::default()
+                },
+                DialogElement {
+                    display_name: "Announce".into(),
+                    name: "announce".into(),
+                    kind: "bool".into(),
+                    placeholder: "Post in ~general when it finishes".into(),
+                    default: "true".into(),
+                    optional: true,
+                    ..DialogElement::default()
+                },
+            ],
+            submit_label: "Approve".into(),
+            notify_on_cancel: true,
+            state: String::new(),
+            icon_url: String::new(),
+        },
+    }))
+}
+
+/// The people the preview dialog's menu offers.
+pub fn menu_sources() -> crate::interactive_dialog::MenuSources {
+    let mut people: Vec<(SharedString, SharedString)> = profiles()
+        .into_iter()
+        .map(|profile| (person(&profile.display_name), profile.display_name))
+        .collect();
+    people.sort_by_key(|(_, name)| name.to_lowercase());
+    crate::interactive_dialog::MenuSources {
+        people,
+        channels: Vec::new(),
+    }
+}
+
 pub fn channel(id: &str) -> Option<ChannelModel> {
     // Another preview server's channel opens empty.
     if let Some(row) = other_servers()
@@ -1561,6 +1675,68 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         files: vec![],
         embeds: vec![],
     };
+    // Build Bot's thread carries the deploy conversation (#211): a reply
+    // with its own buttons and an answer only the viewer sees.
+    if post_id == "p3b" {
+        return Some(ThreadModel {
+            channel_id: channel.id.clone(),
+            channel_name: channel.name.clone(),
+            replies: vec![
+                reply(
+                    "r1",
+                    "Arya",
+                    "09:22",
+                    "Approving for Frankfurt; US East can wait for tomorrow.",
+                    false,
+                ),
+                Post {
+                    embeds: vec![crate::embeds::Embed::Attachment(
+                        crate::embeds::AttachmentCard {
+                            color: "warning".into(),
+                            pretext: "".into(),
+                            author: "".into(),
+                            author_link: "".into(),
+                            title: "Deploy 1482 to eu-central-1".into(),
+                            title_link: "".into(),
+                            text: "Waiting for a second approval before traffic shifts.".into(),
+                            fields: vec![],
+                            footer: "matty / deploy.yml".into(),
+                            image: None,
+                            author_icon: None,
+                            footer_icon: None,
+                            thumb: None,
+                            actions: thread_actions(),
+                        },
+                    )],
+                    ..reply(
+                        "r2",
+                        "Build Bot",
+                        "09:23",
+                        "One more approval and traffic shifts.",
+                        false,
+                    )
+                },
+                Post {
+                    status: PostStatus::Ephemeral,
+                    ..reply(
+                        "r3",
+                        "Build Bot",
+                        "09:24",
+                        "You approved this deploy. Priya has been asked for the second approval.",
+                        false,
+                    )
+                },
+            ],
+            root: Post {
+                continues: false,
+                ..root
+            },
+            following: true,
+            reply_count: 3,
+            older: false,
+            failed_older: false,
+        });
+    }
     Some(ThreadModel {
         channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),

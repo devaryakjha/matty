@@ -215,3 +215,68 @@ async fn a_post_action_reaches_the_server_and_answers() {
     .await;
     server.verify().await;
 }
+
+/// #211: a dialog's values go to the server with the user's id, and the
+/// integration's complaints come back; a cancellation says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dialog_submission_reaches_the_server_and_answers() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/actions/dialogs/submit"))
+        .and(body_partial_json(json!({
+            "type": "dialog_submission",
+            "callback_id": "deploy",
+            "user_id": ME,
+            "channel_id": "c1",
+            "submission": {"reason": "x"},
+            "cancelled": false
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"errors": {"reason": "Too short."}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/actions/dialogs/submit"))
+        .and(body_partial_json(
+            json!({"callback_id": "deploy", "cancelled": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    let submit = |cancelled: bool| Command::SubmitDialog {
+        url: "https://hook.example.com".into(),
+        callback_id: "deploy".into(),
+        state: String::new(),
+        channel_id: "c1".into(),
+        team_id: "t1".into(),
+        submission: if cancelled {
+            Default::default()
+        } else {
+            [("reason".to_owned(), json!("x"))].into()
+        },
+        cancelled,
+    };
+    sync.send(submit(false));
+    let ChangeSet::DialogSubmitted {
+        answer, cancelled, ..
+    } = next(
+        &changes,
+        |c| matches!(c, ChangeSet::DialogSubmitted { callback_id, .. } if callback_id == "deploy"),
+    )
+    .await
+    else {
+        unreachable!()
+    };
+    assert!(!cancelled);
+    assert_eq!(answer.errors["reason"], "Too short.");
+    sync.send(submit(true));
+    next(&changes, |c| {
+        matches!(c, ChangeSet::DialogSubmitted { cancelled: true, answer, .. } if answer.accepted())
+    })
+    .await;
+    server.verify().await;
+}

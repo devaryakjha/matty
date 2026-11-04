@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{body_json, method, path, query_param, query_param_is_missing},
+    matchers::{body_json, body_partial_json, method, path, query_param, query_param_is_missing},
 };
 
 fn fixture<T: DeserializeOwned>(name: &str) -> T {
@@ -530,4 +530,82 @@ async fn post_actions_send_the_choice_and_the_cookie() {
         error.to_string().contains("Action integration error"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn dialogs_submit_their_values_and_read_the_integrations_errors() {
+    use matty_api::models::{SubmitDialogRequest, SubmitDialogResponse};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/actions/dialogs/submit"))
+        .and(body_json(json!({
+            "type": "dialog_submission",
+            "url": "https://hook.example.com/dialog",
+            "callback_id": "deploy",
+            "state": "s",
+            "user_id": "u1",
+            "channel_id": "c1",
+            "team_id": "t1",
+            "submission": {"reason": "hi", "notify": true},
+            "cancelled": false
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": "Not now.",
+            "errors": {"reason": "Say more."}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/actions/dialogs/submit"))
+        .and(body_partial_json(
+            json!({"cancelled": true, "callback_id": "gone"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("null"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/actions/dialogs/submit"))
+        .and(body_partial_json(json!({"callback_id": "quiet"})))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let submit = SubmitDialogRequest {
+        kind: "dialog_submission".into(),
+        url: "https://hook.example.com/dialog".into(),
+        callback_id: "deploy".into(),
+        state: "s".into(),
+        user_id: "u1".into(),
+        channel_id: "c1".into(),
+        team_id: "t1".into(),
+        submission: [
+            ("reason".to_owned(), json!("hi")),
+            ("notify".to_owned(), json!(true)),
+        ]
+        .into(),
+        cancelled: false,
+    };
+    let answer = client.submit_dialog(&submit).await.unwrap();
+    assert!(!answer.accepted());
+    assert_eq!(answer.error, "Not now.");
+    assert_eq!(answer.errors["reason"], "Say more.");
+    let cancel = SubmitDialogRequest {
+        callback_id: "gone".into(),
+        submission: Default::default(),
+        cancelled: true,
+        ..submit.clone()
+    };
+    assert_eq!(
+        client.submit_dialog(&cancel).await.unwrap(),
+        SubmitDialogResponse::default(),
+        "a null answer is a plain yes"
+    );
+    let quiet = SubmitDialogRequest {
+        callback_id: "quiet".into(),
+        ..submit
+    };
+    assert!(client.submit_dialog(&quiet).await.unwrap().accepted());
 }
