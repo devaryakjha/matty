@@ -1454,6 +1454,27 @@ pub async fn sign_in_with_token(url: String, token: String) -> Result<Session, S
     }
 }
 
+/// Finishes browser SSO with the `server_token` from the `mattermost://`
+/// hand-off (PLAN §6.6, #75).
+pub async fn sign_in_with_desktop_token(
+    url: String,
+    server_token: String,
+) -> Result<Session, String> {
+    let answer = matty_sync::io::run(async move {
+        Client::new(&url)?
+            .login_desktop_token(&server_token, "")
+            .await
+    });
+    match answer.recv().await {
+        Ok(Ok(signed_in)) => Ok(Session {
+            client: signed_in.client,
+            user: signed_in.user,
+        }),
+        Ok(Err(error)) => Err(sign_in_error(&error)),
+        Err(_) => Err(STOPPED.into()),
+    }
+}
+
 /// A team's followed threads and their cached root posts, as sync sent
 /// them.
 type ThreadList = (
