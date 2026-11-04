@@ -283,6 +283,16 @@ pub enum Command {
         /// Which rendition.
         size: ImageSize,
     },
+    /// Fetches an image from outside the server, such as a link preview's:
+    /// through the server's image proxy when it has one, else directly and
+    /// without the session (#159). [`ChangeSet::RemoteImage`] answers; a URL
+    /// that gives no image gets no answer.
+    ///
+    /// [`ChangeSet::RemoteImage`]: crate::ChangeSet::RemoteImage
+    LoadRemoteImage {
+        /// The image's URL.
+        url: String,
+    },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
     Download {
@@ -517,6 +527,9 @@ impl std::fmt::Debug for Command {
                 .field("file_id", file_id)
                 .field("size", size)
                 .finish(),
+            Self::LoadRemoteImage { .. } => {
+                f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
+            }
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
                 .field("file_id", file_id)
@@ -733,6 +746,7 @@ impl Engine {
         let mut to_fetch = Vec::new();
         let mut uploads = Vec::new();
         let mut images = Vec::new();
+        let mut remote_images = Vec::new();
         let mut pages = Vec::new();
         let mut downloads = Vec::new();
         let mut fetches = Vec::new();
@@ -1083,6 +1097,9 @@ impl Engine {
                 Message::Command(Command::LoadImage { file_id, size }) => {
                     images.push((file_id, size));
                 }
+                Message::Command(Command::LoadRemoteImage { url }) => {
+                    remote_images.push(url);
+                }
                 Message::Command(Command::Download {
                     file_id,
                     folder,
@@ -1165,6 +1182,9 @@ impl Engine {
         }
         for (file_id, size) in images {
             self.image(file_id, size, dirty);
+        }
+        for url in remote_images {
+            self.remote_image(url, dirty);
         }
         for upload in uploads {
             self.upload(upload, dirty);
@@ -1412,6 +1432,58 @@ impl Engine {
                 size,
                 image,
             });
+        });
+    }
+
+    /// Answers from the media cache, or fetches an outside image; it comes
+    /// back as [`Loaded::RemoteImage`].
+    fn remote_image(&mut self, url: String, dirty: &mut Dirty) {
+        let key = matty_store::media::remote_key(&url);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::RemoteImage {
+                        url,
+                        bytes: Arc::from(cached.bytes),
+                        content_type: cached.content_type,
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        if !self.fetching.insert(key) {
+            return;
+        }
+        let proxy = self
+            .capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.image_proxy);
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let fetched = if proxy {
+                client.proxied_image(&url).await
+            } else {
+                client.outside_image(&url).await
+            };
+            let image = match fetched {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type: Some(content_type),
+                    ..
+                }) if content_type.starts_with("image/") => Some((bytes, content_type)),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::debug!(%error, proxy, "no outside image");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::RemoteImage { url, image });
         });
     }
 
@@ -1863,6 +1935,23 @@ impl Engine {
                     dirty.direct.push(ChangeSet::Image {
                         file_id,
                         size,
+                        bytes: Arc::from(bytes),
+                        content_type,
+                    });
+                }
+            }
+            Loaded::RemoteImage { url, image } => {
+                let key = matty_store::media::remote_key(&url);
+                self.fetching.remove(&key);
+                if let Some((bytes, content_type)) = image {
+                    if let Some(media) = &self.media
+                        && let Err(error) =
+                            media.put(self.store.conn(), &key, &bytes, &content_type)
+                    {
+                        tracing::warn!(%error, "could not keep an image");
+                    }
+                    dirty.direct.push(ChangeSet::RemoteImage {
+                        url,
                         bytes: Arc::from(bytes),
                         content_type,
                     });

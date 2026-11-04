@@ -100,6 +100,11 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// An outside image, or `None` when the URL gave none.
+    RemoteImage {
+        url: String,
+        image: Option<(Vec<u8>, String)>,
+    },
     /// Search results, best first.
     Search {
         terms: String,

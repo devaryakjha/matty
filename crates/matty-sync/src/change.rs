@@ -141,6 +141,16 @@ pub enum ChangeSet {
         /// Its MIME type, such as `image/jpeg`.
         content_type: String,
     },
+    /// An outside image: the answer to
+    /// [`Command::LoadRemoteImage`](crate::Command::LoadRemoteImage).
+    RemoteImage {
+        /// The URL asked for.
+        url: String,
+        /// The encoded image.
+        bytes: Arc<[u8]>,
+        /// Its MIME type, such as `image/png`.
+        content_type: String,
+    },
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].

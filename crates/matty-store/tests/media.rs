@@ -118,3 +118,15 @@ fn remove_deletes_the_file() {
     // Removing again is fine.
     cache.remove(conn, &key).unwrap();
 }
+
+#[test]
+fn remote_keys_are_short_stable_and_distinct() {
+    let url = format!("https://example.com/{}.png", "a".repeat(400));
+    let key = matty_store::media::remote_key(&url);
+    assert_eq!(key, matty_store::media::remote_key(&url));
+    assert_eq!(key.len(), "remote/".len() + 32);
+    assert_ne!(
+        key,
+        matty_store::media::remote_key("https://example.com/b.png")
+    );
+}
