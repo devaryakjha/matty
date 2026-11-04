@@ -820,6 +820,7 @@ impl ChannelView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        crate::perf::composer_changed();
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
@@ -906,6 +907,11 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::perf::channel_shown(
+            model.as_ref().map(|model| model.id.as_ref()),
+            model.as_ref().is_some_and(|model| model.loading),
+            model.as_ref().map_or(0, |model| model.posts.len()),
+        );
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
         self.refresh_header_menu(model.as_ref(), cx);
         let count = self.rows.len();
@@ -1004,6 +1010,8 @@ impl ChannelView {
         };
         let arrived = posts.iter().filter(|post| !post.mine).count();
         model.posts.extend(posts);
+        // Sync's first posts for a channel it had none of come as a patch.
+        crate::perf::channel_shown(Some(&model.id), model.loading, model.posts.len());
         let rows = model.rows();
         let before = self.rows.len();
         let added = rows.len().saturating_sub(before);
