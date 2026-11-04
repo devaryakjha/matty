@@ -108,6 +108,20 @@ pub enum Command {
         /// The root post's id.
         root_id: String,
     },
+    /// Loads the page of replies before the oldest one the open thread's
+    /// snapshot holds (#122); the next [`ChangeSet::Thread`] reaches back
+    /// that far, or says the page failed.
+    LoadOlderReplies {
+        /// The root post's id.
+        root_id: String,
+    },
+    /// Loads the page of followed threads after the last one the team's
+    /// Threads list holds (#122); the next [`ChangeSet::ThreadList`]
+    /// reaches that far, or says the page failed.
+    LoadMoreThreads {
+        /// The team.
+        team_id: String,
+    },
     /// The Threads view of a team is on screen: publish its list now and
     /// whenever it changes.
     OpenThreadList {
@@ -170,20 +184,25 @@ pub enum Command {
         /// Its pending id.
         pending_post_id: String,
     },
-    /// Drops an unsent post.
+    /// Drops an unsent post: a queued or failed one. One on its way to the
+    /// server is refused with
+    /// [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
     Discard {
         /// Its pending id.
         pending_post_id: String,
     },
-    /// Changes a sent post's text. A post still in the outbox is refused
-    /// with [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
+    /// Changes a post's text. A post waiting in the outbox takes the new
+    /// text before it goes, keeping its place (#195); one on its way to the
+    /// server is refused with
+    /// [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
     EditPost {
         /// The post.
         post_id: String,
         /// The new text.
         message: String,
     },
-    /// Deletes a sent post; refused like [`Command::EditPost`] while unsent.
+    /// Deletes a sent post. A post waiting in the outbox is discarded, and
+    /// one on its way is refused like [`Command::EditPost`].
     DeletePost {
         /// The post.
         post_id: String,
@@ -282,6 +301,12 @@ pub enum Command {
         /// The channel.
         channel_id: String,
     },
+    /// Finds what a link names, from the cache or else the server;
+    /// [`ChangeSet::LinkResolved`](crate::ChangeSet::LinkResolved) answers.
+    ResolveLink {
+        /// What the link names.
+        query: crate::LinkQuery,
+    },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
         /// The channel.
@@ -319,6 +344,15 @@ pub enum Command {
     SetCollapsedThreads {
         /// On.
         on: bool,
+    },
+    /// Saves account preferences Preferences mirrors, such as
+    /// `display_settings/message_display` (#156) or
+    /// `advanced_settings/send_on_ctrl_enter` (#157), as the user's.
+    /// [`ChangeSet::AccountPreferences`](crate::ChangeSet::AccountPreferences)
+    /// answers with every such preference.
+    SetPreferences {
+        /// Category, name and value of each; the user id is filled in.
+        preferences: Vec<Preference>,
     },
     /// Moves a channel into or out of the team's Favorites, by the
     /// `favorite_channel` preference the server turns into the move.
@@ -374,6 +408,18 @@ pub enum Command {
     LoadRemoteImage {
         /// The image's URL.
         url: String,
+    },
+    /// Loads a user's profile picture (#153): from the media cache, else
+    /// from the server, keeping it for next time. [`ChangeSet::Avatar`]
+    /// always answers, with no image when there is none to show.
+    ///
+    /// [`ChangeSet::Avatar`]: crate::ChangeSet::Avatar
+    LoadAvatar {
+        /// The user.
+        user_id: String,
+        /// Their `last_picture_update` as the app knows it; `None` uses
+        /// the stored user's.
+        last_picture_update: Option<i64>,
     },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
@@ -495,6 +541,10 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SetCollapsedThreads")
                 .field("on", on)
                 .finish(),
+            Self::SetPreferences { preferences } => f
+                .debug_struct("SetPreferences")
+                .field("preferences", preferences)
+                .finish(),
             Self::SetFavorite {
                 channel_id,
                 favorite,
@@ -542,6 +592,14 @@ impl std::fmt::Debug for Command {
             Self::CloseThread { root_id } => f
                 .debug_struct("CloseThread")
                 .field("root_id", root_id)
+                .finish(),
+            Self::LoadOlderReplies { root_id } => f
+                .debug_struct("LoadOlderReplies")
+                .field("root_id", root_id)
+                .finish(),
+            Self::LoadMoreThreads { team_id } => f
+                .debug_struct("LoadMoreThreads")
+                .field("team_id", team_id)
                 .finish(),
             Self::OpenThreadList { team_id } => f
                 .debug_struct("OpenThreadList")
@@ -653,6 +711,9 @@ impl std::fmt::Debug for Command {
                 .debug_struct("JoinChannel")
                 .field("channel_id", channel_id)
                 .finish(),
+            Self::ResolveLink { query } => {
+                f.debug_struct("ResolveLink").field("query", query).finish()
+            }
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -689,6 +750,14 @@ impl std::fmt::Debug for Command {
             Self::LoadRemoteImage { .. } => {
                 f.debug_struct("LoadRemoteImage").finish_non_exhaustive()
             }
+            Self::LoadAvatar {
+                user_id,
+                last_picture_update,
+            } => f
+                .debug_struct("LoadAvatar")
+                .field("user_id", user_id)
+                .field("last_picture_update", last_picture_update)
+                .finish(),
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
                 .field("file_id", file_id)
@@ -866,6 +935,10 @@ pub(crate) struct Engine {
     fetching: BTreeSet<String>,
     /// What the server said about each link asked for while composing.
     link_previews: std::collections::HashMap<String, Option<Arc<matty_api::models::OpenGraph>>>,
+    /// How far back each open thread's replies are loaded (#122).
+    thread_pages: std::collections::HashMap<String, ThreadPages>,
+    /// How far each team's Threads list is loaded (#122).
+    thread_list_pages: std::collections::HashMap<String, ListPages>,
 }
 
 impl Engine {
@@ -895,6 +968,8 @@ impl Engine {
             history: std::collections::HashMap::new(),
             sending: std::collections::HashMap::new(),
             floors: std::collections::HashMap::new(),
+            thread_pages: std::collections::HashMap::new(),
+            thread_list_pages: std::collections::HashMap::new(),
         }
     }
 
@@ -945,8 +1020,10 @@ impl Engine {
         let mut uploads = Vec::new();
         let mut images = Vec::new();
         let mut remote_images = Vec::new();
+        let mut avatars = Vec::new();
         let mut threads_to_fetch = Vec::new();
         let mut thread_lists_to_fetch = Vec::new();
+        let mut thread_pages_to_fetch = Vec::new();
         let mut link_previews = Vec::new();
         let mut pages = Vec::new();
         let mut downloads = Vec::new();
@@ -1005,24 +1082,32 @@ impl Engine {
                     dirty.unreads = true;
                     dirty.channels.extend(self.open_channels.iter().cloned());
                 }
-                Message::Command(Command::SignOut) => match self.session.take() {
-                    Some(old) => {
-                        old.load.abort();
-                        // Dropping the session closes the WebSocket.
-                        let client = old.client.clone();
-                        drop(old);
-                        let loaded = self.loaded.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = client.logout().await {
-                                tracing::warn!(%error, "the server did not end the session");
-                            }
-                            let _ = loaded.send(Loaded::SignedOut);
-                        });
+                Message::Command(Command::SignOut) => {
+                    // Nothing queued in this session may go out under the
+                    // next, even if the cache outlives the sign out (#194).
+                    let dropped = queue::clear(&tx)?;
+                    if dropped > 0 {
+                        tracing::info!(dropped, "dropped queued sends at sign out");
                     }
-                    None => dirty
-                        .direct
-                        .push(ChangeSet::Connection(Connection::SignedOut)),
-                },
+                    match self.session.take() {
+                        Some(old) => {
+                            old.load.abort();
+                            // Dropping the session closes the WebSocket.
+                            let client = old.client.clone();
+                            drop(old);
+                            let loaded = self.loaded.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = client.logout().await {
+                                    tracing::warn!(%error, "the server did not end the session");
+                                }
+                                let _ = loaded.send(Loaded::SignedOut);
+                            });
+                        }
+                        None => dirty
+                            .direct
+                            .push(ChangeSet::Connection(Connection::SignedOut)),
+                    }
+                }
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
                     to_fetch.push(channel_id.clone());
@@ -1066,11 +1151,32 @@ impl Engine {
                 }
                 Message::Command(Command::OpenThread { root_id }) => {
                     self.open_threads.insert(root_id.clone());
+                    self.thread_pages.remove(&root_id);
                     dirty.threads.insert(root_id.clone());
-                    threads_to_fetch.push(root_id);
+                    threads_to_fetch.push((root_id, None));
                 }
                 Message::Command(Command::CloseThread { root_id }) => {
                     self.open_threads.remove(&root_id);
+                    self.thread_pages.remove(&root_id);
+                }
+                Message::Command(Command::LoadOlderReplies { root_id }) => {
+                    let floor = self.thread_pages.get_mut(&root_id).and_then(|pages| {
+                        let floor = pages.floor.clone().filter(|_| !pages.at_start)?;
+                        (!pages.loading).then_some(floor)
+                    });
+                    if let Some(floor) = floor {
+                        threads_to_fetch.push((root_id, Some(floor)));
+                    }
+                }
+                Message::Command(Command::LoadMoreThreads { team_id }) => {
+                    let pages = self.thread_list_pages.entry(team_id.clone()).or_default();
+                    if !pages.loading && !pages.complete {
+                        let shown = THREAD_LIST + pages.extra;
+                        let last = posts::threads(&tx, &team_id, false, shown)?
+                            .last()
+                            .map(|thread| thread.id.clone());
+                        thread_pages_to_fetch.push((team_id, last));
+                    }
                 }
                 Message::Command(Command::OpenThreadList { team_id }) => {
                     self.open_thread_lists.insert(team_id.clone());
@@ -1158,24 +1264,52 @@ impl Engine {
                     }
                 }
                 Message::Command(Command::Discard { pending_post_id }) => {
-                    outbox::discard(&tx, &pending_post_id, dirty)?;
-                }
-                Message::Command(Command::EditPost { post_id, message }) => {
-                    if queue::get(&tx, &post_id)?.is_some() {
+                    if in_flight(&self.sending, &pending_post_id) {
+                        // The server may be creating it right now; the row
+                        // comes back and reads "Sending…".
+                        if let Some(outgoing) = queue::get(&tx, &pending_post_id)? {
+                            dirty.channels.insert(outgoing.channel_id);
+                        }
                         dirty
                             .direct
-                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                            .push(ChangeSet::Failed(CommandError::NotSentYet {
+                                post_id: pending_post_id,
+                            }));
                     } else {
-                        writes.push(Write::Edit { post_id, message });
+                        outbox::discard(&tx, &pending_post_id, dirty)?;
+                    }
+                }
+                Message::Command(Command::EditPost { post_id, message }) => {
+                    match queue::get(&tx, &post_id)? {
+                        // Still on its way: the server may already have
+                        // it, so the view goes back to what is stored.
+                        Some(outgoing) if in_flight(&self.sending, &post_id) => {
+                            dirty.channels.insert(outgoing.channel_id);
+                            dirty
+                                .direct
+                                .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                        }
+                        // Waiting: the queued send takes the new text (#195).
+                        Some(outgoing) => {
+                            queue::edit(&tx, &post_id, &message)?;
+                            outbox::touch(&outgoing, dirty);
+                        }
+                        None => writes.push(Write::Edit { post_id, message }),
                     }
                 }
                 Message::Command(Command::DeletePost { post_id }) => {
-                    if queue::get(&tx, &post_id)?.is_some() {
-                        dirty
-                            .direct
-                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
-                    } else {
-                        writes.push(Write::Delete { post_id });
+                    match queue::get(&tx, &post_id)? {
+                        Some(outgoing) if in_flight(&self.sending, &post_id) => {
+                            dirty.channels.insert(outgoing.channel_id);
+                            dirty
+                                .direct
+                                .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                        }
+                        // Never sent, so nobody else saw it: it just goes.
+                        Some(_) => {
+                            outbox::discard(&tx, &post_id, dirty)?;
+                        }
+                        None => writes.push(Write::Delete { post_id }),
                     }
                 }
                 Message::Command(Command::ViewChannel {
@@ -1296,6 +1430,20 @@ impl Engine {
                         writes.push(Write::Preferences(vec![preference]));
                     }
                 }
+                Message::Command(Command::SetPreferences { preferences }) => {
+                    if let Some(me) = &self.me {
+                        let preferences: Vec<Preference> = preferences
+                            .into_iter()
+                            .map(|preference| Preference {
+                                user_id: me.clone(),
+                                ..preference
+                            })
+                            .collect();
+                        sidebar::upsert_preferences(&tx, &preferences)?;
+                        dirty.preferences = true;
+                        writes.push(Write::Preferences(preferences));
+                    }
+                }
                 Message::Command(Command::SetFavorite {
                     channel_id,
                     favorite,
@@ -1346,6 +1494,15 @@ impl Engine {
                         private: true,
                     });
                 }
+                Message::Command(Command::ResolveLink { query }) => {
+                    match cached_link(&tx, &query)? {
+                        Some(answer) => dirty.direct.push(ChangeSet::LinkResolved {
+                            query,
+                            answer: Some(answer),
+                        }),
+                        None => writes.push(Write::Resolve(query)),
+                    }
+                }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
                 }
@@ -1366,6 +1523,10 @@ impl Engine {
                 Message::Command(Command::LoadRemoteImage { url }) => {
                     remote_images.push(url);
                 }
+                Message::Command(Command::LoadAvatar {
+                    user_id,
+                    last_picture_update,
+                }) => avatars.push((user_id, last_picture_update)),
                 Message::Command(Command::LoadLinkPreview { url }) => {
                     link_previews.push(url);
                 }
@@ -1527,11 +1688,17 @@ impl Engine {
         for url in remote_images {
             self.remote_image(url, dirty);
         }
+        for (user_id, version) in avatars {
+            self.avatar(user_id, version, dirty);
+        }
         for (team_id, since) in thread_lists_to_fetch {
             self.fetch_thread_list(team_id, since);
         }
-        for root_id in threads_to_fetch {
-            self.fetch_thread(root_id);
+        for (root_id, before) in threads_to_fetch {
+            self.fetch_thread(root_id, before, dirty);
+        }
+        for (team_id, last) in thread_pages_to_fetch {
+            self.fetch_more_threads(team_id, last, dirty);
         }
         for url in link_previews {
             self.link_preview(url, dirty);
@@ -1560,10 +1727,7 @@ impl Engine {
             return Ok(());
         };
         let conn = self.store.conn();
-        let Some(outgoing) = queue::for_channel(conn, channel_id)?
-            .into_iter()
-            .find(|outgoing| outgoing.last_error.is_none())
-        else {
+        let Some(outgoing) = queue::next(conn, channel_id)? else {
             return Ok(());
         };
         queue::attempt(conn, &outgoing.pending_post_id)?;
@@ -1819,30 +1983,71 @@ impl Engine {
         });
     }
 
-    /// Reads a thread from the server, as the cache may hold only its root
-    /// (collapsed threads) or nothing (a thread opened from a search); it
-    /// comes back as [`Loaded::Thread`].
-    fn fetch_thread(&mut self, root_id: String) {
+    /// Reads a thread's newest page of replies from the server, as the
+    /// cache may hold only its root (collapsed threads) or nothing (a
+    /// thread opened from a search), or with `before` the page before that
+    /// reply (#122); it comes back as [`Loaded::Thread`].
+    fn fetch_thread(&mut self, root_id: String, before: Option<(i64, String)>, dirty: &mut Dirty) {
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
             return;
         };
         if !self.fetching.insert(format!("thread/{root_id}")) {
             return;
         }
+        let older = before.is_some();
+        if older {
+            let pages = self.thread_pages.entry(root_id.clone()).or_default();
+            pages.loading = true;
+            pages.failed = false;
+            dirty.threads.insert(root_id.clone());
+        }
+        let query = match before {
+            Some((at, post_id)) => {
+                matty_api::ThreadQuery::from(post_id, at, matty_api::Direction::Up, THREAD_PAGE)
+            }
+            None => matty_api::ThreadQuery::latest(THREAD_PAGE),
+        };
         let client = session.client.clone();
         let results = self.loaded.clone();
         tokio::spawn(async move {
-            let posts = match client
-                .post_thread(&root_id, &matty_api::ThreadQuery::all())
+            let posts = client
+                .post_thread(&root_id, &query)
                 .await
-            {
-                Ok(posts) => posts,
-                Err(error) => {
-                    tracing::debug!(%error, "could not read a thread");
-                    Default::default()
-                }
+                .inspect_err(|error| tracing::debug!(%error, "could not read a thread"))
+                .ok();
+            let _ = results.send(Loaded::Thread {
+                root_id,
+                posts,
+                older,
+            });
+        });
+    }
+
+    /// Reads the page of a team's followed threads after `last`, the
+    /// oldest one listed (#122); it comes back as [`Loaded::MoreThreads`].
+    fn fetch_more_threads(&mut self, team_id: String, last: Option<String>, dirty: &mut Dirty) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        let pages = self.thread_list_pages.entry(team_id.clone()).or_default();
+        pages.loading = true;
+        pages.failed = false;
+        dirty.thread_lists.insert(team_id.clone());
+        let client = session.client.clone();
+        let user_id = session.user_id.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let query = matty_api::ThreadsQuery {
+                before: last,
+                per_page: THREADS_PAGE,
+                ..matty_api::ThreadsQuery::default()
             };
-            let _ = results.send(Loaded::Thread { root_id, posts });
+            let threads = client
+                .user_threads(&user_id, &team_id, &query)
+                .await
+                .inspect_err(|error| tracing::debug!(%error, "could not read more threads"))
+                .ok();
+            let _ = results.send(Loaded::MoreThreads { team_id, threads });
         });
     }
 
@@ -1865,14 +2070,18 @@ impl Engine {
                 deleted: since.is_some(),
                 ..matty_api::ThreadsQuery::default()
             };
-            let threads = match client.user_threads(&user_id, &team_id, &query).await {
-                Ok(threads) => threads.threads,
+            let (threads, total) = match client.user_threads(&user_id, &team_id, &query).await {
+                Ok(threads) => (threads.threads, Some(threads.total)),
                 Err(error) => {
                     tracing::debug!(%error, "could not read the thread list");
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             };
-            let _ = results.send(Loaded::Threads { team_id, threads });
+            let _ = results.send(Loaded::Threads {
+                team_id,
+                threads,
+                total,
+            });
         });
     }
 
@@ -1925,6 +2134,65 @@ impl Engine {
                 }
             };
             let _ = results.send(Loaded::RemoteImage { url, image });
+        });
+    }
+
+    /// Answers a profile picture from the media cache, or fetches it; it
+    /// comes back as [`Loaded::Avatar`]. Without a session there is no
+    /// picture to fetch, which the app hears as an empty answer.
+    fn avatar(&mut self, user_id: String, version: Option<i64>, dirty: &mut Dirty) {
+        let version = version.unwrap_or_else(|| {
+            sidebar::users(self.store.conn(), std::slice::from_ref(&user_id))
+                .ok()
+                .and_then(|users| users.first().map(|user| user.last_picture_update))
+                .unwrap_or(0)
+        });
+        let key = matty_store::media::avatar_key(&user_id, version);
+        if let Some(media) = &self.media {
+            match media.get(self.store.conn(), &key) {
+                Ok(Some(cached)) => {
+                    dirty.direct.push(ChangeSet::Avatar {
+                        user_id,
+                        last_picture_update: version,
+                        image: Some((Arc::from(cached.bytes), cached.content_type)),
+                    });
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the media cache"),
+            }
+        }
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            dirty.direct.push(ChangeSet::Avatar {
+                user_id,
+                last_picture_update: version,
+                image: None,
+            });
+            return;
+        };
+        if !self.fetching.insert(key) {
+            return;
+        }
+        let client = session.client.clone();
+        let results = self.loaded.clone();
+        tokio::spawn(async move {
+            let image = match client.avatar(&user_id, None).await {
+                Ok(matty_api::Fetched::Fresh {
+                    bytes,
+                    content_type,
+                    ..
+                }) => Some((bytes, content_type.unwrap_or_else(|| "image/png".into()))),
+                Ok(matty_api::Fetched::NotModified) => None,
+                Err(error) => {
+                    tracing::debug!(%error, user_id, "no profile picture");
+                    None
+                }
+            };
+            let _ = results.send(Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            });
         });
     }
 
@@ -2238,6 +2506,11 @@ impl Engine {
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));
                 dirty.direct.push(ChangeSet::Preferences);
+                dirty
+                    .direct
+                    .push(ChangeSet::AccountPreferences(account_preferences(
+                        &preferences,
+                    )));
                 dirty.unreads = true;
                 let open: Vec<String> = self.open_channels.iter().cloned().collect();
                 for channel_id in open {
@@ -2296,7 +2569,14 @@ impl Engine {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
             Loaded::StatusesDue => self.fetch_statuses(),
-            Loaded::Done => dirty.direct.push(ChangeSet::Connection(Connection::Loaded)),
+            Loaded::Done => {
+                // The server answered the whole load, so what waits from an
+                // earlier run goes now, even before the socket is up (#194).
+                for channel_id in queue::channels(self.store.conn())? {
+                    self.drain(&channel_id, dirty)?;
+                }
+                dirty.direct.push(ChangeSet::Connection(Connection::Loaded));
+            }
             Loaded::SignedOut => dirty
                 .direct
                 .push(ChangeSet::Connection(Connection::SignedOut)),
@@ -2340,8 +2620,38 @@ impl Engine {
             Loaded::Thread {
                 root_id,
                 posts: list,
+                older,
             } => {
                 self.fetching.remove(&format!("thread/{root_id}"));
+                let open = self.open_threads.contains(&root_id);
+                let Some(list) = list else {
+                    // A failed first page leaves the cached thread as it
+                    // is; a failed older page offers Retry.
+                    if let Some(pages) = self.thread_pages.get_mut(&root_id).filter(|_| older) {
+                        pages.loading = false;
+                        pages.failed = true;
+                        dirty.threads.insert(root_id);
+                    }
+                    return Ok(());
+                };
+                if open {
+                    let pages = self.thread_pages.entry(root_id.clone()).or_default();
+                    pages.loading = false;
+                    pages.at_start = !list.has_next;
+                    let oldest = list
+                        .posts
+                        .values()
+                        .filter(|post| post.id != root_id)
+                        .map(|post| (post.create_at, post.id.clone()))
+                        .min();
+                    if let Some(oldest) = oldest {
+                        pages.floor = Some(match pages.floor.take() {
+                            Some(floor) if older => floor.min(oldest),
+                            _ => oldest,
+                        });
+                    }
+                    dirty.threads.insert(root_id.clone());
+                }
                 if !list.posts.is_empty() {
                     let tx = self.store.conn_mut().transaction()?;
                     let fetched: Vec<_> = list.posts.into_values().collect();
@@ -2422,6 +2732,28 @@ impl Engine {
                         content_type,
                     });
                 }
+            }
+            Loaded::Avatar {
+                user_id,
+                version,
+                image,
+            } => {
+                let key = matty_store::media::avatar_key(&user_id, version);
+                self.fetching.remove(&key);
+                if let Some((bytes, content_type)) = &image
+                    && let Some(media) = &self.media
+                    && let Err(error) = media.put(self.store.conn(), &key, bytes, content_type)
+                {
+                    tracing::warn!(%error, "could not keep a profile picture");
+                }
+                dirty.direct.push(ChangeSet::Avatar {
+                    user_id,
+                    last_picture_update: version,
+                    image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
+                });
+            }
+            Loaded::Resolved { query, answer } => {
+                dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
             Loaded::Search { terms, posts } => dirty.direct.push(ChangeSet::Search {
                 terms,
@@ -2584,8 +2916,33 @@ impl Engine {
                 dirty.channels.insert(channel_id);
                 dirty.threads.extend(self.open_threads.iter().cloned());
             }
-            Loaded::Threads { team_id, threads } => {
+            Loaded::MoreThreads { team_id, threads } => {
+                let pages = self.thread_list_pages.entry(team_id.clone()).or_default();
+                pages.loading = false;
+                dirty.thread_lists.insert(team_id.clone());
+                let Some(page) = threads else {
+                    pages.failed = true;
+                    return Ok(());
+                };
+                pages.extra += page.threads.len();
+                pages.total = Some(page.total);
+                pages.complete = page.threads.len() < THREADS_PAGE as usize;
+                let tx = self.store.conn_mut().transaction()?;
+                posts::upsert_threads(&tx, &team_id, &page.threads)?;
+                tx.commit()?;
+            }
+            Loaded::Threads {
+                team_id,
+                threads,
+                total,
+            } => {
                 self.fetching.remove(&format!("threads/{team_id}"));
+                if let Some(total) = total {
+                    self.thread_list_pages
+                        .entry(team_id.clone())
+                        .or_default()
+                        .total = Some(total);
+                }
                 let tx = self.store.conn_mut().transaction()?;
                 posts::upsert_threads(&tx, &team_id, &threads)?;
                 let newest = threads
@@ -2770,11 +3127,25 @@ impl Engine {
             if !self.open_threads.contains(&root_id) {
                 continue;
             }
+            let pages = self.thread_pages.get(&root_id);
             match posts::thread(conn, &root_id) {
-                Ok(thread) => changes.push(ChangeSet::Thread {
-                    root_id,
-                    posts: Arc::from(thread),
-                }),
+                Ok(mut thread) => {
+                    let older =
+                        pages.and_then(|pages| pages.floor.as_ref().filter(|_| !pages.at_start));
+                    // Cached replies older than the pages loaded would show
+                    // above a gap; they wait until a page reaches them.
+                    if let Some((at, id)) = older {
+                        thread.retain(|post| {
+                            post.id == root_id || (post.create_at, &post.id) >= (*at, id)
+                        });
+                    }
+                    changes.push(ChangeSet::Thread {
+                        root_id,
+                        posts: Arc::from(thread),
+                        older: older.is_some(),
+                        failed: pages.is_some_and(|pages| pages.failed),
+                    });
+                }
                 Err(error) => tracing::error!(%error, "could not read a thread snapshot"),
             }
         }
@@ -2782,7 +3153,9 @@ impl Engine {
             if !self.open_thread_lists.contains(&team_id) {
                 continue;
             }
-            let list = posts::threads(conn, &team_id, false, THREAD_LIST).and_then(|threads| {
+            let pages = self.thread_list_pages.get(&team_id);
+            let limit = THREAD_LIST + pages.map_or(0, |pages| pages.extra);
+            let list = posts::threads(conn, &team_id, false, limit).and_then(|threads| {
                 let roots = threads
                     .iter()
                     .filter_map(|thread| posts::post(conn, &thread.id).transpose())
@@ -2790,11 +3163,21 @@ impl Engine {
                 Ok((threads, roots))
             });
             match list {
-                Ok((threads, roots)) => changes.push(ChangeSet::ThreadList {
-                    team_id,
-                    threads: Arc::from(threads),
-                    roots: Arc::from(roots),
-                }),
+                Ok((threads, roots)) => {
+                    let more = pages.is_some_and(|pages| {
+                        !pages.complete
+                            && pages
+                                .total
+                                .is_some_and(|total| total > threads.len() as i64)
+                    });
+                    changes.push(ChangeSet::ThreadList {
+                        team_id,
+                        threads: Arc::from(threads),
+                        roots: Arc::from(roots),
+                        more,
+                        failed: pages.is_some_and(|pages| pages.failed),
+                    });
+                }
                 Err(error) => tracing::error!(%error, "could not read a thread list"),
             }
         }
@@ -2843,10 +3226,24 @@ impl Engine {
                 floor,
                 roots_only,
             ) {
-                Ok(window) => changes.push(ChangeSet::Posts {
-                    channel_id,
-                    posts: Arc::from(window),
-                }),
+                Ok(window) => {
+                    if !roots_only {
+                        match reply_roots(conn, &window) {
+                            Ok(roots) if !roots.is_empty() => {
+                                changes.push(ChangeSet::ReplyRoots {
+                                    channel_id: channel_id.clone(),
+                                    roots: Arc::from(roots),
+                                });
+                            }
+                            Ok(_) => {}
+                            Err(error) => tracing::error!(%error, "could not read reply roots"),
+                        }
+                    }
+                    changes.push(ChangeSet::Posts {
+                        channel_id,
+                        posts: Arc::from(window),
+                    });
+                }
                 Err(error) => tracing::error!(%error, "could not read a posts snapshot"),
             }
         }
@@ -2867,6 +3264,7 @@ impl Engine {
         for change in changes {
             match change {
                 ChangeSet::Posts { posts, .. }
+                | ChangeSet::ReplyRoots { roots: posts, .. }
                 | ChangeSet::Thread { posts, .. }
                 | ChangeSet::Search { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
@@ -2983,11 +3381,16 @@ impl Engine {
     /// changes every count and the channel windows.
     fn preferences_changed(&mut self, dirty: &mut Dirty) {
         dirty.direct.push(ChangeSet::Preferences);
-        let Some(capabilities) = &self.capabilities else {
-            return;
-        };
         let conn = self.store.conn();
         let Ok(preferences) = all_preferences(conn) else {
+            return;
+        };
+        dirty
+            .direct
+            .push(ChangeSet::AccountPreferences(account_preferences(
+                &preferences,
+            )));
+        let Some(capabilities) = &self.capabilities else {
             return;
         };
         let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
@@ -3008,6 +3411,33 @@ impl Engine {
         dirty.all_teams = true;
         dirty.unreads = true;
         dirty.channels.extend(self.open_channels.iter().cloned());
+        if !crt {
+            self.fetch_replies();
+        }
+    }
+
+    /// Collapsed reply threads went off: the open channels were fetched
+    /// without their replies, so their newest page comes again with them
+    /// (#123).
+    fn fetch_replies(&self) {
+        let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
+            return;
+        };
+        for channel_id in self.open_channels.iter().cloned() {
+            let client = session.client.clone();
+            let results = self.loaded.clone();
+            tokio::spawn(async move {
+                match client
+                    .channel_posts(&channel_id, &matty_api::PostsQuery::latest(HISTORY_PAGE))
+                    .await
+                {
+                    Ok(posts) => {
+                        let _ = results.send(Loaded::Posts { channel_id, posts });
+                    }
+                    Err(error) => tracing::debug!(%error, "could not read the replies"),
+                }
+            });
+        }
     }
 }
 
@@ -3073,8 +3503,39 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
     }
 }
 
+/// What the cache already knows about a link's target; `None` sends the
+/// question to the server.
+fn cached_link(db: &Db, query: &crate::LinkQuery) -> Result<Option<crate::LinkAnswer>, StoreError> {
+    use crate::{LinkAnswer, LinkQuery};
+    Ok(match query {
+        LinkQuery::Post { post_id } => match posts::post(db, post_id)? {
+            Some(post) => sidebar::channel(db, &post.channel_id)?
+                .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+            None => None,
+        },
+        LinkQuery::Channel { team_id, name } => sidebar::channel_by_name(db, team_id, name)?
+            .map(|channel| LinkAnswer::Channel(Arc::new(channel))),
+        LinkQuery::User { username } => {
+            sidebar::user_by_username(db, username)?.map(|user| LinkAnswer::User(Arc::new(user)))
+        }
+    })
+}
+
 /// Whether link previews show: the server's `EnableLinkPreviews`, then the
 /// user's `display_settings/link_previews`, on unless set to "false".
+/// The categories of account preferences Preferences mirrors (#156, #157).
+const ACCOUNT_CATEGORIES: [&str; 2] = ["display_settings", "advanced_settings"];
+
+/// The user's display and advanced settings, for
+/// [`ChangeSet::AccountPreferences`].
+pub(crate) fn account_preferences(preferences: &[Preference]) -> Arc<[Preference]> {
+    preferences
+        .iter()
+        .filter(|p| ACCOUNT_CATEGORIES.contains(&p.category.as_str()))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn link_previews(enabled: bool, preferences: &[Preference]) -> bool {
     enabled
         && !preferences.iter().any(|p| {
@@ -3096,6 +3557,41 @@ fn image_key(file_id: &str, size: ImageSize) -> String {
 
 /// Posts per page of history (PLAN §4.2).
 const HISTORY_PAGE: u32 = 60;
+
+/// Replies per page of a long thread (#122).
+const THREAD_PAGE: u32 = 50;
+
+/// Followed threads per page of the Threads list (#122).
+const THREADS_PAGE: u32 = 25;
+
+/// How far back an open thread's replies are loaded.
+#[derive(Debug, Default)]
+struct ThreadPages {
+    /// The oldest reply fetched, by creation time then id; while older
+    /// replies remain, the snapshot leaves out cached ones before it.
+    floor: Option<(i64, String)>,
+    /// Every reply back to the root is loaded.
+    at_start: bool,
+    /// An older page is on its way.
+    loading: bool,
+    /// The last older page failed.
+    failed: bool,
+}
+
+/// How far a team's Threads list is loaded.
+#[derive(Debug, Default)]
+struct ListPages {
+    /// Threads listed beyond [`THREAD_LIST`], one page at a time.
+    extra: usize,
+    /// The server's count of the team's followed threads, once asked.
+    total: Option<i64>,
+    /// A page came back short: there are no more.
+    complete: bool,
+    /// A page is on its way.
+    loading: bool,
+    /// The last page failed.
+    failed: bool,
+}
 
 /// How far back an open channel's snapshot reaches.
 #[derive(Debug, Default)]
@@ -3201,4 +3697,30 @@ fn category_write(me: Option<&str>, mut category: matty_api::models::SidebarCate
         team_id: category.team_id.clone(),
         category: Box::new(category),
     }
+}
+
+/// The cached roots of the replies in `window` that it does not hold.
+fn reply_roots(
+    conn: &rusqlite::Connection,
+    window: &[matty_api::models::Post],
+) -> Result<Vec<matty_api::models::Post>, StoreError> {
+    let shown: BTreeSet<&str> = window.iter().map(|post| post.id.as_str()).collect();
+    let missing: BTreeSet<&str> = window
+        .iter()
+        .map(|post| post.root_id.as_str())
+        .filter(|root| !root.is_empty() && !shown.contains(root))
+        .collect();
+    let mut roots = Vec::new();
+    for root_id in missing {
+        if let Some(root) = posts::post(conn, root_id)? {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+/// Whether the send is on its way to the server now, given each channel's
+/// send in flight.
+fn in_flight(sending: &std::collections::HashMap<String, String>, pending_post_id: &str) -> bool {
+    sending.values().any(|id| id == pending_post_id)
 }

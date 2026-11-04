@@ -6,15 +6,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_icons::LucideIcon;
+use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, ElementId, Image, ImageFormat, ImageSource, ParentElement as _, SharedString, Styled as _,
-    Window, div,
+    App, ElementId, ExternalPaths, Image, ImageFormat, ImageSource, InteractiveElement as _,
+    IntoElement as _, ParentElement as _, SharedString, Styled as _, Window, div,
 };
 
+use crate::style::{self, TypeStyleExt as _, scaled};
 pub use crate::ui::attachment::AttachmentStatus;
 use crate::ui::{
     attachment::{Attachment, attachment_group},
+    spinner::Spinner,
     theme::UiTheme,
 };
 
@@ -101,6 +103,247 @@ impl Upload {
     /// Whether the file is on the server and the post can go.
     pub fn is_ready(&self) -> bool {
         self.status == AttachmentStatus::Ready
+    }
+    /// Its tray chip: a thumbnail for an image, a card for anything else,
+    /// with remove, and Retry once it failed. `prefix` keeps element ids
+    /// apart between trays.
+    pub fn chip(
+        &self,
+        prefix: &str,
+        on_remove: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+        on_retry: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Attachment {
+        let mut chip = Attachment::new(
+            ElementId::Name(format!("{prefix}.{}", self.id).into()),
+            self.name.clone(),
+        )
+        .meta(self.meta())
+        .icon(self.icon())
+        .status(self.status)
+        .on_remove(on_remove);
+        if let Some(image) = self.image() {
+            chip = chip.image(image);
+        }
+        if self.status == AttachmentStatus::Failed {
+            chip = chip.on_retry(on_retry);
+        }
+        chip
+    }
+}
+
+/// Mattermost's limit on files per post.
+pub const MAX_FILE_COUNT: usize = 10;
+
+/// Mattermost's default `MaxFileSize` (100 MB), until the server says.
+pub const DEFAULT_MAX_FILE_SIZE: u64 = 104_857_600;
+
+/// What pressing Send does with the tray as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendGate {
+    /// Everything is on the server: send.
+    Now,
+    /// Files are still uploading: send once they finish.
+    Wait,
+    /// Nothing to send, or a file failed: stay put.
+    Blocked,
+}
+
+/// A composer's files on their way into a post (PLAN §4.3, #149): the
+/// chips, the size and count rules that keep a file out before it uploads,
+/// the line saying why, and a send waiting for uploads to finish.
+pub struct UploadTray {
+    prefix: &'static str,
+    uploads: Vec<Upload>,
+    seq: usize,
+    max_file_size: u64,
+    notice: Option<SharedString>,
+    queued: bool,
+}
+
+impl UploadTray {
+    /// An empty tray; `prefix` keeps its upload ids apart from other trays'.
+    pub fn new(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            uploads: Vec::new(),
+            seq: 0,
+            max_file_size: DEFAULT_MAX_FILE_SIZE,
+            notice: None,
+            queued: false,
+        }
+    }
+
+    /// The files in the tray, in the order they were added.
+    pub fn uploads(&self) -> &[Upload] {
+        &self.uploads
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.uploads.is_empty()
+    }
+
+    /// The server's `MaxFileSize`.
+    pub fn set_max_file_size(&mut self, bytes: u64) {
+        self.max_file_size = bytes;
+    }
+
+    /// Why files were left out, or why a waiting send did not go.
+    pub fn notice(&self) -> Option<&SharedString> {
+        self.notice.as_ref()
+    }
+
+    /// Whether a send is waiting for uploads to finish.
+    pub fn is_queued(&self) -> bool {
+        self.queued
+    }
+
+    /// Adds picked, dropped or pasted files, refusing any over the size
+    /// limit and any past the tenth. Returns the ones to upload.
+    pub fn add(&mut self, sources: impl IntoIterator<Item = UploadSource>) -> Vec<Upload> {
+        let files = sources
+            .into_iter()
+            .map(|source| match source {
+                UploadSource::Path(path) => Upload::from_path("", path),
+                UploadSource::Image(image) => Upload::from_image("", image),
+            })
+            .collect();
+        self.admit(files)
+    }
+
+    /// [`Self::add`] for files whose name and size are known; each
+    /// accepted one gets the tray's next id.
+    pub fn admit(&mut self, files: Vec<Upload>) -> Vec<Upload> {
+        let mut too_big: Vec<&Upload> = Vec::new();
+        let mut too_many: Vec<&Upload> = Vec::new();
+        let mut accepted = Vec::new();
+        for file in &files {
+            if file.size > self.max_file_size {
+                too_big.push(file);
+            } else if self.uploads.len() >= MAX_FILE_COUNT {
+                too_many.push(file);
+            } else {
+                self.seq += 1;
+                let mut upload = file.clone();
+                upload.id = format!("{}-{}", self.prefix, self.seq).into();
+                upload.status = AttachmentStatus::Uploading(0.);
+                self.uploads.push(upload.clone());
+                accepted.push(upload);
+            }
+        }
+        let limit = format_size(self.max_file_size);
+        let size = match too_big.as_slice() {
+            [] => None,
+            [file] => Some(format!(
+                "{} is {}. Files must be under {limit}.",
+                file.name,
+                format_size(file.size)
+            )),
+            files => Some(format!(
+                "{} files were not added. Files must be under {limit}.",
+                files.len()
+            )),
+        };
+        let count = match too_many.as_slice() {
+            [] => None,
+            [file] => Some(format!(
+                "{} was not added: a message can carry {MAX_FILE_COUNT} files.",
+                file.name
+            )),
+            files => Some(format!(
+                "{} files were not added: a message can carry {MAX_FILE_COUNT} files.",
+                files.len()
+            )),
+        };
+        self.notice = match (size, count) {
+            (None, None) => None,
+            (Some(one), None) | (None, Some(one)) => Some(one.into()),
+            (Some(size), Some(count)) => Some(format!("{size} {count}").into()),
+        };
+        accepted
+    }
+
+    /// Records sync's progress for a file. True when a waiting send is
+    /// now due.
+    pub fn set_status(&mut self, id: &str, status: AttachmentStatus) -> bool {
+        let Some(upload) = self.uploads.iter_mut().find(|upload| upload.id == id) else {
+            return false;
+        };
+        upload.status = status;
+        self.settle()
+    }
+
+    /// Takes a file out of the tray. True when a waiting send is now due.
+    pub fn remove(&mut self, id: &str) -> bool {
+        self.uploads.retain(|upload| upload.id != id);
+        self.notice = None;
+        self.settle()
+    }
+
+    /// What Send should do now, given whether the draft has text.
+    pub fn gate(&self, has_text: bool) -> SendGate {
+        if self
+            .uploads
+            .iter()
+            .any(|upload| upload.status == AttachmentStatus::Failed)
+            || (!has_text && self.uploads.is_empty())
+        {
+            SendGate::Blocked
+        } else if self.uploads.iter().all(Upload::is_ready) {
+            SendGate::Now
+        } else {
+            SendGate::Wait
+        }
+    }
+
+    /// Send was pressed: answers like [`Self::gate`], and a send that has
+    /// to wait is remembered until the uploads finish.
+    pub fn request_send(&mut self, has_text: bool) -> SendGate {
+        let gate = self.gate(has_text);
+        if gate == SendGate::Wait {
+            self.queued = true;
+            self.notice = None;
+        }
+        gate
+    }
+
+    /// Forgets a waiting send.
+    pub fn cancel_send(&mut self) {
+        self.queued = false;
+    }
+
+    /// Empties the tray into a post.
+    pub fn take(&mut self) -> Vec<Upload> {
+        self.queued = false;
+        self.notice = None;
+        std::mem::take(&mut self.uploads)
+    }
+
+    /// Puts fixtures in the tray as they are, for preview.
+    pub fn extend(&mut self, uploads: impl IntoIterator<Item = Upload>) {
+        self.uploads.extend(uploads);
+    }
+
+    /// A waiting send goes once every file is up, and is dropped with a
+    /// word when one fails.
+    fn settle(&mut self) -> bool {
+        if !self.queued {
+            return false;
+        }
+        if self
+            .uploads
+            .iter()
+            .any(|upload| upload.status == AttachmentStatus::Failed)
+        {
+            self.queued = false;
+            self.notice =
+                Some("Not sent: an upload failed. Retry it or remove it, then send.".into());
+            return false;
+        }
+        if self.uploads.iter().all(Upload::is_ready) {
+            self.queued = false;
+            return true;
+        }
+        false
     }
 }
 
@@ -203,6 +446,121 @@ pub fn post_files(
         .children((!cards.is_empty()).then(|| {
             attachment_group(ElementId::Name(format!("{prefix}.cards").into()), cards, cx)
         }))
+}
+
+/// The tray above a composer: the chips, then one `meta` line saying why a
+/// file was left out or a send did not go (`destructive`, with an icon), or
+/// that a send waits for the uploads (DESIGN.md §4 Composer attachments).
+/// None when there is nothing to show.
+pub fn upload_tray(
+    prefix: &str,
+    tray: &UploadTray,
+    chips: Vec<Attachment>,
+    cx: &App,
+) -> Option<gpui_kit::Div> {
+    let theme = UiTheme::read(cx).clone();
+    let line = |icon: gpui_kit::AnyElement, text: SharedString, color| {
+        div()
+            .flex()
+            .items_start()
+            .gap(theme.space(2.))
+            .type_style(style::META, &theme)
+            .text_color(color)
+            .child(div().flex_shrink_0().mt(theme.space(0.5)).child(icon))
+            .child(div().flex_1().min_w_0().child(text))
+    };
+    let notice = tray.notice().cloned().map(|notice| {
+        line(
+            lucide(LucideIcon::CircleAlert)
+                .size(scaled(&theme, 14.))
+                .text_color(theme.colors.destructive)
+                .into_any_element(),
+            notice,
+            theme.colors.destructive,
+        )
+    });
+    let waiting = tray.is_queued().then(|| {
+        line(
+            Spinner::new(ElementId::Name(format!("{prefix}.waiting.spinner").into()))
+                .label("Waiting for uploads")
+                .size(gpui_kit::px(14.))
+                .into_any_element(),
+            "Sends when the uploads finish…".into(),
+            theme.colors.muted_foreground,
+        )
+    });
+    if chips.is_empty() && notice.is_none() {
+        return None;
+    }
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(2.))
+            .pb(theme.space(2.))
+            .children((!chips.is_empty()).then(|| {
+                attachment_group(
+                    ElementId::Name(format!("{prefix}.uploads").into()),
+                    chips,
+                    cx,
+                )
+            }))
+            .children(notice)
+            .children(waiting),
+    )
+}
+
+/// What a drop region shows over itself while files are dragged across it
+/// (#150): gpuicn's empty state, dashed in `ring` on the `accent` tint,
+/// saying where the files go. It is in the tree only while something is
+/// dragged, and shows only while files are over the region; `forced`
+/// shows it regardless, for preview.
+pub fn drop_overlay(
+    id: &str,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    forced: bool,
+    cx: &App,
+) -> Option<gpui_kit::AnyElement> {
+    if !forced && !cx.has_active_drag() {
+        return None;
+    }
+    let theme = UiTheme::read(cx);
+    let card = style::empty_state(LucideIcon::Upload, title, description, cx)
+        .size_full()
+        .border_2()
+        .border_color(theme.colors.ring)
+        .bg(theme.colors.accent);
+    let overlay = div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .debug_selector(|| "drop-overlay".into())
+        .absolute()
+        .inset_0()
+        .p(theme.space(3.))
+        .bg(theme.colors.background.opacity(0.85))
+        .child(card);
+    Some(if forced {
+        overlay.into_any_element()
+    } else {
+        overlay
+            .opacity(0.)
+            .drag_over::<ExternalPaths>(|style, _, _, _| style.opacity(1.))
+            .into_any_element()
+    })
+}
+
+/// "Drop to upload to #general", or to a conversation by its name.
+pub fn drop_title(channel: &str) -> String {
+    if channel.contains(' ') {
+        format!("Drop to upload to {channel}")
+    } else {
+        format!("Drop to upload to #{channel}")
+    }
+}
+
+/// Whether `MATTY_PREVIEW=drop` asks for the drop overlay, for screenshots.
+pub fn preview_drop() -> bool {
+    std::env::var("MATTY_PREVIEW").is_ok_and(|value| value == "drop")
 }
 
 fn thumbnail(name: &str, source: &UploadSource) -> Option<ImageSource> {
@@ -311,6 +669,231 @@ mod tests {
         let doc = PostFile::from_upload(Upload::from_path("u2", "notes.pdf".into()));
         assert!(doc.preview.is_none());
         assert_eq!(doc.meta().as_ref(), "PDF · 0 B");
+    }
+
+    fn file(name: &str, size: u64) -> Upload {
+        Upload {
+            id: "".into(),
+            name: name.to_owned().into(),
+            size,
+            source: UploadSource::Path(name.into()),
+            status: AttachmentStatus::Uploading(0.),
+        }
+    }
+
+    fn tray_with(count: usize) -> UploadTray {
+        let mut tray = UploadTray::new("upload");
+        let files = (0..count).map(|i| file(&format!("f{i}.txt"), 10)).collect();
+        assert_eq!(tray.admit(files).len(), count);
+        tray
+    }
+
+    #[test]
+    fn a_file_over_the_limit_stays_out_and_says_why() {
+        let mut tray = UploadTray::new("upload");
+        tray.set_max_file_size(52_428_800);
+        let accepted = tray.admit(vec![file("demo.mov", 120 * 1024 * 1024), file("a.txt", 5)]);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].name.as_ref(), "a.txt");
+        assert_eq!(accepted[0].id.as_ref(), "upload-1");
+        assert_eq!(
+            tray.notice().map(|n| n.as_ref()),
+            Some("demo.mov is 120 MB. Files must be under 50 MB.")
+        );
+        // Exactly the limit is fine.
+        assert_eq!(tray.admit(vec![file("b.bin", 52_428_800)]).len(), 1);
+        assert_eq!(tray.notice(), None, "a clean add clears the line");
+        tray.admit(vec![file("c.iso", u64::MAX), file("d.iso", u64::MAX)]);
+        assert_eq!(
+            tray.notice().map(|n| n.as_ref()),
+            Some("2 files were not added. Files must be under 50 MB.")
+        );
+    }
+
+    #[test]
+    fn the_eleventh_file_stays_out() {
+        let mut tray = tray_with(9);
+        let accepted = tray.admit(vec![file("ten.txt", 1), file("eleven.txt", 1)]);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(tray.uploads().len(), MAX_FILE_COUNT);
+        assert_eq!(
+            tray.notice().map(|n| n.as_ref()),
+            Some("eleven.txt was not added: a message can carry 10 files.")
+        );
+        tray.admit(vec![
+            file("x", 1),
+            file("huge", 200 * 1024 * 1024),
+            file("y", 1),
+        ]);
+        assert_eq!(
+            tray.notice().map(|n| n.as_ref()),
+            Some(
+                "huge is 200 MB. Files must be under 100 MB. \
+                 2 files were not added: a message can carry 10 files."
+            )
+        );
+        // Removing one makes room again and clears the line.
+        let first = tray.uploads()[0].id.clone();
+        tray.remove(&first);
+        assert_eq!(tray.notice(), None);
+        assert_eq!(tray.admit(vec![file("again.txt", 1)]).len(), 1);
+    }
+
+    #[test]
+    fn send_waits_for_uploads_then_goes() {
+        let mut tray = tray_with(2);
+        let ids: Vec<SharedString> = tray.uploads().iter().map(|u| u.id.clone()).collect();
+        assert_eq!(tray.request_send(true), SendGate::Wait);
+        assert!(tray.is_queued());
+        assert!(!tray.set_status(&ids[0], AttachmentStatus::Uploading(0.5)));
+        assert!(!tray.set_status(&ids[0], AttachmentStatus::Ready));
+        assert!(tray.is_queued(), "still waiting on the second file");
+        assert!(tray.set_status(&ids[1], AttachmentStatus::Ready), "now due");
+        assert!(!tray.is_queued());
+        assert_eq!(tray.request_send(true), SendGate::Now);
+        assert_eq!(tray.take().len(), 2);
+        assert!(tray.is_empty());
+    }
+
+    #[test]
+    fn a_failed_upload_drops_the_waiting_send() {
+        let mut tray = tray_with(2);
+        let ids: Vec<SharedString> = tray.uploads().iter().map(|u| u.id.clone()).collect();
+        assert_eq!(tray.request_send(false), SendGate::Wait);
+        assert!(!tray.set_status(&ids[0], AttachmentStatus::Failed));
+        assert!(!tray.is_queued());
+        assert!(tray.notice().is_some_and(|n| n.starts_with("Not sent")));
+        assert!(
+            !tray.set_status(&ids[1], AttachmentStatus::Ready),
+            "nothing goes by itself"
+        );
+        assert_eq!(tray.gate(true), SendGate::Blocked);
+        // Removing the failed file leaves a ready tray.
+        assert!(!tray.remove(&ids[0]), "no send was waiting");
+        assert_eq!(tray.gate(false), SendGate::Now);
+    }
+
+    #[test]
+    fn removing_the_last_uploading_file_sends_the_waiting_message() {
+        let mut tray = tray_with(2);
+        let ids: Vec<SharedString> = tray.uploads().iter().map(|u| u.id.clone()).collect();
+        tray.set_status(&ids[0], AttachmentStatus::Ready);
+        assert_eq!(tray.request_send(true), SendGate::Wait);
+        assert!(tray.remove(&ids[1]));
+    }
+
+    #[test]
+    fn an_empty_tray_gates_on_the_text() {
+        let mut tray = UploadTray::new("upload");
+        assert_eq!(tray.gate(false), SendGate::Blocked);
+        assert_eq!(tray.gate(true), SendGate::Now);
+        assert_eq!(tray.request_send(false), SendGate::Blocked);
+        assert!(!tray.is_queued());
+        assert_eq!(drop_title("general"), "Drop to upload to #general");
+        assert_eq!(drop_title("Priya Nair"), "Drop to upload to Priya Nair");
+    }
+
+    struct DropProbe {
+        dropped: Rc<std::cell::RefCell<Vec<PathBuf>>>,
+    }
+
+    impl gpui_kit::Render for DropProbe {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            let dropped = self.dropped.clone();
+            div()
+                .relative()
+                .size(gpui_kit::px(400.))
+                .on_drop(move |paths: &ExternalPaths, _, _| {
+                    dropped.borrow_mut().extend(paths.paths().iter().cloned())
+                })
+                .children(drop_overlay(
+                    "probe.drop",
+                    "Drop to upload to #general",
+                    "Files go into the message you are writing.",
+                    false,
+                    cx,
+                ))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_overlay_shows_while_files_are_dragged_and_takes_the_drop(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{FileDropEvent, InputEvent as _, point, px};
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let dropped = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let window = cx.add_window({
+            let dropped = dropped.clone();
+            move |_, _| DropProbe { dropped }
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx))
+        };
+        let paths = || ExternalPaths(vec![PathBuf::from("/tmp/notes.pdf")].into());
+        let at = point(px(200.), px(200.));
+        draw(&mut cx);
+        assert!(
+            cx.debug_bounds("drop-overlay").is_none(),
+            "nothing until a drag"
+        );
+
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                FileDropEvent::Entered {
+                    position: at,
+                    paths: paths(),
+                }
+                .to_platform_input(),
+                cx,
+            )
+        });
+        draw(&mut cx);
+        let overlay = cx
+            .debug_bounds("drop-overlay")
+            .expect("shown on drag-enter");
+        assert_eq!(overlay.size.width, px(400.), "covers the whole region");
+
+        cx.update(|window, cx| {
+            window.dispatch_event(FileDropEvent::Exited.to_platform_input(), cx)
+        });
+        draw(&mut cx);
+        assert!(cx.debug_bounds("drop-overlay").is_none(), "gone on leave");
+
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                FileDropEvent::Entered {
+                    position: at,
+                    paths: paths(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        draw(&mut cx);
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                FileDropEvent::Submit { position: at }.to_platform_input(),
+                cx,
+            )
+        });
+        draw(&mut cx);
+        assert_eq!(
+            dropped.borrow().as_slice(),
+            [PathBuf::from("/tmp/notes.pdf")]
+        );
+        assert!(
+            cx.debug_bounds("drop-overlay").is_none(),
+            "gone after the drop"
+        );
     }
 
     #[test]

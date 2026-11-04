@@ -3,7 +3,9 @@
 //! Stored as JSON in the OS config directory. Writes are atomic (temporary
 //! file, then rename) and run on the background executor. Keys this version
 //! does not know are kept, so an older Matty never drops a newer one's
-//! settings. Server-synced preferences live in the store, not here.
+//! settings. Server-synced preferences live in the store; the few that
+//! Preferences shows (message display, clock, name format, send key) are
+//! mirrored here too, so they apply before sync connects (#156, #157).
 
 use std::{
     io,
@@ -55,7 +57,8 @@ pub enum RemoteImages {
 }
 
 /// Which key sends a message from the composer; the other inserts a
-/// newline.
+/// newline. Mirrors the account's `advanced_settings/send_on_ctrl_enter`
+/// and `code_block_ctrl_enter` (#157).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendKey {
@@ -63,6 +66,34 @@ pub enum SendKey {
     Enter,
     /// Ctrl+Enter, or Cmd+Enter on macOS.
     ModEnter,
+    /// Enter, except in a code block that is still open (an odd number of
+    /// ``` fences), where Enter starts a new line and Ctrl+Enter sends.
+    CodeBlocks,
+}
+
+impl SendKey {
+    /// Whether Enter sends `text` as typed so far.
+    pub fn submits_on_enter(self, text: &str) -> bool {
+        match self {
+            Self::Enter => true,
+            Self::ModEnter => false,
+            Self::CodeBlocks => text.matches("```").count().is_multiple_of(2),
+        }
+    }
+}
+
+/// How people's names read: Mattermost's "Teammate name display", the
+/// account's `display_settings/name_format` (#156).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameFormat {
+    /// The username.
+    Username,
+    /// The nickname, else the full name, else the username.
+    #[default]
+    NicknameFullName,
+    /// The full name, else the username.
+    FullName,
 }
 
 /// How much room a message row takes (PLAN §4.2 display).
@@ -141,6 +172,18 @@ pub struct SavedAccount {
     pub display_name: String,
 }
 
+/// A server whose check went through, for the sign-in card's server step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentServer {
+    /// The normalized URL Matty checked, like `https://chat.example.com`.
+    pub url: String,
+    /// The server's `SiteName`, or its host when it has none.
+    pub name: String,
+}
+
+/// How many servers the server step remembers.
+pub const RECENT_SERVERS: usize = 3;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -162,10 +205,14 @@ pub struct Settings {
     /// Enter sends by default; Ctrl+Enter for people who write in paragraphs.
     pub send_on: SendKey,
     pub display: MessageDisplay,
+    /// How people's names read in messages, threads and profiles.
+    pub name_format: NameFormat,
     /// Turns off the eases on panes, banners and disclosures (DESIGN.md §1);
     /// the OS reduced-motion setting does the same on its own.
     pub reduce_motion: bool,
     pub account: Option<SavedAccount>,
+    /// Servers whose check went through, newest first.
+    pub recent_servers: Vec<RecentServer>,
     /// Keys written by another Matty version, kept as they were.
     #[serde(flatten)]
     pub unknown: serde_json::Map<String, serde_json::Value>,
@@ -190,14 +237,31 @@ impl Default for Settings {
             clock: ClockFormat::TwentyFourHour,
             send_on: SendKey::Enter,
             display: MessageDisplay::Standard,
+            name_format: NameFormat::NicknameFullName,
             reduce_motion: false,
             account: None,
+            recent_servers: Vec::new(),
             unknown: serde_json::Map::new(),
         }
     }
 }
 
 impl Settings {
+    /// Puts `url` first among the recent servers under `name`, dropping
+    /// its older entry and any past [`RECENT_SERVERS`].
+    pub fn remember_server(&mut self, url: &str, name: &str) {
+        self.recent_servers
+            .retain(|server| !server.url.eq_ignore_ascii_case(url));
+        self.recent_servers.insert(
+            0,
+            RecentServer {
+                url: url.to_string(),
+                name: name.to_string(),
+            },
+        );
+        self.recent_servers.truncate(RECENT_SERVERS);
+    }
+
     /// Clamps values a hand-edited file could put out of range.
     fn sanitize(mut self) -> Self {
         let clamp = |value: f32, min: f32, max: f32, default: f32| {
@@ -221,6 +285,7 @@ impl Settings {
         );
         self.text_scale = clamp(self.text_scale, 0.8, 1.5, 1.);
         self.zoom = clamp(self.zoom, ZOOM_MIN, ZOOM_MAX, 1.);
+        self.recent_servers.truncate(RECENT_SERVERS);
         self
     }
 }
@@ -332,6 +397,12 @@ impl SettingsStore {
         cx.global::<GlobalSettings>().0.clone()
     }
 
+    /// The store, where one is installed (views built in tests may have none).
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalSettings>()
+            .map(|global| global.0.clone())
+    }
+
     pub fn get(&self) -> &Settings {
         &self.settings
     }
@@ -368,6 +439,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_servers_keep_the_newest_three_once_each() {
+        let mut settings = Settings::default();
+        for (url, name) in [
+            ("https://a.example.com", "A"),
+            ("https://b.example.com", "B"),
+            ("https://c.example.com", "C"),
+            ("https://A.example.com", "A again"),
+            ("https://d.example.com", "D"),
+        ] {
+            settings.remember_server(url, name);
+        }
+        let names: Vec<_> = settings
+            .recent_servers
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect();
+        assert_eq!(names, ["D", "A again", "C"]);
+        // An older file without the key still loads.
+        let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
+        assert!(old.recent_servers.is_empty());
+    }
+
+    #[test]
     fn round_trips_and_keeps_unknown_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -389,6 +483,16 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn code_blocks_only_holds_enter_inside_an_open_fence() {
+        let key = SendKey::CodeBlocks;
+        assert!(key.submits_on_enter("plain text"));
+        assert!(!key.submits_on_enter("```rust\nfn main() {}"));
+        assert!(key.submits_on_enter("```rust\nfn main() {}\n```"));
+        assert!(SendKey::Enter.submits_on_enter("```"));
+        assert!(!SendKey::ModEnter.submits_on_enter("plain"));
     }
 
     #[test]

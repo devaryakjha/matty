@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Packages target/dist/Matty.app (from scripts/release-bundle) for a GitHub
+# Release (#179): a DMG, a zip of the app, and SHA256SUMS for both, in
+# target/dist/release.
+#
+#   scripts/release-package 0.1.0-beta.1
+#
+# Notarization (#178) runs only when all three notary variables are set, an
+# App Store Connect API key:
+#   MATTY_NOTARY_KEY      path to the AuthKey_XXXX.p8 file
+#   MATTY_NOTARY_KEY_ID   its key id
+#   MATTY_NOTARY_ISSUER   its issuer id
+# The DMG is signed when MATTY_SIGN_IDENTITY is set, as the app already is.
+set -euo pipefail
+
+version="${1:?usage: scripts/release-package VERSION}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+app="target/dist/Matty.app"
+[[ -d "$app" ]] || { echo "no bundle at $app: run scripts/release-bundle" >&2; exit 1; }
+out="target/dist/release"
+rm -rf "$out"
+mkdir -p "$out"
+dmg="$out/Matty-$version.dmg"
+zip="$out/Matty-$version-macos-universal.zip"
+
+notarize=false
+if [[ -n "${MATTY_NOTARY_KEY:-}" && -n "${MATTY_NOTARY_KEY_ID:-}" && -n "${MATTY_NOTARY_ISSUER:-}" ]]; then
+	notarize=true
+fi
+
+# The DMG opens to the app next to an Applications link to drag it onto.
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+ditto "$app" "$staging/Matty.app"
+ln -s /Applications "$staging/Applications"
+hdiutil create -volname Matty -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg" >/dev/null
+
+if [[ -n "${MATTY_SIGN_IDENTITY:-}" ]]; then
+	codesign --force --sign "$MATTY_SIGN_IDENTITY" --timestamp "$dmg"
+fi
+
+if [[ "$notarize" == true ]]; then
+	# Notarizing the DMG covers the app inside it, so both can be stapled.
+	xcrun notarytool submit "$dmg" --wait \
+		--key "$MATTY_NOTARY_KEY" --key-id "$MATTY_NOTARY_KEY_ID" --issuer "$MATTY_NOTARY_ISSUER"
+	xcrun stapler staple "$dmg"
+	xcrun stapler staple "$app"
+	spctl --assess --type execute --verbose=2 "$app"
+else
+	echo "notary credentials not set: $dmg is not notarized" >&2
+fi
+
+# Zipped after stapling, so the zip carries the ticket too. ditto keeps the
+# signature intact where zip(1) can break it.
+ditto -c -k --keepParent "$app" "$zip"
+
+(cd "$out" && shasum -a 256 "$(basename "$dmg")" "$(basename "$zip")" >SHA256SUMS)
+cat "$out/SHA256SUMS"

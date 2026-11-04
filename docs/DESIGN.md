@@ -142,10 +142,17 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 
 - **Sign in** (PLAN §4.5) is one 400px card on the `sidebar` surface under
   the wordmark, never a wizard. Step one asks only for the server address
-  and assumes `https`. Step two shows the server as a muted chip with
+  and assumes `https`; leaving the field says what is wrong with an address
+  that cannot work, and typing clears it. Below Continue, up to three
+  servers checked before sit under a `RECENT SERVERS` label as outline
+  rows (the server's name, its host in `meta` when it differs) that check
+  that server again in one press. Step two shows the server as a muted chip with
   Change, then the password form, an OR rule, outline buttons for each SSO
   provider the server enables, and a personal access token behind a text
-  link. Errors are one `meta` sentence in `destructive` with an icon, placed
+  link. Where the server offers both its own accounts and AD/LDAP, a joined
+  toggle group above the fields picks one. An account with MFA gets a third
+  view in the same card: six code cells that submit when full, Verify, and
+  Back to the password form; a wrong code clears the cells. Errors are one `meta` sentence in `destructive` with an icon, placed
   above the button they concern; a request in flight puts a spinner in the
   primary button and never blocks the window.
 - **Post actions** live in the hover toolbar: add reaction, reply in
@@ -168,12 +175,28 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `destructive` over it. The B, I and code buttons wrap the selection in
   Markdown and leave focus in the composer; Up in an empty composer edits
   the user's last post, Shift+Up replies to the newest one.
+- **Queued rows** (#195): a post written while offline reads "Will send
+  when back online" with a clock after it, at 60% like any pending row. A
+  post the server does not have yet shows no reply, reaction or save
+  actions; its menu holds Copy text, Copy as Markdown and, while it waits,
+  Edit (in place, without "(edited)") and Discard…, which asks in the same
+  alert dialog with a Discard button. A send already on its way offers
+  neither until it comes back.
 - **Thread pane replies** behave like the channel composer: Enter or the
   send button adds the reply as a "Sending…" row at 60% under the thread,
   the replies count follows, a failed reply offers Retry and Delete in
   place, and Send is disabled while empty. Follow/Following is a small
   outline or secondary button on the replies rule, never a toggle switch;
   it flips at once.
+- **System messages** (joins, leaves, header and purpose changes) are one
+  `ui` line in `muted-foreground` in the body column, worded like the web
+  app, with no avatar, author, actions or reactions; the time shows in the
+  gutter on hover, like a continuation. Joins and leaves in a row on one
+  day combine: "Ada, Sam and 3 others joined the channel. Ola left the
+  channel." A system row always ends a run of grouped posts. A post type
+  Matty cannot draw yet (a plugin's `custom_*`) keeps its author header
+  and shows an embed card, "This message type isn't supported yet.", with
+  an outline Open in browser button that opens its permalink.
 - **Reply footer** (Collapsed Reply Threads, PLAN §4.4): a post with a
   thread shows one line under its body: up to three small overlapping
   avatars of who replied, "3 replies" in `primary` and `ui_strong`, a
@@ -181,6 +204,21 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `meta`, and a ghost Follow/Following button. The whole line is a hover
   target that opens the thread; replies never appear inline in the
   channel.
+- **Inline replies** (Collapsed Reply Threads off, #123): replies sit in
+  the channel in time order. Above a reply whose row above is not in its
+  thread, one `meta` line in `muted-foreground` reads "Commented on
+  **Ada's** message: …" with the root's first words, truncated, and a reply
+  icon; it turns `foreground` on hover and opens the thread. That reply
+  starts a new run with its own header. Roots carry no footer in this mode.
+- **Paging threads** (#122): the thread pane opens on the newest 50
+  replies. A row between the "N replies" divider and the first reply loads
+  the page before it when it scrolls into view: a spinner and "Loading
+  older replies…", or "Couldn't load older replies." with a ghost Retry,
+  in 12px `muted-foreground`, like the channel's history row. The divider
+  counts every reply, loaded or not, and an older page goes in above
+  without moving what the reader sees. The Threads list does the same at
+  its end: "Loading more threads…" or "Couldn't load more threads." with
+  Retry, asked for within 240px of the bottom.
 - **Threads view** (PLAN §4.4) replaces the channel when the sidebar's
   Threads row is chosen: a 360px list on the left and the selected thread
   on the right, drawn by the same view as the right pane. The header holds
@@ -251,13 +289,23 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   `attachment_group` directly above the composer card (`design-23`):
   gpuicn `Attachment` thumbnails for images and cards with a type icon,
   the name and "PDF · 2.4 MB" for anything else. Files arrive from the
-  Attach button or Cmd+U (the platform file dialog), from dropping onto
-  the composer, which tints it `accent` while hovering, and from pasting
-  an image, which becomes "Pasted image.png". A chip shows "Uploading…
+  Attach button, Cmd+U or File > Upload files (the platform file dialog),
+  from dropping anywhere on the channel view or the thread pane, and from
+  pasting an image, which becomes "Pasted image.png". While files are
+  dragged over either, gpuicn's empty state covers it, dashed in `ring` on
+  `accent`: "Drop to upload to #general" over "Files go into the message
+  you are writing." (or "your reply"); the thread pane's drop goes to the
+  reply. A file over the server's `MaxFileSize` or past the tenth never
+  starts uploading: the tray says so in one `meta` line in `destructive`
+  with an icon ("demo.mov is 240 MB. Files must be under 100 MB.").
+  A chip shows "Uploading…
   60%" with a progress bar, then its meta line; a failed one turns
   `destructive`, says "Upload failed" and gets Retry. Each has a remove
   button. Send stays disabled while any file is uploading or failed, and
-  a post may be files alone; the tray clears on send.
+  a post may be files alone; the tray clears on send. Enter while files
+  upload queues the send: the Send button spins, a muted line says
+  "Sends when the uploads finish…", and the post goes when the last one
+  is up; a failure drops the queued send and says so.
 - **Files on posts and the lightbox** (PLAN §4.6 Files, gpuicn G8) put a
   post's files under its text as the same `Attachment` chips: image
   thumbnails in one row, then cards with the type icon, name and
@@ -318,19 +366,38 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   until the handle is two characters long, and the new channel opens at
   its empty state with the purpose as its line. Sync owns both on the
   server (PLAN §4.3).
-- **Preferences** is a dialog, not a window: sections under `label`
-  headings, joined toggle groups for theme (System, Light, Dark), text
-  size (90 to 130 percent) and clock (12-hour, 24-hour), switches with a
-  one-line `meta` explanation. The clock applies to every time Matty
-  prints: post headers, gutter times, "Last reply", the Threads list
-  (`design-18`); 24-hour is the default. A compact message density waits
-  on gpuicn's `Message` growing one; Matty does not fake it with
-  continuation rows.
-  "Send message with" picks Enter (default; Shift+Enter for a new line) or
-  Ctrl+Enter, Cmd+Enter on macOS (Enter then starts a new line); the
-  modifier combination always sends, whichever is chosen, in the channel
-  composer and in thread replies (`design-30`).
-  Every change applies behind the dialog as it is made; the only button is
+- **Preferences** (#155) is a gpuicn `Drawer` from the window's right
+  edge, 760px wide or the window's width: a title, "Changes apply right
+  away and are saved for next time." and Done above a section list (a
+  gpuicn `Sidebar` with roving focus: Tab lands on the open section, Up and
+  Down move, Enter opens) and the open section's controls. gpuicn's
+  `Dialog` is fixed at 384px, too narrow for a list beside the controls;
+  the drawer is gpuicn's sheet and closes on Escape and the backdrop.
+  Sections: **General** (keep running when closed, open at login, the
+  download folder), **Appearance** (theme, text size, message display,
+  clock, names, reduce motion), **Messages** (send key, collapsed reply
+  threads where the server lets users choose), **Notifications** (the
+  user's `notify_props`) and **Advanced** (log detail, the logs folder).
+  Groups sit under `label` headings, with joined toggle groups for
+  choices and switches with a one-line `meta` explanation. A setting the
+  Mattermost account keeps ends with a cloud glyph and "Synced with your
+  Mattermost account": message display (`display_settings/
+  message_display`, `clean` or `compact`), clock (`use_military_time`),
+  names (`name_format`: nickname, full name or username, falling back as
+  the web app does), the send key (`advanced_settings/send_on_ctrl_enter`
+  and `code_block_ctrl_enter`), collapsed reply threads and every
+  notification setting. Those are mirrored into the settings file so they
+  apply before sync connects; a preference the account never set leaves
+  the local choice alone. The clock applies to every time Matty prints:
+  post headers, gutter times, "Last reply", the Threads list
+  (`design-18`); 24-hour is the default.
+  "Send messages with" picks Enter (default; Shift+Enter for a new line),
+  Ctrl+Enter (Cmd+Enter on macOS; Enter then starts a new line) or "Enter,
+  but not in code": inside a code block opened with ``` and not yet
+  closed, Enter starts a new line and the modifier sends. The modifier
+  combination always sends, whichever is chosen, in the channel composer
+  and in thread replies (`design-30`).
+  Every change applies behind the sheet as it is made; the only button is
   Done.
 - **Channel menu** (PLAN §3 M1 channel management): the channel name in
   the header is a gpuicn `Menu` trigger with a chevron: "Edit header…",
@@ -495,7 +562,7 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - **Motion** (DESIGN §1, PLAN §5 and §8): the connection banner slides open
   and closed over 200ms and a sidebar category's chevron turns from right to
   down over 150ms, both through gpuicn's `transition_value`, so the theme's
-  timing and the OS reduced-motion setting govern them. Preferences → Window
+  timing and the OS reduced-motion setting govern them. Preferences → Appearance
   gains "Reduce motion", which sets the theme's `motion.reduced` and snaps
   every gpuicn transition (drawers, switches, the sidebar) as well. Nothing
   in the message list moves (`design-54`).
