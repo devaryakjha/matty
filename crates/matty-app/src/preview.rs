@@ -18,7 +18,9 @@ pub fn enabled() -> bool {
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
 /// `login-ldap` offers AD/LDAP beside passwords, `login-mfa` and
 /// `login-mfa-error` show the code step, and `login-version` the server step
-/// refusing a server below the version floor.
+/// refusing a server below the version floor. `sso-waiting` shows the card
+/// waiting for the browser after GitLab, and `sso-expired` the same after
+/// the three minutes ran out.
 pub fn login() -> Option<LoginModel> {
     let value = std::env::var("MATTY_PREVIEW").ok()?;
     let methods = SignInMethods {
@@ -56,6 +58,16 @@ pub fn login() -> Option<LoginModel> {
                 methods,
             },
             Some(wrong_code.into()),
+        ),
+        "sso-waiting" | "sso-expired" => (
+            LoginStep::Methods {
+                server_name,
+                methods,
+            }
+            .to_browser(SsoProvider::GitLab),
+            (value == "sso-expired").then(|| {
+                "Sign-in timed out: the browser did not finish within three minutes.".into()
+            }),
         ),
         "login-version" => {
             let old = matty_api::UnsupportedVersion {

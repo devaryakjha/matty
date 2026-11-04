@@ -4698,6 +4698,7 @@ dependencies = [
  "async-channel",
  "dirs 6.0.0",
  "emojis",
+ "getrandom 0.3.4",
  "gpui-icons",
  "gpui-kit",
  "gpui-pre-platform",
