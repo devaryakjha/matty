@@ -77,9 +77,10 @@ pub(crate) enum Loaded {
         file_id: String,
         state: crate::change::DownloadState,
     },
-    /// A file's thumbnail from the server; `None` when it has none.
-    Thumbnail {
+    /// A file's image from the server; `None` when it has none.
+    Image {
         file_id: String,
+        size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
     /// Search results, best first.
