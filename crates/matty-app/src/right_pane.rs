@@ -80,7 +80,7 @@ pub struct SearchModel {
 /// What the pane shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RightPaneContent {
-    Thread(ThreadModel),
+    Thread(Box<ThreadModel>),
     ChannelInfo(ChannelModel),
     /// The current channel's pinned posts, newest first.
     Pinned {
@@ -798,11 +798,11 @@ impl RightPaneView {
     /// reader sees (#122).
     pub fn set_thread(&mut self, thread: ThreadModel, cx: &mut Context<Self>) {
         let Some(RightPaneContent::Thread(shown)) = &self.content else {
-            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
             return;
         };
         if shown.root.id != thread.root.id {
-            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
             return;
         }
         // Replies before the one that was first came from an older page.
@@ -812,12 +812,12 @@ impl RightPaneView {
         };
         let Some(older) = older.filter(|older| shown.replies.len() + older <= thread.replies.len())
         else {
-            self.set_content(Some(RightPaneContent::Thread(thread)), cx);
+            self.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
             return;
         };
         let newer = thread.replies.len() - shown.replies.len() - older;
         let paged = older > 0 || !thread.older || thread.failed_older;
-        self.content = Some(RightPaneContent::Thread(thread));
+        self.content = Some(RightPaneContent::Thread(Box::new(thread)));
         if paged {
             self.loading_older = false;
         }

@@ -606,10 +606,19 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
             "Lunch: pizza or ramen?",
         ),
         reply(post("t9", "jonas", 20, "", "Ramen, obviously."), "t7"),
-        reply(post("t10", "lena", 21, "", "Ramen it is. I'll book for six."), "t7"),
+        reply(
+            post("t10", "lena", 21, "", "Ramen it is. I'll book for six."),
+            "t7",
+        ),
         post("t11", "mei", 30, "", "Has anyone seen the new desk plan?"),
         reply(
-            post("t12", "tomas", 32, "", "Hi Priya! Tomas from support, glad to be here."),
+            post(
+                "t12",
+                "tomas",
+                32,
+                "",
+                "Hi Priya! Tomas from support, glad to be here.",
+            ),
             "t1",
         ),
     ];

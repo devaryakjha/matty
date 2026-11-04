@@ -370,7 +370,7 @@ fn reply_footers_are_kept_and_follow_live_replies() {
         is_following: Some(false),
         ..post("root", "c", 100)
     };
-    posts::insert_posts(conn, &[root.clone()]).unwrap();
+    posts::insert_posts(conn, std::slice::from_ref(&root)).unwrap();
     // The same root from a fetch that leaves the thread fields out.
     posts::insert_posts(
         conn,

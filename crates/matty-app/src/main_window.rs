@@ -2061,7 +2061,10 @@ impl MainWindow {
             .then(|| crate::preview::thread(&channel_id, &post_id))
             .flatten();
         self.right_pane.update(cx, |pane, cx| {
-            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+            pane.set_content(
+                thread.map(|thread| RightPaneContent::Thread(Box::new(thread))),
+                cx,
+            )
         });
         self.right_pane_open = true;
         cx.notify();

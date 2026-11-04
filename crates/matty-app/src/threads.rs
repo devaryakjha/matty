@@ -143,7 +143,7 @@ impl ThreadsView {
         let unread = std::mem::take(&mut row.summary.unread);
         let root = row.id().clone();
         if changed {
-            let content = Some(RightPaneContent::Thread(row.thread.clone()));
+            let content = Some(RightPaneContent::Thread(Box::new(row.thread.clone())));
             self.detail
                 .update(cx, |pane, cx| pane.set_content(content, cx));
         }

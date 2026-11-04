@@ -201,7 +201,12 @@ async fn replies_come_with_roots_the_window_leaves_out() {
         .with_priority(1)
         .mount(&server)
         .await;
-    let (_sync, changes) = connected(&server).await;
+    let (sync, changes) = connected(&server).await;
+    // The page may have landed while connecting; opening the channel again
+    // publishes its snapshot once more.
+    sync.send(Command::OpenChannel {
+        channel_id: "c1".into(),
+    });
 
     let ChangeSet::ReplyRoots { roots, .. } =
         next(&changes, |c| matches!(c, ChangeSet::ReplyRoots { .. })).await
