@@ -486,6 +486,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   close, attach, emoji and reply, the sidebar's pencil, and the message
   hover actions. The label is the aria label, so pointer and screen reader
   users hear the same name (`design-51`).
+- **Contrast** (PLAN §8): every text token reads at 4.5:1 on each surface
+  it sits on and every presence color at 3:1, in both themes, checked by
+  `scripts/contrast.py`. Dark `primary` moved from `#4a6de8` (3.97:1 as a
+  link) to `#6688f2` with near-black text on buttons; light `destructive`
+  to `#d42020` so sign-in errors pass on the sidebar surface; light `away`
+  to `#cc7a00` for the presence dot and favorite star (`design-53`).
 
 ## 5. Components
 
