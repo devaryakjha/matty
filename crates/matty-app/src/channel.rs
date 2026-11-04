@@ -127,6 +127,19 @@ pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
     markers
 }
 
+/// Whether the post is the user's own and in the outbox but not on its
+/// way: queued while offline, or refused. It can be edited in place or
+/// discarded before it is sent (#195).
+pub fn waiting_to_send(post: &Post, away: bool) -> bool {
+    post.mine
+        && post.kind == PostKind::Regular
+        && match post.status {
+            PostStatus::Sent => false,
+            PostStatus::Pending => away,
+            PostStatus::Failed => true,
+        }
+}
+
 /// The tooltip builder for a message's reaction chips, looking each chip
 /// up in `reactions` by emoji.
 pub fn reaction_tooltip(
@@ -1808,14 +1821,15 @@ impl ChannelView {
     }
 
     /// Turns the post's body into a composer holding its text. Enter saves,
-    /// Escape cancels; only the user's own sent posts qualify.
+    /// Escape cancels; only the user's own posts qualify, sent or waiting
+    /// to send (#195).
     fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(post) = self.model.as_ref().and_then(|model| {
             model.posts.iter().find(|post| {
                 post.id == id
                     && post.mine
-                    && post.status == PostStatus::Sent
                     && post.kind == PostKind::Regular
+                    && (post.status == PostStatus::Sent || waiting_to_send(post, self.away))
             })
         }) else {
             return;
@@ -1909,7 +1923,8 @@ impl ChannelView {
             &id,
             |post| {
                 post.body = body.clone();
-                post.edited = true;
+                // A waiting send just goes with the new text.
+                post.edited = post.status == PostStatus::Sent;
             },
             cx,
         );
@@ -2204,8 +2219,7 @@ impl ChannelView {
         self.set_model(Some(model), window, cx);
         match status {
             PostStatus::Sent => cx.emit(ChannelEvent::Delete(id)),
-            PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
-            PostStatus::Pending => {}
+            PostStatus::Pending | PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
         }
     }
 
@@ -2256,7 +2270,9 @@ impl ChannelView {
             .collect()
     }
 
-    fn more_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+    /// The "More" menu. A post the server does not have yet only offers
+    /// its text, plus Edit and Discard while it waits to send (#195).
+    fn more_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: SharedString, run: MenuAction| {
@@ -2288,6 +2304,28 @@ impl ChannelView {
                     ))
                 }),
             ),
+        ];
+        if post.status != PostStatus::Sent {
+            if waiting_to_send(post, away) {
+                let edit_id = id.clone();
+                let discard_id = id.clone();
+                items.push(MenuItem::separator());
+                items.push(act(
+                    "edit",
+                    "Edit".into(),
+                    Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
+                ));
+                items.push(act(
+                    "discard",
+                    "Discard…".into(),
+                    Box::new(move |this, window, cx| {
+                        this.ask_delete(discard_id.clone(), window, cx)
+                    }),
+                ));
+            }
+            return items;
+        }
+        items.extend([
             {
                 let id = id.clone();
                 act(
@@ -2320,7 +2358,7 @@ impl ChannelView {
                     Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
                 )
             },
-        ];
+        ]);
         if post.mine {
             let edit_id = id.clone();
             let delete_id = id.clone();
@@ -2341,7 +2379,11 @@ impl ChannelView {
 
     /// The right-click menu: reply and react first, then everything the
     /// "More" button offers, with "Mark as unread" after Save.
-    fn context_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
+    fn context_items_for(post: &Post, away: bool, cx: &Context<Self>) -> Vec<MenuItem> {
+        // The server does not have it yet: nothing to reply to or react to.
+        if post.status != PostStatus::Sent {
+            return Self::more_items_for(post, away, cx);
+        }
         let view = cx.entity().downgrade();
         let id = post.id.clone();
         let act = |name: &'static str, label: &'static str, run: MenuAction| {
@@ -2370,7 +2412,7 @@ impl ChannelView {
             ),
             MenuItem::separator(),
         ];
-        let more = Self::more_items_for(post, cx);
+        let more = Self::more_items_for(post, away, cx);
         // `more` is copy, copy as Markdown, copy link, pin, save, then the
         // owner's edit and delete.
         let (keep, own) = more.split_at(5.min(more.len()));
@@ -2411,13 +2453,33 @@ impl ChannelView {
             },
             None => "the channel".into(),
         };
-        let popup = dialog_popup("post.delete.popup", "Delete message", cx)
-            .child(dialog_title("post.delete.title", cx).child("Delete this message?"))
-            .child(
-                dialog_description("post.delete.description", cx).child(format!(
-                    "It is removed for everyone in {channel}. This cannot be undone."
-                )),
+        // A post the server never got is discarded, not deleted (#195).
+        let unsent = self.deleting.as_ref().is_some_and(|id| {
+            self.model.as_ref().is_some_and(|model| {
+                model
+                    .posts
+                    .iter()
+                    .any(|post| &post.id == id && post.status != PostStatus::Sent)
+            })
+        });
+        let (label, title, description, action): (_, _, SharedString, _) = if unsent {
+            (
+                "Discard message",
+                "Discard this message?",
+                "It has not been sent, so nobody else has seen it. This cannot be undone.".into(),
+                "Discard",
             )
+        } else {
+            (
+                "Delete message",
+                "Delete this message?",
+                format!("It is removed for everyone in {channel}. This cannot be undone.").into(),
+                "Delete",
+            )
+        };
+        let popup = dialog_popup("post.delete.popup", label, cx)
+            .child(dialog_title("post.delete.title", cx).child(title))
+            .child(dialog_description("post.delete.description", cx).child(description))
             .child(
                 div()
                     .flex()
@@ -2432,7 +2494,7 @@ impl ChannelView {
                     .child(
                         alert_dialog_action("post.delete.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Delete"),
+                            .label(action),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -2882,55 +2944,65 @@ impl ChannelView {
         let thread_id = id.clone();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, cx);
+        let more_items = Self::more_items_for(post, away, cx);
         let save_id = id.clone();
+        // A post the server does not have yet can only be copied, edited
+        // or discarded, all in More (#195).
+        let sent = post.status == PostStatus::Sent;
         let actions = message_actions(cx)
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
-                "Add reaction",
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                    LucideIcon::FaceSlightlySmilingPlus,
-                    "Add reaction",
-                    cx,
-                )
-                .on_click(cx.listener(
-                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        this.open_menu(react_items.clone(), event.position(), window, cx)
-                    },
-                )),
-            ))
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
-                "Reply in thread",
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
-                    LucideIcon::MessageSquareReply,
-                    "Reply in thread",
-                    cx,
-                )
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
-                })),
-            ))
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                if post.saved { "Unsave" } else { "Save" },
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                    if post.saved {
-                        LucideIcon::BookmarkCheck
-                    } else {
-                        LucideIcon::Bookmark
-                    },
-                    if post.saved { "Unsave" } else { "Save" },
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_save(save_id.clone(), cx))),
-            ))
+            .when(sent, |actions| {
+                actions
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
+                        "Add reaction",
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                            LucideIcon::FaceSlightlySmilingPlus,
+                            "Add reaction",
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                this.open_menu(react_items.clone(), event.position(), window, cx)
+                            },
+                        )),
+                    ))
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
+                        "Reply in thread",
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
+                            LucideIcon::MessageSquareReply,
+                            "Reply in thread",
+                            cx,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
+                        })),
+                    ))
+                    .child(style::tipped_when(
+                        !menu_open,
+                        gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
+                        if post.saved { "Unsave" } else { "Save" },
+                        message_action(
+                            gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                            if post.saved {
+                                LucideIcon::BookmarkCheck
+                            } else {
+                                LucideIcon::Bookmark
+                            },
+                            if post.saved { "Unsave" } else { "Save" },
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.toggle_save(save_id.clone(), cx)
+                            }),
+                        ),
+                    ))
+            })
             .child(style::tipped_when(
                 !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
@@ -3020,6 +3092,14 @@ impl ChannelView {
                     .into_any_element(),
                 },
             });
+        if post.status == PostStatus::Pending && away {
+            // Queued: a clock marks "Will send when back online" (#195).
+            row = row.header_child(
+                lucide(LucideIcon::Clock)
+                    .size(scaled(&theme, metrics::ICON_TINY))
+                    .text_color(theme.colors.muted_foreground),
+            );
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
@@ -3074,7 +3154,7 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, cx);
+        let context_items = Self::context_items_for(post, away, cx);
         div()
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
@@ -3417,7 +3497,12 @@ impl ChannelView {
                 self.selection = None;
                 self.start_edit(id, window, cx);
             }
-            "delete" | "backspace" if post.mine => self.ask_delete(id, window, cx),
+            "delete" | "backspace"
+                if post.mine
+                    && (post.status == PostStatus::Sent || waiting_to_send(&post, self.away)) =>
+            {
+                self.ask_delete(id, window, cx)
+            }
             "+" | "=" if keystroke.key == "+" || modifiers.shift => self.open_picker(Some(id), cx),
             "p" => self.toggle_pin(id, cx),
             "s" => self.toggle_save(id, cx),
@@ -3920,6 +4005,128 @@ mod tests {
             files: vec![],
             embeds: vec![],
         }
+    }
+
+    #[test]
+    fn only_a_waiting_send_of_ones_own_can_be_changed() {
+        let mine = |status| Post {
+            mine: true,
+            status,
+            ..post("p", "Today")
+        };
+        // Offline, a pending send is queued; online it is on its way.
+        assert!(waiting_to_send(&mine(PostStatus::Pending), true));
+        assert!(!waiting_to_send(&mine(PostStatus::Pending), false));
+        assert!(waiting_to_send(&mine(PostStatus::Failed), false));
+        assert!(!waiting_to_send(&mine(PostStatus::Sent), true));
+        let theirs = Post {
+            status: PostStatus::Pending,
+            ..post("p", "Today")
+        };
+        assert!(!waiting_to_send(&theirs, true));
+    }
+
+    /// #195: a message queued while offline is edited in place, unmarked,
+    /// or discarded, before it sends.
+    #[gpui_kit::test]
+    fn a_queued_post_can_be_edited_or_discarded(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let queued = Post {
+            mine: true,
+            status: PostStatus::Pending,
+            body: "Pushing the fix now.".into(),
+            ..post("me:1", "Today")
+        };
+        let model = ChannelModel {
+            purpose: None,
+            offline: true,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![post("1", "Today"), queued],
+            first_unread: None,
+        };
+        let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if matches!(
+                    event,
+                    ChannelEvent::SaveEdit { .. }
+                        | ChannelEvent::Discard(_)
+                        | ChannelEvent::Delete(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let body = |view: &ChannelView| {
+            view.model
+                .as_ref()
+                .and_then(|model| model.posts.iter().find(|post| post.id == "me:1"))
+                .map(|post| (post.body.to_string(), post.edited))
+        };
+
+        // Online, it is on its way and cannot be edited.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_away(false, cx);
+                view.start_edit("me:1".into(), window, cx);
+                assert!(view.editing.is_none());
+            })
+        });
+
+        // Offline, it waits: the edit changes the text, not "(edited)".
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_away(true, cx);
+                view.start_edit("me:1".into(), window, cx);
+                assert!(view.editing.is_some());
+                view.save_edit("Pushing the fix tonight.".into(), window, cx);
+                assert_eq!(
+                    body(view),
+                    Some(("Pushing the fix tonight.".to_owned(), false))
+                );
+            })
+        });
+
+        // Discard asks first, then the row goes and sync drops the send.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.ask_delete("me:1".into(), window, cx);
+                assert_eq!(view.deleting.as_deref(), Some("me:1"));
+                let id = view.deleting.take().unwrap();
+                view.delete_post(id, window, cx);
+                assert_eq!(body(view), None);
+            })
+        });
+        assert_eq!(
+            *events.borrow(),
+            [
+                ChannelEvent::SaveEdit {
+                    post: "me:1".into(),
+                    text: "Pushing the fix tonight.".into(),
+                },
+                ChannelEvent::Discard("me:1".into()),
+            ]
+        );
     }
 
     #[test]

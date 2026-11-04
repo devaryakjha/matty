@@ -169,20 +169,25 @@ pub enum Command {
         /// Its pending id.
         pending_post_id: String,
     },
-    /// Drops an unsent post.
+    /// Drops an unsent post: a queued or failed one. One on its way to the
+    /// server is refused with
+    /// [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
     Discard {
         /// Its pending id.
         pending_post_id: String,
     },
-    /// Changes a sent post's text. A post still in the outbox is refused
-    /// with [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
+    /// Changes a post's text. A post waiting in the outbox takes the new
+    /// text before it goes, keeping its place (#195); one on its way to the
+    /// server is refused with
+    /// [`CommandError::NotSentYet`](crate::CommandError::NotSentYet).
     EditPost {
         /// The post.
         post_id: String,
         /// The new text.
         message: String,
     },
-    /// Deletes a sent post; refused like [`Command::EditPost`] while unsent.
+    /// Deletes a sent post. A post waiting in the outbox is discarded, and
+    /// one on its way is refused like [`Command::EditPost`].
     DeletePost {
         /// The post.
         post_id: String,
@@ -1033,24 +1038,52 @@ impl Engine {
                     }
                 }
                 Message::Command(Command::Discard { pending_post_id }) => {
-                    outbox::discard(&tx, &pending_post_id, dirty)?;
-                }
-                Message::Command(Command::EditPost { post_id, message }) => {
-                    if queue::get(&tx, &post_id)?.is_some() {
+                    if in_flight(&self.sending, &pending_post_id) {
+                        // The server may be creating it right now; the row
+                        // comes back and reads "Sending…".
+                        if let Some(outgoing) = queue::get(&tx, &pending_post_id)? {
+                            dirty.channels.insert(outgoing.channel_id);
+                        }
                         dirty
                             .direct
-                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                            .push(ChangeSet::Failed(CommandError::NotSentYet {
+                                post_id: pending_post_id,
+                            }));
                     } else {
-                        writes.push(Write::Edit { post_id, message });
+                        outbox::discard(&tx, &pending_post_id, dirty)?;
+                    }
+                }
+                Message::Command(Command::EditPost { post_id, message }) => {
+                    match queue::get(&tx, &post_id)? {
+                        // Still on its way: the server may already have
+                        // it, so the view goes back to what is stored.
+                        Some(outgoing) if in_flight(&self.sending, &post_id) => {
+                            dirty.channels.insert(outgoing.channel_id);
+                            dirty
+                                .direct
+                                .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                        }
+                        // Waiting: the queued send takes the new text (#195).
+                        Some(outgoing) => {
+                            queue::edit(&tx, &post_id, &message)?;
+                            outbox::touch(&outgoing, dirty);
+                        }
+                        None => writes.push(Write::Edit { post_id, message }),
                     }
                 }
                 Message::Command(Command::DeletePost { post_id }) => {
-                    if queue::get(&tx, &post_id)?.is_some() {
-                        dirty
-                            .direct
-                            .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
-                    } else {
-                        writes.push(Write::Delete { post_id });
+                    match queue::get(&tx, &post_id)? {
+                        Some(outgoing) if in_flight(&self.sending, &post_id) => {
+                            dirty.channels.insert(outgoing.channel_id);
+                            dirty
+                                .direct
+                                .push(ChangeSet::Failed(CommandError::NotSentYet { post_id }));
+                        }
+                        // Never sent, so nobody else saw it: it just goes.
+                        Some(_) => {
+                            outbox::discard(&tx, &post_id, dirty)?;
+                        }
+                        None => writes.push(Write::Delete { post_id }),
                     }
                 }
                 Message::Command(Command::ViewChannel {
@@ -1351,10 +1384,7 @@ impl Engine {
             return Ok(());
         };
         let conn = self.store.conn();
-        let Some(outgoing) = queue::for_channel(conn, channel_id)?
-            .into_iter()
-            .find(|outgoing| outgoing.last_error.is_none())
-        else {
+        let Some(outgoing) = queue::next(conn, channel_id)? else {
             return Ok(());
         };
         queue::attempt(conn, &outgoing.pending_post_id)?;
@@ -2086,7 +2116,14 @@ impl Engine {
             Loaded::Statuses(statuses) => {
                 dirty.direct.push(ChangeSet::Presence(Arc::from(statuses)));
             }
-            Loaded::Done => dirty.direct.push(ChangeSet::Connection(Connection::Loaded)),
+            Loaded::Done => {
+                // The server answered the whole load, so what waits from an
+                // earlier run goes now, even before the socket is up (#194).
+                for channel_id in queue::channels(self.store.conn())? {
+                    self.drain(&channel_id, dirty)?;
+                }
+                dirty.direct.push(ChangeSet::Connection(Connection::Loaded));
+            }
             Loaded::SignedOut => dirty
                 .direct
                 .push(ChangeSet::Connection(Connection::SignedOut)),
@@ -2899,4 +2936,10 @@ fn snapshot(
             Ok(posts)
         }
     }
+}
+
+/// Whether the send is on its way to the server now, given each channel's
+/// send in flight.
+fn in_flight(sending: &std::collections::HashMap<String, String>, pending_post_id: &str) -> bool {
+    sending.values().any(|id| id == pending_post_id)
 }
