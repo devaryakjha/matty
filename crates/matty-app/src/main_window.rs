@@ -898,6 +898,29 @@ impl MainWindow {
                         }
                         return;
                     }
+                    SidebarEvent::PlaceCategory { id, index } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::PlaceCategory {
+                                category_id: id.to_string(),
+                                index: *index,
+                            });
+                        }
+                        return;
+                    }
+                    SidebarEvent::PlaceChannel {
+                        channel_id,
+                        category_id,
+                        index,
+                    } => {
+                        if let Some(live) = &this.live {
+                            live.send(matty_sync::Command::PlaceChannel {
+                                channel_id: channel_id.to_string(),
+                                category_id: category_id.to_string(),
+                                index: *index,
+                            });
+                        }
+                        return;
+                    }
                     SidebarEvent::MoveToCategory {
                         channel_id,
                         category_id,

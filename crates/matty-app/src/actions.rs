@@ -178,6 +178,9 @@ pub fn tooltip_text(label: &str, binding: &str) -> gpui_kit::SharedString {
 
 /// Key contexts set by views.
 pub const MAIN_WINDOW: &str = "MainWindow";
+/// The sidebar's reorderable list. With focus in it, Alt+Shift+Up and
+/// Down move the focused row or category instead of walking unreads.
+pub const SIDEBAR_SORTABLE: &str = "SidebarSortable";
 pub const CHANNEL_VIEW: &str = "ChannelView";
 pub const RIGHT_PANE: &str = "RightPane";
 pub const COMPOSER: &str = "Composer";
@@ -241,14 +244,14 @@ pub fn bindings() -> Vec<Binding> {
         row!(
             "Previous unread channel",
             PreviousUnreadChannel,
-            main,
+            Some("MainWindow && !SidebarSortable"),
             "alt-shift-up",
             "alt-shift-up"
         ),
         row!(
             "Next unread channel",
             NextUnreadChannel,
-            main,
+            Some("MainWindow && !SidebarSortable"),
             "alt-shift-down",
             "alt-shift-down"
         ),
