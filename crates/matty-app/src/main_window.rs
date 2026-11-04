@@ -2673,13 +2673,13 @@ impl MainWindow {
             .flex()
             .flex_col()
             .gap(theme.space(5.))
-            .child(section("Notify me about", desktop.into_any_element()))
             .child(section(
                 "Notifications",
                 div()
                     .flex()
                     .flex_col()
                     .gap(theme.space(3.))
+                    .child(desktop)
                     .child(switch(
                         "preferences.desktop-threads",
                         "Replies in threads I follow",
