@@ -14,8 +14,9 @@ use crate::autolink::link_spans;
 use crate::entities::find;
 use crate::parse::options;
 
-/// `text` with its mentions, channels, hashtags and (when `is_emoji` knows
-/// them) emoji written as Markdown links to their `matty://` URLs.
+/// `text` with its mentions, channels and hashtags written as Markdown links
+/// to their `matty://` URLs, and the emoji `is_emoji` knows as
+/// `![:name:](emoji:name)` images, the form gpuicn's `CustomEmoji` draws.
 pub fn link_entities_in_source(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
@@ -36,6 +37,10 @@ pub fn link_entities_in_source(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> S
                 continue;
             }
             out.push_str(&text[copied..start]);
+            let emoji = entity.url.strip_prefix("matty://emoji/");
+            if emoji.is_some() {
+                out.push('!');
+            }
             out.push('[');
             for c in text[start..end].chars() {
                 if matches!(c, '\\' | '*' | '_' | '[' | ']' | '`') {
@@ -44,7 +49,13 @@ pub fn link_entities_in_source(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> S
                 out.push(c);
             }
             out.push_str("](");
-            out.push_str(&entity.url);
+            match emoji {
+                Some(name) => {
+                    out.push_str("emoji:");
+                    out.push_str(name);
+                }
+                None => out.push_str(&entity.url),
+            }
             out.push(')');
             copied = end;
         }
@@ -110,7 +121,7 @@ mod tests {
         assert_eq!(
             rewrite("hi @ana, see ~town-square and #release :tada:"),
             "hi [@ana](matty://user/ana), see [~town-square](matty://channel/town-square) \
-             and [#release](matty://hashtag/release) [:tada:](matty://emoji/tada)"
+             and [#release](matty://hashtag/release) ![:tada:](emoji:tada)"
         );
     }
 

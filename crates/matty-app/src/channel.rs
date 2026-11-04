@@ -3547,7 +3547,7 @@ impl ChannelView {
             .highlight(highlight)
             .avatar(avatar)
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .on_reaction(move |emoji, _, cx| {

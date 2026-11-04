@@ -111,6 +111,9 @@ pub fn run_with_links(links: Vec<String>) {
         }
     });
     app.run(move |cx: &mut App| {
+        // Debug builds check that no image is fetched or read from the
+        // media cache on this thread (#153).
+        matty_api::rt::mark_ui_thread();
         launch(links_rx, cx);
     });
 }

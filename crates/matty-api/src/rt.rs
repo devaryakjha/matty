@@ -201,3 +201,49 @@ mod web {
         }
     }
 }
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    static UI_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the calling thread as the one that draws the UI, so that
+/// [`assert_off_ui_thread`] catches blocking work there in debug builds.
+/// Call it once, from the app's main thread.
+pub fn mark_ui_thread() {
+    #[cfg(not(target_family = "wasm"))]
+    UI_THREAD.with(|ui| ui.set(true));
+}
+
+/// Fails a debug build when `what` (fetching or reading image bytes, say)
+/// runs on the thread [`mark_ui_thread`] marked (#153). Image bytes are
+/// fetched and read from the media cache on sync's threads, and GPUI
+/// decodes them on its background executor. On the web everything shares
+/// the page's one thread, so there is nothing to check.
+#[track_caller]
+pub fn assert_off_ui_thread(what: &str) {
+    #[cfg(not(target_family = "wasm"))]
+    debug_assert!(
+        !UI_THREAD.with(std::cell::Cell::get),
+        "{what} ran on the UI thread"
+    );
+    #[cfg(target_family = "wasm")]
+    let _ = what;
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod ui_thread_tests {
+    #[test]
+    fn other_threads_pass_the_check() {
+        super::assert_off_ui_thread("a fetch");
+        std::thread::spawn(|| {
+            super::mark_ui_thread();
+            let caught = std::panic::catch_unwind(|| super::assert_off_ui_thread("a fetch"));
+            assert_eq!(caught.is_err(), cfg!(debug_assertions));
+        })
+        .join()
+        .unwrap();
+        // Marking one thread leaves the others alone.
+        super::assert_off_ui_thread("a fetch");
+    }
+}

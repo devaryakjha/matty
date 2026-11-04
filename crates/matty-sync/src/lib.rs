@@ -29,7 +29,7 @@ mod web;
 pub use bridge::{SyncHandle, spawn, spawn_at};
 pub use change::{
     Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, LinkAnswer, LinkQuery,
-    Listing, POSTS_WINDOW, UploadState,
+    Listing, POSTS_WINDOW, Picture, UploadState,
 };
 pub use engine::Command;
 /// Where an account's database lives.

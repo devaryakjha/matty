@@ -35,7 +35,7 @@ use crate::ui::{
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     menu::{Menu, MenuItem, MenuState},
-    message::{Message, MessageHighlight, MessageStatus, Reaction},
+    message::{Message, MessageHighlight, MessageStatus},
     message_list::{MessageList, MessageListState},
     popover::popover,
     spinner::Spinner,
@@ -1809,7 +1809,7 @@ impl RightPaneView {
             .highlight(highlight)
             .avatar(Self::avatar(&id, post, presence, initial, cx))
             .reactions(post.reactions.iter().map(|reaction| {
-                Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
+                crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
             .px(theme.space(4.))

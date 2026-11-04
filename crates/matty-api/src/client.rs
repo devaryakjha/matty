@@ -367,6 +367,7 @@ impl Client {
         query: &[(&str, String)],
         etag: Option<&str>,
     ) -> Result<Fetched, ApiError> {
+        crate::rt::assert_off_ui_thread("fetching image or file bytes");
         let headers: Vec<(header::HeaderName, String)> = etag
             .map(|etag| (header::IF_NONE_MATCH, etag.to_string()))
             .into_iter()

@@ -341,6 +341,7 @@ impl MainWindow {
         });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
+            crate::preview::share_pictures(cx);
         }
         let account = cx.new(|cx| AccountView::new(crate::preview::account(), window, cx));
         let browse = cx.new(|cx| BrowseView::new("Matty", window, cx));
@@ -1061,7 +1062,7 @@ impl MainWindow {
                 return;
             }
         };
-        cx.set_global(live.avatars());
+        live.share_pictures(cx);
         let mut live = live;
         // Nothing is on screen yet, so the update has nothing to show.
         let _ = live.set_names(self.settings.read(cx).get().name_format);

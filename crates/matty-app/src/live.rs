@@ -115,8 +115,13 @@ pub struct Live {
     asked_remote_images: std::collections::HashSet<String>,
     /// Full-size images for the lightbox, by file id, once fetched.
     full_images: HashMap<String, Arc<gpui_kit::Image>>,
-    /// Profile pictures, shared with the views (#153).
+    /// Profile pictures, custom emoji images and team icons, shared with
+    /// the views (#153).
     avatars: crate::avatars::Avatars,
+    emoji_images: crate::avatars::EmojiImages,
+    team_icons: crate::avatars::TeamIcons,
+    /// The server's custom emoji by name, shared with the views.
+    custom_emoji: crate::emoji::CustomEmoji,
 }
 
 /// One tray file on its way to the server.
@@ -232,7 +237,8 @@ pub struct Update {
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
-    /// A profile picture arrived; the windows redraw to show it.
+    /// A profile picture, custom emoji or team icon arrived, or the custom
+    /// emoji changed; the windows redraw to show it.
     pub avatars: bool,
     /// What a link in a message turned out to name (#85, #103).
     pub link: Option<(matty_sync::LinkQuery, Option<matty_sync::LinkAnswer>)>,
@@ -471,14 +477,19 @@ impl Live {
         let media = media_dir(account);
         let sync = matty_sync::spawn_at(path, media)?;
         let changes = sync.subscribe();
-        let asker = sync.clone();
-        let avatars =
-            crate::avatars::Avatars::new(std::rc::Rc::new(move |user_id: &str, version| {
-                asker.send(Command::LoadAvatar {
-                    user_id: user_id.to_owned(),
-                    last_picture_update: version,
+        let ask = |picture: matty_sync::Picture| -> crate::avatars::Ask {
+            let asker = sync.clone();
+            std::rc::Rc::new(move |id: &str, version| {
+                asker.send(Command::LoadPicture {
+                    picture,
+                    id: id.to_owned(),
+                    version,
                 });
-            }));
+            })
+        };
+        let avatars = crate::avatars::Avatars::new(ask(matty_sync::Picture::Avatar));
+        let emoji_images = crate::avatars::EmojiImages::new(ask(matty_sync::Picture::Emoji));
+        let team_icons = crate::avatars::TeamIcons::new(ask(matty_sync::Picture::TeamIcon));
         Ok((
             Self {
                 sync,
@@ -524,6 +535,9 @@ impl Live {
                 asked_remote_images: std::collections::HashSet::new(),
                 full_images: HashMap::new(),
                 avatars,
+                emoji_images,
+                team_icons,
+                custom_emoji: crate::emoji::CustomEmoji::default(),
             },
             changes,
         ))
@@ -1377,6 +1391,15 @@ impl Live {
         self.avatars.clone()
     }
 
+    /// Makes the pictures and the custom emoji list the app's globals, for
+    /// the views to read while rendering.
+    pub fn share_pictures(&self, cx: &mut gpui_kit::App) {
+        cx.set_global(self.avatars.clone());
+        cx.set_global(self.emoji_images.clone());
+        cx.set_global(self.team_icons.clone());
+        cx.set_global(self.custom_emoji.clone());
+    }
+
     pub fn is_typing(&self) -> bool {
         !self.typing.is_empty() || !self.thread_typing.is_empty()
     }
@@ -1512,15 +1535,28 @@ impl Live {
                     update.channel = self.channel_update();
                 }
             }
-            ChangeSet::Avatar {
-                user_id,
-                last_picture_update,
+            ChangeSet::Picture {
+                picture,
+                id,
+                version,
                 image,
             } => {
-                let picture = image
+                let image = image
                     .as_ref()
                     .and_then(|(bytes, content_type)| crate::avatars::picture(bytes, content_type));
-                update.avatars = self.avatars.landed(user_id, *last_picture_update, picture);
+                let store: &crate::avatars::Pictures = match picture {
+                    matty_sync::Picture::Avatar => &self.avatars,
+                    matty_sync::Picture::Emoji => &self.emoji_images,
+                    matty_sync::Picture::TeamIcon => &self.team_icons,
+                };
+                update.avatars = store.landed(id, *version, image);
+            }
+            ChangeSet::CustomEmoji(emoji) => {
+                self.custom_emoji.set(emoji);
+                for one in emoji.iter() {
+                    self.emoji_images.learn(&one.id, one.update_at);
+                }
+                update.avatars = true;
             }
             ChangeSet::RemoteImage {
                 url,
@@ -1902,6 +1938,8 @@ impl Live {
                     // another try.
                     if matches!(state, matty_api::ws::ConnectionState::Connected { .. }) {
                         self.avatars.retry_failed();
+                        self.emoji_images.retry_failed();
+                        self.team_icons.retry_failed();
                     }
                     update.connection = Some(connection_state(state));
                 }
@@ -3743,9 +3781,10 @@ mod tests {
             ..User::default()
         }])));
         assert!(avatars.image("ada").is_none(), "initials until it lands");
-        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Avatar {
-            user_id: user_id.into(),
-            last_picture_update: 5,
+        let answer = |user_id: &str, image: Option<&[u8]>| ChangeSet::Picture {
+            picture: matty_sync::Picture::Avatar,
+            id: user_id.into(),
+            version: 5,
             image: image.map(|bytes| (Arc::from(bytes), "image/png".to_owned())),
         };
         let update = live.apply(&answer("ada", Some(b"\x89PNG\r\n\x1a\nface")));
@@ -3753,14 +3792,54 @@ mod tests {
         assert!(avatars.image("ada").is_some());
         // No picture, or bytes that are not an image: the initials stay.
         assert!(!live.apply(&answer("bob", None)).avatars);
-        let page = ChangeSet::Avatar {
-            user_id: "eve".into(),
-            last_picture_update: 5,
+        let page = ChangeSet::Picture {
+            picture: matty_sync::Picture::Avatar,
+            id: "eve".into(),
+            version: 5,
             image: Some((Arc::from(&b"<html>"[..]), "text/html".to_owned())),
         };
         assert!(!live.apply(&page).avatars);
         assert!(avatars.image("bob").is_none());
         assert!(avatars.image("eve").is_none());
+    }
+
+    #[test]
+    fn custom_emoji_and_team_icons_land_in_their_own_stores() {
+        let mut live = live();
+        let update = live.apply(&ChangeSet::CustomEmoji(Arc::from(vec![
+            matty_api::models::Emoji {
+                id: "e1".into(),
+                name: "shipit".into(),
+                update_at: 3,
+                ..Default::default()
+            },
+        ])));
+        assert!(update.avatars, "views redraw with the new names");
+        assert_eq!(live.custom_emoji.id("shipit").as_deref(), Some("e1"));
+        assert!(!live.custom_emoji.contains("tada"));
+        let png = Some((
+            Arc::from(&b"\x89PNG\r\n\x1a\nimg"[..]),
+            "image/png".to_owned(),
+        ));
+        let landed = |picture, id: &str| ChangeSet::Picture {
+            picture,
+            id: id.into(),
+            version: 3,
+            image: png.clone(),
+        };
+        assert!(
+            live.apply(&landed(matty_sync::Picture::Emoji, "e1"))
+                .avatars
+        );
+        assert!(live.emoji_images.image("e1").is_some());
+        assert!(
+            live.apply(&landed(matty_sync::Picture::TeamIcon, "t1"))
+                .avatars
+        );
+        assert!(live.team_icons.image("t1").is_some());
+        // Each kind keeps to its own store.
+        assert!(live.avatars.image("e1").is_none());
+        assert!(live.emoji_images.image("t1").is_none());
     }
 
     #[test]
