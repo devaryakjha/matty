@@ -8,8 +8,8 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     Action, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::account::{Account, AccountEvent, AccountView};
@@ -38,7 +38,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
-    kbd::{Kbd, format_shortcut},
+    kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
     switch::Switch,
@@ -46,7 +46,6 @@ use crate::ui::{
     title_bar::TitleBar,
     toast::{Notice, ToastState},
     toggle_group::{ToggleGroup, ToggleGroupItem},
-    tooltip::text_tooltip,
 };
 
 /// Whether Matty can reach the server (PLAN §4.5: network errors become a
@@ -1902,20 +1901,6 @@ impl MainWindow {
 
     /// The keystroke bound to the action with this label in the shortcut
     /// sheet, formatted for the current platform.
-    fn shortcut_for(label: &str) -> Option<String> {
-        let platform = Platform::current();
-        actions::bindings()
-            .into_iter()
-            .find(|row| row.label == label)
-            .map(|row| {
-                let os = match platform {
-                    Platform::MacOs => gpui_kit::OperatingSystem::Mac,
-                    Platform::Other => gpui_kit::OperatingSystem::Linux,
-                };
-                format_shortcut(row.keys(platform), os).to_string()
-            })
-    }
-
     /// A ghost icon button that dispatches `action`, with a tooltip naming
     /// it and its shortcut when the keymap has one.
     fn icon_button(
@@ -1927,10 +1912,6 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = UiTheme::read(cx);
-        let tip: SharedString = match Self::shortcut_for(label) {
-            Some(keys) => format!("{label}  {keys}").into(),
-            None => label.into(),
-        };
         let button = Button::new(id)
             .variant(ButtonVariant::Ghost)
             .size(ButtonSize::IconSm)
@@ -1942,10 +1923,11 @@ impl MainWindow {
                     .size(scaled(theme, metrics::ICON))
                     .text_color(theme.colors.muted_foreground),
             );
-        div()
-            .id(SharedString::from(format!("{id}.tooltip")))
-            .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
-            .child(button)
+        style::tipped(
+            SharedString::from(format!("{id}.tooltip")),
+            actions::tooltip_text(label, label),
+            button,
+        )
     }
 
     /// DESIGN.md §4: navigation on the left, the quick switcher as a search
@@ -1957,7 +1939,7 @@ impl MainWindow {
         }
         let theme = UiTheme::read(cx).clone();
         let platform = Platform::current();
-        let switcher_keys = Self::shortcut_for("Quick switcher").unwrap_or_default();
+        let switcher_keys = actions::shortcut_for("Quick switcher").unwrap_or_default();
         let switcher = Button::new("titlebar.switcher")
             .variant(ButtonVariant::Outline)
             .size(ButtonSize::Sm)

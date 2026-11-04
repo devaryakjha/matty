@@ -6,9 +6,13 @@
 //! ([`Palette`]), and names the type scale and layout metrics every view
 //! shares, so a size appears once here and nowhere else.
 
-use gpui_kit::{App, FontWeight, Global, Pixels, Rgba, Styled, px, rgb};
+use gpui_kit::{
+    App, ElementId, FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Rgba, SharedString, StatefulInteractiveElement as _, Styled, div, px, rgb,
+};
 
 use crate::ui::theme::{ThemeMode, UiTheme};
+use crate::ui::tooltip::text_tooltip;
 
 const THEME_CSS: &str = include_str!("../assets/theme.css");
 
@@ -186,6 +190,23 @@ pub fn scaled(theme: &UiTheme, pixels: f32) -> Pixels {
 /// Returns `pixels` as [`Pixels`] unscaled, for one-pixel hairlines.
 pub const fn hairline() -> Pixels {
     px(1.)
+}
+
+/// Wraps `child` so hovering it shows `tip` (DESIGN.md §5: every icon-only
+/// button has a tooltip, with its shortcut when there is one). `id` must be
+/// unique within the window; the wrapper sizes to its child.
+pub fn tipped(
+    id: impl Into<ElementId>,
+    tip: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> impl IntoElement {
+    let tip: SharedString = tip.into();
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .tooltip(move |_, cx| text_tooltip(tip.clone(), cx))
+        .child(child)
 }
 
 #[cfg(test)]

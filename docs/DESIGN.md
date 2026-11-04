@@ -471,6 +471,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   saved width; picking a channel, Threads or Drafts closes it, as do
   Escape and the backdrop. The team rail stays put, so switching teams
   never needs the drawer (`design-50`).
+- **Tooltips on icon-only buttons** (PLAN §5 visual direction, §8): every
+  icon-only button shows a tooltip naming it, with the shortcut after two
+  spaces when the keymap has one: the channel header's favorite,
+  members, pinned and info, the composer toolbar ("Bold  ⌘B"), send
+  ("Send  ↵", or ⌘↵ when the setting says so), the right pane's expand,
+  close, attach, emoji and reply, the sidebar's pencil, and the message
+  hover actions. The label is the aria label, so pointer and screen reader
+  users hear the same name (`design-51`).
 
 ## 5. Components
 
