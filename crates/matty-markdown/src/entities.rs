@@ -84,14 +84,15 @@ fn inline_entities(inlines: &mut Vec<Inline>, is_emoji: &dyn Fn(&str) -> bool) {
 }
 
 /// An entity found in text: where it is, and where its link goes.
-struct Entity {
-    start: usize,
-    end: usize,
-    url: String,
+pub(crate) struct Entity {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) url: String,
 }
 
-fn split(text: &str, is_emoji: &dyn Fn(&str) -> bool, out: &mut Vec<Inline>) {
-    let mut plain = 0;
+/// The entities in `text`, in order and not overlapping.
+pub(crate) fn find(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> Vec<Entity> {
+    let mut found = Vec::new();
     let mut at = 0;
     while at < text.len() {
         let Some(c) = text[at..].chars().next() else {
@@ -106,19 +107,27 @@ fn split(text: &str, is_emoji: &dyn Fn(&str) -> bool, out: &mut Vec<Inline>) {
         };
         match entity {
             Some(entity) => {
-                if entity.start > plain {
-                    out.push(Inline::Text(text[plain..entity.start].to_owned()));
-                }
-                out.push(Inline::Link {
-                    url: entity.url,
-                    title: String::new(),
-                    children: vec![Inline::Text(text[entity.start..entity.end].to_owned())],
-                });
-                plain = entity.end;
                 at = entity.end;
+                found.push(entity);
             }
             None => at += c.len_utf8(),
         }
+    }
+    found
+}
+
+fn split(text: &str, is_emoji: &dyn Fn(&str) -> bool, out: &mut Vec<Inline>) {
+    let mut plain = 0;
+    for entity in find(text, is_emoji) {
+        if entity.start > plain {
+            out.push(Inline::Text(text[plain..entity.start].to_owned()));
+        }
+        out.push(Inline::Link {
+            url: entity.url,
+            title: String::new(),
+            children: vec![Inline::Text(text[entity.start..entity.end].to_owned())],
+        });
+        plain = entity.end;
     }
     if plain < text.len() {
         out.push(Inline::Text(text[plain..].to_owned()));

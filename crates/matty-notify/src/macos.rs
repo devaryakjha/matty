@@ -2,30 +2,104 @@
 //! run from a bundle with an identifier; a bare binary, as from
 //! `cargo run`, has none and the center would crash, so [`Center::new`]
 //! returns `None` and the caller falls back to logging.
+//!
+//! Clicks come back through a delegate object, which is an Objective-C
+//! class of our own: defining one is the module's only `unsafe`.
+//!
+//! The dock badge (#141) needs no bundle, so it is set either way.
+
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use block2::RcBlock;
-use objc2::runtime::Bool;
+use block2::{DynBlock, RcBlock};
+use objc2::rc::Retained;
+use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, define_class, msg_send};
+use objc2_app_kit::NSApplication;
 use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
-    UNNotificationSound, UNUserNotificationCenter,
+    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
+    UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+    UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
+use crate::backend::{Badge, Clicked, Logged};
 use crate::{Notification, Notifier};
+
+/// What the delegate holds: where clicks go.
+struct DelegateIvars {
+    clicked: async_channel::Sender<Clicked>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, the class adds no
+    // `Drop`, and its ivars are `Send + Sync`, so any thread may own it.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = AllocAnyThread]
+    #[name = "MattyNotificationDelegate"]
+    #[ivars = DelegateIvars]
+    struct Delegate;
+
+    // SAFETY: NSObjectProtocol has no requirements beyond NSObject's.
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    // SAFETY: each method's signature matches the protocol's declaration in
+    // objc2-user-notifications, and each completion handler is called once.
+    unsafe impl UNUserNotificationCenterDelegate for Delegate {
+        /// A click on a notification, or on its default action.
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive(
+            &self,
+            _center: &UNUserNotificationCenter,
+            response: &UNNotificationResponse,
+            completion_handler: &DynBlock<dyn Fn()>,
+        ) {
+            let id = response.notification().request().identifier().to_string();
+            if let Some(clicked) = Clicked::from_identifier(&id) {
+                let _ = self.ivars().clicked.try_send(clicked);
+            }
+            completion_handler.call(());
+        }
+
+        /// Matty is frontmost: the policy already decided this one should
+        /// show, so macOS should not hold it back.
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present(
+            &self,
+            _center: &UNUserNotificationCenter,
+            _notification: &UNNotification,
+            completion_handler: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+        ) {
+            completion_handler.call((UNNotificationPresentationOptions::Banner
+                | UNNotificationPresentationOptions::List
+                | UNNotificationPresentationOptions::Sound,));
+        }
+    }
+);
+
+impl Delegate {
+    fn new(clicked: async_channel::Sender<Clicked>) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(DelegateIvars { clicked });
+        // SAFETY: NSObject's `init` on a freshly allocated object.
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 /// Posts through the user notification center, one thread per channel.
 pub struct Center {
     /// What is on screen per channel, to take it away when the channel is
     /// read.
     shown: Mutex<HashMap<String, Vec<String>>>,
+    /// The center holds its delegate weakly; this keeps it alive.
+    _delegate: Retained<Delegate>,
 }
 
 impl Center {
     /// The center, once permission is asked for; `None` outside a bundle.
-    pub fn new() -> Option<Self> {
+    /// Clicks on its notifications arrive on `clicked`.
+    pub fn new(clicked: async_channel::Sender<Clicked>) -> Option<Self> {
         let bundle = NSBundle::mainBundle();
         if bundle.bundleIdentifier().is_none() {
             tracing::warn!(
@@ -35,6 +109,8 @@ impl Center {
             return None;
         }
         let center = UNUserNotificationCenter::currentNotificationCenter();
+        let delegate = Delegate::new(clicked);
+        center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         let answered = RcBlock::new(|granted: Bool, error: *mut NSError| {
             if !error.is_null() {
                 tracing::warn!("the notification permission request failed");
@@ -50,6 +126,7 @@ impl Center {
         );
         Some(Self {
             shown: Mutex::new(HashMap::new()),
+            _delegate: delegate,
         })
     }
 }
@@ -63,7 +140,7 @@ impl Notifier for Center {
         if notification.sound {
             content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
-        let id = format!("{}:{}", notification.channel_id, notification.post_id);
+        let id = Clicked::identifier(&notification.channel_id, &notification.post_id);
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
             &NSString::from_str(&id),
             &content,
@@ -99,4 +176,38 @@ impl Notifier for Center {
         center.removeDeliveredNotificationsWithIdentifiers(&ids);
         center.removePendingNotificationRequestsWithIdentifiers(&ids);
     }
+
+    fn set_badge(&self, badge: Badge) {
+        set_dock_badge(badge);
+    }
+}
+
+/// Outside a bundle: notifications are logged, the dock badge still shows.
+pub struct DockOnly;
+
+impl Notifier for DockOnly {
+    fn show(&self, notification: &Notification) {
+        Logged.show(notification);
+    }
+
+    fn withdraw(&self, channel_id: &str) {
+        Logged.withdraw(channel_id);
+    }
+
+    fn set_badge(&self, badge: Badge) {
+        set_dock_badge(badge);
+    }
+}
+
+/// Puts `badge` on the dock icon. AppKit allows this only on the main
+/// thread, where the app calls it; elsewhere it is skipped with a warning.
+fn set_dock_badge(badge: Badge) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        tracing::warn!("the dock badge can only be set on the main thread");
+        return;
+    };
+    let label = badge.label().map(|label| NSString::from_str(&label));
+    NSApplication::sharedApplication(mtm)
+        .dockTile()
+        .setBadgeLabel(label.as_deref());
 }
