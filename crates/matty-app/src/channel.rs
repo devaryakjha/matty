@@ -32,7 +32,7 @@ use crate::ui::{
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
-    empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+    empty::EmptyContent,
     lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
@@ -3289,22 +3289,6 @@ impl ChannelView {
     fn empty_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let direct = matches!(channel.kind, ChannelKind::Direct { .. });
-        let media = div()
-            .size(theme.space(10.))
-            .rounded_full()
-            .bg(theme.colors.muted)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                lucide(if direct {
-                    LucideIcon::MessageSquare
-                } else {
-                    LucideIcon::Hash
-                })
-                .size(scaled(&theme, metrics::ICON_LARGE))
-                .text_color(theme.colors.muted_foreground),
-            );
         let title: SharedString = if direct {
             format!(
                 "This is the start of your conversation with {}",
@@ -3324,22 +3308,12 @@ impl ChannelView {
                     "Nothing has been posted yet. Say hello, or set a purpose so people know what belongs here.".into()
                 }
             });
-        let mut header = EmptyHeader::new()
-            .media(EmptyMedia::new().child(media))
-            .title(
-                EmptyTitle::new()
-                    .type_style(style::TITLE, &theme)
-                    .text_center()
-                    .child(title),
-            )
-            .description(
-                EmptyDescription::new()
-                    .type_style(style::META, &theme)
-                    .text_center()
-                    .child(description),
-            );
-        let _ = &mut header;
-        let mut empty = Empty::new().header(header);
+        let glyph = if direct {
+            LucideIcon::MessageSquare
+        } else {
+            LucideIcon::Hash
+        };
+        let mut empty = style::empty_state(glyph, title, description, cx);
         if !direct {
             empty = empty.content(
                 EmptyContent::new().child(
@@ -3388,48 +3362,17 @@ impl ChannelView {
                     .text_color(theme.colors.muted_foreground),
             )
             .child("No channel open");
-        let media = div()
-            .size(theme.space(10.))
-            .rounded_full()
-            .bg(theme.colors.muted)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                lucide(LucideIcon::MessagesSquare)
-                    .size(scaled(&theme, metrics::ICON_LARGE))
-                    .text_color(theme.colors.muted_foreground),
-            );
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(theme.space(6.))
-                    .child(
-                        Empty::new().header(
-                            EmptyHeader::new()
-                                .media(EmptyMedia::new().child(media))
-                                .title(
-                                    EmptyTitle::new()
-                                        .type_style(style::TITLE, &theme)
-                                        .child("Not connected yet"),
-                                )
-                                .description(
-                                    EmptyDescription::new()
-                                        .type_style(style::META, &theme)
-                                        .child("Your channels appear here once Matty is connected to a Mattermost server."),
-                                ),
-                        ),
-                    ),
-            )
+            .child(style::centered_empty(
+                LucideIcon::MessagesSquare,
+                "Not connected yet",
+                "Your channels appear here once Matty is connected to a Mattermost server.",
+                cx,
+            ))
     }
 }
 

@@ -3,7 +3,7 @@
 //! list. It replaces the channel view when the sidebar's Threads row is
 //! chosen and never opens the right pane.
 
-use gpui_icons::{LucideIcon, lucide};
+use gpui_icons::LucideIcon;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
@@ -17,7 +17,6 @@ use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     theme::UiTheme,
     toggle_group::{ToggleGroup, ToggleGroupItem},
 };
@@ -334,7 +333,6 @@ impl ThreadsView {
     }
 
     fn empty(&self, cx: &App) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
         let (title, description) = if self.unread_only {
             (
                 "No unread threads",
@@ -346,43 +344,7 @@ impl ThreadsView {
                 "Reply in a thread, or choose Follow on one, and it shows up here.",
             )
         };
-        let media = div()
-            .size(theme.space(10.))
-            .rounded_full()
-            .bg(theme.colors.muted)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                lucide(LucideIcon::MessagesSquare)
-                    .size(scaled(&theme, metrics::ICON_LARGE))
-                    .text_color(theme.colors.muted_foreground),
-            );
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(theme.space(6.))
-            .child(
-                Empty::new().header(
-                    EmptyHeader::new()
-                        .media(EmptyMedia::new().child(media))
-                        .title(
-                            EmptyTitle::new()
-                                .type_style(style::TITLE, &theme)
-                                .text_center()
-                                .child(title),
-                        )
-                        .description(
-                            EmptyDescription::new()
-                                .type_style(style::META, &theme)
-                                .text_center()
-                                .child(description),
-                        ),
-                ),
-            )
+        style::centered_empty(LucideIcon::MessagesSquare, title, description, cx)
     }
 }
 

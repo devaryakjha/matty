@@ -38,21 +38,28 @@ Values are sRGB hex; the CSS is the source of truth.
 | `sidebar` / `sidebar-foreground` | `#f4f5f7` / `#1b1f2a` | `#0f1114` / `#d6dae3` | Title bar, team rail, sidebar |
 | `sidebar-accent` | `#e6e8ed` | `#1d2129` | Hovered and selected sidebar rows |
 | `sidebar-border` / `border` | `#e3e5ea` / `#e6e8ec` | `#262a33` / `#2a2e37` | Hairlines |
-| `primary` / `primary-foreground` | `#3056d3` / `#ffffff` | `#4a6de8` / `#ffffff` | Buttons, links, selected rail item, mention badges |
+| `primary` / `primary-foreground` | `#3056d3` / `#ffffff` | `#6688f2` / `#0f1114` | Buttons, links, selected rail item, mention badges |
 | `accent` / `accent-foreground` | `#eef0f4` / `#1b1f2a` | `#242830` / `#e8eaef` | Hover on buttons and menu items |
 | `muted` / `muted-foreground` | `#f1f2f4` / `#5f6775` | `#1d2027` / `#8b93a5` | Timestamps, placeholders, meta |
 | `card` / `popover` | `#ffffff` | `#1c1f26` | Popovers, menus, dialogs |
-| `destructive` | `#dc2626` | `#f0564f` | Errors, delete, DND |
-| `ring` | `#3056d3` | `#4a6de8` | Focus |
+| `destructive` | `#d42020` | `#f0564f` | Errors, delete, DND |
+| `ring` | `#3056d3` | `#6688f2` | Focus |
 | `radius` | 8px | 8px | Base; buttons use 6px, inputs 8px, cards 10px |
+
+Every text token reaches 4.5:1 on every surface it sits on, and every
+presence color 3:1 (PLAN §8); `scripts/contrast.py` checks the CSS. In
+dark mode `primary` is a light blue with near-black text on it, because no
+mid-blue can carry white text and still read as a link on `#15171c`.
+Hairline borders are decorative and exempt; inputs are told apart by their
+`input` fill and placeholder, not their border.
 
 Semantic colors Matty adds on top (`style::Palette`):
 
 | Name | Light | Dark | Used for |
 | --- | --- | --- | --- |
 | `online` | `#16a34a` | `#3fb950` | Presence dot |
-| `away` | `#f59e0b` | `#f2b038` | Presence dot |
-| `dnd` | `#dc2626` | `#f0564f` | Presence dot |
+| `away` | `#cc7a00` | `#f2b038` | Presence dot, favorite star |
+| `dnd` | `#d42020` | `#f0564f` | Presence dot |
 
 Mentions, the "New messages" line and links need no token of their own:
 gpuicn's `Message` tints a mention row with `primary` at 6% behind a 2px
@@ -479,6 +486,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   close, attach, emoji and reply, the sidebar's pencil, and the message
   hover actions. The label is the aria label, so pointer and screen reader
   users hear the same name (`design-51`).
+- **Contrast** (PLAN §8): every text token reads at 4.5:1 on each surface
+  it sits on and every presence color at 3:1, in both themes, checked by
+  `scripts/contrast.py`. Dark `primary` moved from `#4a6de8` (3.97:1 as a
+  link) to `#6688f2` with near-black text on buttons; light `destructive`
+  to `#d42020` so sign-in errors pass on the sidebar surface; light `away`
+  to `#cc7a00` for the presence dot and favorite star (`design-53`).
 
 ## 5. Components
 
@@ -488,6 +501,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 - Icons are Lucide at 16px in chrome, 20px in empty states, 14px inside
   badges and sidebar rows. Stroke color follows the text color around it.
 - Tooltips on every icon-only button, with the shortcut when there is one.
+- Empty states are built by `style::empty_state` (gpuicn `Empty` with its
+  icon media sized to the 40px circle) or `style::centered_empty`; a view
+  never assembles one by hand.
 
 ## 6. Screens that set the bar
 

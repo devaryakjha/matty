@@ -26,7 +26,6 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
-    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     markdown::markdown,
@@ -970,58 +969,12 @@ impl RightPaneView {
 
     /// Nothing open: one line on how to get a thread here.
     fn empty(cx: &App) -> impl IntoElement + use<> {
-        Self::empty_state(
+        style::centered_empty(
             LucideIcon::MessageSquareReply,
             "No thread open",
             "Hover a message and choose Reply in thread to follow it here.",
             cx,
         )
-    }
-
-    fn empty_state(
-        glyph: LucideIcon,
-        title: &'static str,
-        description: &'static str,
-        cx: &App,
-    ) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let media = div()
-            .size(theme.space(10.))
-            .rounded_full()
-            .bg(theme.colors.muted)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                lucide(glyph)
-                    .size(scaled(&theme, metrics::ICON_LARGE))
-                    .text_color(theme.colors.muted_foreground),
-            );
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(theme.space(6.))
-            .child(
-                Empty::new().header(
-                    EmptyHeader::new()
-                        .media(EmptyMedia::new().child(media))
-                        .title(
-                            EmptyTitle::new()
-                                .type_style(style::TITLE, &theme)
-                                .text_center()
-                                .child(title),
-                        )
-                        .description(
-                            EmptyDescription::new()
-                                .type_style(style::META, &theme)
-                                .text_center()
-                                .child(description),
-                        ),
-                ),
-            )
     }
 
     /// Saved, pinned and mention listings: each post under a caption with
@@ -1034,7 +987,7 @@ impl RightPaneView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         if items.is_empty() {
-            return Self::empty_state(empty.0, empty.1, empty.2, cx).into_any_element();
+            return style::centered_empty(empty.0, empty.1, empty.2, cx).into_any_element();
         }
         let theme = UiTheme::read(cx).clone();
         let view = cx.entity().downgrade();
@@ -1105,7 +1058,7 @@ impl RightPaneView {
         let theme = UiTheme::read(cx).clone();
         let muted = theme.colors.muted_foreground;
         let body = if model.query.is_empty() {
-            Self::empty_state(
+            style::centered_empty(
                 LucideIcon::Search,
                 "Search messages",
                 "Words, \u{201c}exact phrases\u{201d}, from:someone and in:channel.",
