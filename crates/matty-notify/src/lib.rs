@@ -2,6 +2,8 @@
 //! per platform (PLAN §6.7).
 
 pub mod backend;
+#[cfg(target_os = "macos")]
+mod macos;
 pub mod mention;
 pub mod policy;
 
