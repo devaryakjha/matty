@@ -98,6 +98,9 @@ pub fn from_post(post: &Post) -> Vec<Embed> {
             .map(|attachment| Embed::Attachment(attachment_card(attachment, &post.metadata.images)))
             .collect();
     }
+    if post.props.get(REMOVE_LINK_PREVIEW).and_then(Value::as_str) == Some("true") {
+        return Vec::new();
+    }
     post.metadata
         .embeds
         .iter()
@@ -196,6 +199,50 @@ fn shown(image: Option<&EmbedImage>) -> Option<(ImageSource, u32, u32)> {
     let image = image?;
     let loaded = image.loaded.clone()?;
     Some((ImageSource::Image(loaded), image.width, image.height))
+}
+
+/// The card for what the server read from a link.
+pub fn link_card(url: &str, graph: &matty_api::models::OpenGraph) -> LinkCard {
+    let title = if graph.title.is_empty() {
+        url
+    } else {
+        &graph.title
+    };
+    LinkCard {
+        url: url.to_owned().into(),
+        site_name: graph.site_name.clone().into(),
+        title: title.to_owned().into(),
+        description: graph.description.clone().into(),
+        image: None,
+    }
+}
+
+/// The first web link in a draft, for the preview above the composer
+/// (#188): a word that starts with `http://` or `https://`, without the
+/// punctuation that closes a sentence or wraps the link.
+pub fn first_link(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|word| {
+        let word = word.trim_start_matches(['(', '<', '"', '\'', '[']);
+        let link = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '>', '"', '\'', ']']);
+        let host = link
+            .strip_prefix("https://")
+            .or_else(|| link.strip_prefix("http://"))?;
+        (!host.is_empty() && host.contains('.')).then(|| link.to_owned())
+    })
+}
+
+/// The post property Mattermost clients set to hide a post's link
+/// preview: the web app's Remove link preview writes `"true"`.
+const REMOVE_LINK_PREVIEW: &str = "remove_link_preview";
+
+/// A new post's properties: a link preview the user removed while
+/// composing stays off the post, for every client.
+pub fn send_props(unfurl: bool) -> std::collections::HashMap<String, Value> {
+    let mut props = std::collections::HashMap::new();
+    if !unfurl {
+        props.insert(REMOVE_LINK_PREVIEW.to_owned(), Value::String("true".into()));
+    }
+    props
 }
 
 /// Only web links open from a card.
@@ -382,6 +429,28 @@ mod tests {
             panic!("{embeds:?}");
         };
         assert_eq!(card.text.as_ref(), "Deploy finished");
+    }
+
+    #[test]
+    fn the_first_web_link_in_a_draft_is_previewed() {
+        assert_eq!(
+            first_link("see (https://github.com/devaryakjha/matty). Thanks").as_deref(),
+            Some("https://github.com/devaryakjha/matty")
+        );
+        assert_eq!(
+            first_link("<http://example.com/a?b=1> and https://x.org").as_deref(),
+            Some("http://example.com/a?b=1")
+        );
+        assert_eq!(first_link("no link, https:// alone, or ftp://a.b"), None);
+        assert_eq!(first_link("https://localhost"), None);
+    }
+
+    #[test]
+    fn a_removed_preview_stays_off_the_post() {
+        assert!(send_props(true).is_empty());
+        let props = serde_json::to_value(send_props(false)).unwrap();
+        let removed = from_post(&post(props, vec![graph("https://github.com/a", "Repo A")]));
+        assert_eq!(removed, []);
     }
 
     #[test]
