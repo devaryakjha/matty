@@ -2301,11 +2301,24 @@ impl ChannelView {
         const LIMIT: usize = 8;
         let query = query.to_lowercase();
         match trigger {
-            '@' => people_suggestions(
-                self.model.iter().flat_map(|model| model.profiles.iter()),
-                &query,
-                LIMIT,
-            ),
+            '@' => {
+                let in_channel = self.model.as_ref().is_some_and(|model| {
+                    matches!(model.kind, ChannelKind::Public | ChannelKind::Private)
+                });
+                // The groups keep their rows even when many people match.
+                let groups = if in_channel {
+                    group_mentions(&query, LIMIT)
+                } else {
+                    Vec::new()
+                };
+                let mut found = people_suggestions(
+                    self.model.iter().flat_map(|model| model.profiles.iter()),
+                    &query,
+                    LIMIT - groups.len(),
+                );
+                found.extend(groups);
+                found
+            }
             '~' => self
                 .directory
                 .iter()
@@ -4314,6 +4327,26 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
 /// matches by username prefix or anywhere in the name the user's format
 /// shows (#156). The row reads that name, with the username under it
 /// when it says something more.
+/// `@here`, `@channel` and `@all`, after the people, as the webapp offers
+/// them in a channel.
+fn group_mentions(query: &str, limit: usize) -> Vec<ComposerSuggestion> {
+    const GROUPS: [(&str, &str); 3] = [
+        ("here", "Everyone online here"),
+        ("channel", "Everyone in the channel"),
+        ("all", "Everyone in the channel"),
+    ];
+    GROUPS
+        .iter()
+        .filter(|(name, _)| name.starts_with(query))
+        .take(limit)
+        .map(|(name, what)| {
+            ComposerSuggestion::new(format!("@{name}"), format!("@{name}"))
+                .description(*what)
+                .icon(LucideIcon::Users)
+        })
+        .collect()
+}
+
 fn people_suggestions<'a>(
     profiles: impl Iterator<Item = &'a UserProfile>,
     query: &str,
@@ -4360,6 +4393,21 @@ mod tests {
                 .unwrap()
                 .as_second()
         );
+    }
+
+    #[test]
+    fn group_mentions_follow_what_is_typed() {
+        let values = |query: &str, limit| {
+            group_mentions(query, limit)
+                .into_iter()
+                .map(|s| s.value.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values("", 8), ["@here", "@channel", "@all"]);
+        assert_eq!(values("ch", 8), ["@channel"]);
+        assert_eq!(values("a", 8), ["@all"]);
+        assert_eq!(values("", 1), ["@here"]);
+        assert!(values("ada", 8).is_empty());
     }
 
     #[test]
