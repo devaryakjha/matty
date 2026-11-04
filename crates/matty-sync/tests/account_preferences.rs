@@ -1,5 +1,6 @@
 //! Preferences mirrors the user's display and advanced settings from the
-//! server and writes them back (#156, #157).
+//! server and writes them back (#156, #157), and follows the user's
+//! Mattermost themes (#214).
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -30,6 +31,7 @@ async fn the_users_display_and_advanced_settings_arrive_at_sign_in() {
             {"user_id": ME, "category": "display_settings", "name": "name_format", "value": "full_name"},
             {"user_id": ME, "category": "advanced_settings", "name": "send_on_ctrl_enter", "value": "true"},
             {"user_id": ME, "category": "favorite_channel", "name": "c1", "value": "true"},
+            {"user_id": ME, "category": "theme", "name": "", "value": "{\"type\":\"Onyx\"}"},
         ])))
         .with_priority(1)
         .mount(&server)
@@ -54,7 +56,36 @@ async fn the_users_display_and_advanced_settings_arrive_at_sign_in() {
             ("advanced_settings", "send_on_ctrl_enter", "true"),
             ("display_settings", "message_display", "compact"),
             ("display_settings", "name_format", "full_name"),
+            ("theme", "", "{\"type\":\"Onyx\"}"),
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_theme_changed_elsewhere_arrives_with_the_others() {
+    use matty_api::ws::WsEvent;
+    let server = server().await;
+    let (sync, changes) = connected(&server).await;
+    let team_theme = Preference {
+        user_id: ME.into(),
+        category: "theme".into(),
+        name: "t1".into(),
+        value: r#"{"type":"Quartz"}"#.into(),
+    };
+    sync.send(Command::Event(Box::new(WsEvent::PreferencesChanged(vec![
+        team_theme,
+    ]))));
+    let ChangeSet::AccountPreferences(preferences) = next(
+        &changes,
+        |c| matches!(c, ChangeSet::AccountPreferences(p) if p.iter().any(|p| p.category == "theme")),
+    )
+    .await
+    else {
+        unreachable!()
+    };
+    assert!(
+        triples(&preferences).contains(&("theme", "t1", r#"{"type":"Quartz"}"#)),
+        "{preferences:?}"
     );
 }
 
