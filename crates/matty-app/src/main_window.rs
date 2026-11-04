@@ -1040,11 +1040,15 @@ impl MainWindow {
                     .await;
                 let left = this.update(cx, |this, cx| {
                     let live = this.live.as_mut()?;
-                    let names = live.expire_typing(std::time::Instant::now());
+                    let (names, thread) = live.expire_typing(std::time::Instant::now());
                     let left = live.is_typing();
                     if let Some(names) = names {
                         this.channel
                             .update(cx, |view, cx| view.set_typing(names, cx));
+                    }
+                    if let Some(names) = thread {
+                        this.right_pane
+                            .update(cx, |pane, cx| pane.set_typing(names, cx));
                     }
                     Some(left)
                 });
@@ -1222,6 +1226,14 @@ impl MainWindow {
             let someone = !names.is_empty();
             self.channel
                 .update(cx, |view, cx| view.set_typing(names, cx));
+            if someone {
+                self.expire_typing_later(cx);
+            }
+        }
+        if let Some(names) = update.thread_typing {
+            let someone = !names.is_empty();
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_typing(names, cx));
             if someone {
                 self.expire_typing_later(cx);
             }
@@ -1907,8 +1919,10 @@ impl MainWindow {
             .model()
             .map(|model| model.profiles.clone())
             .unwrap_or_default();
-        self.right_pane
-            .update(cx, |pane, cx| pane.set_profiles(profiles, cx));
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_profiles(profiles, cx);
+            pane.set_typing(Vec::new(), cx);
+        });
         if let Some(live) = &mut self.live {
             // Sync publishes the thread from the cache at once and again as
             // replies arrive; until then the pane is empty.
@@ -1923,7 +1937,10 @@ impl MainWindow {
             .then(|| crate::preview::thread(&channel_id, &post_id))
             .flatten();
         self.right_pane.update(cx, |pane, cx| {
-            pane.set_content(thread.map(RightPaneContent::Thread), cx)
+            pane.set_content(thread.map(RightPaneContent::Thread), cx);
+            if crate::preview::enabled() {
+                pane.set_typing(crate::preview::thread_typing(), cx);
+            }
         });
         self.right_pane_open = true;
         cx.notify();

@@ -1942,24 +1942,8 @@ impl ChannelView {
         }
     }
 
-    /// "Priya is typing…" under the transcript; the row keeps its height
-    /// when nobody is, so the transcript does not jump.
     fn typing_line(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
-        let text = match channel.typing.as_slice() {
-            [] => String::new(),
-            [one] => format!("{} is typing\u{2026}", first(one)),
-            [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
-            _ => "Several people are typing\u{2026}".to_string(),
-        };
-        div()
-            .flex_shrink_0()
-            .h(scaled(&theme, metrics::TYPING_LINE))
-            .px(theme.space(4.))
-            .type_style(style::META, &theme)
-            .text_color(theme.colors.muted_foreground)
-            .child(text)
+        typing_line(&channel.typing, cx)
     }
 
     /// Opens the picker for `target` (a post to react to, or the composer).
@@ -3638,6 +3622,31 @@ fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
         .child(picker)
 }
 
+/// What the typing line says for `names`: "Ana is typing…", "Ana and Ben
+/// are typing…", "Several people are typing…", or nothing.
+pub(crate) fn typing_text(names: &[SharedString]) -> String {
+    let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
+    match names {
+        [] => String::new(),
+        [one] => format!("{} is typing\u{2026}", first(one)),
+        [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
+        _ => "Several people are typing\u{2026}".to_string(),
+    }
+}
+
+/// The typing line under a transcript (#137); it keeps its height when
+/// nobody is typing, so the transcript does not jump.
+pub(crate) fn typing_line(names: &[SharedString], cx: &App) -> gpui_kit::Div {
+    let theme = UiTheme::read(cx);
+    div()
+        .flex_shrink_0()
+        .h(scaled(theme, metrics::TYPING_LINE))
+        .px(theme.space(4.))
+        .type_style(style::META, theme)
+        .text_color(theme.colors.muted_foreground)
+        .child(typing_text(names))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3777,5 +3786,24 @@ mod tests {
         assert_eq!(channel.first_unread, Some(3));
         assert_eq!(channel.rows()[1], Row::Day("Yesterday".into()));
         assert_eq!(channel.prepend_posts(vec![post("1", "Yesterday")]), 0);
+    }
+
+    #[test]
+    fn typing_text_names_one_two_or_several() {
+        let names = |list: &[&str]| -> Vec<SharedString> {
+            list.iter()
+                .map(|name| SharedString::from(name.to_string()))
+                .collect()
+        };
+        assert_eq!(typing_text(&[]), "");
+        assert_eq!(typing_text(&names(&["Ana Lopez"])), "Ana is typing\u{2026}");
+        assert_eq!(
+            typing_text(&names(&["Ana Lopez", "Ben Ode"])),
+            "Ana and Ben are typing\u{2026}"
+        );
+        assert_eq!(
+            typing_text(&names(&["Ana", "Ben", "Cy"])),
+            "Several people are typing\u{2026}"
+        );
     }
 }

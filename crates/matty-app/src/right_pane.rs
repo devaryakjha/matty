@@ -163,6 +163,8 @@ pub struct RightPaneView {
     /// People the thread's authors are looked up in for their presence
     /// dots (#135); the window keeps it in step with the channel's.
     profiles: Vec<UserProfile>,
+    /// Who is typing a reply in the thread (#137).
+    typing: Vec<SharedString>,
     draft_len: usize,
     /// The preview above the reply composer (#188).
     link: crate::draft_link::DraftLink,
@@ -272,6 +274,7 @@ impl RightPaneView {
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             profiles: Vec::new(),
+            typing: Vec::new(),
             draft_len: 0,
             link: Default::default(),
             _link_task: None,
@@ -804,6 +807,14 @@ impl RightPaneView {
             )
     }
 
+    /// Who is typing a reply in the open thread.
+    pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
+        if self.typing != names {
+            self.typing = names;
+            cx.notify();
+        }
+    }
+
     /// Keeps the people whose presence the thread's avatars show.
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
         if self.profiles != profiles {
@@ -1065,6 +1076,7 @@ impl RightPaneView {
             .flex()
             .flex_col()
             .child(div().flex_1().min_h_0().child(transcript))
+            .child(crate::channel::typing_line(&self.typing, cx))
             .child(
                 div()
                     .flex_shrink_0()

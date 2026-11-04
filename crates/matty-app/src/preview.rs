@@ -9,6 +9,11 @@ use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence, SidebarModel};
 
 /// Whether the preview fixtures are on for this process.
+/// Who is typing a reply in any preview thread.
+pub fn thread_typing() -> Vec<SharedString> {
+    vec!["Sam Okafor".into()]
+}
+
 pub fn enabled() -> bool {
     std::env::var_os("MATTY_PREVIEW").is_some_and(|value| !value.is_empty() && value != "0")
 }
