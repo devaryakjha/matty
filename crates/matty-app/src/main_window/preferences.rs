@@ -18,9 +18,11 @@ use matty_api::models::Preference;
 
 use super::{MainWindow, TEXT_SIZES};
 use crate::actions::Platform;
+use crate::dnd;
 use crate::settings::{
     ClockFormat, MessageDisplay, NameFormat, SendKey, Settings, ThemeChoice, UpdateChannel,
 };
+use crate::sidebar::Presence;
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
@@ -956,6 +958,7 @@ impl MainWindow {
             format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
         };
         page(&theme)
+            .child(group("Status", self.dnd_row(cx), true, &theme))
             .child(group(
                 "Desktop notifications",
                 stack(&theme)
@@ -1015,6 +1018,37 @@ impl MainWindow {
                 ))
             })
             .into_any_element()
+    }
+
+    /// Do not disturb as the status menu set it, with a switch (#158). On
+    /// turns it on until the user turns it off; a set time is the status
+    /// menu's job, with its durations and custom picker (#190).
+    fn dnd_row(&self, cx: &mut Context<Self>) -> Div {
+        let theme = UiTheme::read(cx).clone();
+        let account = self.account.read(cx).account();
+        let dnd = account.presence == Presence::Dnd;
+        let now = jiff::Zoned::now();
+        let on = dnd::is_on(dnd, account.dnd_end, &now);
+        let detail = dnd::preferences_detail(dnd, account.dnd_end, &now, ClockFormat::current(cx));
+        let (view, account) = (cx.entity().downgrade(), self.account.clone());
+        labelled_row(
+            "Do not disturb".into(),
+            detail.into(),
+            Switch::new("preferences.dnd")
+                .checked(on)
+                .aria_label("Do not disturb")
+                .on_change(move |next, _, _, cx| {
+                    let presence = if next {
+                        Presence::Dnd
+                    } else {
+                        Presence::Online
+                    };
+                    account.update(cx, |account, cx| account.set_presence(presence, None, cx));
+                    view.update(cx, |_, cx| cx.notify()).ok();
+                })
+                .into_any_element(),
+            &theme,
+        )
     }
 
     /// A keyword list in Preferences: its field and its tags (#192).
