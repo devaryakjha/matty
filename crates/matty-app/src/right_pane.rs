@@ -1446,6 +1446,66 @@ impl RightPaneView {
         cx.notify();
     }
 
+    /// The post on thread row `row`: the root, or a reply after the
+    /// divider.
+    fn row_post(&self, row: usize) -> Option<&Post> {
+        let Some(RightPaneContent::Thread(thread)) = &self.content else {
+            return None;
+        };
+        match row {
+            0 => Some(&thread.root),
+            row => thread.replies.get(row.checked_sub(THREAD_HEAD)?),
+        }
+    }
+
+    /// Single keys on the selected row, as in the channel (#107): R
+    /// replies, E edits and Delete removes the user's own reply, P pins, S
+    /// saves and U marks unread.
+    fn selection_key(
+        &mut self,
+        keystroke: &gpui_kit::Keystroke,
+        selected: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let modifiers = keystroke.modifiers;
+        if modifiers.control || modifiers.platform || modifiers.alt {
+            return false;
+        }
+        let Some(row) = selected else {
+            return false;
+        };
+        let Some(post) = self.row_post(row).cloned() else {
+            return false;
+        };
+        let reply = row >= THREAD_HEAD;
+        let own = reply && post.mine && post.kind == PostKind::Regular;
+        let sent = post.status == PostStatus::Sent;
+        let id = post.id.clone();
+        match keystroke.key.as_str() {
+            "r" => self.select_row(None, window, cx),
+            "e" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.selection = None;
+                self.start_edit(id, window, cx);
+            }
+            "delete" | "backspace" if own && (sent || waiting_to_send(&post, self.away)) => {
+                self.ask_discard(id, window, cx)
+            }
+            "p" if sent => cx.emit(RightPaneEvent::SetPinned {
+                post: id,
+                pinned: !post.pinned,
+            }),
+            "s" if sent => cx.emit(RightPaneEvent::SetSaved {
+                post: id,
+                saved: !post.saved,
+            }),
+            "u" if sent => cx.emit(RightPaneEvent::MarkUnread(id)),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Selects the newest reply, or the root when there is none.
     fn select_newest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.thread_rows();
@@ -2066,6 +2126,15 @@ impl RightPaneView {
                 move |index, window, cx| {
                     view.update(cx, |this, cx| this.select_row(index, window, cx))
                         .ok();
+                }
+            })
+            .on_key({
+                let view = cx.entity().downgrade();
+                move |event, selected, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.selection_key(&event.keystroke, selected, window, cx)
+                    })
+                    .unwrap_or(false)
                 }
             });
         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
@@ -3215,6 +3284,73 @@ mod tests {
             "at the root: nothing more to ask"
         );
         assert!(cx.debug_bounds("right-pane.older").is_none());
+    }
+
+    /// #107: single keys act on the selected thread row as in the channel.
+    #[gpui_kit::test]
+    fn single_keys_act_on_the_selected_reply(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let thread = ThreadModel {
+            channel_id: "c-town".into(),
+            channel_name: "town".into(),
+            root: post("root"),
+            replies: vec![Post {
+                mine: true,
+                status: PostStatus::Sent,
+                ..post("r1")
+            }],
+            following: true,
+            reply_count: 1,
+            older: false,
+            failed_older: false,
+        };
+        let window = cx.add_window(|window, cx| RightPaneView::new("me", window, cx));
+        let view = window.root(cx).unwrap();
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &RightPaneEvent, _| {
+                if matches!(
+                    event,
+                    RightPaneEvent::SetPinned { .. }
+                        | RightPaneEvent::SetSaved { .. }
+                        | RightPaneEvent::MarkUnread(_)
+                ) {
+                    events.borrow_mut().push(event.clone());
+                }
+            })
+            .detach();
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let key = |k: &'static str| gpui_kit::Keystroke::parse(k).unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_content(Some(RightPaneContent::Thread(Box::new(thread))), cx);
+                let reply = Some(THREAD_HEAD);
+                assert!(view.selection_key(&key("p"), reply, window, cx));
+                assert!(view.selection_key(&key("s"), reply, window, cx));
+                assert!(view.selection_key(&key("u"), Some(0), window, cx));
+                // Someone else's root is not the user's to edit; a modifier
+                // leaves the key to the app.
+                assert!(!view.selection_key(&key("e"), Some(0), window, cx));
+                assert!(!view.selection_key(&key("ctrl-p"), reply, window, cx));
+                assert!(view.selection_key(&key("e"), reply, window, cx));
+                assert!(view.editing.is_some());
+                assert_eq!(view.selection, None);
+            })
+        });
+        let events = events.borrow();
+        assert!(
+            matches!(&events[0], RightPaneEvent::SetPinned { post, pinned: true } if post == "r1")
+        );
+        assert!(
+            matches!(&events[1], RightPaneEvent::SetSaved { post, saved: true } if post == "r1")
+        );
+        assert!(matches!(&events[2], RightPaneEvent::MarkUnread(post) if post == "root"));
+        assert_eq!(events.len(), 3);
     }
 
     /// #117, #118: the user's sent reply is edited in place, marked
