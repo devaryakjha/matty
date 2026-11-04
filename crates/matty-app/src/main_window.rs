@@ -42,6 +42,7 @@ use crate::ui::{
     switch::Switch,
     theme::UiTheme,
     title_bar::TitleBar,
+    toast::{Notice, ToastState},
     toggle_group::{ToggleGroup, ToggleGroupItem},
     tooltip::text_tooltip,
 };
@@ -117,6 +118,9 @@ pub struct MainWindow {
     /// The Threads view stands in for the channel while the sidebar's
     /// Threads row is chosen.
     threads: Entity<ThreadsView>,
+    /// The notification queue, mounted once above the page (PLAN §4.5:
+    /// results and failures of background work are toasts, never dialogs).
+    toasts: Entity<ToastState>,
     threads_open: bool,
     drafts: Entity<DraftsView>,
     drafts_open: bool,
@@ -248,6 +252,7 @@ impl MainWindow {
             ThreadsModel::default()
         };
         let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
+        let toasts = cx.new(ToastState::new);
         let drafts_model = if crate::preview::enabled() {
             crate::preview::drafts()
         } else {
@@ -534,6 +539,7 @@ impl MainWindow {
             rail,
             right_pane_open: false,
             threads,
+            toasts,
             threads_open: false,
             drafts,
             drafts_open: false,
@@ -664,6 +670,12 @@ impl MainWindow {
     /// (see [`open_download`]).
     fn download_file(&mut self, file_id: &SharedString, cx: &mut Context<Self>) {
         let Some(live) = &self.live else {
+            if let Some(name) = crate::preview::file_name(file_id) {
+                // Preview has no server: show the toast a finished download
+                // would.
+                let folder = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+                self.push_download_toast(&folder.join(name), cx);
+            }
             return;
         };
         let Some(name) = live.file_name(file_id) else {
@@ -683,6 +695,48 @@ impl MainWindow {
             file_id: file_id.to_string(),
             folder,
             name,
+        });
+    }
+
+    /// Tells the user a file was saved: the file name as the title and the
+    /// folder below it. A "Show in folder" action waits on gpuicn's toast
+    /// growing action buttons; until then the file opens on its own.
+    pub fn push_download_toast(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "File".to_string());
+        let folder = path
+            .parent()
+            .map(|folder| {
+                let shown = dirs::home_dir()
+                    .and_then(|home| folder.strip_prefix(home).ok())
+                    .map(|rest| format!("~/{}", rest.display()))
+                    .unwrap_or_else(|| folder.display().to_string());
+                format!("Saved to {shown}")
+            })
+            .unwrap_or_else(|| "Saved".to_string());
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                format!("download.{}", path.display()),
+                Notice::new(name)
+                    .description(folder)
+                    .timeout(std::time::Duration::from_secs(6)),
+                cx,
+            );
+        });
+    }
+
+    /// Tells the user something failed, in one sentence, for eight seconds.
+    /// Retry waits on gpuicn toast actions; the message says what to do.
+    pub fn push_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let text = text.into();
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                format!("error.{text}"),
+                Notice::new(text).timeout(std::time::Duration::from_secs(8)),
+                cx,
+            );
         });
     }
 
@@ -813,9 +867,13 @@ impl MainWindow {
         }
         if let Some(download) = update.download {
             match download {
-                matty_sync::DownloadState::Done(path) => open_download(&path, cx),
+                matty_sync::DownloadState::Done(path) => {
+                    open_download(&path, cx);
+                    self.push_download_toast(&path, cx);
+                }
                 matty_sync::DownloadState::Failed(error) => {
                     tracing::warn!(%error, "download failed");
+                    self.push_error(format!("Couldn't download the file: {error}"), cx);
                 }
             }
         }
@@ -2289,6 +2347,7 @@ impl Render for MainWindow {
                 cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
             )
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(theme.colors.background)
@@ -2324,6 +2383,7 @@ impl Render for MainWindow {
             .child(self.browse(window, cx))
             .child(self.directory_dialogs(window, cx))
             .child(switcher_element)
+            .child(self.toasts.clone())
     }
 }
 
