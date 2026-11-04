@@ -15,6 +15,8 @@ const PAGE: u32 = 200;
 /// users; search covers the rest.
 const BROWSE_PAGES: u32 = 5;
 const PEOPLE_PAGES: u32 = 5;
+/// Saved posts and recent mentions show this many, newest first.
+const LISTING_PAGE: u32 = 60;
 
 /// A server write a command asked for.
 #[derive(Debug)]
@@ -51,6 +53,8 @@ pub(crate) enum Write {
     },
     NotifyProps(std::collections::HashMap<String, String>),
     Profile(matty_api::ProfilePatch),
+    /// A new profile picture, or `None` to remove it.
+    Picture(Option<(Vec<u8>, String)>),
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -84,6 +88,16 @@ pub(crate) enum Write {
         team_id: String,
         query: Box<SearchQuery>,
     },
+    Listing(crate::Listing),
+    Reminder {
+        post_id: String,
+        target_time: i64,
+    },
+    Pin {
+        post_id: String,
+        pinned: bool,
+    },
+    DeletePreferences(Vec<matty_api::models::Preference>),
     Create(Box<NewChannel>),
     Patch {
         channel_id: String,
@@ -119,6 +133,11 @@ pub(crate) enum Write {
         team_id: String,
         category: Box<matty_api::models::SidebarCategory>,
     },
+    /// A team's categories in a new order.
+    CategoryOrder {
+        team_id: String,
+        order: Vec<String>,
+    },
     DeleteCategory {
         team_id: String,
         category_id: String,
@@ -131,6 +150,12 @@ pub(crate) enum Write {
     },
     /// Finds what a link names, which the cache did not know.
     Resolve(crate::LinkQuery),
+    /// Finds who matches a typed `@name`.
+    Suggest {
+        term: String,
+        team_id: Option<String>,
+        channel_id: Option<String>,
+    },
 }
 
 impl Write {
@@ -148,6 +173,8 @@ impl Write {
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
             Self::Profile(_) => "save your profile",
+            Self::Picture(Some(_)) => "change your picture",
+            Self::Picture(None) => "remove your picture",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
@@ -157,6 +184,13 @@ impl Write {
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
             Self::Search { .. } => "search",
+            Self::Listing(crate::Listing::Saved) => "load saved messages",
+            Self::Listing(crate::Listing::Pinned { .. }) => "load pinned messages",
+            Self::Listing(crate::Listing::Mentions { .. }) => "load recent mentions",
+            Self::Pin { pinned: true, .. } => "pin message",
+            Self::Pin { pinned: false, .. } => "unpin message",
+            Self::DeletePreferences(_) => "delete preferences",
+            Self::Reminder { .. } => "set reminder",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -166,10 +200,12 @@ impl Write {
             Self::ReadAllThreads { .. } => "mark threads read",
             Self::CreateCategory { .. } => "create category",
             Self::UpdateCategory { .. } => "change category",
+            Self::CategoryOrder { .. } => "reorder categories",
             Self::DeleteCategory { .. } => "delete category",
             Self::Follow { follow: true, .. } => "follow thread",
             Self::Follow { follow: false, .. } => "unfollow thread",
             Self::Resolve(_) => "open link",
+            Self::Suggest { .. } => "suggest people",
         }
     }
 
@@ -177,6 +213,8 @@ impl Write {
     fn target(&self, user_id: &str) -> String {
         match self {
             Self::Edit { post_id, .. }
+            | Self::Pin { post_id, .. }
+            | Self::Reminder { post_id, .. }
             | Self::Delete { post_id }
             | Self::Unread { post_id, .. } => post_id.clone(),
             Self::React { reaction, .. } => reaction.post_id.clone(),
@@ -184,7 +222,9 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) => user_id.to_owned(),
+            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) | Self::Picture(_) => {
+                user_id.to_owned()
+            }
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -194,7 +234,10 @@ impl Write {
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
-            Self::Browse { team_id }
+            Self::Listing(crate::Listing::Saved) => user_id.to_owned(),
+            Self::Listing(crate::Listing::Pinned { channel_id }) => channel_id.clone(),
+            Self::Listing(crate::Listing::Mentions { team_id, .. })
+            | Self::Browse { team_id }
             | Self::People { team_id }
             | Self::Search { team_id, .. }
             | Self::ReadAllThreads { team_id } => team_id.clone(),
@@ -202,16 +245,18 @@ impl Write {
                 category.display_name.clone()
             }
             Self::DeleteCategory { category_id, .. } => category_id.clone(),
+            Self::CategoryOrder { team_id, .. } => team_id.clone(),
             Self::ReadThread { thread_id, .. } | Self::Follow { thread_id, .. } => {
                 thread_id.clone()
             }
             Self::Create(channel) => channel.name.clone(),
+            Self::Suggest { term, .. } => term.clone(),
             Self::Resolve(query) => match query {
                 crate::LinkQuery::Post { post_id } => post_id.clone(),
                 crate::LinkQuery::Channel { name, .. } => name.clone(),
                 crate::LinkQuery::User { username } => username.clone(),
             },
-            Self::Preferences(preferences) => preferences
+            Self::Preferences(preferences) | Self::DeletePreferences(preferences) => preferences
                 .iter()
                 .map(|preference| preference.name.as_str())
                 .collect::<Vec<_>>()
@@ -284,6 +329,29 @@ pub(crate) async fn run(
                     Err(error) => return Err(error),
                 };
                 Some(Loaded::Resolved { query, answer })
+            }
+            Write::Suggest {
+                term,
+                team_id,
+                channel_id,
+            } => {
+                // Suggestions are a nicety: a failure leaves the local ones
+                // rather than an error the user did not cause.
+                let users = match client
+                    .autocomplete_users(&term, team_id.as_deref(), channel_id.as_deref())
+                    .await
+                {
+                    Ok(found) => found
+                        .users
+                        .into_iter()
+                        .chain(found.out_of_channel)
+                        .collect(),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not suggest people");
+                        Vec::new()
+                    }
+                };
+                Some(Loaded::Suggested { term, users })
             }
             Write::Follow {
                 team_id,
@@ -365,6 +433,16 @@ pub(crate) async fn run(
             Write::Profile(patch) => {
                 let user = client.patch_profile(&user_id, &patch).await?;
                 Some(Loaded::Users(vec![user]))
+            }
+            Write::Picture(picture) => {
+                match picture {
+                    Some((bytes, file_name)) => {
+                        client.set_profile_image(&user_id, bytes, file_name).await?
+                    }
+                    None => client.reset_profile_image(&user_id).await?,
+                }
+                // The new `last_picture_update` refetches the picture.
+                Some(Loaded::Users(vec![client.me().await?]))
             }
             Write::OpenDirect { user_ids } => {
                 let channel = match user_ids.as_slice() {
@@ -469,9 +547,12 @@ pub(crate) async fn run(
             }
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
+                let posts: Vec<_> = results.list.ordered().cloned().collect();
                 Some(Loaded::Search {
-                    posts: results.list.ordered().cloned().collect(),
+                    more: posts.len() >= query.per_page as usize,
+                    posts,
                     terms: query.terms,
+                    page: query.page,
                 })
             }
             Write::CreateCategory { team_id, category } => {
@@ -482,6 +563,10 @@ pub(crate) async fn run(
                 client
                     .update_categories(&team_id, std::slice::from_ref(&*category))
                     .await?;
+                categories(&client, team_id).await?
+            }
+            Write::CategoryOrder { team_id, order } => {
+                client.set_category_order(&team_id, &order).await?;
                 categories(&client, team_id).await?
             }
             Write::DeleteCategory {
@@ -512,6 +597,44 @@ pub(crate) async fn run(
             Write::Preferences(preferences) => {
                 client.save_preferences(&user_id, &preferences).await?;
                 None
+            }
+            Write::DeletePreferences(preferences) => {
+                client.delete_preferences(&user_id, &preferences).await?;
+                None
+            }
+            Write::Reminder {
+                post_id,
+                target_time,
+            } => {
+                client
+                    .set_post_reminder(&user_id, &post_id, target_time)
+                    .await?;
+                None
+            }
+            Write::Pin { post_id, pinned } => {
+                if pinned {
+                    client.pin_post(&post_id).await?;
+                } else {
+                    client.unpin_post(&post_id).await?;
+                }
+                None
+            }
+            Write::Listing(listing) => {
+                let list = match &listing {
+                    crate::Listing::Saved => client.saved_posts(&user_id, 0, LISTING_PAGE).await?,
+                    crate::Listing::Pinned { channel_id } => {
+                        client.pinned_posts(channel_id).await?
+                    }
+                    crate::Listing::Mentions { team_id, terms } => {
+                        let mut query = SearchQuery::new(terms.clone());
+                        query.is_or_search = true;
+                        query.per_page = LISTING_PAGE;
+                        client.search_posts(team_id, &query).await?.list
+                    }
+                };
+                let mut posts: Vec<_> = list.ordered().cloned().collect();
+                posts.sort_by_key(|post| std::cmp::Reverse(post.create_at));
+                Some(Loaded::Listing { listing, posts })
             }
             Write::AddMembers {
                 channel_id,

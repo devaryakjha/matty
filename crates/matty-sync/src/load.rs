@@ -57,6 +57,9 @@ pub(crate) enum Loaded {
     Emoji(Vec<Emoji>),
     /// Statuses for the people in direct messages.
     Statuses(Vec<Status>),
+    /// The user's drafts on the server, for one team and its direct
+    /// messages (only when the server syncs drafts).
+    Drafts(Vec<matty_api::models::Draft>),
     /// The status batch window closed (#135).
     StatusesDue,
     /// Every team has been tried.
@@ -116,6 +119,8 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// Who matches a typed `@name`, channel members first.
+    Suggested { term: String, users: Vec<User> },
     /// What a link names, or `None` when it is gone or hidden.
     Resolved {
         query: crate::LinkQuery,
@@ -141,6 +146,13 @@ pub(crate) enum Loaded {
     /// Search results, best first.
     Search {
         terms: String,
+        page: u32,
+        posts: Vec<matty_api::models::Post>,
+        more: bool,
+    },
+    /// A listing's posts, newest first.
+    Listing {
+        listing: crate::Listing,
         posts: Vec<matty_api::models::Post>,
     },
     /// A team's active people.
@@ -287,6 +299,8 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
         .map(|team| team.id.clone())
         .collect();
     let custom_emoji = capabilities.custom_emoji;
+    let synced_drafts = capabilities.synced_drafts;
+    let draft_teams = team_ids.clone();
     if results
         .send(Loaded::Account {
             me: Box::new(me),
@@ -338,6 +352,17 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
                 let _ = results.send(Loaded::Statuses(statuses));
             }
             Err(error) => tracing::warn!(%error, "could not load statuses"),
+        }
+    }
+    if synced_drafts {
+        for team_id in draft_teams {
+            match client.drafts(&user_id, &team_id).await {
+                Ok(drafts) if !drafts.is_empty() => {
+                    let _ = results.send(Loaded::Drafts(drafts));
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, %team_id, "could not load drafts"),
+            }
         }
     }
     if custom_emoji {

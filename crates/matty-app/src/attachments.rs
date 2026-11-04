@@ -633,7 +633,10 @@ pub fn preview_drop() -> bool {
 fn thumbnail(name: &str, source: &UploadSource) -> Option<ImageSource> {
     match source {
         UploadSource::Image(image) => Some(ImageSource::Image(image.clone())),
-        UploadSource::Path(path) if is_image(name) => Some(ImageSource::from(path.clone())),
+        // A draft's file restored from the server has no path here.
+        UploadSource::Path(path) if is_image(name) && !path.as_os_str().is_empty() => {
+            Some(ImageSource::from(path.clone()))
+        }
         UploadSource::Path(_) => None,
     }
 }

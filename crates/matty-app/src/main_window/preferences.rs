@@ -18,7 +18,9 @@ use matty_api::models::Preference;
 
 use super::{MainWindow, TEXT_SIZES};
 use crate::actions::Platform;
-use crate::settings::{ClockFormat, MessageDisplay, NameFormat, SendKey, Settings, ThemeChoice};
+use crate::settings::{
+    ClockFormat, MessageDisplay, NameFormat, SendKey, Settings, ThemeChoice, UpdateChannel,
+};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
@@ -937,6 +939,30 @@ impl MainWindow {
 
     fn advanced(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = UiTheme::read(cx).clone();
+        let store = self.settings.clone();
+        // The updater reads the channel at each check (#180).
+        let channel_group = choices(
+            "preferences.update-channel",
+            "Update channel",
+            match self.settings.read(cx).get().update_channel {
+                UpdateChannel::Stable => "stable",
+                UpdateChannel::Beta => "beta",
+            },
+            &[("stable", "Stable"), ("beta", "Beta")],
+            move |value, cx| {
+                let channel = match value {
+                    "beta" => UpdateChannel::Beta,
+                    _ => UpdateChannel::Stable,
+                };
+                store.update(cx, |store, cx| {
+                    store.update(cx, |s| s.update_channel = channel)
+                });
+            },
+        );
+        let channel_hint = match self.settings.read(cx).get().update_channel {
+            UpdateChannel::Stable => "Releases only.",
+            UpdateChannel::Beta => "Betas and alphas too, before they're released.",
+        };
         let logs = group(
             "Logs",
             stack(&theme)
@@ -989,7 +1015,13 @@ impl MainWindow {
             &theme,
         );
         page(&theme)
-            .child(logs)
+            .child(group(
+                "Updates",
+                hinted(channel_group, channel_hint, &theme),
+                false,
+                &theme,
+            ))
+            .child(logs.into_any_element())
             .child(group("Account", sign_out, false, &theme))
             .into_any_element()
     }

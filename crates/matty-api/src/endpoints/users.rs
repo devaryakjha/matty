@@ -136,6 +136,28 @@ impl Client {
         self.get("users/me").await
     }
 
+    /// `POST users/{user_id}/image`: sets the user's profile picture from
+    /// an image file (JPEG, PNG, GIF or BMP).
+    pub async fn set_profile_image(
+        &self,
+        user_id: &str,
+        bytes: Vec<u8>,
+        file_name: String,
+    ) -> Result<(), ApiError> {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        let form = reqwest::multipart::Form::new().part("image", part);
+        self.send_multipart(&format!("users/{user_id}/image"), form)
+            .await
+            .map(|_| ())
+    }
+
+    /// `DELETE users/{user_id}/image`: goes back to the generated picture.
+    pub async fn reset_profile_image(&self, user_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("users/{user_id}/image"))
+            .await
+            .map(|_| ())
+    }
+
     /// `GET users/{user_id}/sessions`.
     pub async fn sessions(&self, user_id: &str) -> Result<Vec<Session>, ApiError> {
         self.get(&format!("users/{user_id}/sessions")).await

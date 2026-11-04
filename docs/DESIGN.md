@@ -119,7 +119,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   rows are 28px, 8px padding, 6px radius, icon 16px. Unread rows use
   `ui_strong` in `sidebar-foreground`; read rows use `muted-foreground`;
   muted channels are 60% opacity; the selected row is `sidebar-accent`.
-  Mention counts are `primary` pills.
+  Mention counts are `primary` pills. A channel with an unsent draft shows
+  a `muted-foreground` pencil in its icon slot while another channel is
+  open, as Mattermost does.
 - **Channel view** has a 48px header (name in `title`, star, member count,
   pinned count, info) over the post list and the composer. Posts use 20px
   horizontal gutters, 32px avatars, Medium author and `meta` time, grouped
@@ -464,6 +466,12 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   gpuicn#95 (action buttons on a notice); until then the file opens on its
   own and the error says what to do. In preview, clicking a file card shows
   the download toast.
+- **Restart to update** (PLAN §10, #180) is the same toast, persistent:
+  "Update ready" over "Matty 0.2.0 has downloaded. Restart to finish
+  updating.", a primary "Restart to update" and an outline "Later". It
+  never appears while a composer has unsent text and focus; it waits until
+  every composer has been free for three seconds. "Later" holds it until
+  the next six-hourly check. `MATTY_PREVIEW=update` shows it.
 - **Jump to a post** (PLAN §4.2): "Jump" in Saved, Pinned, mentions and
   search results opens the channel, scrolls the post into view and tints
   it with gpuicn's permalink highlight, amber with a gutter bar, for four
