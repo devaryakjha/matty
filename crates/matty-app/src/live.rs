@@ -11,7 +11,8 @@ use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
 use matty_api::{ApiError, Client, ServerCapabilities};
 use matty_sync::{
-    ChangeSet, Command, Connection, SidebarSection, SyncHandle, TeamWithUnreads, UploadState,
+    ChangeSet, Command, Connection, ImageSize, SidebarSection, SyncHandle, TeamWithUnreads,
+    UploadState,
 };
 
 use crate::channel::{ChannelModel, Post};
@@ -59,6 +60,8 @@ pub struct Live {
     /// Image files' thumbnails by file id, and those asked for.
     thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
     asked_thumbnails: std::collections::HashSet<String>,
+    /// Full-size images for the lightbox, by file id, once fetched.
+    full_images: HashMap<String, Arc<gpui_kit::Image>>,
 }
 
 /// One tray file on its way to the server.
@@ -127,6 +130,8 @@ pub struct Update {
     pub notifications: Option<(bool, crate::channel::ChannelNotifications)>,
     /// The search's results, or its failure.
     pub search: Option<crate::right_pane::SearchModel>,
+    /// A file's full-size image, for the lightbox.
+    pub full_image: Option<(SharedString, Arc<gpui_kit::Image>)>,
     /// A file saved to the download folder, or the failure.
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
@@ -307,6 +312,7 @@ impl Live {
                 uploads: HashMap::new(),
                 thumbnails: HashMap::new(),
                 asked_thumbnails: std::collections::HashSet::new(),
+                full_images: HashMap::new(),
             },
             changes,
         ))
@@ -429,14 +435,36 @@ impl Live {
             .map(|file| file.name.clone())
     }
 
+    /// The full-size images already here for `file_ids`; sync is asked
+    /// for the rest, which come as [`Update::full_image`].
+    pub fn full_images(
+        &self,
+        file_ids: &[SharedString],
+    ) -> Vec<(SharedString, Arc<gpui_kit::Image>)> {
+        let mut here = Vec::new();
+        for id in file_ids {
+            match self.full_images.get(id.as_ref()) {
+                Some(image) => here.push((id.clone(), image.clone())),
+                None => {
+                    self.sync.send(Command::LoadImage {
+                        file_id: id.to_string(),
+                        size: ImageSize::Preview,
+                    });
+                }
+            }
+        }
+        here
+    }
+
     /// Asks sync for the thumbnails of image files not yet asked for.
     fn ask_thumbnails(&mut self, posts: &[Post]) {
         for file in posts.iter().flat_map(|post| &post.files) {
             if crate::attachments::is_image(&file.name)
                 && self.asked_thumbnails.insert(file.id.to_string())
             {
-                self.sync.send(Command::LoadThumbnail {
+                self.sync.send(Command::LoadImage {
                     file_id: file.id.to_string(),
+                    size: ImageSize::Thumbnail,
                 });
             }
         }
@@ -668,16 +696,22 @@ impl Live {
                 ..
             }) => update.join_failed = Some(target.clone().into()),
             ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
-            ChangeSet::Thumbnail {
+            ChangeSet::Image {
                 file_id,
+                size,
                 bytes,
                 content_type,
             } => {
                 let Some(format) = image_format(bytes, content_type) else {
                     return update;
                 };
-                let image = gpui_kit::Image::from_bytes(format, bytes.to_vec());
-                self.thumbnails.insert(file_id.clone(), Arc::new(image));
+                let image = Arc::new(gpui_kit::Image::from_bytes(format, bytes.to_vec()));
+                if *size == ImageSize::Preview {
+                    self.full_images.insert(file_id.clone(), image.clone());
+                    update.full_image = Some((file_id.as_str().into(), image));
+                    return update;
+                }
+                self.thumbnails.insert(file_id.clone(), image);
                 let shown = self.shown.as_ref().is_some_and(|posts| {
                     posts
                         .iter()
@@ -1526,8 +1560,9 @@ mod tests {
             posts: Arc::from(vec![post]),
         });
         assert!(live.asked_thumbnails.contains("f1"));
-        let update = live.apply(&ChangeSet::Thumbnail {
+        let update = live.apply(&ChangeSet::Image {
             file_id: "f1".into(),
+            size: ImageSize::Thumbnail,
             bytes: Arc::from(&b"png"[..]),
             content_type: "image/png".into(),
         });
@@ -1569,5 +1604,20 @@ mod tests {
         });
         assert_eq!(live.file_name("f1").as_deref(), Some("notes.pdf"));
         assert_eq!(live.file_name("f2"), None);
+    }
+
+    #[test]
+    fn a_full_image_goes_to_the_lightbox_and_is_kept() {
+        let mut live = live();
+        let update = live.apply(&ChangeSet::Image {
+            file_id: "f1".into(),
+            size: ImageSize::Preview,
+            bytes: Arc::from(&b"\x89PNG...."[..]),
+            content_type: "image/jpeg".into(),
+        });
+        let (id, image) = update.full_image.unwrap();
+        assert_eq!(id.as_ref(), "f1");
+        assert_eq!(image.format, gpui_kit::ImageFormat::Png);
+        assert_eq!(live.full_images(&["f1".into()]).len(), 1);
     }
 }

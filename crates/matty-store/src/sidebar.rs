@@ -425,6 +425,22 @@ const SNAPSHOT: &str = "
     WHERE cat.team_id = ?1
     ORDER BY cat.sort_order, cat.id, cc.sort_order";
 
+/// The preference (category, name) that shows a direct or group
+/// conversation in the sidebar; Mattermost hides one the user closed by
+/// setting it to `false`. `None` for other channels.
+pub fn show_preference(
+    kind: &str,
+    channel_id: &str,
+    channel_name: &str,
+    me: &str,
+) -> Option<(&'static str, String)> {
+    match kind {
+        "D" => Some(("direct_channel_show", dm_partner(channel_name, me)?)),
+        "G" => Some(("group_channel_show", channel_id.to_owned())),
+        _ => None,
+    }
+}
+
 /// The other person in a direct channel named `a__b`.
 fn dm_partner(name: &str, me: &str) -> Option<String> {
     let (first, second) = name.split_once("__")?;
@@ -467,6 +483,12 @@ pub fn sidebar_snapshot(
         };
         let kind: String = row.get(7)?;
         let name: String = row.get(8)?;
+        // Closed by the user, until they open it again.
+        if let Some((category, key)) = show_preference(&kind, &channel_id, &name, user_id)
+            && preference(conn, category, &key)?.as_deref() == Some("false")
+        {
+            continue;
+        }
         let channel = Channel {
             total_msg_count: row.get(11)?,
             total_msg_count_root: row.get(12)?,
