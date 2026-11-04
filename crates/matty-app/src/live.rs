@@ -136,9 +136,9 @@ pub struct Update {
     pub download: Option<matty_sync::DownloadState>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
-    /// The open channel's older history: whether its first post is
-    /// loaded, and whether the last page failed.
-    pub history: Option<(bool, bool)>,
+    /// The open channel's history: whether its first post is loaded,
+    /// whether it reaches the newest post, and whether the last page failed.
+    pub history: Option<(bool, bool, bool)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
 }
@@ -781,10 +781,10 @@ impl Live {
             ChangeSet::History {
                 channel_id,
                 at_start,
+                at_end,
                 failed,
-                ..
             } if self.is_open(channel_id) => {
-                update.history = Some((*at_start, *failed));
+                update.history = Some((*at_start, *at_end, *failed));
             }
             ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
                 self.stats = Some(stats.clone());
