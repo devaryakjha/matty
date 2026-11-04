@@ -23,6 +23,7 @@ async fn a_post_is_sent_edited_and_deleted() {
         root_id: String::new(),
         message: "writes: hello".into(),
         file_ids: Vec::new(),
+        props: Default::default(),
     });
     // The optimistic row, then the server's.
     let window = engine

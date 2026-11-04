@@ -98,6 +98,9 @@ pub fn from_post(post: &Post) -> Vec<Embed> {
             .map(|attachment| Embed::Attachment(attachment_card(attachment, &post.metadata.images)))
             .collect();
     }
+    if post.props.get(REMOVE_LINK_PREVIEW).and_then(Value::as_str) == Some("true") {
+        return Vec::new();
+    }
     post.metadata
         .embeds
         .iter()
@@ -226,6 +229,20 @@ pub fn first_link(text: &str) -> Option<String> {
             .or_else(|| link.strip_prefix("http://"))?;
         (!host.is_empty() && host.contains('.')).then(|| link.to_owned())
     })
+}
+
+/// The post property Mattermost clients set to hide a post's link
+/// preview: the web app's Remove link preview writes `"true"`.
+const REMOVE_LINK_PREVIEW: &str = "remove_link_preview";
+
+/// A new post's properties: a link preview the user removed while
+/// composing stays off the post, for every client.
+pub fn send_props(unfurl: bool) -> std::collections::HashMap<String, Value> {
+    let mut props = std::collections::HashMap::new();
+    if !unfurl {
+        props.insert(REMOVE_LINK_PREVIEW.to_owned(), Value::String("true".into()));
+    }
+    props
 }
 
 /// Only web links open from a card.
@@ -426,6 +443,14 @@ mod tests {
         );
         assert_eq!(first_link("no link, https:// alone, or ftp://a.b"), None);
         assert_eq!(first_link("https://localhost"), None);
+    }
+
+    #[test]
+    fn a_removed_preview_stays_off_the_post() {
+        assert!(send_props(true).is_empty());
+        let props = serde_json::to_value(send_props(false)).unwrap();
+        let removed = from_post(&post(props, vec![graph("https://github.com/a", "Repo A")]));
+        assert_eq!(removed, []);
     }
 
     #[test]

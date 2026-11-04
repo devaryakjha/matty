@@ -450,6 +450,9 @@ pub enum ChannelEvent {
     Send {
         text: SharedString,
         files: Vec<SharedString>,
+        /// False when the user removed the link's preview while composing,
+        /// so the post shows none either (#188).
+        unfurl: bool,
     },
     /// The user picked, dropped or pasted a file; sync uploads it and
     /// reports back through `set_upload_status`.
@@ -1689,12 +1692,15 @@ impl ChannelView {
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
+        let unfurl = crate::embeds::first_link(&body)
+            .is_none_or(|link| !self.removed_links.contains(link.as_str()));
         self.link = None;
         self.removed_links.clear();
         self._link_task = None;
         cx.emit(ChannelEvent::Send {
             text: body,
             files: file_ids,
+            unfurl,
         });
     }
 

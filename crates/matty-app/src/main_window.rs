@@ -417,7 +417,11 @@ impl MainWindow {
                 ChannelEvent::OpenDirect { display_name, .. } => {
                     this.open_direct(display_name.clone(), window, cx)
                 }
-                ChannelEvent::Send { text, files } => {
+                ChannelEvent::Send {
+                    text,
+                    files,
+                    unfurl,
+                } => {
                     if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
                         let file_ids = live.take_file_ids(files);
                         live.send(matty_sync::Command::SendPost {
@@ -426,6 +430,7 @@ impl MainWindow {
                             root_id: String::new(),
                             message: text.to_string(),
                             file_ids,
+                            props: crate::embeds::send_props(*unfurl),
                         });
                     }
                 }

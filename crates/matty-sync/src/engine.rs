@@ -139,6 +139,9 @@ pub enum Command {
         message: String,
         /// Uploaded file ids.
         file_ids: Vec<String>,
+        /// Post properties, such as `remove_link_preview` when the user
+        /// removed the link preview while composing (#188).
+        props: std::collections::HashMap<String, serde_json::Value>,
     },
     /// Sends a failed post again.
     Retry {
@@ -923,6 +926,7 @@ impl Engine {
                     root_id,
                     message,
                     file_ids,
+                    props,
                 }) => {
                     let Some(me) = self.me.clone() else {
                         dirty.direct.push(ChangeSet::Failed(CommandError::Offline));
@@ -940,6 +944,7 @@ impl Engine {
                         root_id,
                         message,
                         file_ids,
+                        props,
                         created_at: now,
                         ..Outgoing::default()
                     };
