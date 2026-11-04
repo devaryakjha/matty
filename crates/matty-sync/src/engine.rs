@@ -801,7 +801,9 @@ impl Engine {
                     to_fetch.push(channel_id.clone());
                     // Which of its rows failed to send, even from an
                     // earlier run.
-                    dirty.outbox.insert(channel_id.clone());
+                    if !queue::for_channel(&tx, &channel_id)?.is_empty() {
+                        dirty.outbox.insert(channel_id.clone());
+                    }
                     dirty.channels.insert(channel_id);
                 }
                 Message::Command(Command::LoadOlder { channel_id }) => {
