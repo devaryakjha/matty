@@ -59,6 +59,9 @@ pub struct Live {
     threads_on: Option<bool>,
     /// Whether link previews show (#187); until sync says, they do.
     link_previews: bool,
+    /// Not connected: an open channel with no posts may just not be saved
+    /// here yet (#163).
+    offline: bool,
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
@@ -439,6 +442,7 @@ impl Live {
                 threads_choice: None,
                 threads_on: None,
                 link_previews: true,
+                offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
@@ -578,6 +582,7 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        model.offline = self.offline;
         for post in &mut model.posts {
             if self.failed.contains(post.id.as_ref()) {
                 post.status = crate::channel::PostStatus::Failed;
@@ -1286,6 +1291,18 @@ impl Live {
                 _ => {}
             },
             _ => {}
+        }
+        if let Some(state) = &update.connection {
+            let offline = *state != ConnectionState::Online;
+            if offline != self.offline {
+                self.offline = offline;
+                // Only an empty channel reads it, and a patch would not
+                // carry it.
+                if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
+                    self.shown = None;
+                    update.channel = self.channel_update();
+                }
+            }
         }
         update
     }
@@ -2074,6 +2091,33 @@ mod tests {
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
         assert_eq!((row.summary.count, row.summary.unread), (2, true));
         assert_eq!(model.unread(), 1);
+    }
+
+    #[test]
+    fn an_empty_channel_says_so_only_while_online() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        let empty = ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(Vec::new()),
+        };
+        let Some(ChannelUpdate::Replace(model)) = live.apply(&empty).channel else {
+            panic!("the channel shows");
+        };
+        assert!(!model.offline);
+        let socket = |state| ChangeSet::Connection(Connection::Socket(state));
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Stopped));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn offline");
+        };
+        assert!(model.offline && model.posts.is_empty());
+        let update = live.apply(&socket(matty_api::ws::ConnectionState::Connected {
+            connection_id: "x".into(),
+        }));
+        let Some(ChannelUpdate::Replace(model)) = update.channel else {
+            panic!("redrawn online");
+        };
+        assert!(!model.offline);
     }
 
     fn opened(live: &mut Live) {
