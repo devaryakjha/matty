@@ -405,6 +405,17 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::OpenFile(id) => this.download_file(id, cx),
+                ChannelEvent::ViewImages(ids) => {
+                    let here = this
+                        .live
+                        .as_ref()
+                        .map(|live| live.full_images(ids))
+                        .unwrap_or_default();
+                    for (id, image) in here {
+                        this.channel
+                            .update(cx, |view, cx| view.set_full_image(id, image, cx));
+                    }
+                }
                 ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
                 | ChannelEvent::Retry(_)
@@ -773,6 +784,10 @@ impl MainWindow {
         if let Some(profiles) = update.profiles {
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
+        }
+        if let Some((id, image)) = update.full_image {
+            self.channel
+                .update(cx, |view, cx| view.set_full_image(id, image, cx));
         }
         if let Some(download) = update.download {
             match download {

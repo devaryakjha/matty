@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::change::{
-    ChangeSet, CommandError, Connection, DownloadState, POSTS_WINDOW, UploadState,
+    ChangeSet, CommandError, Connection, DownloadState, ImageSize, POSTS_WINDOW, UploadState,
 };
 use crate::commands::{self, Write};
 use crate::events::{self, Fetch};
@@ -224,12 +224,14 @@ pub enum Command {
         /// The contents.
         bytes: Vec<u8>,
     },
-    /// Fetches a file's thumbnail, from the media cache or the server;
-    /// [`ChangeSet::Thumbnail`](crate::ChangeSet::Thumbnail) answers. A
-    /// file without one gets no answer.
-    LoadThumbnail {
+    /// Fetches one of a file's images, from the media cache or the server;
+    /// [`ChangeSet::Image`](crate::ChangeSet::Image) answers. A file
+    /// without one gets no answer.
+    LoadImage {
         /// The file.
         file_id: String,
+        /// Which rendition.
+        size: ImageSize,
     },
     /// Saves a file into `folder` under `name`, numbered when the name is
     /// taken; [`ChangeSet::Download`](crate::ChangeSet::Download) answers.
@@ -426,9 +428,10 @@ impl std::fmt::Debug for Command {
                 .field("file_name", file_name)
                 .field("bytes", &bytes.len())
                 .finish(),
-            Self::LoadThumbnail { file_id } => f
-                .debug_struct("LoadThumbnail")
+            Self::LoadImage { file_id, size } => f
+                .debug_struct("LoadImage")
                 .field("file_id", file_id)
+                .field("size", size)
                 .finish(),
             Self::Download { file_id, .. } => f
                 .debug_struct("Download")
@@ -627,7 +630,7 @@ impl Engine {
     ) -> Result<(), StoreError> {
         let mut to_fetch = Vec::new();
         let mut uploads = Vec::new();
-        let mut thumbnails = Vec::new();
+        let mut images = Vec::new();
         let mut downloads = Vec::new();
         let mut fetches = Vec::new();
         let mut sends = Vec::new();
@@ -902,8 +905,8 @@ impl Engine {
                     file_name,
                     bytes,
                 }),
-                Message::Command(Command::LoadThumbnail { file_id }) => {
-                    thumbnails.push(file_id);
+                Message::Command(Command::LoadImage { file_id, size }) => {
+                    images.push((file_id, size));
                 }
                 Message::Command(Command::Download {
                     file_id,
@@ -982,8 +985,8 @@ impl Engine {
         for (file_id, folder, name) in downloads {
             self.download(file_id, folder, name, dirty);
         }
-        for file_id in thumbnails {
-            self.thumbnail(file_id, dirty);
+        for (file_id, size) in images {
+            self.image(file_id, size, dirty);
         }
         for upload in uploads {
             self.upload(upload, dirty);
@@ -1040,15 +1043,16 @@ impl Engine {
         ));
     }
 
-    /// Answers from the media cache, or fetches the thumbnail; it comes
-    /// back as [`Loaded::Thumbnail`].
-    fn thumbnail(&mut self, file_id: String, dirty: &mut Dirty) {
-        let key = matty_store::media::file_key(&file_id, matty_store::media::FileVariant::Thumb);
+    /// Answers from the media cache, or fetches the image; it comes back
+    /// as [`Loaded::Image`].
+    fn image(&mut self, file_id: String, size: ImageSize, dirty: &mut Dirty) {
+        let key = image_key(&file_id, size);
         if let Some(media) = &self.media {
             match media.get(self.store.conn(), &key) {
                 Ok(Some(cached)) => {
-                    dirty.direct.push(ChangeSet::Thumbnail {
+                    dirty.direct.push(ChangeSet::Image {
                         file_id,
+                        size,
                         bytes: Arc::from(cached.bytes),
                         content_type: cached.content_type,
                     });
@@ -1061,13 +1065,17 @@ impl Engine {
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
             return;
         };
-        if !self.fetching.insert(file_id.clone()) {
+        if !self.fetching.insert(key) {
             return;
         }
         let client = session.client.clone();
         let results = self.loaded.clone();
         tokio::spawn(async move {
-            let image = match client.file_thumbnail(&file_id, None).await {
+            let fetched = match size {
+                ImageSize::Thumbnail => client.file_thumbnail(&file_id, None).await,
+                ImageSize::Preview => client.file_preview(&file_id, None).await,
+            };
+            let image = match fetched {
                 Ok(matty_api::Fetched::Fresh {
                     bytes,
                     content_type,
@@ -1075,11 +1083,15 @@ impl Engine {
                 }) => Some((bytes, content_type.unwrap_or_else(|| "image/jpeg".into()))),
                 Ok(matty_api::Fetched::NotModified) => None,
                 Err(error) => {
-                    tracing::debug!(%error, file_id, "no thumbnail");
+                    tracing::debug!(%error, file_id, ?size, "no image");
                     None
                 }
             };
-            let _ = results.send(Loaded::Thumbnail { file_id, image });
+            let _ = results.send(Loaded::Image {
+                file_id,
+                size,
+                image,
+            });
         });
     }
 
@@ -1383,22 +1395,23 @@ impl Engine {
             Loaded::Download { file_id, state } => {
                 dirty.direct.push(ChangeSet::Download { file_id, state });
             }
-            Loaded::Thumbnail { file_id, image } => {
-                self.fetching.remove(&file_id);
+            Loaded::Image {
+                file_id,
+                size,
+                image,
+            } => {
+                let key = image_key(&file_id, size);
+                self.fetching.remove(&key);
                 if let Some((bytes, content_type)) = image {
-                    if let Some(media) = &self.media {
-                        let key = matty_store::media::file_key(
-                            &file_id,
-                            matty_store::media::FileVariant::Thumb,
-                        );
-                        if let Err(error) =
+                    if let Some(media) = &self.media
+                        && let Err(error) =
                             media.put(self.store.conn(), &key, &bytes, &content_type)
-                        {
-                            tracing::warn!(%error, "could not keep a thumbnail");
-                        }
+                    {
+                        tracing::warn!(%error, "could not keep an image");
                     }
-                    dirty.direct.push(ChangeSet::Thumbnail {
+                    dirty.direct.push(ChangeSet::Image {
                         file_id,
+                        size,
                         bytes: Arc::from(bytes),
                         content_type,
                     });
@@ -1905,4 +1918,16 @@ pub(crate) fn collapsed_threads(mode: CollapsedThreads, preferences: &[Preferenc
         CollapsedThreads::DefaultOn => chosen.unwrap_or(true),
         CollapsedThreads::DefaultOff => chosen.unwrap_or(false),
     }
+}
+
+/// The media cache key for one of a file's images.
+fn image_key(file_id: &str, size: ImageSize) -> String {
+    use matty_store::media::{FileVariant, file_key};
+    file_key(
+        file_id,
+        match size {
+            ImageSize::Thumbnail => FileVariant::Thumb,
+            ImageSize::Preview => FileVariant::Preview,
+        },
+    )
 }

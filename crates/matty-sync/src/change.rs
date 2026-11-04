@@ -113,11 +113,13 @@ pub enum ChangeSet {
         /// Where it went, or why not.
         state: DownloadState,
     },
-    /// A file's thumbnail: the answer to
-    /// [`Command::LoadThumbnail`](crate::Command::LoadThumbnail).
-    Thumbnail {
+    /// A file's image: the answer to
+    /// [`Command::LoadImage`](crate::Command::LoadImage).
+    Image {
         /// The file.
         file_id: String,
+        /// Which rendition.
+        size: ImageSize,
         /// The encoded image.
         bytes: Arc<[u8]>,
         /// Its MIME type, such as `image/jpeg`.
@@ -201,6 +203,15 @@ pub enum Connection {
         /// What went wrong.
         error: String,
     },
+}
+
+/// Which of a file's images: the server scales each image it is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImageSize {
+    /// About 120 pixels, for the tile on a post.
+    Thumbnail,
+    /// Up to about 1920 pixels wide, for the lightbox.
+    Preview,
 }
 
 /// How a download ended.

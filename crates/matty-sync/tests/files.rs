@@ -4,7 +4,7 @@
 mod common;
 
 use common::{connected, next, server};
-use matty_sync::{ChangeSet, Command, UploadState};
+use matty_sync::{ChangeSet, Command, ImageSize, UploadState};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -115,14 +115,16 @@ async fn a_thumbnail_comes_from_the_server_once_then_the_cache() {
     .await;
 
     for _ in 0..2 {
-        sync.send(Command::LoadThumbnail {
+        sync.send(Command::LoadImage {
             file_id: "f1".into(),
+            size: ImageSize::Thumbnail,
         });
-        let ChangeSet::Thumbnail {
+        let ChangeSet::Image {
             file_id,
+            size,
             bytes,
             content_type,
-        } = next(&changes, |c| matches!(c, ChangeSet::Thumbnail { .. })).await
+        } = next(&changes, |c| matches!(c, ChangeSet::Image { .. })).await
         else {
             unreachable!()
         };
@@ -130,6 +132,7 @@ async fn a_thumbnail_comes_from_the_server_once_then_the_cache() {
             (file_id.as_str(), &*bytes, content_type.as_str()),
             ("f1", &b"jpeg"[..], "image/jpeg")
         );
+        assert_eq!(size, ImageSize::Thumbnail);
     }
     let fetched = common::requested(&server)
         .await

@@ -3,6 +3,7 @@
 //! the empty state, or the preview fixtures with `MATTY_PREVIEW=1`.
 
 use gpui_icons::{LucideIcon, lucide};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -346,6 +347,9 @@ pub enum ChannelEvent {
     RetryUpload(SharedString),
     /// The user clicked a file on a post; sync opens or downloads it.
     OpenFile(SharedString),
+    /// The lightbox opened on these image files; sync fetches their full
+    /// size and the window hands them back through `set_full_image`.
+    ViewImages(Vec<SharedString>),
     /// The user asked to reply to this post in a thread.
     OpenThread(SharedString),
     /// The user asked for the channel's pinned messages.
@@ -454,6 +458,10 @@ pub struct ChannelView {
     lightbox_handle: DialogHandle,
     /// File ids behind the lightbox's images, for its Open button.
     lightbox_files: Vec<SharedString>,
+    /// The post the lightbox shows, and full-size images by file id as
+    /// they come; until then the lightbox shows the thumbnail.
+    lightbox_post: Option<SharedString>,
+    full_images: HashMap<SharedString, Arc<gpui_kit::Image>>,
     /// The post whose body is a composer right now (PLAN §4.3 edit).
     editing: Option<Editing>,
     /// Posts that arrived while the reader was scrolled up; the jump pill
@@ -670,6 +678,8 @@ impl ChannelView {
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
             lightbox_files: Vec::new(),
+            lightbox_post: None,
+            full_images: HashMap::new(),
             editing: None,
             unseen: 0,
             delete: DialogHandle::new(false),
@@ -979,13 +989,29 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(post) = self
-            .model
-            .as_ref()
-            .and_then(|model| model.posts.iter().find(|p| p.id == post))
-        else {
+        let Some((ids, images)) = self.lightbox_images(&post, cx) else {
             return;
         };
+        self.lightbox_files = ids.clone();
+        self.lightbox_post = Some(post);
+        self.lightbox
+            .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
+        self.lightbox_handle.open(window, cx);
+        cx.emit(ChannelEvent::ViewImages(ids));
+        cx.notify();
+    }
+
+    /// The image files of `post` and their lightbox entries, full size
+    /// where it has come.
+    fn lightbox_images(
+        &self,
+        post: &SharedString,
+        cx: &App,
+    ) -> Option<(Vec<SharedString>, Vec<LightboxImage>)> {
+        let post = self
+            .model
+            .as_ref()
+            .and_then(|model| model.posts.iter().find(|p| &p.id == post))?;
         let caption: SharedString = format!(
             "{} · {}",
             post.author,
@@ -997,18 +1023,41 @@ impl ChannelView {
             .files
             .iter()
             .filter_map(|file| {
-                let image = file.image()?;
+                let image = match self.full_images.get(&file.id) {
+                    Some(full) => gpui_kit::ImageSource::Image(full.clone()),
+                    None => file.image()?,
+                };
                 ids.push(file.id.clone());
                 Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
             })
             .collect();
-        if images.is_empty() {
+        (!images.is_empty()).then_some((ids, images))
+    }
+
+    /// Sync fetched a file's full-size image; the lightbox swaps it in
+    /// when it shows that file's post.
+    pub fn set_full_image(
+        &mut self,
+        file_id: SharedString,
+        image: Arc<gpui_kit::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let showing = self.lightbox_files.contains(&file_id);
+        self.full_images.insert(file_id, image);
+        if !showing {
             return;
         }
-        self.lightbox_files = ids;
-        self.lightbox
-            .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
-        self.lightbox_handle.open(window, cx);
+        let Some((_, images)) = self
+            .lightbox_post
+            .clone()
+            .and_then(|post| self.lightbox_images(&post, cx))
+        else {
+            return;
+        };
+        self.lightbox.update(cx, |lightbox, cx| {
+            let index = lightbox.index();
+            lightbox.set_images(images, index, cx);
+        });
         cx.notify();
     }
 
