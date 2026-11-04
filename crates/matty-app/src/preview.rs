@@ -117,6 +117,19 @@ use gpui_kit::SharedString;
 
 /// Posts for the channel with `id`, with a day divider, a continuation, a
 /// mention, reactions, an edit mark and a "New messages" line.
+/// The name of a fixture file, for the preview's download toast.
+pub fn file_name(file_id: &str) -> Option<String> {
+    sidebar()
+        .categories
+        .iter()
+        .flat_map(|category| category.rows.iter())
+        .filter_map(|row| channel(&row.id))
+        .flat_map(|channel| channel.posts)
+        .flat_map(|post| post.files)
+        .find(|file| file.id.as_ref() == file_id)
+        .map(|file| file.name.to_string())
+}
+
 pub fn channel(id: &str) -> Option<ChannelModel> {
     let row = sidebar()
         .categories

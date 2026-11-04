@@ -367,6 +367,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   Create channel (`design-35`). The shortcut sheet lists them from the
   same table, so the sheet and the bindings cannot drift apart.
 
+- **Toasts** (PLAN §4.5): gpuicn's `ToastState` is mounted once at the
+  window root, bottom-left, three deep. A finished download shows the file
+  name over "Saved to ~/Downloads" for six seconds; a failure shows one
+  sentence for eight (`design-38`). "Show in folder" and "Retry" wait on
+  gpuicn#95 (action buttons on a notice); until then the file opens on its
+  own and the error says what to do. In preview, clicking a file card shows
+  the download toast.
+
 ## 5. Components
 
 - Every control is a gpuicn component with default styling; Matty passes
