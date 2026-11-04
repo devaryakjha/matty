@@ -15,8 +15,8 @@ use gpui_kit::{
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
     self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
-    HistoryForward, MarkAllRead, NextChannel, NextUnreadChannel, OpenPreferences, Platform,
-    PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
+    HistoryForward, MarkAllRead, MarkChannelRead, NextChannel, NextUnreadChannel, OpenPreferences,
+    Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
     SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
     ZoomOut,
 };
@@ -2392,6 +2392,48 @@ impl MainWindow {
     /// Preferences (DESIGN.md §5): appearance first, with every control a
     /// gpuicn one and every change written to settings straight away so
     /// the window re-themes behind the dialog.
+    /// Escape in the channel (#147): closes the right pane when one is
+    /// open, else views the open channel on the server and clears its
+    /// unread mark.
+    fn mark_channel_read(&mut self, cx: &mut Context<Self>) {
+        if self.right_pane_open {
+            self.right_pane_open = false;
+            cx.notify();
+            return;
+        }
+        if self.threads_open || self.drafts_open {
+            return;
+        }
+        let Some(id) = self.selected_channel.clone() else {
+            return;
+        };
+        self.view_channels(std::slice::from_ref(&id));
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
+    }
+
+    /// Shift+Escape (#147): views every unread channel in the team on the
+    /// server and clears the sidebar's unread marks.
+    fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        let unread = self.sidebar.read(cx).unread_ids();
+        self.view_channels(&unread);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.mark_all_read(cx));
+    }
+
+    /// Tells the server the user viewed `ids`, one request each.
+    fn view_channels(&self, ids: &[gpui_kit::SharedString]) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        for id in ids {
+            live.send(matty_sync::Command::ViewChannel {
+                channel_id: id.to_string(),
+                prev_channel_id: String::new(),
+            });
+        }
+    }
+
     fn username(&self, cx: &gpui_kit::App) -> String {
         self.account.read(cx).account().username.to_string()
     }
@@ -2851,10 +2893,8 @@ impl Render for MainWindow {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
             }))
-            .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| {
-                this.sidebar
-                    .update(cx, |sidebar, cx| sidebar.mark_all_read(cx))
-            }))
+            .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
+            .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))

@@ -14,7 +14,9 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::actions::{self, EditLastMessage, FocusComposer, ReplyToLastMessage, UploadFiles};
+use crate::actions::{
+    self, EditLastMessage, FocusComposer, MarkChannelRead, ReplyToLastMessage, UploadFiles,
+};
 use crate::attachments::{AttachmentStatus, PostFile, Upload, UploadSource, post_files};
 use crate::channel_settings::{
     ChannelEditEvent, ChannelEditView, ChannelField, NotificationsEvent, NotificationsView,
@@ -3486,11 +3488,23 @@ impl Render for ChannelView {
         self.composer_cap = style::composer_cap(window);
         let theme = UiTheme::read(cx).clone();
         let root = div()
+            .key_context(actions::CHANNEL_VIEW)
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
             .bg(theme.colors.background)
+            // Escape ends an edit or a selection first; only then does it
+            // reach the window, which marks the channel read (#147).
+            .on_action(cx.listener(|this, _: &MarkChannelRead, window, cx| {
+                if this.editing.is_some() {
+                    this.cancel_edit(window, cx);
+                } else if this.selection.is_some() {
+                    this.select_row(None, window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
                 this.composer
                     .update(cx, |composer, cx| composer.focus(window, cx))
