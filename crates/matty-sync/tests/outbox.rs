@@ -19,6 +19,7 @@ fn send() -> Command {
         root_id: String::new(),
         message: "hello".into(),
         file_ids: Vec::new(),
+        props: Default::default(),
     }
 }
 
@@ -163,6 +164,7 @@ async fn sends_in_a_channel_go_one_at_a_time_in_order() {
         root_id: String::new(),
         message: "second".into(),
         file_ids: Vec::new(),
+        props: Default::default(),
     });
     // While the first is on its way, the second waits.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -196,4 +198,37 @@ async fn post_requests(server: &wiremock::MockServer) -> usize {
         .into_iter()
         .filter(|request| request.url.path() == "/api/v4/posts")
         .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_posts_properties_reach_the_server() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .respond_with(created())
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    sync.send(Command::SendPost {
+        pending_post_id: "me:3".into(),
+        channel_id: "c1".into(),
+        root_id: String::new(),
+        message: "see https://github.com/devaryakjha/matty".into(),
+        file_ids: Vec::new(),
+        props: [("remove_link_preview".to_owned(), "true".into())].into(),
+    });
+    next(
+        &changes,
+        |c| matches!(c, ChangeSet::Outbox { sends, .. } if sends.is_empty()),
+    )
+    .await;
+    let request = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| request.url.path() == "/api/v4/posts")
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["props"]["remove_link_preview"], "true");
 }

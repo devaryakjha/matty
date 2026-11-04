@@ -744,6 +744,18 @@ pub fn uploads() -> Vec<Upload> {
 }
 
 /// The preview user's notification preferences, with two keywords.
+/// A link preview for a draft's link: GitHub links have one, others none.
+pub fn link_card(url: &str) -> Option<crate::embeds::LinkCard> {
+    url.starts_with("https://github.com/")
+        .then(|| crate::embeds::LinkCard {
+            url: url.to_owned().into(),
+            site_name: "GitHub".into(),
+            title: "devaryakjha/matty: A native Mattermost client".into(),
+            description: "Fast, keyboard-first and offline-friendly, built with GPUI.".into(),
+            image: None,
+        })
+}
+
 pub fn notify_props() -> std::collections::HashMap<String, String> {
     [
         ("desktop", "mention"),
