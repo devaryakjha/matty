@@ -1,6 +1,6 @@
 //! Where notifications go: one backend per platform (PLAN §6.7). The macOS
-//! backend posts through UNUserNotificationCenter (#139); until a platform
-//! has one, notifications are only logged.
+//! backend posts through UNUserNotificationCenter (#139); elsewhere, and on
+//! macOS outside an app bundle, notifications are only logged.
 
 use crate::Notification;
 
@@ -35,5 +35,9 @@ impl Notifier for Logged {
 
 /// This platform's backend.
 pub fn platform() -> Box<dyn Notifier> {
+    #[cfg(target_os = "macos")]
+    if let Some(center) = crate::macos::Center::new() {
+        return Box::new(center);
+    }
     Box::new(Logged)
 }
