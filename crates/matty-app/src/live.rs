@@ -141,6 +141,9 @@ pub struct Update {
     pub history: Option<(bool, bool, bool)>,
     /// The session ended; the window returns to sign-in.
     pub signed_out: bool,
+    /// The server refused the saved session; the window asks the user to
+    /// sign in again.
+    pub expired: bool,
 }
 
 /// A change to the open channel's view.
@@ -840,6 +843,11 @@ impl Live {
                 self.max_post_size = Some(capabilities.max_post_size);
             }
             ChangeSet::Connection(connection) => match connection {
+                Connection::Socket(matty_api::ws::ConnectionState::Unauthorized)
+                | Connection::Expired => {
+                    update.expired = true;
+                    update.connection = Some(ConnectionState::Offline);
+                }
                 Connection::Socket(state) => update.connection = Some(connection_state(state)),
                 Connection::Failed { .. } => update.connection = Some(ConnectionState::Offline),
                 Connection::SignedOut => update.signed_out = true,

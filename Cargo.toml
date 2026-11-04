@@ -46,6 +46,7 @@ emojis = "0.6"
 async-channel = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 insta = "1"
+keyring = "4.2"
 
 matty-api = { path = "crates/matty-api" }
 matty-store = { path = "crates/matty-store" }
