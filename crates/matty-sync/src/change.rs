@@ -199,6 +199,9 @@ pub enum ChangeSet {
     Connection(Connection),
     /// The user's preferences changed.
     Preferences,
+    /// Whether collapsed reply threads are on for the user, at sign-in and
+    /// whenever the preferences or the server's config change.
+    CollapsedThreads(bool),
     /// The server's config or license was read.
     Config(Arc<ServerCapabilities>),
 }

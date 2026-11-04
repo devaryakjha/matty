@@ -114,3 +114,28 @@ async fn closing_a_conversation_hides_it_and_tells_the_server() {
         ]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn choosing_collapsed_threads_tells_the_server_and_the_window() {
+    let server = common::server_with_config(json!({"CollapsedThreads": "default_off"})).await;
+    Mock::given(method("PUT"))
+        .and(path(format!("/api/v4/users/{ME}/preferences")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+
+    sync.send(Command::SetCollapsedThreads { on: true });
+    next(&changes, |c| matches!(c, ChangeSet::CollapsedThreads(true))).await;
+    for _ in 0..50 {
+        if !saved_preferences(&server).await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let saved = saved_preferences(&server).await;
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0]["category"], "display_settings");
+    assert_eq!(saved[0]["name"], "collapsed_reply_threads");
+    assert_eq!(saved[0]["value"], "on");
+}

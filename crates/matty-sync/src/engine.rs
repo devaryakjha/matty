@@ -247,6 +247,14 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Turns collapsed reply threads on or off for the user, where the
+    /// server lets users choose (#157). Every count and window follows;
+    /// [`ChangeSet::CollapsedThreads`](crate::ChangeSet::CollapsedThreads)
+    /// answers.
+    SetCollapsedThreads {
+        /// On.
+        on: bool,
+    },
     /// Moves a channel into or out of the team's Favorites, by the
     /// `favorite_channel` preference the server turns into the move.
     SetFavorite {
@@ -370,6 +378,10 @@ impl std::fmt::Debug for Command {
             Self::ShowCache => f.write_str("ShowCache"),
             Self::SignOut => f.write_str("SignOut"),
             Self::Event(event) => f.debug_tuple("Event").field(event).finish(),
+            Self::SetCollapsedThreads { on } => f
+                .debug_struct("SetCollapsedThreads")
+                .field("on", on)
+                .finish(),
             Self::SetFavorite {
                 channel_id,
                 favorite,
@@ -1038,6 +1050,19 @@ impl Engine {
                 }),
                 Message::Command(Command::SetNotifyProps { notify_props }) => {
                     writes.push(Write::NotifyProps(notify_props))
+                }
+                Message::Command(Command::SetCollapsedThreads { on }) => {
+                    if let Some(me) = &self.me {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: "display_settings".into(),
+                            name: "collapsed_reply_threads".into(),
+                            value: if on { "on" } else { "off" }.into(),
+                        };
+                        sidebar::upsert_preferences(&tx, std::slice::from_ref(&preference))?;
+                        dirty.preferences = true;
+                        writes.push(Write::Preferences(vec![preference]));
+                    }
                 }
                 Message::Command(Command::SetFavorite {
                     channel_id,
@@ -1783,6 +1808,7 @@ impl Engine {
                     session.user_id = me.id.clone();
                     session.collapsed_threads = crt;
                 }
+                dirty.direct.push(ChangeSet::CollapsedThreads(crt));
                 self.me = Some(me.id.clone());
                 self.capabilities = Some((*capabilities).clone());
                 // The window reads the user's own notification preferences
@@ -2043,6 +2069,7 @@ impl Engine {
                 if let Some(session) = &mut self.session {
                     session.collapsed_threads = crt;
                 }
+                dirty.direct.push(ChangeSet::CollapsedThreads(crt));
                 self.capabilities = Some((*capabilities).clone());
                 dirty
                     .direct
@@ -2438,6 +2465,7 @@ impl Engine {
             return;
         };
         let crt = collapsed_threads(capabilities.collapsed_threads, &preferences);
+        dirty.direct.push(ChangeSet::CollapsedThreads(crt));
         if cached_crt(conn).ok() == Some(crt) {
             return;
         }

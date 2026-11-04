@@ -155,6 +155,9 @@ pub struct MainWindow {
     keywords: Entity<InputState>,
     /// The user's `notify_props` as the server last sent them.
     notify_props: Option<std::collections::HashMap<String, String>>,
+    /// Whether the user may choose collapsed reply threads, and whether
+    /// they are on (#157).
+    collapsed_threads: Option<(bool, bool)>,
     /// Where notifications go on this platform (#141).
     notifier: Box<dyn matty_notify::Notifier>,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
@@ -734,6 +737,7 @@ impl MainWindow {
             keywords,
             notifier: matty_notify::backend::platform(),
             notify_props: preview_props,
+            collapsed_threads: crate::preview::enabled().then_some((true, true)),
             browse,
             new_message,
             create_channel,
@@ -1207,6 +1211,10 @@ impl MainWindow {
                 }
             });
             self.notify_props = Some(props);
+        }
+        if let Some(threads) = update.collapsed_threads {
+            self.collapsed_threads = Some(threads);
+            cx.notify();
         }
         if let Some(arrival) = update.arrived {
             self.notify(&arrival, window, cx);
@@ -2594,6 +2602,22 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Turns collapsed reply threads on or off for the user (#157). The
+    /// server's preferences come back and every count follows.
+    fn set_collapsed_threads(&mut self, on: bool, cx: &mut Context<Self>) {
+        let Some((choice, current)) = self.collapsed_threads else {
+            return;
+        };
+        if current == on {
+            return;
+        }
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::SetCollapsedThreads { on });
+        }
+        self.collapsed_threads = Some((choice, on));
+        cx.notify();
+    }
+
     /// Preferences' Notifications section, from the user's `notify_props`
     /// with Mattermost's defaults (#158).
     fn notification_prefs(
@@ -2995,6 +3019,28 @@ impl MainWindow {
                         .into_any_element(),
                 )
             };
+        let threads = self
+            .collapsed_threads
+            .filter(|(choice, _)| *choice)
+            .map(|(_, on)| {
+                let view = cx.entity().downgrade();
+                section(
+                    "Threads",
+                    labelled_row(
+                        "Collapsed reply threads".into(),
+                        "Replies stay in their thread instead of the channel.".into(),
+                        Switch::new("preferences.collapsed-threads")
+                            .checked(on)
+                            .aria_label("Collapsed reply threads")
+                            .on_change(move |next, _, _, cx| {
+                                view.update(cx, |this, cx| this.set_collapsed_threads(next, cx))
+                                    .ok();
+                            })
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                )
+            });
         let notifications = self
             .notify_props
             .as_ref()
@@ -3033,6 +3079,7 @@ impl MainWindow {
                                 "Message display",
                                 display_section.into_any_element(),
                             ))
+                            .children(threads)
                             .children(notifications)
                             .child(section(
                                 "Window",

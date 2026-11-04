@@ -47,6 +47,10 @@ pub struct Live {
     open: Option<ChannelRow>,
     posts: Option<Arc<[matty_api::models::Post]>>,
     max_post_size: Option<usize>,
+    /// Whether the server lets users choose collapsed reply threads, and
+    /// whether they are on for the user, once each is known (#157).
+    threads_choice: Option<bool>,
+    threads_on: Option<bool>,
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
@@ -140,6 +144,9 @@ pub struct Update {
     pub own_presence: Option<(Presence, Option<i64>)>,
     /// The user's own `notify_props` from the server, for Preferences.
     pub notify_props: Option<HashMap<String, String>>,
+    /// Whether the user may choose collapsed reply threads, and whether
+    /// they are on, for Preferences (#157).
+    pub collapsed_threads: Option<(bool, bool)>,
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
@@ -400,6 +407,8 @@ impl Live {
                 open: None,
                 posts: None,
                 max_post_size: None,
+                threads_choice: None,
+                threads_on: None,
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
                 failed: Default::default(),
@@ -478,6 +487,12 @@ impl Live {
 
     /// The open channel's view change for the latest posts: the first
     /// snapshot replaces the model, later ones patch it.
+    /// Collapsed reply threads for Preferences, once the server's mode
+    /// and the user's setting are both known.
+    fn threads(&self) -> Option<(bool, bool)> {
+        Some((self.threads_choice?, self.threads_on?))
+    }
+
     fn channel_update(&mut self) -> Option<ChannelUpdate> {
         let model = self.channel_model()?;
         if model.loading {
@@ -1036,6 +1051,16 @@ impl Live {
             }
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);
+                self.threads_choice = Some(matches!(
+                    capabilities.collapsed_threads,
+                    matty_api::capabilities::CollapsedThreads::DefaultOn
+                        | matty_api::capabilities::CollapsedThreads::DefaultOff
+                ));
+                update.collapsed_threads = self.threads();
+            }
+            ChangeSet::CollapsedThreads(on) => {
+                self.threads_on = Some(*on);
+                update.collapsed_threads = self.threads();
             }
             ChangeSet::Connection(connection) => match connection {
                 Connection::Socket(matty_api::ws::ConnectionState::Unauthorized)
