@@ -98,6 +98,17 @@ pub enum ChangeSet {
         /// Members by channel id.
         members: Arc<std::collections::HashMap<String, i64>>,
     },
+    /// Older posts came for a channel: the next
+    /// [`ChangeSet::Posts`] reaches further back. `at_start` once the
+    /// channel's first post is in it, so there is nothing more to load.
+    History {
+        /// The channel.
+        channel_id: String,
+        /// The channel's first post is loaded.
+        at_start: bool,
+        /// The page failed; asking again retries it.
+        failed: bool,
+    },
     /// An upload moved on.
     Upload {
         /// The caller's id for it.
