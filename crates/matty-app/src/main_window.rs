@@ -38,6 +38,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     kbd::{Kbd, format_shortcut},
+    markdown::selection_root,
     resizable::{PaneLimits, Resizable},
     switch::Switch,
     theme::UiTheme,
@@ -2430,15 +2431,21 @@ impl Render for MainWindow {
                     .w_full()
                     .child(login.clone())
                     .into_any_element(),
+                // One selection root over the rail, sidebar, channel and
+                // right pane, so a drag can select text across messages and
+                // Cmd/Ctrl+C copies it in reading order (PLAN §4.2).
                 None => div()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .flex()
-                    .when(self.rail.read(cx).is_multi(), |row| {
-                        row.child(self.rail.clone())
-                    })
-                    .child(div().flex_1().min_w_0().h_full().child(frame))
+                    .child(
+                        selection_root("window.selection")
+                            .flex()
+                            .when(self.rail.read(cx).is_multi(), |row| {
+                                row.child(self.rail.clone())
+                            })
+                            .child(div().flex_1().min_w_0().h_full().child(frame)),
+                    )
                     .into_any_element(),
             })
             .child(self.shortcut_sheet(window, cx))
