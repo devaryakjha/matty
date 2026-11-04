@@ -2075,6 +2075,7 @@ mod tests {
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),
+            kind: crate::channel::PostKind::Regular,
             time: 600,
             day: "Today".into(),
             date: SharedString::default(),
