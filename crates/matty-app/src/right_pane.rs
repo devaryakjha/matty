@@ -48,6 +48,8 @@ pub const UPLOAD_PREFIX: &str = "thread-upload";
 /// A thread: its root post and the replies loaded for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadModel {
+    /// The thread's channel, where its reply draft belongs.
+    pub channel_id: SharedString,
     pub channel_name: SharedString,
     pub root: Post,
     pub replies: Vec<Post>,
@@ -130,6 +132,9 @@ pub enum RightPaneEvent {
     /// The reply draft has this link; sync asks the server for its
     /// preview and calls `set_link_preview` (#188).
     PreviewLink(SharedString),
+    /// The reply draft changed, after a pause in typing, on leaving the
+    /// thread or on sending; sync stores it (#114).
+    SaveDraft(crate::composer_draft::DraftSave),
     /// Retry a reply that failed; the pane shows it pending again.
     Retry(SharedString),
     /// The user edited a reply waiting to send; it goes with this text
@@ -219,6 +224,12 @@ pub struct RightPaneView {
     /// Who is typing a reply in the thread (#137).
     typing: Vec<SharedString>,
     draft_len: usize,
+    /// Which thread's draft the composer holds, and what was saved of it.
+    draft: crate::composer_draft::ComposerDraft,
+    _draft_task: Option<gpui_kit::Task<()>>,
+    /// This pane's window, to put a thread's draft in the composer once the
+    /// pane switches threads.
+    window: gpui_kit::AnyWindowHandle,
     /// The preview above the reply composer (#188).
     link: crate::draft_link::DraftLink,
     /// Files waiting to go with the reply, and a reply waiting on them.
@@ -350,6 +361,10 @@ impl RightPaneView {
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
+                        // A restored draft is not the user typing.
+                        if !this.draft.is_saved(&text) {
+                            this.schedule_draft_save(cx);
+                        }
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
@@ -376,6 +391,9 @@ impl RightPaneView {
             profiles: Vec::new(),
             typing: Vec::new(),
             draft_len: 0,
+            draft: Default::default(),
+            _draft_task: None,
+            window: window.window_handle(),
             link: Default::default(),
             tray: UploadTray::new(UPLOAD_PREFIX),
             _link_task: None,
@@ -547,6 +565,10 @@ impl RightPaneView {
         thread.replies.push(reply);
         let content = self.content.clone();
         self.set_content(content, cx);
+        self._draft_task = None;
+        if let Some(cleared) = self.draft.sent(cx) {
+            cx.emit(RightPaneEvent::SaveDraft(cleared));
+        }
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
@@ -628,14 +650,25 @@ impl RightPaneView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.tray.uploads().iter().any(|upload| upload.id == id) {
+            // A file in another thread's draft.
+            if let Some(save) = crate::composer_draft::DraftBook::set_upload_status(id, status, cx)
+            {
+                cx.emit(RightPaneEvent::SaveDraft(save));
+            }
+            return;
+        }
         if self.tray.set_status(id, status) {
             self.send_queued(window, cx);
+        } else if status == AttachmentStatus::Ready {
+            self.schedule_draft_save(cx);
         }
         cx.notify();
     }
 
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
+        self.schedule_draft_save(cx);
         cx.emit(RightPaneEvent::CancelUpload(id.clone()));
         if due {
             self.send_queued(window, cx);
@@ -936,16 +969,103 @@ impl RightPaneView {
         if !same_thread {
             self.link = Default::default();
             self._link_task = None;
-            // The files were for the other thread's channel.
-            for upload in self.tray.take() {
-                cx.emit(RightPaneEvent::CancelUpload(upload.id));
-            }
             self.editing = None;
         }
         self.content = content;
         self.selection = None;
         self.loading_older = false;
+        let key = self.draft_key();
+        let moved = self.draft.key() != key.as_ref();
+        if moved
+            && self
+                .draft
+                .switches_quietly(key.as_ref(), &self.composer, cx)
+        {
+            // Nothing typed and nothing to restore: switch now, without
+            // touching the window (an update there redraws it).
+            self.switch_draft(key, None, cx);
+        } else if moved {
+            // The composer needs the window to change its text.
+            let window = self.window;
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                window
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.sync_draft(window, cx))
+                    })
+                    .ok();
+            });
+        }
         cx.notify();
+    }
+
+    /// Where the composer's draft belongs: the shown thread.
+    fn draft_key(&self) -> Option<crate::composer_draft::DraftKey> {
+        match &self.content {
+            Some(RightPaneContent::Thread(thread)) => {
+                Some(crate::composer_draft::DraftKey::thread(
+                    thread.channel_id.clone(),
+                    thread.root.id.clone(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Puts the composer on the shown thread's draft, saving the one it
+    /// leaves.
+    fn sync_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.draft_key();
+        if self.draft.key() == key.as_ref() {
+            return;
+        }
+        self.switch_draft(key, Some(window), cx);
+    }
+
+    fn switch_draft(
+        &mut self,
+        key: Option<crate::composer_draft::DraftKey>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        self._draft_task = None;
+        let left = self
+            .draft
+            .switch(key, &self.composer, &mut self.tray, window, cx);
+        if let Some(left) = left {
+            cx.emit(RightPaneEvent::SaveDraft(left));
+        }
+        self.draft_len = self.composer.read(cx).value(cx).chars().count();
+        cx.notify();
+    }
+
+    /// Saves the reply draft once typing pauses (#114).
+    fn schedule_draft_save(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::composer_draft::SAVE_PAUSE)
+                .await;
+            this.update(cx, |this, cx| this.save_draft(cx)).ok();
+        }));
+    }
+
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = None;
+        if let Some(save) = self.draft.save(&self.composer, &self.tray, cx) {
+            cx.emit(RightPaneEvent::SaveDraft(save));
+        }
+    }
+
+    /// The thread's draft changed elsewhere; the composer follows unless
+    /// the user has typed since it was saved.
+    pub fn refresh_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .draft
+            .refresh(&self.composer, &mut self.tray, window, cx)
+        {
+            self.draft_len = self.composer.read(cx).value(cx).chars().count();
+            cx.notify();
+        }
     }
 
     /// Sync's latest of the open thread. The same thread keeps its scroll
@@ -2363,6 +2483,7 @@ mod tests {
     /// The thread with replies `r{from}` to `r{to - 1}` of 500 loaded.
     fn thread(replies: std::ops::Range<usize>, older: bool, failed: bool) -> ThreadModel {
         ThreadModel {
+            channel_id: "c-town".into(),
             channel_name: "town".into(),
             root: Post {
                 root_id: SharedString::default(),
@@ -2512,6 +2633,7 @@ mod tests {
             ..post(id)
         };
         let thread = ThreadModel {
+            channel_id: "c-town".into(),
             channel_name: "town".into(),
             root: post("root"),
             replies: vec![
@@ -2590,6 +2712,84 @@ mod tests {
                 },
                 RightPaneEvent::Discard("me:1".into()),
             ]
+        );
+    }
+
+    /// #114: each thread keeps its own reply draft; switching threads saves
+    /// the one left and restores the one opened, and replying clears it.
+    #[gpui_kit::test]
+    fn a_threads_reply_draft_survives_switching_threads(cx: &mut gpui_kit::TestAppContext) {
+        use crate::composer_draft::SAVE_PAUSE;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let posts = crate::preview::channel("general").unwrap().posts;
+        let thread = |index: usize| {
+            RightPaneContent::Thread(Box::new(
+                crate::preview::thread("general", &posts[index].id).unwrap(),
+            ))
+        };
+        let (first, second) = (thread(0), thread(1));
+        let (pane, cx) = cx.add_window_view(|window, cx| RightPaneView::new("me", window, cx));
+        let saves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let saves = saves.clone();
+            cx.subscribe(&pane, move |_, event: &RightPaneEvent, _| {
+                if let RightPaneEvent::SaveDraft(save) = event {
+                    saves
+                        .borrow_mut()
+                        .push((save.key.root_id.to_string(), save.text.to_string()));
+                }
+            })
+            .detach();
+        });
+        let show = |content: &RightPaneContent, cx: &mut gpui_kit::VisualTestContext| {
+            let content = content.clone();
+            cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_content(Some(content), cx)));
+            cx.run_until_parked();
+        };
+        let focus = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                let composer = pane.read(cx).composer.clone();
+                composer.update(cx, |composer, cx| composer.focus(window, cx));
+            });
+        };
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| pane.read(cx).composer.read(cx).value(cx).to_string())
+        };
+        let root = |content: &RightPaneContent| match content {
+            RightPaneContent::Thread(thread) => thread.root.id.to_string(),
+            _ => unreachable!(),
+        };
+
+        show(&first, cx);
+        focus(cx);
+        cx.simulate_input("on it");
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [(root(&first), "on it".to_owned())]
+        );
+
+        show(&second, cx);
+        assert_eq!(text(cx), "");
+        show(&first, cx);
+        assert_eq!(text(cx), "on it");
+        assert!(saves.borrow().is_empty(), "restoring saves nothing");
+
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                let text = pane.composer.read(cx).value(cx);
+                pane.reply(text, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [(root(&first), String::new())]
         );
     }
 }
