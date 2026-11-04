@@ -89,6 +89,10 @@ URL schemes, so it can sit next to a release install:
 scripts/dev-bundle && open "target/Matty Dev.app"
 ```
 
+`scripts/release-bundle` builds the universal release bundle,
+`target/dist/Matty.app`, for Apple silicon and Intel. It needs both Rust
+targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+
 ## Development
 
 - [docs/PLAN.md](docs/PLAN.md): goals, milestones and architecture.
