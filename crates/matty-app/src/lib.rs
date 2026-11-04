@@ -9,6 +9,7 @@
 pub mod account;
 pub mod actions;
 pub mod attachments;
+pub mod avatars;
 pub mod channel;
 pub mod channel_settings;
 pub mod deeplink;

@@ -161,6 +161,17 @@ pub enum ChangeSet {
         /// Its MIME type, such as `image/png`.
         content_type: String,
     },
+    /// A user's profile picture: the answer to
+    /// [`Command::LoadAvatar`](crate::Command::LoadAvatar), with no image
+    /// when it could not be had.
+    Avatar {
+        /// The user.
+        user_id: String,
+        /// The `last_picture_update` the picture is for.
+        last_picture_update: i64,
+        /// The encoded image and its MIME type.
+        image: Option<(Arc<[u8]>, String)>,
+    },
     /// Search results, best first: the answer to
     /// [`Command::Search`](crate::Command::Search). Their authors come
     /// ahead in [`ChangeSet::Users`].

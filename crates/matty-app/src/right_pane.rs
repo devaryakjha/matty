@@ -393,9 +393,13 @@ impl RightPaneView {
         };
         let root = thread.root.id.clone();
         let last = thread.replies.last().unwrap_or(&thread.root);
+        let own = crate::channel::own_id(
+            &[std::slice::from_ref(&thread.root), &thread.replies[..]].concat(),
+        );
         let reply = Post {
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
+            author_id: own,
             time: last.time,
             day: last.day.clone(),
             date: SharedString::default(),
@@ -848,14 +852,16 @@ impl RightPaneView {
             .continuation(post.continues && !root)
             .density(message_density(cx))
             .highlight(highlight)
-            .avatar(
+            .avatar(crate::avatars::with_picture(
                 Avatar::new(gpui_kit::ElementId::Name(
                     format!("thread.{id}.avatar").into(),
                 ))
                 .size(AvatarSize::Default)
                 .fallback(initial)
                 .aria_label(post.author.clone()),
-            )
+                &post.author_id,
+                cx,
+            ))
             .reactions(post.reactions.iter().map(|reaction| {
                 Reaction::new(reaction.emoji.clone(), reaction.count, reaction.mine)
             }))
@@ -1448,7 +1454,7 @@ impl RightPaneView {
             format!("info.member.{username}.popover").into(),
         ))
         .offset(px(4.))
-        .trigger_with(move |_, _, _| {
+        .trigger_with(move |_, _, cx| {
             div()
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
@@ -1466,14 +1472,16 @@ impl RightPaneView {
                     div()
                         .relative()
                         .flex_shrink_0()
-                        .child(
+                        .child(crate::avatars::with_picture(
                             Avatar::new(gpui_kit::ElementId::Name(
                                 format!("info.member.{}.avatar", row_profile.username).into(),
                             ))
                             .size(AvatarSize::Sm)
                             .fallback(initial.clone())
                             .aria_label(row_profile.display_name.clone()),
-                        )
+                            &row_profile.user_id,
+                            cx,
+                        ))
                         .child(
                             div()
                                 .absolute()

@@ -112,6 +112,13 @@ pub(crate) enum Loaded {
         url: String,
         image: Option<(Vec<u8>, String)>,
     },
+    /// A profile picture at a `last_picture_update`, or `None` when the
+    /// server gave none.
+    Avatar {
+        user_id: String,
+        version: i64,
+        image: Option<(Vec<u8>, String)>,
+    },
     /// Search results, best first.
     Search {
         terms: String,

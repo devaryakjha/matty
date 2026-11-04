@@ -266,14 +266,16 @@ impl ThreadsView {
                 this.hover(|style| style.bg(theme.colors.accent.opacity(0.6)))
             })
             .on_click(cx.listener(move |this, _, _, cx| this.select(Some(id.clone()), cx)))
-            .child(
+            .child(crate::avatars::with_picture(
                 Avatar::new(gpui_kit::ElementId::Name(
                     format!("threads.{}.avatar", row.id()).into(),
                 ))
                 .size(AvatarSize::Default)
                 .fallback(initial)
                 .aria_label(root.author.clone()),
-            )
+                &root.author_id,
+                cx,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -326,13 +328,23 @@ impl ThreadsView {
                                 row.summary.participants.iter().take(3).enumerate().map(
                                     |(index, name)| {
                                         let initial: String = name.chars().take(1).collect();
+                                        let user_id = row
+                                            .summary
+                                            .participant_ids
+                                            .get(index)
+                                            .map(SharedString::as_ref)
+                                            .unwrap_or_default();
                                         div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                            Avatar::new(gpui_kit::ElementId::Name(
-                                                format!("threads.{}.p{index}", row.id()).into(),
-                                            ))
-                                            .size(AvatarSize::Sm)
-                                            .fallback(initial)
-                                            .aria_label(name.clone()),
+                                            crate::avatars::with_picture(
+                                                Avatar::new(gpui_kit::ElementId::Name(
+                                                    format!("threads.{}.p{index}", row.id()).into(),
+                                                ))
+                                                .size(AvatarSize::Sm)
+                                                .fallback(initial)
+                                                .aria_label(name.clone()),
+                                                user_id,
+                                                cx,
+                                            ),
                                         )
                                     },
                                 ),
