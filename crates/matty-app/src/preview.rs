@@ -147,7 +147,10 @@ pub fn sidebar() -> SidebarModel {
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
-        unread_threads: 2,
+        // What `threads()` holds; it reads the channels, so it cannot be
+        // asked here.
+        unread_threads: 3,
+        thread_mentions: 1,
         drafts: 2,
         drafted: ["design".into()].into_iter().collect(),
         categories: preview_kinds(vec![
@@ -225,6 +228,25 @@ pub fn file_name(file_id: &str) -> Option<String> {
         .flat_map(|post| post.files)
         .find(|file| file.id.as_ref() == file_id)
         .map(|file| file.name.to_string())
+}
+
+/// The review notes' download, for its card (#151):
+/// `MATTY_PREVIEW=downloading` shows it arriving, `downloaded` saved, and
+/// `download-failed` failed; any other preview shows none.
+pub fn downloads() -> crate::attachments::Downloads {
+    use crate::attachments::{Downloads, FileDownload};
+    let state = match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+        Some("downloading") => FileDownload::Downloading {
+            received: 1_056_965,
+            total: Some(2_516_582),
+        },
+        Some("downloaded") => {
+            FileDownload::Saved(crate::main_window::download_folder(None).join("review-notes.pdf"))
+        }
+        Some("download-failed") => FileDownload::Failed,
+        _ => return Downloads::default(),
+    };
+    Downloads([("f-notes".into(), state)].into_iter().collect())
 }
 
 /// `MATTY_PREVIEW_POSTS=<n>` fills `general` with `n` posts, the fixtures
@@ -314,7 +336,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Lena Fischer".into()],
                 participant_ids: vec![person("Lena Fischer")],
                 following: false,
-                unread: true,
+                unread_replies: 1,
+                unread_mentions: 0,
             }),
             ..post(
                 "p2",
@@ -422,7 +445,8 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 participants: vec!["Arya".into(), "Jonas Weber".into()],
                 participant_ids: vec![person("Arya"), person("Jonas Weber")],
                 following: true,
-                unread: false,
+                unread_replies: 0,
+                unread_mentions: 0,
             }),
             ..post(
                 "p5",
@@ -887,8 +911,6 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
     ]
 }
 
-/// What the composer tray shows after Attach: a thumbnail, a file still
-/// uploading and one that failed.
 /// The team's public channels for Browse: the sidebar's plus five more.
 pub fn directory() -> Vec<DirectoryChannel> {
     let joined: Vec<SharedString> = sidebar()
@@ -1006,6 +1028,8 @@ pub fn empty_channel(
     }
 }
 
+/// What the composer tray shows after Attach: a thumbnail, a file still
+/// uploading and one that failed; offline, all three queued.
 pub fn uploads() -> Vec<Upload> {
     let mut mockup = Upload::from_image(
         "u-mockup",
@@ -1013,7 +1037,7 @@ pub fn uploads() -> Vec<Upload> {
     )
     .ready(48_312);
     mockup.name = "sidebar-mockup.png".into();
-    vec![
+    let uploads = vec![
         mockup,
         Upload {
             id: "u-notes".into(),
@@ -1021,6 +1045,7 @@ pub fn uploads() -> Vec<Upload> {
             size: 2_516_582,
             source: UploadSource::Path("release-notes.pdf".into()),
             status: AttachmentStatus::Uploading(0.6),
+            queued: false,
         },
         Upload {
             id: "u-log".into(),
@@ -1028,8 +1053,15 @@ pub fn uploads() -> Vec<Upload> {
             size: 918_000,
             source: UploadSource::Path("matty-2026-11-03.log".into()),
             status: AttachmentStatus::Failed,
+            queued: false,
         },
-    ]
+    ];
+    // `MATTY_PREVIEW=offline`: each file waits for the connection (#194).
+    if connection() == crate::main_window::ConnectionState::Offline {
+        uploads.into_iter().map(Upload::queued).collect()
+    } else {
+        uploads
+    }
 }
 
 /// A screen recording over the default 100 MB limit, which the tray
@@ -1041,6 +1073,7 @@ pub fn oversize_upload() -> Upload {
         size: 251_658_240,
         source: UploadSource::Path("screen-recording.mov".into()),
         status: AttachmentStatus::Uploading(0.),
+        queued: false,
     }
 }
 
@@ -1061,6 +1094,7 @@ pub fn notify_props() -> std::collections::HashMap<String, String> {
     [
         ("desktop", "mention"),
         ("mention_keys", "arya,@arya,release,design review"),
+        ("highlight_keys", "incident"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -1256,40 +1290,43 @@ pub fn threads() -> ThreadsModel {
             summary,
         })
     };
-    let summary = |count, last: &str, participants: &[&str], unread| ReplySummary {
-        count,
-        last_time: if last.contains(':') { hm(last) } else { 0 },
-        last_day: if last.contains(':') {
-            "Today".into()
-        } else {
-            last.into()
-        },
-        participants: participants.iter().map(|name| (*name).into()).collect(),
-        participant_ids: participants.iter().map(|name| person(name)).collect(),
-        following: true,
-        unread,
+    let summary = |count, last: &str, participants: &[&str], (unread_replies, unread_mentions)| {
+        ReplySummary {
+            count,
+            last_time: if last.contains(':') { hm(last) } else { 0 },
+            last_day: if last.contains(':') {
+                "Today".into()
+            } else {
+                last.into()
+            },
+            participants: participants.iter().map(|name| (*name).into()).collect(),
+            participant_ids: participants.iter().map(|name| person(name)).collect(),
+            following: true,
+            unread_replies,
+            unread_mentions,
+        }
     };
     ThreadsModel {
         threads: [
             row(
                 "general",
                 "p2",
-                summary(1, "10:02", &["Lena Fischer"], true),
+                summary(1, "10:02", &["Lena Fischer"], (1, 0)),
             ),
             row(
                 "design",
                 "p6",
-                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], true),
+                summary(2, "09:48", &["Priya Nair", "Sam Okafor"], (2, 1)),
             ),
             row(
                 "general",
                 "p5",
-                summary(12, "08:13", &["Arya", "Jonas Weber"], false),
+                summary(12, "08:13", &["Arya", "Jonas Weber"], (3, 0)),
             ),
             row(
                 "help-desk",
                 "p8",
-                summary(3, "Yesterday", &["Arya", "Sam Okafor"], false),
+                summary(3, "Yesterday", &["Arya", "Sam Okafor"], (0, 0)),
             ),
         ]
         .into_iter()
@@ -1413,6 +1450,13 @@ mod tests {
         assert!(!profiles().is_empty());
         assert!(!drafts().drafts.is_empty());
         assert!(!threads().threads.is_empty());
+    }
+
+    #[test]
+    fn the_sidebar_counts_the_preview_threads() {
+        let (sidebar, threads) = (sidebar(), threads());
+        assert_eq!(sidebar.unread_threads, threads.unread());
+        assert_eq!(sidebar.thread_mentions, threads.mentions());
     }
 
     #[test]

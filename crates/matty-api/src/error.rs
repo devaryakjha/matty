@@ -47,6 +47,10 @@ pub enum ApiError {
     /// The URL Matty was given is not usable.
     #[error("invalid server URL: {0}")]
     InvalidUrl(String),
+    /// Writing what the server sent failed on this computer, such as a
+    /// download whose folder is full or read-only.
+    #[error("{0}")]
+    Io(String),
 }
 
 #[derive(Deserialize)]

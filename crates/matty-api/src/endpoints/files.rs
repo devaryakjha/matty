@@ -96,6 +96,28 @@ impl Client {
         self.get_bytes(&format!("files/{file_id}"), etag).await
     }
 
+    /// `GET files/{file_id}` as it arrives, for saving a file (#151): hands
+    /// each piece of the body to `chunk` with the bytes received so far and
+    /// the length the server gave, if any. An error from `chunk` stops the
+    /// download. Allows a long transfer rather than the usual timeout, and
+    /// returns the bytes received. Not in the browser, which saves files
+    /// itself.
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn download_file(
+        &self,
+        file_id: &str,
+        mut chunk: impl FnMut(&[u8], u64, Option<u64>) -> std::io::Result<()>,
+    ) -> Result<u64, ApiError> {
+        let mut response = self.send_long_get(&format!("files/{file_id}")).await?;
+        let total = response.content_length();
+        let mut received = 0u64;
+        while let Some(piece) = response.chunk().await.map_err(ApiError::from_transport)? {
+            received += piece.len() as u64;
+            chunk(&piece, received, total).map_err(|error| ApiError::Io(error.to_string()))?;
+        }
+        Ok(received)
+    }
+
     /// `GET files/{file_id}/thumbnail`: a small JPEG of an image.
     pub async fn file_thumbnail(
         &self,

@@ -56,9 +56,10 @@ impl FromStr for Version {
 
 /// The oldest server Matty supports.
 ///
-/// Provisional: PLAN §6.3 sets the floor at the release that added
-/// `POST /users/login/desktop_token`, and spike S3 (#59) pins it exactly.
-/// Until then Matty uses the 9.5 extended-support release.
+/// `POST /users/login/desktop_token`, which SSO needs, arrived in 9.1.0
+/// (spike S3, `docs/spikes/S3.md`). PLAN §6.3 supports only recent
+/// extended-support releases, so the floor is 9.5.0, the first of them with
+/// the desktop-token flow.
 pub const MINIMUM_VERSION: Version = Version::new(9, 5, 0);
 
 /// How Collapsed Reply Threads is configured on the server.

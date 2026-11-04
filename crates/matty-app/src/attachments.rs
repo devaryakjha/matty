@@ -40,6 +40,9 @@ pub struct Upload {
     pub size: u64,
     pub source: UploadSource,
     pub status: AttachmentStatus,
+    /// Added while offline: it waits on this computer and uploads when
+    /// the connection is back, or with its post from the outbox (#194).
+    pub queued: bool,
 }
 
 impl Upload {
@@ -57,6 +60,7 @@ impl Upload {
             size,
             source: UploadSource::Path(path),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 
@@ -69,6 +73,7 @@ impl Upload {
             size,
             source: UploadSource::Image(image),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 
@@ -85,14 +90,27 @@ impl Upload {
         self
     }
 
+    /// Marks it queued while offline, for fixtures.
+    pub fn queued(mut self) -> Self {
+        self.status = AttachmentStatus::Ready;
+        self.queued = true;
+        self
+    }
+
     /// The image to show as a thumbnail, when the file is one.
     pub fn image(&self) -> Option<ImageSource> {
         thumbnail(&self.name, &self.source)
     }
 
-    /// The chip's second line: "PDF · 2.4 MB".
+    /// The chip's second line: "PDF · 2.4 MB", or "Queued · 2.4 MB" while
+    /// it waits for the connection.
     pub fn meta(&self) -> SharedString {
-        format!("{} · {}", kind(&self.name), format_size(self.size)).into()
+        let kind = if self.queued {
+            "Queued".to_owned()
+        } else {
+            kind(&self.name)
+        };
+        format!("{kind} · {}", format_size(self.size)).into()
     }
 
     /// The file-type icon for a card.
@@ -100,7 +118,8 @@ impl Upload {
         icon_for(&self.name)
     }
 
-    /// Whether the file is on the server and the post can go.
+    /// Whether the post can go: the file is on the server, or queued to
+    /// upload with it.
     pub fn is_ready(&self) -> bool {
         self.status == AttachmentStatus::Ready
     }
@@ -226,6 +245,7 @@ impl UploadTray {
                 let mut upload = file.clone();
                 upload.id = format!("{}-{}", self.prefix, self.seq).into();
                 upload.status = AttachmentStatus::Uploading(0.);
+                upload.queued = false;
                 self.uploads.push(upload.clone());
                 accepted.push(upload);
             }
@@ -269,7 +289,25 @@ impl UploadTray {
             return false;
         };
         upload.status = status;
+        upload.queued = false;
         self.settle()
+    }
+
+    /// Sync is offline: the file waits here and goes with the post through
+    /// the outbox, or uploads when the connection is back (#194). True
+    /// when a waiting send is now due.
+    pub fn set_queued(&mut self, id: &str) -> bool {
+        let Some(upload) = self.uploads.iter_mut().find(|upload| upload.id == id) else {
+            return false;
+        };
+        upload.status = AttachmentStatus::Ready;
+        upload.queued = true;
+        self.settle()
+    }
+
+    /// Whether any file waits for the connection.
+    pub fn has_queued(&self) -> bool {
+        self.uploads.iter().any(|upload| upload.queued)
     }
 
     /// Takes a file out of the tray. True when a waiting send is now due.
@@ -347,6 +385,29 @@ impl UploadTray {
     }
 }
 
+/// Where a file added while offline is read from when it uploads later
+/// (#194): a picked or dropped file stays where it is, and a pasted image
+/// is written to a folder of its own under the system's temporary folder,
+/// keeping its name.
+pub fn keep_for_outbox(id: &str, name: &str, source: &UploadSource) -> std::io::Result<PathBuf> {
+    match source {
+        UploadSource::Path(path) => Ok(path.clone()),
+        UploadSource::Image(image) => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default();
+            let dir = std::env::temp_dir()
+                .join("matty-outbox")
+                .join(format!("{id}-{stamp}"));
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(name);
+            std::fs::write(&path, &image.bytes)?;
+            Ok(path)
+        }
+    }
+}
+
 /// A file on a posted message (PLAN §4.6 Files).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostFile {
@@ -396,6 +457,67 @@ impl PostFile {
     /// "PDF · 2.4 MB".
     pub fn meta(&self) -> SharedString {
         format!("{} · {}", kind(&self.name), format_size(self.size)).into()
+    }
+}
+
+/// Where a posted file's download is (#151), shown on its card.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileDownload {
+    /// Arriving: bytes so far, and the size when known.
+    Downloading { received: u64, total: Option<u64> },
+    /// Saved here; clicking the card opens this copy.
+    Saved(PathBuf),
+    /// Did not save; clicking the card tries again.
+    Failed,
+}
+
+impl FileDownload {
+    /// The card's second line for this state, in place of its kind and size:
+    /// "Downloading… 42%", "Downloaded · PDF · 2.4 MB" or "Download failed ·
+    /// Click to retry".
+    pub fn meta(&self, file: &PostFile) -> SharedString {
+        match self {
+            Self::Downloading {
+                received,
+                total: Some(total),
+            } if *total > 0 => {
+                let percent = (received.saturating_mul(100) / total).min(100);
+                format!("Downloading… {percent}%").into()
+            }
+            Self::Downloading { received, .. } => {
+                format!("Downloading… {}", format_size(*received)).into()
+            }
+            Self::Saved(_) => format!("Downloaded · {}", file.meta()).into(),
+            Self::Failed => "Download failed · Click to retry".into(),
+        }
+    }
+
+    /// The card's icon: a check once saved, an alert on failure, and the
+    /// file's own icon while it arrives.
+    fn icon(&self, name: &str) -> LucideIcon {
+        match self {
+            Self::Downloading { .. } => icon_for(name),
+            Self::Saved(_) => LucideIcon::CircleCheck,
+            Self::Failed => LucideIcon::CircleAlert,
+        }
+    }
+}
+
+/// Every download this run, by file id, for the cards to show (#151).
+#[derive(Default)]
+pub struct Downloads(pub std::collections::HashMap<SharedString, FileDownload>);
+
+impl gpui_kit::Global for Downloads {}
+
+impl Downloads {
+    /// Where `file_id`'s download is, if it has one.
+    pub fn get<'a>(cx: &'a App, file_id: &str) -> Option<&'a FileDownload> {
+        cx.try_global::<Self>()?.0.get(file_id)
+    }
+
+    /// Records where `file_id`'s download is.
+    pub fn set(cx: &mut App, file_id: SharedString, state: FileDownload) {
+        cx.default_global::<Self>().0.insert(file_id, state);
     }
 }
 
@@ -458,10 +580,16 @@ pub fn post_files(
             Shown::Card => {
                 let file_id = file.id.clone();
                 let open = on_file.clone();
+                let download = Downloads::get(cx, &file.id);
                 cards.push(
                     Attachment::new(id, file.name.clone())
-                        .meta(file.meta())
-                        .icon(icon_for(&file.name))
+                        .meta(download.map_or_else(|| file.meta(), |state| state.meta(file)))
+                        .icon(
+                            download.map_or_else(
+                                || icon_for(&file.name),
+                                |state| state.icon(&file.name),
+                            ),
+                        )
                         .on_click(move |_, window, cx| open(file_id.clone(), window, cx)),
                 );
             }
@@ -525,6 +653,16 @@ pub fn upload_tray(
             theme.colors.muted_foreground,
         )
     });
+    let offline = tray.has_queued().then(|| {
+        line(
+            lucide(LucideIcon::CloudOff)
+                .size(scaled(&theme, 14.))
+                .text_color(theme.colors.muted_foreground)
+                .into_any_element(),
+            "Queued: files upload when you're back online. You can send now.".into(),
+            theme.colors.muted_foreground,
+        )
+    });
     if chips.is_empty() && notice.is_none() {
         return None;
     }
@@ -542,6 +680,7 @@ pub fn upload_tray(
                 )
             }))
             .children(notice)
+            .children(offline)
             .children(waiting),
     )
 }
@@ -681,6 +820,22 @@ pub fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    /// #194: a file queued offline counts as ready, so Send goes now and
+    /// a waiting send is due; once it uploads it is no longer queued.
+    #[test]
+    fn a_file_queued_offline_lets_the_post_go() {
+        let mut tray = UploadTray::new("t");
+        let added = tray.admit(vec![file("plan.pdf", 2_516_582)]);
+        assert_eq!(tray.request_send(false), SendGate::Wait);
+        assert!(tray.set_queued(&added[0].id));
+        assert!(tray.has_queued());
+        assert_eq!(tray.uploads()[0].meta().as_ref(), "Queued · 2.4 MB");
+        assert_eq!(tray.gate(false), SendGate::Now);
+        tray.set_status(&added[0].id, AttachmentStatus::Uploading(0.));
+        assert!(!tray.has_queued());
+        assert_eq!(tray.gate(false), SendGate::Wait);
+    }
+
     type Seen = std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>;
 
     /// A post's files in an 800px column, recording their laid-out bounds.
@@ -792,6 +947,102 @@ mod tests {
         assert_eq!(doc.meta().as_ref(), "PDF · 0 B");
     }
 
+    fn notes() -> PostFile {
+        PostFile {
+            id: "f1".into(),
+            name: "notes.pdf".into(),
+            size: 2_516_582,
+            preview: None,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    #[test]
+    fn a_card_says_where_its_download_is() {
+        let notes = notes();
+        let arriving = FileDownload::Downloading {
+            received: 1_056_965,
+            total: Some(2_516_582),
+        };
+        assert_eq!(arriving.meta(&notes).as_ref(), "Downloading… 42%");
+        let no_size = FileDownload::Downloading {
+            received: 3 * 1024 * 1024,
+            total: None,
+        };
+        assert_eq!(no_size.meta(&notes).as_ref(), "Downloading… 3.0 MB");
+        let saved = FileDownload::Saved("/tmp/notes.pdf".into());
+        assert_eq!(saved.meta(&notes).as_ref(), "Downloaded · PDF · 2.4 MB");
+        assert_eq!(
+            FileDownload::Failed.meta(&notes).as_ref(),
+            "Download failed · Click to retry"
+        );
+        assert_eq!(arriving.icon(&notes.name), LucideIcon::FileText);
+        assert_eq!(saved.icon(&notes.name), LucideIcon::CircleCheck);
+        assert_eq!(
+            FileDownload::Failed.icon(&notes.name),
+            LucideIcon::CircleAlert
+        );
+    }
+
+    struct CardsProbe {
+        opened: Rc<std::cell::RefCell<Vec<SharedString>>>,
+    }
+
+    impl gpui_kit::Render for CardsProbe {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            let opened = self.opened.clone();
+            div().size(gpui_kit::px(400.)).child(post_files(
+                "probe",
+                &[notes()],
+                |_, _, _| {},
+                move |file, _, _| opened.borrow_mut().push(file),
+                cx,
+            ))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_file_card_asks_for_its_file_in_every_download_state(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{Modifiers, point, px};
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let window = cx.add_window({
+            let opened = opened.clone();
+            move |_, _| CardsProbe { opened }
+        });
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let states = [
+            None,
+            Some(FileDownload::Downloading {
+                received: 10,
+                total: Some(100),
+            }),
+            Some(FileDownload::Failed),
+            Some(FileDownload::Saved("/tmp/notes.pdf".into())),
+        ];
+        for (clicks, state) in states.into_iter().enumerate() {
+            cx.update(|window, cx| {
+                if let Some(state) = state {
+                    Downloads::set(cx, "f1".into(), state);
+                }
+                window.refresh();
+            });
+            cx.run_until_parked();
+            // The card is the first thing in the window.
+            cx.simulate_click(point(px(40.), px(20.)), Modifiers::none());
+            assert_eq!(opened.borrow().len(), clicks + 1);
+        }
+        assert!(opened.borrow().iter().all(|id| id.as_ref() == "f1"));
+    }
+
     fn file(name: &str, size: u64) -> Upload {
         Upload {
             id: "".into(),
@@ -799,6 +1050,7 @@ mod tests {
             size,
             source: UploadSource::Path(name.into()),
             status: AttachmentStatus::Uploading(0.),
+            queued: false,
         }
     }
 

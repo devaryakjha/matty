@@ -540,8 +540,9 @@ the database.
 ### 6.3 Mattermost API usage
 
 - **Version support:** current Mattermost release and the last two ESRs, and
-  never older than the release that added `POST /users/login/desktop_token`
-  (the 9.x line; spike S3 pins the exact version).
+  never older than the release that added `POST /users/login/desktop_token`.
+  That is 9.1.0 (spike S3, `docs/spikes/S3.md`), so Matty's floor is
+  9.5.0, the first extended-support release with it.
   Read `/api/v4/config/client?format=old` and
   `/api/v4/license/client?format=old` at
   connect time and feature-gate on them (Collapsed Reply Threads, message

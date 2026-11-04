@@ -175,6 +175,8 @@ pub struct SidebarModel {
     pub selected: Option<SharedString>,
     /// Followed threads with replies the user has not read.
     pub unread_threads: usize,
+    /// Mentions of the user in those threads' unread replies (#124).
+    pub thread_mentions: usize,
     /// Unsent drafts, channels' and threads', for the Drafts row's count.
     pub drafts: usize,
     /// Channels whose composer holds a draft; their rows show a pencil.
@@ -342,7 +344,31 @@ impl SidebarModel {
             row.mentions = 0;
         }
         self.unread_threads = 0;
+        self.thread_mentions = 0;
     }
+
+    /// The Threads entry's count: its mentions as a channel row shows
+    /// them, otherwise how many threads are unread (#124).
+    pub fn threads_count(&self) -> EntryCount {
+        if self.thread_mentions > 0 {
+            EntryCount::Mentions(self.thread_mentions)
+        } else if self.unread_threads > 0 {
+            EntryCount::Count(self.unread_threads)
+        } else {
+            EntryCount::None
+        }
+    }
+}
+
+/// The badge on a fixed sidebar entry (DESIGN.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryCount {
+    /// Nothing to read or finish.
+    None,
+    /// Things to read or finish, as a `secondary` badge.
+    Count(usize),
+    /// Mentions, as the `primary` pill a channel row's mentions use.
+    Mentions(usize),
 }
 
 /// A stable element id from a prefix and a server id.
@@ -1108,10 +1134,10 @@ impl SidebarView {
         let entry = |id: &'static str,
                      label: &'static str,
                      glyph: LucideIcon,
-                     count: usize,
+                     count: EntryCount,
                      event: SidebarEvent,
                      cx: &mut Context<Self>| {
-            let strong = count > 0;
+            let strong = count != EntryCount::None;
             let selected = self.model.selected.as_deref() == Some(id);
             let mut item = SidebarItem::new(id, label)
                 .size(SidebarItemSize::Small)
@@ -1130,15 +1156,23 @@ impl SidebarView {
                 )
                 .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
                 .on_activate(cx.listener(move |_, _, _, cx| cx.emit(event.clone())));
-            if strong {
+            let badge = match count {
+                EntryCount::None => None,
+                EntryCount::Count(count) => {
+                    Some(Badge::new(count.to_string()).variant(BadgeVariant::Secondary))
+                }
+                EntryCount::Mentions(count) => Some(Badge::count(count, 99)),
+            };
+            if let Some(badge) = badge {
                 item = item.trailing(
-                    Badge::new(count.to_string())
-                        .variant(BadgeVariant::Secondary)
-                        .h(theme.space(4.5))
-                        .min_w(theme.space(4.5))
-                        .px(theme.space(1.5))
-                        .text_size(theme.text(11.))
-                        .line_height(theme.text(11.)),
+                    div().debug_selector(move || format!("{id}.count")).child(
+                        badge
+                            .h(theme.space(4.5))
+                            .min_w(theme.space(4.5))
+                            .px(theme.space(1.5))
+                            .text_size(theme.text(11.))
+                            .line_height(theme.text(11.)),
+                    ),
                 );
             } else {
                 item = item.text_color(theme.colors.muted_foreground);
@@ -1154,7 +1188,7 @@ impl SidebarView {
                 THREADS_ID,
                 "Threads",
                 LucideIcon::MessageSquareText,
-                self.model.unread_threads,
+                self.model.threads_count(),
                 SidebarEvent::OpenThreads,
                 cx,
             ))
@@ -1162,7 +1196,10 @@ impl SidebarView {
                 DRAFTS_ID,
                 "Drafts",
                 LucideIcon::FilePenLine,
-                self.model.drafts,
+                match self.model.drafts {
+                    0 => EntryCount::None,
+                    count => EntryCount::Count(count),
+                },
                 SidebarEvent::OpenDrafts,
                 cx,
             ))
@@ -1303,6 +1340,7 @@ mod tests {
             loading: false,
             selected: None,
             unread_threads: 0,
+            thread_mentions: 0,
             drafts: 0,
             drafted: Default::default(),
             categories: vec![
@@ -1384,6 +1422,7 @@ mod tests {
             loading: false,
             selected: Some(selected.into()),
             unread_threads: 0,
+            thread_mentions: 0,
             drafts: 0,
             drafted: Default::default(),
             categories: vec![
@@ -1435,6 +1474,20 @@ mod tests {
         read.mark_all_read();
         assert_eq!(read.neighbor(Step::Next, true), None);
         assert_eq!(read.neighbor(Step::Next, false).as_deref(), Some("b"));
+    }
+
+    /// #124: the Threads entry shows its mentions as channel rows do,
+    /// otherwise how many threads are unread.
+    #[test]
+    fn the_threads_entry_counts_mentions_first() {
+        let mut model = model("a");
+        assert_eq!(model.threads_count(), EntryCount::None);
+        model.unread_threads = 2;
+        assert_eq!(model.threads_count(), EntryCount::Count(2));
+        model.thread_mentions = 3;
+        assert_eq!(model.threads_count(), EntryCount::Mentions(3));
+        model.mark_all_read();
+        assert_eq!(model.threads_count(), EntryCount::None);
     }
 
     #[test]

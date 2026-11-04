@@ -226,7 +226,8 @@ fn reply_summary(
             .collect(),
         participant_ids: people.iter().map(|user| user.id.clone().into()).collect(),
         following: root.is_following.unwrap_or(false),
-        unread: false,
+        unread_replies: 0,
+        unread_mentions: 0,
     }
 }
 
@@ -266,7 +267,7 @@ fn display_post(
         date,
         body,
         reactions: reactions(post, viewer.user_id, users, viewer.names),
-        mentions_me: mention.mentioned(&post.message),
+        mentions_me: mention.mentioned(&post.message) || mention.highlighted(&post.message),
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
@@ -603,7 +604,8 @@ pub fn thread_row(
             participants,
             participant_ids,
             following: true,
-            unread: thread.unread_replies > 0,
+            unread_replies: usize::try_from(thread.unread_replies).unwrap_or(0),
+            unread_mentions: usize::try_from(thread.unread_mentions).unwrap_or(0),
         },
     }
 }

@@ -146,7 +146,7 @@ pub enum ChangeSet {
         /// Where it is.
         state: UploadState,
     },
-    /// A download finished: the answer to
+    /// A download's progress or end: the answer to
     /// [`Command::Download`](crate::Command::Download).
     Download {
         /// The file.
@@ -420,9 +420,16 @@ pub enum ImageSize {
     Preview,
 }
 
-/// How a download ended.
+/// Where a download is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DownloadState {
+    /// Arriving: bytes so far, and the size when the server gave it.
+    Progress {
+        /// Bytes written so far.
+        received: u64,
+        /// The file's size, when known.
+        total: Option<u64>,
+    },
     /// Saved here.
     Done(std::path::PathBuf),
     /// Not saved, and why.

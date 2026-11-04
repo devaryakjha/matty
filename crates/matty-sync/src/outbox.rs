@@ -124,8 +124,30 @@ pub(crate) fn touch(outgoing: &Outgoing, dirty: &mut Dirty) {
     }
 }
 
-/// Sends one queued post.
-pub(crate) async fn send(client: Client, outgoing: Outgoing, results: UnboundedSender<Loaded>) {
+/// Sends one queued post: first its offline files, one by one, each
+/// reported as it lands so a retry skips it (#194), then the post with
+/// every file id.
+pub(crate) async fn send(client: Client, mut outgoing: Outgoing, results: UnboundedSender<Loaded>) {
+    for path in std::mem::take(&mut outgoing.local_files) {
+        match upload_local(&client, &outgoing, &path).await {
+            Ok(file_id) => {
+                let _ = results.send(Loaded::FileUp {
+                    pending_post_id: outgoing.pending_post_id.clone(),
+                    path,
+                    file_id: file_id.clone(),
+                });
+                outgoing.file_ids.push(file_id);
+            }
+            Err((error, transient)) => {
+                let _ = results.send(Loaded::SendFailed {
+                    pending_post_id: outgoing.pending_post_id,
+                    transient,
+                    error,
+                });
+                return;
+            }
+        }
+    }
     let request = NewPost {
         channel_id: outgoing.channel_id,
         message: outgoing.message,
@@ -146,6 +168,50 @@ pub(crate) async fn send(client: Client, outgoing: Outgoing, results: UnboundedS
             error: error.to_string(),
         },
     });
+}
+
+/// Reads and uploads one file attached while offline. A file no longer on
+/// disk, or one the server refuses, fails the send for the user to see;
+/// a network or server failure is transient.
+async fn upload_local(
+    client: &Client,
+    outgoing: &Outgoing,
+    path: &str,
+) -> Result<String, (String, bool)> {
+    let file_name = local_file_name(path);
+    let read = {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || std::fs::read(path)).await
+    };
+    let bytes = match read {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            return Err((format!("could not read {file_name}: {error}"), false));
+        }
+        Err(error) => return Err((error.to_string(), true)),
+    };
+    let upload = matty_api::Upload {
+        channel_id: outgoing.channel_id.clone(),
+        client_id: format!("{}:{path}", outgoing.pending_post_id),
+        file_name,
+        bytes,
+    };
+    let progress: matty_api::Progress = std::sync::Arc::new(|_, _| {});
+    match client.upload_file(upload, progress).await {
+        Ok(uploaded) => match uploaded.file_infos.into_iter().next() {
+            Some(file) => Ok(file.id),
+            None => Err(("the server kept no file".into(), false)),
+        },
+        Err(error) => Err((error.to_string(), transient(&error))),
+    }
+}
+
+/// The name a file attached offline is uploaded under: its file name.
+pub(crate) fn local_file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "File".to_owned())
 }
 
 /// Whether a failed send should go again by itself: the server was not
@@ -308,14 +374,16 @@ mod tests {
     /// One step of a drain with the connection coming and going (#194).
     #[derive(Clone, Debug)]
     enum Step {
-        /// The user writes a post in channel 0 or 1.
-        Write(usize),
+        /// The user writes a post in channel 0 or 1, with this many files
+        /// attached while offline.
+        Write(usize, usize),
         /// The engine starts the channel's next send, unless one is out.
         Start(usize),
-        /// The send out comes back created.
+        /// The send out takes its next step: its next offline file lands
+        /// on the server, or, with none left, the post comes back created.
         Created(usize),
-        /// The server created it but the answer was lost on the way back:
-        /// a transient failure, so it goes again.
+        /// The server took the file or created the post but the answer was
+        /// lost on the way back: a transient failure, so it goes again.
         Lost(usize),
         /// The connection dropped before the server saw it.
         Dropped(usize),
@@ -329,12 +397,15 @@ mod tests {
         Discard(usize, usize),
         /// The user retries the channel's failed sends.
         Retry(usize),
+        /// The app quits and starts again: whatever was out is forgotten
+        /// and only the store remains.
+        Relaunch,
     }
 
     fn step() -> impl Strategy<Value = Step> {
         let channel = 0usize..2;
         prop_oneof![
-            3 => channel.clone().prop_map(Step::Write),
+            3 => (channel.clone(), 0usize..3).prop_map(|(c, files)| Step::Write(c, files)),
             3 => channel.clone().prop_map(Step::Start),
             2 => channel.clone().prop_map(Step::Created),
             1 => channel.clone().prop_map(Step::Lost),
@@ -344,6 +415,7 @@ mod tests {
             1 => (channel.clone(), 0usize..4).prop_map(|(c, n)| Step::Edit(c, n)),
             1 => (channel.clone(), 0usize..4).prop_map(|(c, n)| Step::Discard(c, n)),
             1 => channel.prop_map(Step::Retry),
+            1 => Just(Step::Relaunch),
         ]
     }
 
@@ -353,8 +425,13 @@ mod tests {
     #[derive(Default)]
     struct Drain {
         written: Vec<Vec<String>>,
+        /// Each send's offline files, in the order they were attached.
+        attached: std::collections::HashMap<String, Vec<String>>,
         out: [Option<String>; 2],
         server: Vec<Vec<Post>>,
+        /// Every file the server took, by its id: the local path it came
+        /// from. Uploads whose answer was lost stay here unused.
+        files: std::collections::HashMap<String, String>,
         /// Sends the server refused at least once; Retry sends them after
         /// later ones, by design.
         refused: std::collections::BTreeSet<String>,
@@ -387,6 +464,7 @@ mod tests {
                 channel_id: outgoing.channel_id.clone(),
                 user_id: ME.into(),
                 message: outgoing.message.clone(),
+                file_ids: outgoing.file_ids.clone(),
                 create_at: 1_000 + self.clock,
                 update_at: 1_000 + self.clock,
                 ..Post::default()
@@ -400,17 +478,22 @@ mod tests {
             let in_flight =
                 |out: &[Option<String>; 2], id: &str| out.iter().flatten().any(|out| out == id);
             match *step {
-                Step::Write(channel) => {
+                Step::Write(channel, files) => {
                     self.clock += 1;
                     let id = format!("{ME}:{}", self.clock);
+                    let local_files: Vec<String> = (0..files)
+                        .map(|n| format!("/home/me/{}-{n}.png", self.clock))
+                        .collect();
                     let outgoing = Outgoing {
                         pending_post_id: id.clone(),
                         channel_id: CHANNELS[channel].into(),
                         message: format!("message {}", self.clock),
+                        local_files: local_files.clone(),
                         created_at: self.clock,
                         ..Outgoing::default()
                     };
                     queue(conn, &outgoing, ME, &mut dirty).unwrap();
+                    self.attached.insert(id.clone(), local_files);
                     self.written[channel].push(id);
                 }
                 Step::Start(channel) => {
@@ -425,17 +508,32 @@ mod tests {
                     if let Some(id) = self.out[channel].take()
                         && let Some(outgoing) = outbox::get(conn, &id).unwrap()
                     {
-                        let post = self.accept(channel, &outgoing);
-                        confirm(conn, &id, &post, Some(ME), &mut dirty).unwrap();
+                        if let Some(path) = outgoing.local_files.first() {
+                            // The engine's `Loaded::FileUp`; the send stays out.
+                            let file_id = self.upload(path);
+                            assert!(outbox::file_up(conn, &id, path, &file_id).unwrap());
+                            self.out[channel] = Some(id);
+                        } else {
+                            let post = self.accept(channel, &outgoing);
+                            confirm(conn, &id, &post, Some(ME), &mut dirty).unwrap();
+                        }
                     }
                 }
                 Step::Lost(channel) => {
                     if let Some(id) = self.out[channel].take()
                         && let Some(outgoing) = outbox::get(conn, &id).unwrap()
                     {
-                        self.accept(channel, &outgoing);
+                        match outgoing.local_files.first() {
+                            Some(path) => {
+                                self.upload(path);
+                            }
+                            None => {
+                                self.accept(channel, &outgoing);
+                            }
+                        }
                     }
                 }
+                Step::Relaunch => self.out = [None, None],
                 Step::Dropped(channel) => self.out[channel] = None,
                 Step::Refused(channel) => {
                     if let Some(id) = self.out[channel].take() {
@@ -480,6 +578,14 @@ mod tests {
             }
         }
 
+        /// The server stores a file and gives it a new id.
+        fn upload(&mut self, path: &str) -> String {
+            self.clock += 1;
+            let file_id = format!("file{}", self.clock);
+            self.files.insert(file_id.clone(), path.to_owned());
+            file_id
+        }
+
         /// The connection stays up until every channel has sent all it can.
         fn finish(&mut self, conn: &Connection) {
             for (channel, id) in CHANNELS.iter().enumerate() {
@@ -493,10 +599,12 @@ mod tests {
     }
 
     proptest! {
-        /// However sends, failures, lost answers, echoes, edits and
-        /// discards interleave, each channel's posts reach the server once
-        /// each, in the order they were written (#194), and every
-        /// optimistic row ends up replaced by the server's post or gone.
+        /// However sends, offline file uploads, dropped connections,
+        /// relaunches, failures, lost answers, echoes, edits and discards
+        /// interleave, each channel's posts reach the server once each, in
+        /// the order they were written, with every file attached (#194),
+        /// and every optimistic row ends up replaced by the server's post
+        /// or gone.
         #[test]
         fn a_drain_never_duplicates_or_reorders_within_a_channel(
             steps in proptest::collection::vec(step(), 0..80)
@@ -542,6 +650,20 @@ mod tests {
                     }
                 }
                 prop_assert!(outbox::for_channel(conn, channel_id).unwrap().is_empty());
+                // Each post carries its offline files once each, in the
+                // order they were attached: none lost, none twice.
+                for post in &drain.server[channel] {
+                    let carried: Vec<&str> = post
+                        .file_ids
+                        .iter()
+                        .map(|id| drain.files[id].as_str())
+                        .collect();
+                    let attached: Vec<&str> = drain.attached[&post.pending_post_id]
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    prop_assert_eq!(carried, attached, "{}", post.pending_post_id);
+                }
             }
             // No optimistic row is left, and no post shows twice.
             let rows: Vec<(String, String)> = conn

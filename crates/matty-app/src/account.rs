@@ -527,7 +527,7 @@ impl AccountView {
     fn sign_out_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let popup = dialog_popup("account.sign-out.popup", "Sign out", cx)
-            .child(dialog_title("account.sign-out.title", cx).child("Sign out of Matty?"))
+            .child(dialog_title("account.sign-out.title", cx).child(sign_out_title(cx)))
             .child(
                 dialog_description("account.sign-out.description", cx).child(
                     "This removes Matty's copy of your messages, files and drafts from \
@@ -559,6 +559,23 @@ impl AccountView {
             },
         )
     }
+}
+
+impl AccountView {
+    /// The "Sign out of {server}?" dialog the menu's Sign out opens, for
+    /// the Sign out button in Preferences to open too (#160).
+    pub fn sign_out_dialog_handle(&self) -> DialogHandle {
+        self.sign_out.clone()
+    }
+}
+
+/// "Sign out of chat.example.com?", naming the signed-in server, or
+/// "Sign out of Matty?" when there is none on file.
+fn sign_out_title(cx: &App) -> String {
+    let server = crate::settings::SettingsStore::try_global(cx)
+        .and_then(|store| store.read(cx).get().account.clone())
+        .map(|account| crate::live::url_host(&account.server).to_owned());
+    format!("Sign out of {}?", server.as_deref().unwrap_or("Matty"))
 }
 
 impl Render for AccountView {

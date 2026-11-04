@@ -131,6 +131,9 @@ pub struct UploadJob {
     pub name: String,
     pub source: crate::attachments::UploadSource,
     file_id: Option<String>,
+    /// Waiting on this computer for the connection (#194): it goes with
+    /// its post through the outbox, or uploads once back online.
+    queued: Option<PathBuf>,
 }
 
 impl UploadJob {
@@ -144,6 +147,7 @@ impl UploadJob {
             name: name.into(),
             source,
             file_id: None,
+            queued: None,
         }
     }
 }
@@ -203,6 +207,9 @@ pub struct Update {
     /// Whether the user may choose collapsed reply threads, and whether
     /// they are on, for Preferences (#157).
     pub collapsed_threads: Option<(bool, bool)>,
+    /// Whether the server takes highlight-only keywords, for Preferences
+    /// (#192).
+    pub highlight_keys: Option<bool>,
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
@@ -228,10 +235,13 @@ pub struct Update {
     pub listing: Option<crate::right_pane::RightPaneContent>,
     /// A file's full-size image, for the lightbox.
     pub full_image: Option<(SharedString, Arc<gpui_kit::Image>)>,
-    /// A file saved to the download folder, or the failure.
-    pub download: Option<matty_sync::DownloadState>,
+    /// A download's progress, where it was saved, or the failure, by file id.
+    pub download: Option<(SharedString, matty_sync::DownloadState)>,
     /// A tray file's progress, by the tray's id.
     pub upload: Option<(SharedString, crate::attachments::AttachmentStatus)>,
+    /// Tray files queued while offline, to upload now that the connection
+    /// is back (#194).
+    pub resume_uploads: Vec<SharedString>,
     /// The server's `MaxFileSize`, for the trays to check files against.
     pub max_file_size: Option<u64>,
     /// The open channel's history: whether its first post is loaded,
@@ -552,6 +562,20 @@ impl Live {
         self.uploads.insert(id.to_owned(), job);
     }
 
+    /// Whether sync is offline, so a new tray file waits on this computer
+    /// instead of failing to upload (#194).
+    pub fn is_offline(&self) -> bool {
+        self.offline || crate::offline()
+    }
+
+    /// Keeps a tray file on this computer until the post goes or the
+    /// connection is back; `path` is where its bytes are.
+    pub fn queue_upload(&mut self, id: &str, path: PathBuf) {
+        if let Some(job) = self.uploads.get_mut(id) {
+            job.queued = Some(path);
+        }
+    }
+
     /// The tray file `id`, to send again after a failure.
     pub fn upload_job(&self, id: &str) -> Option<UploadJob> {
         self.uploads.get(id).cloned()
@@ -592,6 +616,7 @@ impl Live {
             name: name.clone(),
             source: source.clone(),
             file_id: Some(file_id.to_owned()),
+            queued: None,
         });
         Upload {
             id: file_id.to_owned().into(),
@@ -599,15 +624,24 @@ impl Live {
             size: 0,
             source,
             status: AttachmentStatus::Ready,
+            queued: false,
         }
     }
 
-    /// The server ids for the tray files a post carries; they leave the
-    /// tray with it.
-    pub fn take_file_ids(&mut self, ids: &[SharedString]) -> Vec<String> {
-        ids.iter()
-            .filter_map(|id| self.uploads.remove(id.as_ref())?.file_id)
-            .collect()
+    /// The tray files a post carries, as server ids and, for files queued
+    /// while offline, local paths for the outbox to upload (#194); they
+    /// leave the tray with it.
+    pub fn take_files(&mut self, ids: &[SharedString]) -> (Vec<String>, Vec<PathBuf>) {
+        let mut file_ids = Vec::new();
+        let mut local = Vec::new();
+        for job in ids.iter().filter_map(|id| self.uploads.remove(id.as_ref())) {
+            match (job.file_id, job.queued) {
+                (Some(file_id), _) => file_ids.push(file_id),
+                (None, Some(path)) => local.push(path),
+                (None, None) => {}
+            }
+        }
+        (file_ids, local)
     }
 
     /// Shows `row`'s channel: sync publishes its posts now and as they
@@ -1508,7 +1542,9 @@ impl Live {
                 target,
                 ..
             }) => update.join_failed = Some(target.clone().into()),
-            ChangeSet::Download { state, .. } => update.download = Some(state.clone()),
+            ChangeSet::Download { file_id, state } => {
+                update.download = Some((file_id.as_str().into(), state.clone()));
+            }
             ChangeSet::Image {
                 file_id,
                 size,
@@ -1907,6 +1943,9 @@ impl Live {
                         | matty_api::capabilities::CollapsedThreads::DefaultOff
                 ));
                 update.collapsed_threads = self.threads();
+                // `highlight_keys` came in 9.3 (below Matty's floor) for
+                // licensed servers; an unlicensed one drops the prop.
+                update.highlight_keys = Some(capabilities.licensed);
             }
             ChangeSet::CollapsedThreads(on) => {
                 let changed = self.threads_on != Some(*on);
@@ -1953,6 +1992,14 @@ impl Live {
             let offline = *state != ConnectionState::Online;
             if offline != self.offline {
                 self.offline = offline;
+                if !offline {
+                    // Back online: files queued in a tray upload now.
+                    update.resume_uploads = self
+                        .uploads
+                        .iter_mut()
+                        .filter_map(|(id, job)| job.queued.take().map(|_| id.as_str().into()))
+                        .collect();
+                }
                 // Only an empty channel reads it, and a patch would not
                 // carry it.
                 if self.posts.as_ref().is_some_and(|posts| posts.is_empty()) {
@@ -2291,7 +2338,7 @@ fn probe_error(url: &str, error: &ProbeError) -> String {
 }
 
 /// `chat.example.com` from `https://chat.example.com/sub`.
-fn url_host(url: &str) -> &str {
+pub(crate) fn url_host(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }
@@ -2826,6 +2873,33 @@ mod tests {
     }
 
     #[test]
+    fn network_failures_show_the_banner_and_never_a_dialog() {
+        let mut live = live();
+        // The account could not load because the network is down.
+        let update = live.apply(&ChangeSet::Connection(Connection::Failed {
+            error: matty_api::ApiError::Network("dns error".into()).to_string(),
+        }));
+        assert_eq!(update.connection, Some(ConnectionState::Offline));
+        assert!(!update.expired, "a network error is not a sign-in prompt");
+        assert!(!update.signed_out);
+        // Commands that need a connection while there is none, or that the
+        // network dropped, leave the banner to speak.
+        for failure in [
+            matty_sync::CommandError::Offline,
+            matty_sync::CommandError::Server {
+                action: "edit",
+                target: "p1".into(),
+                error: matty_api::ApiError::Network("connection reset".into()).to_string(),
+            },
+        ] {
+            let update = live.apply(&ChangeSet::Failed(failure));
+            assert!(update.join_failed.is_none());
+            assert!(!update.expired);
+            assert!(!update.signed_out);
+        }
+    }
+
+    #[test]
     fn the_connection_and_sign_out_reach_the_window() {
         let mut live = live();
         let update = live.apply(&ChangeSet::Connection(Connection::Socket(
@@ -2855,6 +2929,38 @@ mod tests {
             live.apply(&ChangeSet::Connection(Connection::SignedOut))
                 .signed_out
         );
+    }
+
+    /// #194: a file added offline waits by its path, goes with its post
+    /// as a local file, and uploads once the connection is back.
+    #[test]
+    fn files_added_offline_wait_and_resume_when_back() {
+        let mut live = live();
+        live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Stopped,
+        )));
+        assert!(live.is_offline());
+        for id in ["upload-1", "upload-2"] {
+            let path = PathBuf::from(format!("/home/me/{id}.pdf"));
+            live.track_upload(
+                id,
+                UploadJob::new("c", "x.pdf", UploadSource::Path(path.clone())),
+            );
+            live.queue_upload(id, path);
+        }
+        let (file_ids, local) = live.take_files(&["upload-1".into()]);
+        assert!(file_ids.is_empty());
+        assert_eq!(local, [PathBuf::from("/home/me/upload-1.pdf")]);
+
+        let update = live.apply(&ChangeSet::Connection(Connection::Socket(
+            matty_api::ws::ConnectionState::Connected {
+                connection_id: "c".into(),
+            },
+        )));
+        assert!(!live.is_offline());
+        assert_eq!(update.resume_uploads, [SharedString::from("upload-2")]);
+        // Resumed, it no longer goes as a local file.
+        assert_eq!(live.take_files(&["upload-2".into()]), (vec![], vec![]));
     }
 
     #[test]
@@ -3064,7 +3170,7 @@ mod tests {
             last_reply_at: 0,
             last_viewed_at: 0,
             unread_replies: unread,
-            unread_mentions: 0,
+            unread_mentions: unread / 2,
             participants: vec!["ada".into()],
         };
         let list = |team: &str| ChangeSet::ThreadList {
@@ -3081,8 +3187,17 @@ mod tests {
         assert!(model.more && !model.failed);
         let row = &model.threads[0];
         assert_eq!(row.thread.root.body.as_ref(), "Plan?");
-        assert_eq!((row.summary.count, row.summary.unread), (2, true));
+        // The row carries the server's unread counts (#124).
+        assert_eq!(
+            (
+                row.summary.count,
+                row.summary.unread_replies,
+                row.summary.unread_mentions
+            ),
+            (2, 2, 1)
+        );
         assert_eq!(model.unread(), 1);
+        assert_eq!(model.mentions(), 1);
     }
 
     #[test]
@@ -3529,6 +3644,7 @@ mod tests {
             first_name: Some("Ada".into()),
             channel_wide: true,
             keywords: vec!["deploy".into()],
+            ..Default::default()
         };
         assert_eq!(mention_terms(&keys), "@ada Ada deploy");
     }
@@ -3648,7 +3764,7 @@ mod tests {
             update.upload,
             Some(("upload-1".into(), AttachmentStatus::Ready))
         );
-        assert_eq!(live.take_file_ids(&["upload-1".into()]), vec!["f1"]);
+        assert_eq!(live.take_files(&["upload-1".into()]).0, vec!["f1"]);
         // It left with the post; a late report changes nothing.
         let update = live.apply(&ChangeSet::Upload {
             upload_id: "upload-1".into(),
@@ -3679,7 +3795,7 @@ mod tests {
         let upload = live.draft_upload("c1", "f1");
         assert!(upload.is_ready());
         assert_eq!(live.file_ids(std::slice::from_ref(&upload.id)), ["f1"]);
-        assert_eq!(live.take_file_ids(&[upload.id]), ["f1"]);
+        assert_eq!(live.take_files(&[upload.id]).0, ["f1"]);
     }
 
     #[test]
@@ -3690,7 +3806,7 @@ mod tests {
         live.track_upload("upload-1", job);
         live.cancel_upload("upload-1");
         assert!(live.upload_job("upload-1").is_none());
-        assert!(live.take_file_ids(&["upload-1".into()]).is_empty());
+        assert!(live.take_files(&["upload-1".into()]).0.is_empty());
     }
 
     #[test]

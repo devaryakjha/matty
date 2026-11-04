@@ -166,7 +166,28 @@ async fn a_download_lands_in_the_folder_with_the_servers_bytes() {
     else {
         unreachable!()
     };
+    // Progress comes first, counting up to the whole file.
     assert_eq!(file_id, "f1");
+    assert_eq!(
+        state,
+        DownloadState::Progress {
+            received: 14,
+            total: Some(14)
+        }
+    );
+    let ChangeSet::Download { state, .. } = next(&changes, |c| {
+        matches!(
+            c,
+            ChangeSet::Download {
+                state: DownloadState::Done(_) | DownloadState::Failed(_),
+                ..
+            }
+        )
+    })
+    .await
+    else {
+        unreachable!()
+    };
     let saved = folder.path().join("notes (1).pdf");
     assert_eq!(state, DownloadState::Done(saved.clone()));
     assert_eq!(std::fs::read(saved).unwrap(), b"%PDF-1.7 notes");
@@ -174,6 +195,47 @@ async fn a_download_lands_in_the_folder_with_the_servers_bytes() {
         std::fs::read(folder.path().join("notes.pdf")).unwrap(),
         b"older"
     );
+    // Nothing half-written is left beside them.
+    let mut names: Vec<_> = std::fs::read_dir(folder.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["notes (1).pdf", "notes.pdf"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_download_says_why_and_leaves_nothing_behind() {
+    use matty_sync::DownloadState;
+
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/files/f2"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "id": "app.file_info.get.app_error",
+            "message": "Unable to get the file.",
+            "status_code": 404
+        })))
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    let folder = tempfile::tempdir().unwrap();
+    sync.send(Command::Download {
+        file_id: "f2".into(),
+        folder: folder.path().to_path_buf(),
+        name: "gone.pdf".into(),
+    });
+    let ChangeSet::Download { file_id, state } =
+        next(&changes, |c| matches!(c, ChangeSet::Download { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(file_id, "f2");
+    assert!(
+        matches!(&state, DownloadState::Failed(why) if why.contains("Unable to get the file")),
+        "{state:?}"
+    );
+    assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
