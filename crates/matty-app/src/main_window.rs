@@ -545,6 +545,15 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::SuggestPeople(term) => {
+                    if let (Some(live), Some(channel)) = (&this.live, &this.selected_channel) {
+                        live.send(matty_sync::Command::SuggestPeople {
+                            term: term.to_string(),
+                            team_id: live.team().map(str::to_string),
+                            channel_id: Some(channel.to_string()),
+                        });
+                    }
+                }
                 ChannelEvent::SaveEdit { post, text } => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::EditPost {
@@ -1421,6 +1430,10 @@ impl MainWindow {
         if let Some(channels) = update.directory {
             self.browse
                 .update(cx, |browse, cx| browse.set_channels(channels, cx));
+        }
+        if let Some((term, people)) = update.suggested {
+            self.channel
+                .update(cx, |channel, cx| channel.set_suggested(term, people, cx));
         }
         if let Some(people) = update.people {
             self.new_message

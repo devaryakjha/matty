@@ -204,6 +204,8 @@ pub struct Update {
     pub directory: Option<Vec<crate::directory::DirectoryChannel>>,
     /// The shown team's people, for a new direct message.
     pub people: Option<Vec<UserProfile>>,
+    /// Who the server says matches a typed `@name`, channel members first.
+    pub suggested: Option<(String, Vec<UserProfile>)>,
     /// A channel to switch to: the one the user joined, created or
     /// started, now in the sidebar.
     pub ready: Option<SharedString>,
@@ -1512,6 +1514,17 @@ impl Live {
                     };
                     update.upload = Some((upload_id.as_str().into(), status));
                 }
+            }
+            ChangeSet::Suggested { term, users } => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                }
+                let people = users
+                    .iter()
+                    .filter(|user| user.delete_at == 0)
+                    .map(|user| self.profile(user))
+                    .collect();
+                update.suggested = Some((term.clone(), people));
             }
             ChangeSet::LinkResolved { query, answer } => {
                 update.link = Some((query.clone(), answer.clone()));

@@ -288,6 +288,16 @@ pub enum Command {
         /// What the link names.
         query: crate::LinkQuery,
     },
+    /// Asks the server who matches a typed `@name`, channel members first;
+    /// [`ChangeSet::Suggested`](crate::ChangeSet::Suggested) answers.
+    SuggestPeople {
+        /// What follows the `@`.
+        term: String,
+        /// The team to look in.
+        team_id: Option<String>,
+        /// The channel whose members come first.
+        channel_id: Option<String>,
+    },
     /// Leaves a channel; it drops out of the sidebar once the server agrees.
     LeaveChannel {
         /// The channel.
@@ -722,6 +732,8 @@ impl std::fmt::Debug for Command {
             Self::ResolveLink { query } => {
                 f.debug_struct("ResolveLink").field("query", query).finish()
             }
+            // A half-typed name is the user's own words: keep it out of logs.
+            Self::SuggestPeople { .. } => f.write_str("SuggestPeople"),
             Self::LeaveChannel { channel_id } => f
                 .debug_struct("LeaveChannel")
                 .field("channel_id", channel_id)
@@ -1532,6 +1544,17 @@ impl Engine {
                         }),
                         None => writes.push(Write::Resolve(query)),
                     }
+                }
+                Message::Command(Command::SuggestPeople {
+                    term,
+                    team_id,
+                    channel_id,
+                }) => {
+                    writes.push(Write::Suggest {
+                        term,
+                        team_id,
+                        channel_id,
+                    });
                 }
                 Message::Command(Command::Browse { team_id }) => {
                     writes.push(Write::Browse { team_id });
@@ -2793,6 +2816,15 @@ impl Engine {
                     last_picture_update: version,
                     image: image.map(|(bytes, content_type)| (Arc::from(bytes), content_type)),
                 });
+            }
+            Loaded::Suggested { term, users } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                self.sent_users.extend(users.iter().map(|u| u.id.clone()));
+                let users: Arc<[matty_api::models::User]> = Arc::from(users);
+                if !users.is_empty() {
+                    dirty.direct.push(ChangeSet::Users(users.clone()));
+                }
+                dirty.direct.push(ChangeSet::Suggested { term, users });
             }
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })

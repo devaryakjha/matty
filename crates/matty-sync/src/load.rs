@@ -116,6 +116,8 @@ pub(crate) enum Loaded {
         size: crate::change::ImageSize,
         image: Option<(Vec<u8>, String)>,
     },
+    /// Who matches a typed `@name`, channel members first.
+    Suggested { term: String, users: Vec<User> },
     /// What a link names, or `None` when it is gone or hidden.
     Resolved {
         query: crate::LinkQuery,

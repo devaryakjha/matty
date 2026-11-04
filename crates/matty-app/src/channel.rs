@@ -803,6 +803,9 @@ pub fn message_density(cx: &App) -> MessageDensity {
 /// What the channel view asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelEvent {
+    /// The user typed `@` and this much of a name; sync asks the server who
+    /// matches and [`ChannelView::set_suggested`] takes the answer.
+    SuggestPeople(SharedString),
     /// The user changed the composer's text; sync tells the channel at
     /// most every few seconds. `root` is the thread when replying.
     Typing { root: Option<SharedString> },
@@ -980,6 +983,10 @@ pub struct ChannelView {
     recent_emoji: Vec<SharedString>,
     /// The sidebar's channels, for `~` autocomplete.
     directory: Vec<ChannelRow>,
+    /// The `@` query the composer shows suggestions for, if any.
+    asking: Option<String>,
+    /// The server's matches for a typed `@name`, by what was typed.
+    suggested: Option<(String, Vec<UserProfile>)>,
     /// Files waiting in the composer tray, and a send waiting on them.
     tray: UploadTray,
     /// The image viewer over the clicked post's images.
@@ -1243,6 +1250,7 @@ impl ChannelView {
                     }
                     ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
                     ComposerEvent::Autocomplete { trigger, query } => {
+                        this.ask_people(*trigger, query, cx);
                         let suggestions = this.suggestions(*trigger, query);
                         composer
                             .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
@@ -1278,6 +1286,8 @@ impl ChannelView {
             picker_target: None,
             recent_emoji: Vec::new(),
             directory: Vec::new(),
+            asking: None,
+            suggested: None,
             tray: UploadTray::new("upload"),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
@@ -1349,6 +1359,9 @@ impl ChannelView {
         }
         self.permalink = None;
         self.selection = None;
+        // The server ranked its matches for the channel that was open.
+        self.asking = None;
+        self.suggested = None;
         // Preview has no server to page from, so it starts at the beginning.
         self.history = History {
             at_start: crate::preview::enabled(),
@@ -2321,6 +2334,44 @@ impl ChannelView {
 
     /// Flips the user's reaction locally and tells sync. A chip that drops
     /// to zero disappears, as on the server.
+    /// Asks the server who matches an `@` query the channel's own
+    /// profiles may not cover, once per query.
+    fn ask_people(&mut self, trigger: char, query: &str, cx: &mut Context<Self>) {
+        if trigger != '@' {
+            self.asking = None;
+            return;
+        }
+        let query = query.to_lowercase();
+        if self.asking.as_deref() == Some(query.as_str()) {
+            return;
+        }
+        self.asking = Some(query.clone());
+        if self
+            .suggested
+            .as_ref()
+            .is_none_or(|(term, _)| *term != query)
+        {
+            cx.emit(ChannelEvent::SuggestPeople(query.into()));
+        }
+    }
+
+    /// Takes the server's matches for `term` and, while the composer still
+    /// asks for it, shows them after the channel's own people.
+    pub fn set_suggested(
+        &mut self,
+        term: String,
+        people: Vec<UserProfile>,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.asking.as_deref() == Some(term.as_str());
+        self.suggested = Some((term.clone(), people));
+        if current {
+            let suggestions = self.suggestions('@', &term);
+            self.composer
+                .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+        }
+    }
+
     /// The channels `~` can complete; the window passes the sidebar's rows.
     pub fn set_directory(&mut self, rows: Vec<ChannelRow>, cx: &mut Context<Self>) {
         self.directory = rows;
@@ -2344,8 +2395,20 @@ impl ChannelView {
                 } else {
                     Vec::new()
                 };
+                // The channel's posters first, then whoever the server
+                // found, each person once.
+                let mut seen = std::collections::HashSet::new();
+                let suggested = self
+                    .suggested
+                    .iter()
+                    .filter(|(term, _)| query.starts_with(term.as_str()))
+                    .flat_map(|(_, people)| people.iter());
                 let mut found = people_suggestions(
-                    self.model.iter().flat_map(|model| model.profiles.iter()),
+                    self.model
+                        .iter()
+                        .flat_map(|model| model.profiles.iter())
+                        .chain(suggested)
+                        .filter(|profile| seen.insert(profile.username.clone())),
                     &query,
                     LIMIT - groups.len(),
                 );
@@ -4673,6 +4736,76 @@ mod tests {
             ..post("p", "Today")
         };
         assert!(!waiting_to_send(&theirs, true));
+    }
+
+    /// #113: `@` asks the server once per query, and its matches follow the
+    /// channel's own posters without repeating anyone.
+    #[gpui_kit::test]
+    fn server_matches_follow_the_channels_people(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let person = |name: &str| UserProfile {
+            user_id: name.to_owned().into(),
+            username: name.to_owned().into(),
+            display_name: name.to_owned().into(),
+            position: None,
+            presence: crate::sidebar::Presence::Offline,
+            status_text: None,
+            time_zone: None,
+        };
+        let model = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![person("grace")],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 3,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![],
+            first_unread: None,
+            can_manage: false,
+        };
+        let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
+        let view = window.root(cx).unwrap();
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let asked = asked.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if let ChannelEvent::SuggestPeople(term) = event {
+                    asked.borrow_mut().push(term.to_string());
+                }
+            })
+            .detach();
+        });
+        let values = |view: &ChannelView, query: &str| {
+            view.suggestions('@', query)
+                .into_iter()
+                .map(|s| s.value.to_string())
+                .collect::<Vec<_>>()
+        };
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.ask_people('@', "Gr", cx);
+                view.ask_people('@', "gr", cx);
+                view.ask_people(':', "gr", cx);
+                assert_eq!(values(view, "gr"), ["@grace"]);
+                view.set_suggested("gr".into(), vec![person("grace"), person("greg")], cx);
+                assert_eq!(values(view, "gr"), ["@grace", "@greg"]);
+                // A longer query narrows what the server said.
+                assert_eq!(values(view, "gre"), ["@greg"]);
+            })
+        });
+        assert_eq!(*asked.borrow(), ["gr"]);
     }
 
     /// #195: a message queued while offline is edited in place, unmarked,
