@@ -499,6 +499,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   gains "Reduce motion", which sets the theme's `motion.reduced` and snaps
   every gpuicn transition (drawers, switches, the sidebar) as well. Nothing
   in the message list moves (`design-54`).
+- **Accessible names** (PLAN §8): every control has a name a screen reader
+  can say. gpuicn's `Button::child` adds content without naming the button,
+  so text buttons use `label` and icon or mixed buttons `aria_label`; a
+  clickable row (a browse or New message result, a Threads row, the reply
+  footer under a post) takes `Role::Button` and a name that says what it
+  does ("Join #design", "Message Priya Nair", "Open thread, 3 replies").
+  `scripts/check-accessible-names.py` lists any Button that slipped
+  (`design-55`). Nothing changes on screen.
 
 ## 5. Components
 

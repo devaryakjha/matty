@@ -256,7 +256,7 @@ impl AccountView {
                         row.child(
                             Button::new("account.status.clear-button")
                                 .variant(ButtonVariant::Ghost)
-                                .child("Clear")
+                                .label("Clear")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.set_status(None, cx);
                                     this.status.close(window, cx);
@@ -266,7 +266,7 @@ impl AccountView {
                     .child(
                         Button::new("account.status.cancel")
                             .variant(ButtonVariant::Outline)
-                            .child("Cancel")
+                            .label("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.status.close(window, cx);
                             })),
@@ -274,7 +274,7 @@ impl AccountView {
                     .child(
                         Button::new("account.status.save")
                             .variant(ButtonVariant::Default)
-                            .child("Done")
+                            .label("Done")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_status(window, cx);
                             })),
