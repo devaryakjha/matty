@@ -126,6 +126,7 @@ pub fn sidebar() -> SidebarModel {
         selected: Some("general".into()),
         unread_threads: 2,
         drafts: 2,
+        drafted: ["design".into()].into_iter().collect(),
         categories: preview_kinds(vec![
             Category::new(
                 "favorites",
@@ -667,10 +668,12 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         ),
     ];
     let keys = matty_notify::MentionKeys::username("arya");
+    let saved = std::collections::HashSet::new();
     let zone = jiff::tz::TimeZone::UTC;
     let viewer = crate::transcript::Viewer {
         user_id: "arya",
         keys: &keys,
+        saved: &saved,
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
@@ -1166,6 +1169,23 @@ pub fn drafts() -> DraftsModel {
     }
 }
 
+/// Puts the fixture drafts in the composers' book, so their channels show
+/// the sidebar's pencil and their composers open with the text.
+pub fn seed_drafts(cx: &mut gpui_kit::App) {
+    use crate::composer_draft::{DraftBook, DraftKey, Kept};
+    for draft in drafts().drafts {
+        let key = match draft.thread_root {
+            Some(root) => DraftKey::thread(draft.channel_id, root),
+            None => DraftKey::channel(draft.channel_id),
+        };
+        let kept = Kept {
+            text: draft.body,
+            ..Kept::default()
+        };
+        DraftBook::put(key, kept, cx);
+    }
+}
+
 /// The threads the user follows, for the Threads view.
 pub fn threads() -> ThreadsModel {
     let row = |channel_id: &str, post_id: &str, summary: ReplySummary| {
@@ -1254,6 +1274,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         embeds: vec![],
     };
     Some(ThreadModel {
+        channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         replies: vec![
             reply(

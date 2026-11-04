@@ -25,6 +25,8 @@ pub struct Viewer<'a> {
     pub user_id: &'a str,
     /// What counts as mentioning the viewer, for the mention highlight.
     pub keys: &'a MentionKeys,
+    /// The ids of the posts the viewer saved.
+    pub saved: &'a std::collections::HashSet<String>,
     pub zone: &'a TimeZone,
     pub now: Timestamp,
     /// Whether link previews show: the server allows them and the user
@@ -268,7 +270,7 @@ fn display_post(
         edited: post.edit_at != 0,
         continues,
         mine: post.user_id == viewer.user_id,
-        saved: false,
+        saved: viewer.saved.contains(&post.id),
         pinned: post.is_pinned,
         // Sync's optimistic copy of a send keeps the client's id until
         // the server's post replaces it.
@@ -297,6 +299,14 @@ fn display_post(
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
+            .map(|mut embed| {
+                if let crate::embeds::Embed::Permalink(quoted) = &mut embed
+                    && let Some(user) = users.get(&quoted.author_id)
+                {
+                    quoted.author = display_name(user).into();
+                }
+                embed
+            })
             .collect(),
     }
 }
@@ -577,6 +587,7 @@ pub fn thread_row(
     crate::threads::ThreadRow {
         channel_id: root.channel_id.clone().into(),
         thread: crate::right_pane::ThreadModel {
+            channel_id: root.channel_id.clone().into(),
             channel_name,
             root: listed_post(root, users, viewer),
             replies: Vec::new(),
@@ -599,7 +610,7 @@ pub fn thread_row(
 
 /// Minutes since local midnight, the day label the post falls under, and
 /// the full date for the time's tooltip.
-fn when(
+pub(crate) fn when(
     millis: i64,
     zone: &TimeZone,
     today: jiff::civil::Date,
@@ -697,10 +708,14 @@ mod tests {
     static KEYS: std::sync::LazyLock<MentionKeys> =
         std::sync::LazyLock::new(|| MentionKeys::username("arya"));
 
+    static SAVED: std::sync::LazyLock<std::collections::HashSet<String>> =
+        std::sync::LazyLock::new(Default::default);
+
     fn viewer(zone: &TimeZone) -> Viewer<'_> {
         Viewer {
             user_id: "me",
             keys: &KEYS,
+            saved: &SAVED,
             zone,
             // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),

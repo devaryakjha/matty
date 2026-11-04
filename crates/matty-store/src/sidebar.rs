@@ -416,6 +416,8 @@ pub struct SidebarChannel {
     pub id: String,
     /// `O` public, `P` private, `D` direct, `G` group.
     pub kind: String,
+    /// The URL handle, such as `town-square`, which search's `in:` takes.
+    pub name: String,
     /// The channel's name for display; for a direct message, the other
     /// person's username (or the user's own for a self DM).
     pub display_name: String,
@@ -575,6 +577,7 @@ pub fn sidebar_snapshot(
             muted: section.muted || member.is_muted(),
             unreads: unreads(&channel, &member, mode),
             kind,
+            name,
             display_name,
             dm_user_id,
             dm_user,
@@ -877,6 +880,16 @@ pub fn category_sort_order(conn: &Connection, category_id: &str) -> Result<Optio
         .prepare_cached("SELECT sort_order FROM categories WHERE id = ?1")?
         .query_row([category_id], |row| row.get(0))
         .optional()?)
+}
+
+/// A team's category ids in sidebar order.
+pub fn category_order(conn: &Connection, team_id: &str) -> Result<Vec<String>> {
+    let mut statement =
+        conn.prepare_cached("SELECT id FROM categories WHERE team_id = ?1 ORDER BY sort_order")?;
+    let ids = statement
+        .query_map([team_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 /// Reorders a team's categories (`sidebar_category_order_updated`).
