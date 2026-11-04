@@ -405,3 +405,41 @@ fn deleting_a_channel_or_team_clears_it_from_the_sidebar() {
     let teams = sidebar::teams_with_unreads(conn, ME, UnreadMode::AllPosts).unwrap();
     assert_eq!(teams.len(), 1);
 }
+
+#[test]
+fn a_closed_conversation_leaves_the_sidebar_until_shown_again() {
+    let store = seeded();
+    let conn = store.conn();
+    let set = |value: &str| {
+        sidebar::upsert_preferences(
+            conn,
+            &[matty_api::models::Preference {
+                user_id: ME.into(),
+                category: "direct_channel_show".into(),
+                name: "u1".into(),
+                value: value.into(),
+            }],
+        )
+        .unwrap();
+    };
+    let dms = || -> Vec<String> {
+        sidebar::sidebar_snapshot(conn, "t1", ME, UnreadMode::AllPosts)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.kind == "direct_messages")
+            .unwrap()
+            .channels
+            .into_iter()
+            .map(|c| c.display_name)
+            .collect()
+    };
+    set("false");
+    assert_eq!(dms(), vec!["bob", "me"]);
+    set("true");
+    assert_eq!(dms(), vec!["bob", "alice", "me"]);
+    assert_eq!(
+        sidebar::show_preference("G", "g1", "", ME),
+        Some(("group_channel_show", "g1".to_owned()))
+    );
+    assert_eq!(sidebar::show_preference("O", "c1", "town", ME), None);
+}

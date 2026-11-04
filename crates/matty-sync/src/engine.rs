@@ -211,6 +211,20 @@ pub enum Command {
         /// The team.
         team_id: String,
     },
+    /// Moves a channel into or out of the team's Favorites, by the
+    /// `favorite_channel` preference the server turns into the move.
+    SetFavorite {
+        /// The channel.
+        channel_id: String,
+        /// In Favorites, or out.
+        favorite: bool,
+    },
+    /// Hides a direct or group conversation from the sidebar until it is
+    /// opened again; its posts stay on the server.
+    CloseDirect {
+        /// The conversation.
+        channel_id: String,
+    },
     /// Uploads a file into a channel for the next post; progress, the
     /// server's file id or the failure come back in
     /// [`ChangeSet::Upload`](crate::ChangeSet::Upload).
@@ -310,6 +324,18 @@ impl std::fmt::Debug for Command {
             Self::ShowCache => f.write_str("ShowCache"),
             Self::SignOut => f.write_str("SignOut"),
             Self::Event(event) => f.debug_tuple("Event").field(event).finish(),
+            Self::SetFavorite {
+                channel_id,
+                favorite,
+            } => f
+                .debug_struct("SetFavorite")
+                .field("channel_id", channel_id)
+                .field("favorite", favorite)
+                .finish(),
+            Self::CloseDirect { channel_id } => f
+                .debug_struct("CloseDirect")
+                .field("channel_id", channel_id)
+                .finish(),
             Self::OpenChannel { channel_id } => f
                 .debug_struct("OpenChannel")
                 .field("channel_id", channel_id)
@@ -882,6 +908,38 @@ impl Engine {
                     status,
                     dnd_end_time,
                 }),
+                Message::Command(Command::SetFavorite {
+                    channel_id,
+                    favorite,
+                }) => {
+                    if let Some(me) = &self.me {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: "favorite_channel".into(),
+                            name: channel_id,
+                            value: favorite.to_string(),
+                        };
+                        sidebar::upsert_preferences(&tx, std::slice::from_ref(&preference))?;
+                        writes.push(Write::Preferences(vec![preference]));
+                    }
+                }
+                Message::Command(Command::CloseDirect { channel_id }) => {
+                    if let Some(me) = &self.me
+                        && let Some(channel) = sidebar::channel(&tx, &channel_id)?
+                        && let Some((category, name)) =
+                            sidebar::show_preference(&channel.kind, &channel.id, &channel.name, me)
+                    {
+                        let preference = Preference {
+                            user_id: me.clone(),
+                            category: category.into(),
+                            name,
+                            value: "false".into(),
+                        };
+                        sidebar::upsert_preferences(&tx, std::slice::from_ref(&preference))?;
+                        dirty.all_teams = true;
+                        writes.push(Write::Preferences(vec![preference]));
+                    }
+                }
                 Message::Command(Command::OpenDirect { user_ids }) => {
                     writes.push(Write::OpenDirect { user_ids });
                 }
@@ -1430,6 +1488,21 @@ impl Engine {
             }
             Loaded::Ready { channel, member } => {
                 let channel_id = channel.id.clone();
+                if let Some(me) = &self.me
+                    && let Some((category, name)) =
+                        sidebar::show_preference(&channel.kind, &channel.id, &channel.name, me)
+                {
+                    sidebar::upsert_preferences(
+                        self.store.conn(),
+                        &[Preference {
+                            user_id: me.clone(),
+                            category: category.into(),
+                            name,
+                            value: "true".into(),
+                        }],
+                    )?;
+                    dirty.all_teams = true;
+                }
                 self.write_loaded(
                     Loaded::Channel {
                         channel,

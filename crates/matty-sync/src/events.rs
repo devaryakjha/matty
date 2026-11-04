@@ -176,6 +176,7 @@ pub(crate) fn apply(
         WsEvent::PreferencesChanged(preferences) => {
             sidebar::upsert_preferences(conn, &preferences)?;
             dirty.preferences = true;
+            dirty.all_teams |= preferences.iter().any(shows_conversation);
             if let Some(order) = preferences.iter().find(|p| p.category == "teams_order") {
                 let ids: Vec<String> = order
                     .value
@@ -190,6 +191,7 @@ pub(crate) fn apply(
         WsEvent::PreferencesDeleted(preferences) => {
             sidebar::delete_preferences(conn, &preferences)?;
             dirty.preferences = true;
+            dirty.all_teams |= preferences.iter().any(shows_conversation);
         }
         WsEvent::UpdateTeam(team) => {
             sidebar::upsert_teams(conn, std::slice::from_ref(&*team))?;
@@ -378,4 +380,12 @@ pub(crate) fn touch_channel(
         _ => dirty.all_teams = true,
     }
     Ok(())
+}
+
+/// Whether a preference shows or hides a direct or group conversation.
+fn shows_conversation(preference: &matty_api::models::Preference) -> bool {
+    matches!(
+        preference.category.as_str(),
+        "direct_channel_show" | "group_channel_show"
+    )
 }
