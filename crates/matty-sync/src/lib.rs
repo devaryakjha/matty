@@ -44,3 +44,9 @@ pub use matty_store::outbox::Outgoing;
 pub use matty_store::posts::ThreadSummary;
 /// The snapshot types change sets carry, so the app needs no store crate.
 pub use matty_store::sidebar::{SidebarChannel, SidebarSection, TeamWithUnreads, Unreads};
+/// The key that names one account's files, and where those files live
+/// for a saved key (#206).
+pub use matty_store::{
+    account_key, is_account_key, media::dir_for_key as media_dir_for_key,
+    path_for_key as database_path_for_key,
+};

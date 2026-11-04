@@ -37,6 +37,7 @@ pub mod profile_editor;
 pub mod rail;
 pub mod right_pane;
 pub mod secrets;
+pub mod servers;
 pub mod settings;
 pub mod sidebar;
 pub mod style;

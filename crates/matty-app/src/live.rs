@@ -2299,30 +2299,26 @@ pub fn saved_account(server: &str, user: &User) -> SavedAccount {
         user_id: user.id.clone(),
         username: user.username.clone(),
         display_name,
+        ..SavedAccount::default()
     }
 }
 
 /// Where `account`'s database lives: one file per server and user.
 /// Where `account`'s media cache lives, if the system has a cache folder.
 pub fn media_dir(account: &SavedAccount) -> Option<PathBuf> {
-    url::Url::parse(&account.server)
-        .ok()
-        .and_then(|server| matty_sync::media_dir(&server, &account.user_id))
+    matty_sync::media_dir_for_key(&account.data_key())
 }
 
 pub fn database_path(account: &SavedAccount) -> PathBuf {
-    url::Url::parse(&account.server)
-        .ok()
-        .and_then(|server| matty_sync::database_path(&server, &account.user_id))
-        .unwrap_or_else(|| {
-            // The browser has no temporary folder; this path only names
-            // the database, which is kept in memory there.
-            #[cfg(target_family = "wasm")]
-            let dir = PathBuf::new();
-            #[cfg(not(target_family = "wasm"))]
-            let dir = std::env::temp_dir();
-            dir.join(format!("matty-{}.sqlite", account.user_id))
-        })
+    matty_sync::database_path_for_key(&account.data_key()).unwrap_or_else(|| {
+        // The browser has no temporary folder; this path only names
+        // the database, which is kept in memory there.
+        #[cfg(target_family = "wasm")]
+        let dir = PathBuf::new();
+        #[cfg(not(target_family = "wasm"))]
+        let dir = std::env::temp_dir();
+        dir.join(format!("matty-{}.sqlite", account.user_id))
+    })
 }
 
 /// The sentence for a server check that stopped at `error`, naming
@@ -2465,6 +2461,7 @@ mod tests {
             user_id: "me".into(),
             username: "me".into(),
             display_name: "Me".into(),
+            ..SavedAccount::default()
         };
         let live = Live::start(dir.path().join("account.sqlite"), &account)
             .unwrap()

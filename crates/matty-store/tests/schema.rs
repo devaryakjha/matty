@@ -239,3 +239,21 @@ fn database_names_are_per_server_and_user() {
     let odd = database_file_name(&url("https://x.example.com/../../etc"), "../u");
     assert!(!odd.contains('/') && !odd.contains(".."), "{odd}");
 }
+
+#[test]
+fn account_keys_name_the_same_files_and_refuse_odd_ones() {
+    use matty_store::{account_key, default_path, is_account_key, media, path_for_key};
+    let server = url::Url::parse("https://chat.example.com:8065").unwrap();
+    let key = account_key(&server, "abc");
+    assert_eq!(key, "chat.example.com_8065-abc");
+    assert!(is_account_key(&key));
+    // A saved key finds the files the account always had.
+    assert_eq!(path_for_key(&key), default_path(&server, "abc"));
+    assert_eq!(media::dir_for_key(&key), media::default_dir(&server, "abc"));
+    // A hand-edited key never names a file outside Matty's folders.
+    for odd in ["", "..", "../x", "a/b", "a\\b", "x..y", "é"] {
+        assert!(!is_account_key(odd), "{odd:?}");
+        assert_eq!(path_for_key(odd), None);
+        assert_eq!(media::dir_for_key(odd), None);
+    }
+}

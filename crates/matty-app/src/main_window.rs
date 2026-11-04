@@ -1051,7 +1051,9 @@ impl MainWindow {
         this.follow_links(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
-        let saved = this.settings.read(cx).get().account.clone();
+        let saved = this
+            .settings
+            .update(cx, |settings, cx| settings.launch_server(cx));
         if !crate::preview::enabled()
             && let Some(account) = saved
         {
@@ -1977,7 +1979,7 @@ impl MainWindow {
                         crate::secrets::save(&account, token);
                     }
                     this.settings.update(cx, |settings, cx| {
-                        settings.update(cx, |s| s.account = Some(account.clone()))
+                        settings.update(cx, |s| s.sign_in_server(account.clone()))
                     });
                     this.start_live(&account, window, cx);
                     if let Some(live) = &this.live {
@@ -3287,8 +3289,15 @@ impl MainWindow {
         if let Some(account) = &account {
             crate::secrets::delete(account);
         }
-        self.settings
-            .update(cx, |settings, cx| settings.update(cx, |s| s.account = None));
+        // Signing out forgets the server along with its cache (#206).
+        self.settings.update(cx, |settings, cx| {
+            settings.update(cx, |s| {
+                if let Some(account) = &account {
+                    s.remove_server(&account.data_key());
+                }
+                s.account = None;
+            })
+        });
         self.selected_channel = None;
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_model(SidebarModel::loading(), cx)

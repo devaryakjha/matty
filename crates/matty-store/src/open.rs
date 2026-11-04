@@ -142,9 +142,37 @@ pub fn forget(database: &Path, media: Option<&Path>) -> std::io::Result<()> {
 
 /// Where an account's database lives: `<app data>/Matty/accounts/<file>`.
 pub fn default_path(server: &url::Url, user_id: &str) -> Option<PathBuf> {
+    path_for_key(&account_key(server, user_id))
+}
+
+/// The name that keys one account's files: its database, media folder and
+/// saved server entry (#206). It is [`database_file_name`] without the
+/// extension.
+pub fn account_key(server: &url::Url, user_id: &str) -> String {
+    let file = database_file_name(server, user_id);
+    file.strip_suffix(".sqlite").unwrap_or(&file).to_owned()
+}
+
+/// Whether `key` could have come from [`account_key`]: letters, digits,
+/// `.`, `-` and `_`, and never `..`. A key read back from a settings file
+/// is checked before it names a file Matty may delete.
+pub fn is_account_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.contains("..")
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Where the database for the account `key` lives, as [`default_path`]
+/// puts it; `None` for a key [`account_key`] could not have made.
+pub fn path_for_key(key: &str) -> Option<PathBuf> {
+    if !is_account_key(key) {
+        return None;
+    }
     dirs::data_local_dir().map(|dir| {
         dir.join("Matty")
             .join("accounts")
-            .join(database_file_name(server, user_id))
+            .join(format!("{key}.sqlite"))
     })
 }

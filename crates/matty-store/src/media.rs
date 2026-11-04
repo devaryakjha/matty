@@ -234,7 +234,14 @@ fn relative_path(key: &str) -> String {
 /// Where an account's media lives: `<cache>/Matty/media/<account>`, named
 /// like its database.
 pub fn default_dir(server: &url::Url, user_id: &str) -> Option<PathBuf> {
-    let file = crate::database_file_name(server, user_id);
-    let account = file.strip_suffix(".sqlite").unwrap_or(&file).to_owned();
-    dirs::cache_dir().map(|dir| dir.join("Matty").join("media").join(account))
+    dir_for_key(&crate::account_key(server, user_id))
+}
+
+/// Where the media for the account `key` lives, as [`default_dir`] puts
+/// it; `None` for a key [`crate::account_key`] could not have made.
+pub fn dir_for_key(key: &str) -> Option<PathBuf> {
+    if !crate::is_account_key(key) {
+        return None;
+    }
+    dirs::cache_dir().map(|dir| dir.join("Matty").join("media").join(key))
 }
