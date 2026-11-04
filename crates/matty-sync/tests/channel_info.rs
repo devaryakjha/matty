@@ -32,16 +32,24 @@ async fn an_open_channel_sends_itself_and_its_counts() {
     sync.send(Command::Connect {
         client: Client::new(server.uri()).unwrap().with_token("token"),
     });
-    let ChangeSet::Channel { channel, member } =
-        next(&changes, |c| matches!(c, ChangeSet::Channel { .. })).await
-    else {
-        unreachable!()
-    };
+    // The counts and the channel load side by side, so either may come
+    // first.
+    let (mut header, mut counts) = (None, None);
+    while header.is_none() || counts.is_none() {
+        match next(&changes, |c| {
+            matches!(c, ChangeSet::Channel { .. } | ChangeSet::Stats(_))
+        })
+        .await
+        {
+            ChangeSet::Channel { channel, member } => header = Some((channel, member)),
+            ChangeSet::Stats(stats) => counts = Some(stats),
+            _ => unreachable!(),
+        }
+    }
+    let (channel, member) = header.unwrap();
     assert_eq!(channel.display_name, "C1");
     assert_eq!(member.unwrap().notify_props["mark_unread"], "all");
-    let ChangeSet::Stats(stats) = next(&changes, |c| matches!(c, ChangeSet::Stats(_))).await else {
-        unreachable!()
-    };
+    let stats = counts.unwrap();
     assert_eq!((stats.member_count, stats.pinnedpost_count), (12, 3));
 }
 
