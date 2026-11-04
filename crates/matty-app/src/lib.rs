@@ -9,18 +9,23 @@
 pub mod account;
 pub mod actions;
 pub mod attachments;
+pub mod avatars;
+pub mod badge;
 pub mod channel;
 pub mod channel_settings;
+pub mod deeplink;
 pub mod directory;
 pub mod dnd;
 pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod links;
 pub mod live;
 pub mod logging;
 pub mod login;
 mod main_window;
+pub mod menu;
 pub mod preview;
 pub mod profile;
 pub mod rail;
@@ -66,23 +71,43 @@ pub fn run_offline() {
 /// Starts the GPUI application and opens the main window. Blocks until the
 /// app quits.
 pub fn run() {
-    gpui_kit::platform::application()
-        .with_assets(LucideAssetSource)
-        .run(|cx: &mut App| {
-            // Settings load after this, so their level applies just below.
-            let logs = logging::init(logging::default_dir().as_deref(), Default::default());
-            tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
-            ui::theme::init(cx);
-            style::install(ThemeMode::Light, cx);
-            load_fonts(cx);
-            let settings = SettingsStore::init(settings::default_path(), cx);
-            if let Some(logs) = logs {
-                follow_log_level(&settings, logs, cx);
-            }
-            actions::bind(cx);
-            open_main_window(cx);
-            cx.activate(true);
-        });
+    run_with_links(Vec::new());
+}
+
+/// [`run`], then handles `links` (a `mattermost://` URL given on the command
+/// line) as if the OS had opened them. Links the OS opens later arrive the
+/// same way. A second launch on Linux and Windows does not forward its link
+/// to the first yet (#84).
+pub fn run_with_links(links: Vec<String>) {
+    let (links_tx, links_rx) = async_channel::unbounded::<String>();
+    for link in links {
+        let _ = links_tx.try_send(link);
+    }
+    let app = gpui_kit::platform::application().with_assets(LucideAssetSource);
+    // macOS calls this for a URL-scheme open, at launch or while running.
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            tracing::info!(link = %deeplink::redacted(&url), "the system opened a link");
+            let _ = links_tx.try_send(url);
+        }
+    });
+    app.run(move |cx: &mut App| {
+        // Settings load after this, so their level applies just below.
+        let logs = logging::init(logging::default_dir().as_deref(), Default::default());
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
+        ui::theme::init(cx);
+        style::install(ThemeMode::Light, cx);
+        load_fonts(cx);
+        let settings = SettingsStore::init(settings::default_path(), cx);
+        if let Some(logs) = logs {
+            follow_log_level(&settings, logs, cx);
+        }
+        actions::bind(cx);
+        menu::init(cx);
+        cx.set_global(deeplink::Incoming(links_rx));
+        open_main_window(cx);
+        cx.activate(true);
+    });
 }
 
 /// Keeps the logger's level in step with the `log_level` setting.

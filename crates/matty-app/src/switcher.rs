@@ -29,10 +29,14 @@ pub enum SwitcherEvent {
         post: SharedString,
         channel: SharedString,
     },
+    /// The user pasted a link and chose "Open link" (#85).
+    OpenLink(SharedString),
 }
 
 /// The value of the search row; the query follows it.
 const SEARCH_PREFIX: &str = "~search:";
+/// The value of the open-link row; the link follows it.
+const LINK_PREFIX: &str = "~link:";
 
 pub struct Switcher {
     handle: DialogHandle,
@@ -63,13 +67,17 @@ impl Switcher {
                 move |this, _, event, window, cx| match event {
                     CommandEvent::Confirm(value) => {
                         close.close(window, cx);
-                        match (this.forwarding.take(), value.strip_prefix(SEARCH_PREFIX)) {
-                            (Some(post), _) => cx.emit(SwitcherEvent::Forward {
+                        if let Some(post) = this.forwarding.take() {
+                            cx.emit(SwitcherEvent::Forward {
                                 post,
                                 channel: value.clone(),
-                            }),
-                            (None, Some(query)) => cx.emit(SwitcherEvent::Search(query.into())),
-                            (None, None) => cx.emit(SwitcherEvent::Open(value.clone())),
+                            });
+                        } else if let Some(query) = value.strip_prefix(SEARCH_PREFIX) {
+                            cx.emit(SwitcherEvent::Search(query.into()));
+                        } else if let Some(url) = value.strip_prefix(LINK_PREFIX) {
+                            cx.emit(SwitcherEvent::OpenLink(url.into()));
+                        } else {
+                            cx.emit(SwitcherEvent::Open(value.clone()));
                         }
                         this.reset(window, cx);
                     }
@@ -90,10 +98,20 @@ impl Switcher {
         }
     }
 
-    /// Any typed query also offers a message search, last in the list.
+    /// Any typed query also offers a message search, last in the list; a
+    /// pasted link offers to open it, first.
     fn offer_search(&mut self, query: SharedString, cx: &mut Context<Self>) {
         let query = query.trim().to_string();
         let mut items = self.items.clone();
+        if self.forwarding.is_none() && crate::links::looks_like_link(&query) {
+            items.insert(
+                0,
+                CommandItem::new(format!("{LINK_PREFIX}{query}"), "Open link")
+                    .group("Link")
+                    .icon(LucideIcon::Link)
+                    .keywords([query.clone()]),
+            );
+        }
         if !query.is_empty() && self.forwarding.is_none() {
             items.push(
                 CommandItem::new(
@@ -164,8 +182,17 @@ impl Switcher {
                     let mut item = CommandItem::new(row.id.clone(), row.name.clone())
                         .group(category.name.clone())
                         .icon(icon);
-                    if row.unread {
-                        item = item.keywords(["unread"]);
+                    // `keywords` replaces, so the words go in one call: "unread"
+                    // and, for a direct message, the person's username, which
+                    // finds the row whatever the name format shows (#156).
+                    let keywords: Vec<SharedString> = row
+                        .unread
+                        .then(|| SharedString::from("unread"))
+                        .into_iter()
+                        .chain(row.handle.clone())
+                        .collect();
+                    if !keywords.is_empty() {
+                        item = item.keywords(keywords);
                     }
                     item
                 })
@@ -212,5 +239,35 @@ impl Switcher {
             .max_w(style::scaled(&theme, style::metrics::SWITCHER_MAX_WIDTH))
             .type_style(style::UI, &theme);
         dialog("switcher", &self.handle, popup, window, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sidebar::{Category, ChannelRow, Presence};
+
+    #[test]
+    fn a_dm_shows_its_formatted_name_and_is_found_by_username() {
+        let dm = ChannelRow::new(
+            "d1",
+            "Ada Lovelace",
+            ChannelKind::Direct {
+                presence: Presence::Online,
+            },
+        )
+        .person("u1")
+        .handle("ada")
+        .unread();
+        let model = SidebarModel {
+            categories: vec![Category::new("dms", "Direct messages", vec![dm])],
+            ..SidebarModel::default()
+        };
+        let items = Switcher::items(&model);
+        assert_eq!(items[0].label.as_ref(), "Ada Lovelace");
+        assert_eq!(
+            items[0].keywords,
+            vec![SharedString::from("unread"), "ada".into()]
+        );
     }
 }
