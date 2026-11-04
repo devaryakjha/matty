@@ -145,7 +145,10 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   and assumes `https`. Step two shows the server as a muted chip with
   Change, then the password form, an OR rule, outline buttons for each SSO
   provider the server enables, and a personal access token behind a text
-  link. Errors are one `meta` sentence in `destructive` with an icon, placed
+  link. Where the server offers both its own accounts and AD/LDAP, a joined
+  toggle group above the fields picks one. An account with MFA gets a third
+  view in the same card: six code cells that submit when full, Verify, and
+  Back to the password form; a wrong code clears the cells. Errors are one `meta` sentence in `destructive` with an icon, placed
   above the button they concern; a request in flight puts a spinner in the
   primary button and never blocks the window.
 - **Post actions** live in the hover toolbar: add reaction, reply in
@@ -174,6 +177,15 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   place, and Send is disabled while empty. Follow/Following is a small
   outline or secondary button on the replies rule, never a toggle switch;
   it flips at once.
+- **System messages** (joins, leaves, header and purpose changes) are one
+  `ui` line in `muted-foreground` in the body column, worded like the web
+  app, with no avatar, author, actions or reactions; the time shows in the
+  gutter on hover, like a continuation. Joins and leaves in a row on one
+  day combine: "Ada, Sam and 3 others joined the channel. Ola left the
+  channel." A system row always ends a run of grouped posts. A post type
+  Matty cannot draw yet (a plugin's `custom_*`) keeps its author header
+  and shows an embed card, "This message type isn't supported yet.", with
+  an outline Open in browser button that opens its permalink.
 - **Reply footer** (Collapsed Reply Threads, PLAN §4.4): a post with a
   thread shows one line under its body: up to three small overlapping
   avatars of who replied, "3 replies" in `primary` and `ui_strong`, a

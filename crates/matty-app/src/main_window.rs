@@ -146,6 +146,8 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod sso;
+
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
     /// Shown until a session exists; sync replaces it with the workspace.
@@ -175,6 +177,8 @@ pub struct MainWindow {
     collapsed_threads: Option<(bool, bool)>,
     /// Where notifications go on this platform (#141).
     notifier: Box<dyn matty_notify::Notifier>,
+    /// What the dock badge shows now (#141).
+    badge: matty_notify::Badge,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -235,6 +239,8 @@ pub struct MainWindow {
     kept_unread: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
+    /// The browser sign-in the card waits on (#75).
+    sso: Option<sso::PendingSso>,
     /// The link sync is finding, with the permalink's post (#85, #103).
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
     /// The join prompt for a link to a public channel the user is not in.
@@ -284,7 +290,7 @@ impl MainWindow {
             |this, _, event: &SwitcherEvent, window, cx| match event {
                 SwitcherEvent::Open(id) => this.open_channel(id.clone(), window, cx),
                 SwitcherEvent::Search(query) => this.search(query.clone(), window, cx),
-                SwitcherEvent::OpenLink(url) => this.open_link(url.clone(), window, cx),
+                SwitcherEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
             },
         )
         .detach();
@@ -587,7 +593,8 @@ impl MainWindow {
                     }
                 }
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
-                ChannelEvent::OpenLink(url) => this.open_link(url.clone(), window, cx),
+                ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
+                ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
                 ChannelEvent::MarkUnread(post) => {
                     if let Some(live) = &this.live {
                         live.send(matty_sync::Command::MarkUnread {
@@ -777,6 +784,7 @@ impl MainWindow {
             keywords,
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
+            badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
             browse,
@@ -812,8 +820,14 @@ impl MainWindow {
             link_join_offer: None,
             link_jump: None,
             login_server: None,
+            sso: None,
             sidebar_shown: false,
         };
+        cx.observe(&this.sidebar, |this, _, cx| this.update_badge(cx))
+            .detach();
+        cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
+            .detach();
+        this.follow_links(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
@@ -1012,16 +1026,32 @@ impl MainWindow {
         });
     }
 
-    /// Puts a post's permalink on the clipboard and says so (#133).
-    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+    /// A post's permalink in the open channel, or the preview's stand-in.
+    fn permalink(&self, post_id: &str) -> Option<String> {
         let link = self.live.as_ref().and_then(|live| {
             let channel = self.selected_channel.as_ref()?;
             live.permalink(channel, post_id)
         });
-        let link = link.or_else(|| {
+        link.or_else(|| {
             crate::preview::enabled().then(|| format!("{PREVIEW_SERVER}/matty/pl/{post_id}"))
-        });
-        let Some(link) = link else {
+        })
+    }
+
+    /// Opens a post Matty cannot draw in the web app (#104).
+    fn open_in_browser(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        match self.permalink(post_id) {
+            Some(link) => cx.open_url(&link),
+            None => self.push_error_with(
+                "Couldn't open the message. Try again once you're connected.",
+                None,
+                cx,
+            ),
+        }
+    }
+
+    /// Puts a post's permalink on the clipboard and says so (#133).
+    fn copy_link(&mut self, post_id: &str, cx: &mut Context<Self>) {
+        let Some(link) = self.permalink(post_id) else {
             self.push_error_with(
                 "Couldn't copy the link. Try again once you're connected.",
                 None,
@@ -1382,14 +1412,13 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 this.login_server = None;
             }
-            LoginEvent::SignIn { login_id, password } => {
+            LoginEvent::SignIn(sign_in) => {
                 let Some(server) = this.login_server.clone() else {
                     model.step = LoginStep::Server;
                     return view.update(cx, |view, cx| view.set_model(model, window, cx));
                 };
                 model.busy = true;
-                let signing_in =
-                    crate::live::sign_in(server.clone(), login_id.clone(), password.clone());
+                let signing_in = crate::live::sign_in(server.clone(), sign_in.clone());
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Token(token) => {
@@ -1402,14 +1431,16 @@ impl MainWindow {
                 this.finish_sign_in(server, signing_in, view, window, cx);
             }
             LoginEvent::Sso(provider) => {
-                // The browser flow is #75.
-                model.error = Some(
-                    format!(
-                        "{} sign-in is not in Matty yet. Use a password or a personal access token.",
-                        provider.label()
-                    )
-                    .into(),
-                );
+                let Some(server) = this.login_server.clone() else {
+                    model.step = LoginStep::Server;
+                    return view.update(cx, |view, cx| view.set_model(model, window, cx));
+                };
+                model.step = model.step.to_browser(*provider);
+                this.start_sso(server, *provider, view, window, cx);
+            }
+            LoginEvent::CancelSso => {
+                this.cancel_sso();
+                model.step = model.step.back_to_methods();
             }
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
@@ -1420,7 +1451,9 @@ impl MainWindow {
     fn finish_sign_in(
         &mut self,
         server: String,
-        signing_in: impl std::future::Future<Output = Result<crate::live::Session, String>> + 'static,
+        signing_in: impl std::future::Future<
+            Output = Result<crate::live::Session, crate::login::SignInFailure>,
+        > + 'static,
         view: &Entity<LoginView>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1447,11 +1480,10 @@ impl MainWindow {
                     this.login_server = None;
                     cx.notify();
                 }
-                Err(error) => {
+                Err(failure) => {
                     let _ = view.update(cx, |view, cx| {
                         let mut model = view.model().clone();
-                        model.busy = false;
-                        model.error = Some(error.into());
+                        model.sign_in_failed(failure);
                         view.set_model(model, window, cx);
                     });
                 }
@@ -1485,7 +1517,19 @@ impl MainWindow {
                 model.step = LoginStep::Server;
                 model.error = None;
             }
-            LoginEvent::SignIn { .. } | LoginEvent::Token(_) | LoginEvent::Sso(_) => {
+            // The preview asks for a code once, to show the MFA step.
+            LoginEvent::SignIn(sign_in) if sign_in.mfa_token.is_none() => {
+                model.sign_in_failed(crate::login::SignInFailure::MfaRequired);
+            }
+            LoginEvent::Sso(provider) => {
+                model.step = model.step.to_browser(*provider);
+                model.error = None;
+            }
+            LoginEvent::CancelSso => {
+                model.step = model.step.back_to_methods();
+                model.error = None;
+            }
+            LoginEvent::SignIn(_) | LoginEvent::Token(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());
             }
         }
@@ -2012,7 +2056,7 @@ impl MainWindow {
                 cx.notify();
             }
             RightPaneEvent::Search(query) => self.search(query.clone(), window, cx),
-            RightPaneEvent::OpenLink(url) => self.open_link(url.clone(), window, cx),
+            RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::OpenDirect { display_name, .. } => {
                 self.open_direct(display_name.clone(), window, cx)
@@ -2510,6 +2554,18 @@ impl MainWindow {
                     .child(div().pl(theme.space(1.)).child(me)),
             )
             .into_any_element()
+    }
+
+    /// Puts the unread and mention totals on the dock icon (#141); signed
+    /// out, the sidebar is loading and the badge clears.
+    fn update_badge(&mut self, cx: &mut Context<Self>) {
+        let rail = self.rail.read(cx);
+        let badge =
+            crate::badge::dock_badge(self.sidebar.read(cx).model(), rail.teams(), rail.current());
+        if badge != self.badge {
+            self.badge = badge;
+            self.notifier.set_badge(badge);
+        }
     }
 
     /// Sign out returns to the sign-in card at once; sync ends the session
@@ -3522,7 +3578,12 @@ impl MainWindow {
     // decides where a link goes; these act on it.
 
     /// Opens a link clicked in a message or pasted into the switcher.
-    fn open_link(&mut self, url: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_message_link(
+        &mut self,
+        url: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::links::LinkTarget;
         let (server, teams, team) = if let Some(live) = &self.live {
             (
@@ -3874,6 +3935,9 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
+            .on_action(
+                cx.listener(|this, _: &crate::menu::SignOut, window, cx| this.sign_out(window, cx)),
+            )
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
             })

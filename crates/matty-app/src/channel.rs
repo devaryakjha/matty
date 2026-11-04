@@ -33,6 +33,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant, style_button},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
+    embed::MessageEmbed,
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     empty::EmptyContent,
     lightbox::{LightboxImage, LightboxState, lightbox},
@@ -154,12 +155,29 @@ pub enum PostStatus {
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
 pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
+/// How a post draws (#104).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PostKind {
+    /// A message someone wrote.
+    #[default]
+    Regular,
+    /// A system message, already worded in `body`: a muted line with no
+    /// author, actions or reactions that ends the run of grouped posts.
+    /// `activity` marks joins and leaves, which arrive combined into one
+    /// row ("Ada, Sam and 3 others joined the channel.").
+    System { activity: bool },
+    /// A type Matty does not draw yet, such as a plugin's `custom_*`
+    /// post: a card that offers to open it in the browser. Holds the type.
+    Unsupported(SharedString),
+}
+
 /// One post, already formatted for display: sync does the time zone and
 /// Markdown rewriting, the view only draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Post {
     pub id: SharedString,
     pub author: SharedString,
+    pub kind: PostKind,
     /// Minutes since midnight in the user's zone; `ClockFormat` prints it.
     pub time: u16,
     /// The day divider label this post falls under ("Today", "Yesterday", a date).
@@ -305,6 +323,8 @@ enum Row {
     Day(SharedString),
     NewMessages,
     Post(usize),
+    /// A system message (#104); never selectable.
+    System(usize),
     /// The bottom row: loading newer messages after a jump into the past,
     /// or a failed page with Retry. Empty while the transcript runs to the
     /// newest post.
@@ -416,10 +436,21 @@ impl ChannelModel {
     fn row_keys(&self, rows: &[Row]) -> Vec<RowKey> {
         rows.iter()
             .map(|row| match row {
-                Row::Post(index) => RowKey::Post(self.posts[*index].id.clone()),
+                Row::Post(index) | Row::System(index) => {
+                    RowKey::Post(self.posts[*index].id.clone())
+                }
                 other => RowKey::Other(other.clone()),
             })
             .collect()
+    }
+
+    /// The newest post someone wrote, for Shift+Up's reply: system rows
+    /// have no thread.
+    fn last_message(&self) -> Option<&Post> {
+        self.posts
+            .iter()
+            .rev()
+            .find(|post| !matches!(post.kind, PostKind::System { .. }))
     }
 
     fn rows(&self) -> Vec<Row> {
@@ -434,7 +465,10 @@ impl ChannelModel {
             if self.first_unread == Some(index) {
                 rows.push(Row::NewMessages);
             }
-            rows.push(Row::Post(index));
+            rows.push(match post.kind {
+                PostKind::System { .. } => Row::System(index),
+                _ => Row::Post(index),
+            });
         }
         rows.push(Row::Newer);
         rows
@@ -514,6 +548,9 @@ pub enum ChannelEvent {
     /// "Copy link" on a post: the window puts its permalink on the
     /// clipboard, since only sync knows the server and the team (#133).
     CopyLink(SharedString),
+    /// "Open in browser" on a post Matty cannot draw: the window opens its
+    /// permalink (#104).
+    OpenInBrowser(SharedString),
     /// The transcript showed its top row and wants an older page; sync
     /// answers with `prepend_posts` and `set_history`. Fired once per page:
     /// the view marks itself loading until one of those arrives.
@@ -685,6 +722,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
+    /// Posts whose preview images the user collapsed (#187), as the web
+    /// app's per-post toggle; they expand again with the toggle.
+    collapsed_previews: std::collections::HashSet<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -759,7 +799,7 @@ impl ChannelView {
                         return false;
                     }
                     if keystroke.modifiers.shift {
-                        if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
+                        if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
                             cx.emit(ChannelEvent::OpenThread(post.id.clone()));
                         }
                     } else if let Some(id) = this.last_own_post() {
@@ -927,6 +967,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            collapsed_previews: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1040,7 +1081,11 @@ impl ChannelView {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let arrived = posts.iter().filter(|post| !post.mine).count();
+        // Joins and other system rows are not messages to catch up on.
+        let arrived = posts
+            .iter()
+            .filter(|post| !post.mine && !matches!(post.kind, PostKind::System { .. }))
+            .count();
         model.posts.extend(posts);
         let rows = model.rows();
         let before = self.rows.len();
@@ -1709,6 +1754,7 @@ impl ChannelView {
         let post = Post {
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
+            kind: PostKind::Regular,
             time: last.map_or(0, |post| post.time),
             day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
             date: SharedString::default(),
@@ -1757,7 +1803,8 @@ impl ChannelView {
 
     fn last_own_post(&self) -> Option<SharedString> {
         self.model.as_ref()?.posts.iter().rev().find_map(|post| {
-            (post.mine && post.status == PostStatus::Sent).then(|| post.id.clone())
+            (post.mine && post.status == PostStatus::Sent && post.kind == PostKind::Regular)
+                .then(|| post.id.clone())
         })
     }
 
@@ -1765,10 +1812,12 @@ impl ChannelView {
     /// Escape cancels; only the user's own sent posts qualify.
     fn start_edit(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let Some(post) = self.model.as_ref().and_then(|model| {
-            model
-                .posts
-                .iter()
-                .find(|post| post.id == id && post.mine && post.status == PostStatus::Sent)
+            model.posts.iter().find(|post| {
+                post.id == id
+                    && post.mine
+                    && post.status == PostStatus::Sent
+                    && post.kind == PostKind::Regular
+            })
         }) else {
             return;
         };
@@ -2084,6 +2133,29 @@ impl ChannelView {
         if changed {
             cx.emit(ChannelEvent::ToggleReaction { post: id, emoji });
         }
+    }
+
+    /// Collapses or expands the images in a post's previews; the row's
+    /// height changes, so the list measures it again.
+    fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
+        let changed = if collapsed {
+            self.collapsed_previews.insert(id.clone())
+        } else {
+            self.collapsed_previews.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        let posts = self.model.as_ref().map(|model| &model.posts);
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if posts.and_then(|posts| posts.get(*index)).is_some_and(|post| post.id == id))
+        });
+        if let Some(row) = row {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(row..row + 1, cx));
+        }
+        cx.notify();
     }
 
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
@@ -2802,7 +2874,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away): (bool, bool),
+        (menu_open, away, previews_collapsed): (bool, bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2939,19 +3011,22 @@ impl ChannelView {
             .px(scaled(&theme, metrics::GUTTER))
             .child(match editor {
                 Some((composer, cap)) => Self::editor(composer, *cap, cx).into_any_element(),
-                None => {
-                    let link_view = cx.entity().downgrade();
-                    crate::links::message_body(
-                        gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
-                        &post.body,
-                        move |url, _, cx| {
-                            let event = ChannelEvent::OpenLink(url.clone());
-                            link_view.update(cx, |_, cx| cx.emit(event)).ok();
-                        },
-                        cx,
-                    )
-                    .into_any_element()
-                }
+                None => match &post.kind {
+                    PostKind::Unsupported(_) => Self::unsupported_card(&id, cx).into_any_element(),
+                    _ => {
+                        let link_view = cx.entity().downgrade();
+                        crate::links::message_body(
+                            gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
+                            &post.body,
+                            move |url, _, cx| {
+                                let event = ChannelEvent::OpenLink(url.clone());
+                                link_view.update(cx, |_, cx| cx.emit(event)).ok();
+                            },
+                            cx,
+                        )
+                        .into_any_element()
+                    }
+                },
             });
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
@@ -2969,7 +3044,18 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
-            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+            let (view, post_id) = (cx.entity().downgrade(), id.clone());
+            row = row.child(crate::embeds::post_embeds(
+                &id,
+                &post.embeds,
+                previews_collapsed,
+                std::rc::Rc::new(move |collapsed, _, cx| {
+                    let post_id = post_id.clone();
+                    view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
+                        .ok();
+                }),
+                cx,
+            ));
         }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
@@ -3006,6 +3092,67 @@ impl ChannelView {
                 }),
             )
             .child(row)
+    }
+
+    /// A system message (#104): a muted line in the body column, with the
+    /// time in the gutter on hover like a continuation, and no actions.
+    fn system_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let time: SharedString = ClockFormat::current(cx).format(post.time).into();
+        Message::new(gpui_kit::ElementId::Name(
+            format!("post.{}", post.id).into(),
+        ))
+        .continuation(true)
+        .timestamp(time.clone())
+        .gutter_time(time.clone())
+        .when(!post.date.is_empty(), |row| {
+            row.timestamp_tooltip(format!("{} at {time}", post.date))
+        })
+        .density(message_density(cx))
+        .px(scaled(&theme, metrics::GUTTER))
+        .py(theme.space(1.))
+        .child(
+            div()
+                .text_size(theme.text(13.))
+                .line_height(theme.text(20.))
+                .text_color(theme.colors.muted_foreground)
+                .child(post.body.clone()),
+        )
+    }
+
+    /// The body of a post whose type Matty does not draw yet (#104): a card
+    /// that says so and opens the post in the web app.
+    fn unsupported_card(id: &SharedString, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let open = id.clone();
+        MessageEmbed::new(gpui_kit::ElementId::Name(
+            format!("post.{id}.unsupported").into(),
+        ))
+        .density(message_density(cx))
+        .mt(theme.space(1.))
+        .body(
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(theme.space(2.))
+                .child(
+                    div()
+                        .text_color(theme.colors.muted_foreground)
+                        .child("This message type isn't supported yet."),
+                )
+                .child(
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("post.{id}.open-in-browser").into(),
+                    ))
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Sm)
+                    .label("Open in browser")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ChannelEvent::OpenInBrowser(open.clone()))
+                    })),
+                ),
+        )
     }
 
     /// The thread line under a post with replies: who replied, how many,
@@ -3154,6 +3301,10 @@ impl ChannelView {
                 Some(Row::NewMessages) => {
                     new_messages_divider("new-messages", "New messages", cx).into_any_element()
                 }
+                Some(Row::System(post)) => {
+                    let post = posts[*post].clone();
+                    view.update(cx, |_, cx| Self::system_row(&post, cx).into_any_element())
+                }
                 Some(Row::Post(post)) => {
                     let post = posts[*post].clone();
                     let profile = profiles
@@ -3168,12 +3319,13 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
                         Self::post_row(
                             &post,
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away),
+                            (menu_open, away, previews_collapsed),
                             cx,
                         )
                         .into_any_element()
@@ -3382,7 +3534,7 @@ impl ChannelView {
                 }
             }))
             .on_action(cx.listener(|this, _: &ReplyToLastMessage, _, cx| {
-                if let Some(post) = this.model.as_ref().and_then(|m| m.posts.last()) {
+                if let Some(post) = this.model.as_ref().and_then(|m| m.last_message()) {
                     cx.emit(ChannelEvent::OpenThread(post.id.clone()));
                 }
             }))
@@ -3759,6 +3911,7 @@ mod tests {
         Post {
             id: id.into(),
             author: "a".into(),
+            kind: PostKind::Regular,
             time: 600,
             day: day.into(),
             date: SharedString::default(),
@@ -3856,6 +4009,49 @@ mod tests {
         channel.first_unread = Some(0);
         let after = channel.row_keys(&channel.rows());
         assert_eq!(changed_rows(&before, &after), (1..3, 0));
+    }
+
+    #[test]
+    fn system_posts_get_their_own_rows_and_no_replies() {
+        let system = |id: &str| Post {
+            kind: PostKind::System { activity: true },
+            author: SharedString::default(),
+            ..post(id, "Today")
+        };
+        let channel = ChannelModel {
+            purpose: None,
+            offline: false,
+            loading: false,
+            max_post_size: DEFAULT_MAX_POST_SIZE,
+            profiles: vec![],
+            typing: vec![],
+            notifications: ChannelNotifications::default(),
+            id: "c".into(),
+            name: "c".into(),
+            kind: ChannelKind::Public,
+            header: None,
+            members: 1,
+            pinned: 0,
+            favorite: false,
+            muted: false,
+            posts: vec![post("1", "Today"), system("2")],
+            first_unread: None,
+        };
+        assert_eq!(
+            channel.rows(),
+            vec![
+                Row::History,
+                Row::Day("Today".into()),
+                Row::Post(0),
+                Row::System(1),
+                Row::Newer,
+            ]
+        );
+        // Shift+Up replies to the newest message, not the join under it.
+        assert_eq!(
+            channel.last_message().map(|post| post.id.as_ref()),
+            Some("1")
+        );
     }
 
     #[test]
