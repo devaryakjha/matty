@@ -155,9 +155,6 @@ pub enum PostStatus {
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
 pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
-/// How long typing pauses before the draft's link is asked about (#188).
-const LINK_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// One post, already formatted for display: sync does the time zone and
 /// Markdown rewriting, the view only draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -622,8 +619,7 @@ pub struct ChannelView {
     /// The preview above the composer (#188): the draft's first link and
     /// its card once the server has read it; links the user removed from
     /// this draft stay removed.
-    link: Option<(SharedString, Option<crate::embeds::LinkCard>)>,
-    removed_links: std::collections::HashSet<SharedString>,
+    link: crate::draft_link::DraftLink,
     _link_task: Option<gpui_kit::Task<()>>,
     /// A jump whose post is not in the transcript yet; applied when it
     /// arrives with the channel or a later page.
@@ -878,8 +874,7 @@ impl ChannelView {
             unseen: 0,
             permalink: None,
             _permalink_task: None,
-            link: None,
-            removed_links: Default::default(),
+            link: Default::default(),
             _link_task: None,
             pending_jump: None,
             jump_asked: None,
@@ -1608,19 +1603,16 @@ impl ChannelView {
     /// pause in typing, so a link being typed is not asked about letter by
     /// letter.
     fn draft_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let link = crate::embeds::first_link(text)
-            .map(SharedString::from)
-            .filter(|link| !self.removed_links.contains(link));
-        if self.link.as_ref().map(|(url, _)| url) == link.as_ref() {
-            return;
-        }
-        self._link_task = None;
-        self.link = link.clone().map(|url| (url, None));
-        let Some(url) = link else {
+        let Some(url) = self.link.follow(text) else {
+            if !self.link.has_link() {
+                self._link_task = None;
+            }
             return;
         };
         self._link_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(LINK_PAUSE).await;
+            cx.background_executor()
+                .timer(crate::draft_link::PAUSE)
+                .await;
             this.update(cx, |_, cx| cx.emit(ChannelEvent::PreviewLink(url)))
                 .ok();
         }));
@@ -1633,18 +1625,7 @@ impl ChannelView {
         card: Option<crate::embeds::LinkCard>,
         cx: &mut Context<Self>,
     ) {
-        if let Some((current, shown)) = &mut self.link
-            && current.as_ref() == url
-        {
-            *shown = card;
-            cx.notify();
-        }
-    }
-
-    /// Remove preview: this draft keeps the link without a card.
-    fn remove_link_preview(&mut self, cx: &mut Context<Self>) {
-        if let Some((url, _)) = self.link.take() {
-            self.removed_links.insert(url);
+        if self.link.answer(url, card) {
             cx.notify();
         }
     }
@@ -1692,10 +1673,7 @@ impl ChannelView {
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
-        let unfurl = crate::embeds::first_link(&body)
-            .is_none_or(|link| !self.removed_links.contains(link.as_str()));
-        self.link = None;
-        self.removed_links.clear();
+        let unfurl = self.link.sent(&body);
         self._link_task = None;
         cx.emit(ChannelEvent::Send {
             text: body,
@@ -3310,18 +3288,14 @@ impl ChannelView {
                 picker.update(cx, |picker, cx| picker.open(window, cx));
                 emoji_popup(EmojiPicker::new(&picker).bordered(false), cx)
             });
-        let link_preview = self.link.as_ref().and_then(|(_, card)| {
-            let card = card.as_ref()?;
-            let mut preview =
-                crate::ui::embed::LinkPreview::new("composer.link-preview", card.title.clone())
-                    .density(message_density(cx))
-                    .site_name(card.site_name.clone())
-                    .on_remove(cx.listener(|this, _, _, cx| this.remove_link_preview(cx)));
-            if !card.description.is_empty() {
-                preview = preview.description(card.description.clone());
-            }
-            Some(div().pb(theme.space(2.)).child(preview))
-        });
+        let link_preview = self.link.preview(
+            "composer.link-preview",
+            cx,
+            cx.listener(|this, _, _, cx| {
+                this.link.remove();
+                cx.notify();
+            }),
+        );
         let tray = (!self.uploads.is_empty()).then(|| {
             let chips: Vec<Attachment> = self
                 .uploads

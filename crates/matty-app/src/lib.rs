@@ -13,6 +13,7 @@ pub mod channel;
 pub mod channel_settings;
 pub mod directory;
 pub mod dnd;
+pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;

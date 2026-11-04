@@ -682,7 +682,18 @@ impl MainWindow {
                             .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
                     }
                 }
-                RightPaneEvent::Reply { root, text } => {
+                RightPaneEvent::PreviewLink(url) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::LoadLinkPreview {
+                            url: url.to_string(),
+                        });
+                    } else if crate::preview::enabled() {
+                        let card = crate::preview::link_card(url);
+                        this.right_pane
+                            .update(cx, |view, cx| view.set_link_preview(url, card, cx));
+                    }
+                }
+                RightPaneEvent::Reply { root, text, unfurl } => {
                     if let Some(live) = &this.live
                         && let Some(channel_id) = live.thread_channel()
                     {
@@ -692,7 +703,7 @@ impl MainWindow {
                             root_id: root.to_string(),
                             message: text.to_string(),
                             file_ids: Vec::new(),
-                            props: Default::default(),
+                            props: crate::embeds::send_props(*unfurl),
                         });
                     }
                 }
@@ -1302,6 +1313,8 @@ impl MainWindow {
                 .update(cx, |pane, cx| pane.set_thread(thread, cx));
         }
         if let Some((url, card)) = update.link_preview {
+            self.right_pane
+                .update(cx, |view, cx| view.set_link_preview(&url, card.clone(), cx));
             self.channel
                 .update(cx, |view, cx| view.set_link_preview(&url, card, cx));
         }

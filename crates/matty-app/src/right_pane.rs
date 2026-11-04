@@ -91,7 +91,12 @@ pub enum RightPaneEvent {
     Reply {
         root: SharedString,
         text: SharedString,
+        /// False when the user removed the link's preview while replying.
+        unfurl: bool,
     },
+    /// The reply draft has this link; sync asks the server for its
+    /// preview and calls `set_link_preview` (#188).
+    PreviewLink(SharedString),
     /// Retry a reply that failed; the pane shows it pending again.
     Retry(SharedString),
     /// The user toggled following the thread under `root`.
@@ -156,6 +161,9 @@ pub struct RightPaneView {
     /// The current user's display name, for optimistic rows.
     me: SharedString,
     draft_len: usize,
+    /// The preview above the reply composer (#188).
+    link: crate::draft_link::DraftLink,
+    _link_task: Option<gpui_kit::Task<()>>,
     pending_seq: usize,
     /// The search field at the top of the Search listing.
     search: Entity<InputState>,
@@ -235,7 +243,9 @@ impl RightPaneView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
-                        this.draft_len = composer.read(cx).value(cx).chars().count();
+                        let text = composer.read(cx).value(cx);
+                        this.draft_len = text.chars().count();
+                        this.draft_changed(&text, cx);
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
@@ -259,6 +269,8 @@ impl RightPaneView {
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             draft_len: 0,
+            link: Default::default(),
+            _link_task: None,
             pending_seq: 0,
             search,
             lightbox: cx.new(|_| LightboxState::new([])),
@@ -407,7 +419,43 @@ impl RightPaneView {
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
-        cx.emit(RightPaneEvent::Reply { root, text: body });
+        let unfurl = self.link.sent(&body);
+        self._link_task = None;
+        cx.emit(RightPaneEvent::Reply {
+            root,
+            text: body,
+            unfurl,
+        });
+    }
+
+    /// Follows the reply draft's first link, asked about after a pause in
+    /// typing like the channel composer's.
+    fn draft_changed(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(url) = self.link.follow(text) else {
+            if !self.link.has_link() {
+                self._link_task = None;
+            }
+            return;
+        };
+        self._link_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::draft_link::PAUSE)
+                .await;
+            this.update(cx, |_, cx| cx.emit(RightPaneEvent::PreviewLink(url)))
+                .ok();
+        }));
+    }
+
+    /// What the server read from `url`; ignored once the draft moved on.
+    pub fn set_link_preview(
+        &mut self,
+        url: &str,
+        card: Option<crate::embeds::LinkCard>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.link.answer(url, card) {
+            cx.notify();
+        }
     }
 
     /// Applies `change` to the reply with `id`, if it is loaded, and redraws.
@@ -527,6 +575,16 @@ impl RightPaneView {
             _ => 0,
         };
         self.list = cx.new(|cx| MessageListState::new(rows, cx));
+        let same_thread = match (&self.content, &content) {
+            (Some(RightPaneContent::Thread(a)), Some(RightPaneContent::Thread(b))) => {
+                a.root.id == b.root.id
+            }
+            _ => false,
+        };
+        if !same_thread {
+            self.link = Default::default();
+            self._link_task = None;
+        }
         self.content = content;
         self.selection = None;
         cx.notify();
@@ -970,6 +1028,14 @@ impl RightPaneView {
                     .px(theme.space(4.))
                     .pt(theme.space(1.))
                     .pb(theme.space(4.))
+                    .children(self.link.preview(
+                        "right-pane.link-preview",
+                        cx,
+                        cx.listener(|this, _, _, cx| {
+                            this.link.remove();
+                            cx.notify();
+                        }),
+                    ))
                     .child(
                         Composer::new(&self.composer)
                             .max_height(self.composer_cap)
