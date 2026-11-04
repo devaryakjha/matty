@@ -203,6 +203,27 @@ pub fn file_name(file_id: &str) -> Option<String> {
         .map(|file| file.name.to_string())
 }
 
+/// `MATTY_PREVIEW_POSTS=<n>` fills `general` with `n` posts, the fixtures
+/// over and over, for scrolling a long channel (`scripts/perf-run`, #174).
+pub fn long_posts() -> Option<usize> {
+    std::env::var("MATTY_PREVIEW_POSTS").ok()?.parse().ok()
+}
+
+/// `posts` repeated to `count`, each copy with its own ids.
+fn repeat(posts: &[Post], count: usize) -> Vec<Post> {
+    posts
+        .iter()
+        .cycle()
+        .take(count)
+        .enumerate()
+        .map(|(index, post)| Post {
+            id: format!("{}-{index}", post.id).into(),
+            replies: None,
+            ..post.clone()
+        })
+        .collect()
+}
+
 pub fn channel(id: &str) -> Option<ChannelModel> {
     let row = sidebar()
         .categories
@@ -493,6 +514,9 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         "town-square" => (activity(&row), false, None),
         "gpui" => (vec![], true, None),
         "release-2026-11" => (vec![], false, None),
+        "general" if long_posts().is_some() => {
+            (repeat(&posts, long_posts().unwrap_or(0)), false, None)
+        }
         _ => (posts, false, Some(7)),
     };
     Some(ChannelModel {
