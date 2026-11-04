@@ -292,13 +292,15 @@ fn match_rank(query: &str, place: &Place) -> Option<u8> {
         return Some(0);
     }
     let handle: Vec<SharedString> = place.row.handle.iter().cloned().collect();
-    // A team's name finds its rows only by a word or a run of letters:
-    // its letters scattered would find most rows.
+    // A team's name finds its rows only by a word or a run of letters, as
+    // its letters scattered would find most rows,
     let team = place
         .note
         .as_ref()
         .and_then(|note| matches(query, note, &[]))
-        .filter(|rank| *rank < 2);
+        .filter(|rank| *rank < 2)
+        // and ranks below a row whose own name matches as well.
+        .map(|rank| rank + 1);
     matches(query, &place.row.name, &handle)
         .into_iter()
         .chain(team)
