@@ -588,6 +588,34 @@ async fn ephemeral_and_typing_are_not_stored() {
     assert!(posts::post(store.conn(), "eph").unwrap().is_none());
 }
 
+/// #211: an integration changes or removes its ephemeral post with the
+/// usual post events; those go to the view and stay out of the store too.
+#[tokio::test]
+async fn ephemeral_edits_and_deletes_are_not_stored() {
+    let ephemeral = |at: i64, deleted: i64| {
+        let mut post = post("eph", "c1", "", "bot", 50);
+        post.kind = "system_ephemeral".into();
+        post.update_at = at;
+        post.delete_at = deleted;
+        Box::new(post)
+    };
+    let (seen, store, _dir) = run(vec![
+        event(WsEvent::EphemeralMessage(ephemeral(50, 0))),
+        event(WsEvent::PostEdited(ephemeral(60, 0))),
+        event(WsEvent::PostDeleted(ephemeral(70, 70))),
+    ])
+    .await;
+    let shown: Vec<(i64, i64)> = seen
+        .iter()
+        .filter_map(|c| match c {
+            ChangeSet::Ephemeral(p) => Some((p.update_at, p.delete_at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [(50, 0), (60, 0), (70, 70)]);
+    assert!(posts::post(store.conn(), "eph").unwrap().is_none());
+}
+
 mod fetches {
     use super::*;
     use matty_api::Client;

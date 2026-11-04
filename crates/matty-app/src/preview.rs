@@ -383,6 +383,44 @@ fn repeat(posts: &[Post], count: usize) -> Vec<Post> {
         .collect()
 }
 
+/// An interactive message's buttons and menu, one of each state (#211):
+/// Approve waits for the server, Reject is turned off, Re-run is ready, and
+/// the region menu starts on its default.
+fn preview_actions() -> Vec<crate::interactive::ActionCard> {
+    use crate::interactive::{ActionCard, ActionMenu, MenuSource};
+    let button = |id: &str, name: &str, style: &str| ActionCard {
+        id: id.into(),
+        name: name.into(),
+        style: style.into(),
+        disabled: false,
+        cookie: "".into(),
+        menu: None,
+        pending: false,
+    };
+    vec![
+        ActionCard {
+            pending: true,
+            ..button("approve", "Deploy", "primary")
+        },
+        ActionCard {
+            disabled: true,
+            ..button("reject", "Roll back", "danger")
+        },
+        button("rerun", "Re-run checks", "default"),
+        ActionCard {
+            menu: Some(ActionMenu {
+                source: MenuSource::Static,
+                options: vec![
+                    ("eu-central-1".into(), "Europe (Frankfurt)".into()),
+                    ("us-east-1".into(), "US East".into()),
+                ],
+                default: "eu-central-1".into(),
+            }),
+            ..button("region", "Pick a region", "")
+        },
+    ]
+}
+
 pub fn channel(id: &str) -> Option<ChannelModel> {
     // Another preview server's channel opens empty.
     if let Some(row) = other_servers()
@@ -503,9 +541,24 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     ],
                     footer: "matty / ci.yml".into(),
                     image: None,
+                    author_icon: None,
+                    footer_icon: None,
+                    thumb: None,
+                    actions: preview_actions(),
                 },
             )],
             ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
+        },
+        // Build Bot's answer to Approve, which only the viewer sees (#211).
+        Post {
+            status: PostStatus::Ephemeral,
+            ..post(
+                "p3e",
+                "Build Bot",
+                "09:21",
+                "Yesterday",
+                "Deploy to **eu-central-1** approved. I'll post here when it finishes.",
+            )
         },
         Post {
             embeds: vec![crate::embeds::Embed::Link(crate::embeds::LinkCard {

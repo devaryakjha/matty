@@ -93,6 +93,13 @@ pub(crate) enum Write {
         post_id: String,
         target_time: i64,
     },
+    /// An interactive message's button press or menu choice (#211).
+    PostAction {
+        post_id: String,
+        action_id: String,
+        selected_option: Option<String>,
+        cookie: String,
+    },
     Pin {
         post_id: String,
         pinned: bool,
@@ -191,6 +198,7 @@ impl Write {
             Self::Pin { pinned: false, .. } => "unpin message",
             Self::DeletePreferences(_) => "delete preferences",
             Self::Reminder { .. } => "set reminder",
+            Self::PostAction { .. } => "run action",
             Self::Create(_) => "create channel",
             Self::Patch { .. } => "change channel",
             Self::Notify { .. } => "change notifications",
@@ -215,6 +223,7 @@ impl Write {
             Self::Edit { post_id, .. }
             | Self::Pin { post_id, .. }
             | Self::Reminder { post_id, .. }
+            | Self::PostAction { post_id, .. }
             | Self::Delete { post_id }
             | Self::Unread { post_id, .. } => post_id.clone(),
             Self::React { reaction, .. } => reaction.post_id.clone(),
@@ -610,6 +619,17 @@ pub(crate) async fn run(
                     .set_post_reminder(&user_id, &post_id, target_time)
                     .await?;
                 None
+            }
+            Write::PostAction {
+                post_id,
+                action_id,
+                selected_option,
+                cookie,
+            } => {
+                client
+                    .do_post_action(&post_id, &action_id, selected_option.as_deref(), &cookie)
+                    .await?;
+                Some(Loaded::PostActionDone { post_id, action_id })
             }
             Write::Pin { post_id, pinned } => {
                 if pinned {

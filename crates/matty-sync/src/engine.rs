@@ -560,6 +560,20 @@ pub enum Command {
         /// Which page of results, from 0.
         page: u32,
     },
+    /// Presses an interactive message's button, or picks `selected_option`
+    /// from its menu (#211);
+    /// [`ChangeSet::PostActionDone`](crate::ChangeSet::PostActionDone) or a
+    /// failure answers.
+    RunPostAction {
+        /// The post.
+        post_id: String,
+        /// The button or menu.
+        action_id: String,
+        /// The menu option picked; `None` for a button.
+        selected_option: Option<String>,
+        /// The action's cookie, which an ephemeral post needs.
+        cookie: String,
+    },
     /// Asks the server to remind the user of a post at `target_time`
     /// (Unix seconds); only a failure answers.
     SetReminder {
@@ -902,6 +916,13 @@ impl std::fmt::Debug for Command {
             Self::Search { team_id, .. } => f
                 .debug_struct("Search")
                 .field("team_id", team_id)
+                .finish_non_exhaustive(),
+            Self::RunPostAction {
+                post_id, action_id, ..
+            } => f
+                .debug_struct("RunPostAction")
+                .field("post_id", post_id)
+                .field("action_id", action_id)
                 .finish_non_exhaustive(),
             Self::SetReminder {
                 post_id,
@@ -1813,6 +1834,17 @@ impl Engine {
                 Message::Command(Command::FindPeople { team_id }) => {
                     writes.push(Write::People { team_id });
                 }
+                Message::Command(Command::RunPostAction {
+                    post_id,
+                    action_id,
+                    selected_option,
+                    cookie,
+                }) => writes.push(Write::PostAction {
+                    post_id,
+                    action_id,
+                    selected_option,
+                    cookie,
+                }),
                 Message::Command(Command::SetReminder {
                     post_id,
                     target_time,
@@ -3017,6 +3049,9 @@ impl Engine {
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
+            Loaded::PostActionDone { post_id, action_id } => dirty
+                .direct
+                .push(ChangeSet::PostActionDone { post_id, action_id }),
             Loaded::Search {
                 terms,
                 page,

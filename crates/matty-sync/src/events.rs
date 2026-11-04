@@ -61,6 +61,11 @@ pub(crate) fn apply(
                 })));
             }
         }
+        // The server changes and removes an ephemeral post with the usual
+        // events; it stays out of the store all the same.
+        WsEvent::PostEdited(post) | WsEvent::PostDeleted(post) if is_ephemeral(&post) => {
+            dirty.direct.push(ChangeSet::Ephemeral(Arc::from(post)));
+        }
         WsEvent::PostEdited(post) => {
             let known = posts::post(conn, &post.id)?.is_some();
             if !known {
@@ -406,4 +411,9 @@ fn shows_conversation(preference: &matty_api::models::Preference) -> bool {
         preference.category.as_str(),
         "direct_channel_show" | "group_channel_show"
     )
+}
+
+/// Whether `post` is one only this user sees, which is never stored.
+fn is_ephemeral(post: &matty_api::models::Post) -> bool {
+    post.kind == "system_ephemeral"
 }

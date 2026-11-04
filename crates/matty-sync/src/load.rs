@@ -121,6 +121,8 @@ pub(crate) enum Loaded {
     },
     /// Who matches a typed `@name`, channel members first.
     Suggested { term: String, users: Vec<User> },
+    /// The server took an interactive message's button press or choice.
+    PostActionDone { post_id: String, action_id: String },
     /// What a link names, or `None` when it is gone or hidden.
     Resolved {
         query: crate::LinkQuery,
