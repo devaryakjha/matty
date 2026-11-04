@@ -945,6 +945,12 @@ impl ChannelView {
         self.model.as_ref()
     }
 
+    /// Puts the caret in the composer (Ctrl+Shift+L).
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx))
+    }
+
     /// Replaces the channel and resets the transcript to its end.
     pub fn set_model(
         &mut self,
@@ -3739,10 +3745,9 @@ impl Render for ChannelView {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
-                this.composer
-                    .update(cx, |composer, cx| composer.focus(window, cx))
-            }));
+            .on_action(
+                cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
+            );
         let Some(channel) = self.model.clone() else {
             return root.child(Self::empty(cx));
         };

@@ -14,11 +14,11 @@ use gpui_kit::{
 
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
-    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusSearch, HistoryBack,
-    HistoryForward, MarkAllRead, MarkChannelRead, NextChannel, NextUnreadChannel, OpenPreferences,
-    Platform, PreviousChannel, PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom,
-    SavedMessages, Search, ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn,
-    ZoomOut,
+    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusComposer,
+    FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead, NextChannel,
+    NextUnreadChannel, OpenPreferences, Platform, PreviousChannel, PreviousUnreadChannel,
+    QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search, ShowShortcuts,
+    ToggleRightPane, ToggleSidebar, UnreadsFilter, ZoomIn, ZoomOut,
 };
 use crate::channel::{ChannelEvent, ChannelView};
 use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessageView};
@@ -1494,6 +1494,9 @@ impl MainWindow {
                     }
                     this.login = None;
                     this.login_server = None;
+                    // The sign-in field that had focus is gone; without
+                    // this, shortcuts like Alt-Down do nothing until a click.
+                    window.focus(&this.focus, cx);
                     cx.notify();
                 }
                 Err(error) => {
@@ -3767,6 +3770,12 @@ impl Render for MainWindow {
             .on_action(
                 cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)),
             )
+            // From anywhere outside the channel view, such as the sidebar
+            // or right after sign-in.
+            .on_action(cx.listener(|this, _: &FocusComposer, window, cx| {
+                this.channel
+                    .update(cx, |channel, cx| channel.focus_composer(window, cx))
+            }))
             .size_full()
             .relative()
             .flex()
