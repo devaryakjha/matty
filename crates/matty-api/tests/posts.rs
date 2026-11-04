@@ -97,6 +97,46 @@ fn metadata_decodes_embeds_images_files_reactions_and_emoji() {
     assert_eq!(attachment.fields[1].value, json!(95));
     assert!(attachment.fields[0].short);
 
+    // An interactive message, as the server sends it: the integration's
+    // URL stripped, each action sealed into a cookie.
+    let path = format!(
+        "{}/tests/fixtures/post_interactive.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let post: Post = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let attachment = &post.attachments()[0];
+    assert_eq!(
+        attachment.author_icon,
+        "https://deploy.example.com/icon.png"
+    );
+    assert_eq!(attachment.thumb_url, "https://deploy.example.com/thumb.png");
+    assert_eq!(
+        attachment.footer_icon,
+        "https://deploy.example.com/footer.png"
+    );
+    assert!(!attachment.fields[2].short);
+    let actions: Vec<(&str, bool, bool)> = attachment
+        .actions
+        .iter()
+        .map(|a| (a.id.as_str(), a.is_select(), a.disabled))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("approve", false, false),
+            ("reject", false, true),
+            ("region", true, false),
+            ("reviewer", true, false)
+        ]
+    );
+    assert_eq!(attachment.actions[0].style, "primary");
+    assert!(!attachment.actions[0].cookie.is_empty());
+    let region = &attachment.actions[2];
+    assert_eq!(region.default_option, "eu-central-1");
+    assert_eq!(region.options[1].text, "US East");
+    assert_eq!(attachment.actions[3].data_source, "users");
+    assert!(attachment.actions[3].options.is_empty(), "null options");
+
     let post: Post = fixture("post_with_files");
     let file = &post.metadata.files[0];
     assert_eq!(post.file_ids, vec![file.id.clone()]);
@@ -442,4 +482,52 @@ async fn reactions_and_drafts_send_the_expected_requests() {
     assert!(client.drafts("u1", "t1").await.unwrap().is_empty());
     client.delete_draft("u1", "c1", "").await.unwrap();
     client.delete_draft("u1", "c1", "r1").await.unwrap();
+}
+
+#[tokio::test]
+async fn post_actions_send_the_choice_and_the_cookie() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/p1/actions/approve"))
+        .and(body_json(json!({ "cookie": "sealed" })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "status": "OK", "trigger_id": "" })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/p1/actions/region"))
+        .and(body_json(json!({ "selected_option": "us-east-1" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "OK" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/p1/actions/gone"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "id": "api.post.do_action.action_integration.app_error",
+            "message": "Action integration error.",
+            "status_code": 400
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let answer = client
+        .do_post_action("p1", "approve", None, "sealed")
+        .await
+        .unwrap();
+    assert_eq!(answer.status, "OK");
+    client
+        .do_post_action("p1", "region", Some("us-east-1"), "")
+        .await
+        .unwrap();
+    let error = client
+        .do_post_action("p1", "gone", None, "")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Action integration error"),
+        "{error}"
+    );
 }

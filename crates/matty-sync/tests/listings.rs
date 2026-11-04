@@ -166,3 +166,52 @@ async fn a_reminder_reaches_the_server() {
     }
     server.verify().await;
 }
+
+/// #211: a button press reaches the server with its cookie and answers
+/// when done; a refusal answers as a failed "run action".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_action_reaches_the_server_and_answers() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/p1/actions/approve"))
+        .and(body_partial_json(json!({"cookie": "sealed"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/p1/actions/region"))
+        .and(body_partial_json(json!({"selected_option": "eu"})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "id": "api.post.do_action.action_integration.app_error",
+            "message": "Action integration error.",
+            "status_code": 400
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    sync.send(Command::RunPostAction {
+        post_id: "p1".into(),
+        action_id: "approve".into(),
+        selected_option: None,
+        cookie: "sealed".into(),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::PostActionDone { post_id, action_id }
+            if post_id == "p1" && action_id == "approve")
+    })
+    .await;
+    sync.send(Command::RunPostAction {
+        post_id: "p1".into(),
+        action_id: "region".into(),
+        selected_option: Some("eu".into()),
+        cookie: String::new(),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Failed(matty_sync::CommandError::Server { action: "run action", target, .. })
+            if target == "p1")
+    })
+    .await;
+    server.verify().await;
+}

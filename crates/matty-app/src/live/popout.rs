@@ -128,6 +128,7 @@ impl Live {
             team_icons: self.team_icons.clone(),
             custom_emoji: self.custom_emoji.clone(),
             views: self.views.fork(),
+            interactive: Default::default(),
         };
         (fork, changes)
     }

@@ -26,6 +26,7 @@ pub mod emoji;
 pub mod fd_limit;
 pub mod forward;
 pub mod instance;
+pub mod interactive;
 pub mod links;
 pub mod live;
 pub mod logging;

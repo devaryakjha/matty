@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use crate::{
     ApiError, Client,
     models::{
-        ChannelUnreadAt, ChannelViewed, Draft, Post, PostList, Reaction, UserThread, UserThreads,
+        ChannelUnreadAt, ChannelViewed, Draft, Post, PostActionResponse, PostList, Reaction,
+        UserThread, UserThreads,
     },
 };
 
@@ -398,6 +399,32 @@ impl Client {
         )
         .await
         .map(|_| ())
+    }
+
+    /// `POST posts/{post_id}/actions/{action_id}`: presses an interactive
+    /// message's button, or picks `selected_option` from its menu. The
+    /// server passes the choice on to the integration. `cookie` is the
+    /// action's [`cookie`](crate::models::PostAction::cookie), which an
+    /// ephemeral post needs; empty leaves it out.
+    pub async fn do_post_action(
+        &self,
+        post_id: &str,
+        action_id: &str,
+        selected_option: Option<&str>,
+        cookie: &str,
+    ) -> Result<PostActionResponse, ApiError> {
+        let mut body = serde_json::Map::new();
+        if let Some(option) = selected_option {
+            body.insert("selected_option".into(), json!(option));
+        }
+        if !cookie.is_empty() {
+            body.insert("cookie".into(), json!(cookie));
+        }
+        self.post(
+            &format!("posts/{post_id}/actions/{action_id}"),
+            &Value::Object(body),
+        )
+        .await
     }
 
     /// `PUT users/{user_id}/teams/{team_id}/threads/{thread_id}/following`.

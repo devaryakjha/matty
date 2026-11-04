@@ -290,6 +290,67 @@ pub struct MessageAttachment {
     pub footer: String,
     /// Footer icon URL.
     pub footer_icon: String,
+    /// Buttons and menus an integration offers (interactive messages).
+    #[serde(deserialize_with = "null_as_default")]
+    pub actions: Vec<PostAction>,
+}
+
+/// A button or menu on a [`MessageAttachment`]. Choosing it calls
+/// `posts/{post_id}/actions/{id}`; the server passes it on to the
+/// integration, whose URL it keeps to itself.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PostAction {
+    /// Action id, unique within the post.
+    pub id: String,
+    /// `button` or `select`; a button when empty.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The button's label, or the menu's placeholder.
+    pub name: String,
+    /// Whether the integration has turned it off.
+    pub disabled: bool,
+    /// A button's look: `default`, `primary`, `success`, `good`,
+    /// `warning`, `danger`, or a hex color.
+    pub style: String,
+    /// A menu's options: empty for [`options`](Self::options), `users`
+    /// or `channels` for the server's own lists.
+    pub data_source: String,
+    /// A static menu's options.
+    #[serde(deserialize_with = "null_as_default")]
+    pub options: Vec<PostActionOption>,
+    /// The value a menu starts on.
+    pub default_option: String,
+    /// The server's sealed copy of the action, sent back with the choice so
+    /// it can run an action on a post it does not store (an ephemeral one).
+    pub cookie: String,
+}
+
+impl PostAction {
+    /// Whether this is a menu rather than a button.
+    pub fn is_select(&self) -> bool {
+        self.kind == "select"
+    }
+}
+
+/// One option of a menu [`PostAction`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PostActionOption {
+    /// What the menu shows.
+    pub text: String,
+    /// What is sent when it is chosen.
+    pub value: String,
+}
+
+/// What `posts/{post_id}/actions/{action_id}` answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PostActionResponse {
+    /// `OK`.
+    pub status: String,
+    /// Set when the integration wants to open an interactive dialog.
+    pub trigger_id: String,
 }
 
 /// One field of a [`MessageAttachment`].
