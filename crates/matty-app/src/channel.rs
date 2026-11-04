@@ -21,7 +21,7 @@ use crate::channel_settings::{
 };
 use crate::directory::{AddMembersEvent, AddMembersView};
 use crate::profile::{ProfileActions, UserProfile, profile_card};
-use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
+use crate::settings::{ClockFormat, MessageDisplay, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -37,8 +37,8 @@ use crate::ui::{
     markdown::markdown,
     menu::{Menu, MenuItem, MenuState},
     message::{
-        Message, MessageHighlight, MessageStatus, Reaction, day_divider, message_action,
-        message_actions, new_messages_divider,
+        Message, MessageDensity, MessageHighlight, MessageStatus, Reaction, day_divider,
+        message_action, message_actions, new_messages_divider,
     },
     message_list::{MessageList, MessageListState},
     popover::popover,
@@ -356,6 +356,14 @@ impl ChannelModel {
     }
 }
 
+/// The row density from Preferences (PLAN §4.2 display).
+pub fn message_density(cx: &App) -> MessageDensity {
+    match SettingsStore::global(cx).read(cx).get().display {
+        MessageDisplay::Standard => MessageDensity::Standard,
+        MessageDisplay::Compact => MessageDensity::Compact,
+    }
+}
+
 /// What the channel view asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelEvent {
@@ -548,6 +556,8 @@ impl ChannelView {
                 this.composer.update(cx, |composer, _| {
                     composer.set_submit_on_enter(send_on == SendKey::Enter)
                 });
+                // Display density changes every row's height.
+                this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
             },
         )
@@ -2516,6 +2526,7 @@ impl ChannelView {
                 }
             })
             .actions(actions)
+            .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
             .child(match editor {
                 Some(composer) => Self::editor(composer, cx).into_any_element(),
