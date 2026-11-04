@@ -172,6 +172,8 @@ pub struct MainWindow {
     collapsed_threads: Option<(bool, bool)>,
     /// Where notifications go on this platform (#141).
     notifier: Box<dyn matty_notify::Notifier>,
+    /// What the dock badge shows now (#141).
+    badge: matty_notify::Badge,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -765,6 +767,7 @@ impl MainWindow {
             keywords,
             log_level,
             notifier: matty_notify::backend::platform(clicked_tx),
+            badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
             browse,
@@ -798,6 +801,10 @@ impl MainWindow {
             login_server: None,
             sidebar_shown: false,
         };
+        cx.observe(&this.sidebar, |this, _, cx| this.update_badge(cx))
+            .detach();
+        cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
+            .detach();
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
         let saved = this.settings.read(cx).get().account.clone();
@@ -2492,6 +2499,18 @@ impl MainWindow {
             .into_any_element()
     }
 
+    /// Puts the unread and mention totals on the dock icon (#141); signed
+    /// out, the sidebar is loading and the badge clears.
+    fn update_badge(&mut self, cx: &mut Context<Self>) {
+        let rail = self.rail.read(cx);
+        let badge =
+            crate::badge::dock_badge(self.sidebar.read(cx).model(), rail.teams(), rail.current());
+        if badge != self.badge {
+            self.badge = badge;
+            self.notifier.set_badge(badge);
+        }
+    }
+
     /// Sign out returns to the sign-in card at once; sync ends the session
     /// on the server and then stops, and the account's cache is deleted
     /// (#160). Offline, the server is told nothing but the cache still goes.
@@ -3600,6 +3619,9 @@ impl Render for MainWindow {
             .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
+            .on_action(
+                cx.listener(|this, _: &crate::menu::SignOut, window, cx| this.sign_out(window, cx)),
+            )
             .on_action(move |_: &QuickSwitcher, window, cx| {
                 switcher.update(cx, |switcher, cx| switcher.open(window, cx))
             })
