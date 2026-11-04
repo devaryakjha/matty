@@ -201,6 +201,17 @@ impl World {
         })
     }
 
+    /// `user`'s read position in the channel, as the server has it: every
+    /// post created after it is unread.
+    pub async fn last_viewed_at(&self, user: &User) -> i64 {
+        let member: Value = user
+            .client
+            .get(&format!("channels/{}/members/{}", self.channel.id, user.id))
+            .await
+            .unwrap();
+        member["last_viewed_at"].as_i64().unwrap()
+    }
+
     /// `user` posts `message` in the channel, as a reply to `root_id` when
     /// it is not empty.
     pub async fn post(&self, user: &User, message: &str, root_id: &str) -> Post {
@@ -279,7 +290,21 @@ impl Engine {
     /// A load that fails ends the wait at once with its error, and a wait
     /// that times out lists the connection changes it saw, so a failure
     /// says why.
-    pub async fn wait(&self, what: &str, mut stop: impl FnMut(&ChangeSet) -> bool) -> ChangeSet {
+    pub async fn wait(&self, what: &str, stop: impl FnMut(&ChangeSet) -> bool) -> ChangeSet {
+        self.try_wait(what, stop)
+            .await
+            .unwrap_or_else(|connection| {
+                panic!("timed out waiting for {what}; connection changes: {connection:?}")
+            })
+    }
+
+    /// [`Engine::wait`], answering a timeout with the connection changes
+    /// seen so the caller can add what else it saw.
+    async fn try_wait(
+        &self,
+        what: &str,
+        mut stop: impl FnMut(&ChangeSet) -> bool,
+    ) -> Result<ChangeSet, Vec<String>> {
         let mut connection = Vec::new();
         let waited = tokio::time::timeout(WAIT, async {
             loop {
@@ -305,25 +330,37 @@ impl Engine {
             }
         })
         .await;
-        waited.unwrap_or_else(|_| {
-            panic!("timed out waiting for {what}; connection changes: {connection:?}")
-        })
+        waited.map_err(|_| connection)
     }
 
-    /// Opens `channel_id` and waits for a window `stop` accepts.
+    /// Opens `channel_id` and waits for a window `stop` accepts. A wait
+    /// that times out also names the last window the engine showed, so a
+    /// window in the wrong place reads differently from no window at all.
     pub async fn open(&self, channel_id: &str, mut stop: impl FnMut(&[Post]) -> bool) -> Vec<Post> {
         self.send(Command::OpenChannel {
             channel_id: channel_id.into(),
         });
-        let ChangeSet::Posts { posts, .. } = self
-            .wait("the channel's posts", |change| {
-                matches!(change, ChangeSet::Posts { channel_id: id, posts } if id == channel_id && stop(posts))
+        let mut last = None;
+        let waited = self
+            .try_wait("the channel's posts", |change| match change {
+                ChangeSet::Posts {
+                    channel_id: id,
+                    posts,
+                } if id == channel_id => {
+                    last = Some(describe(posts));
+                    stop(posts)
+                }
+                _ => false,
             })
-            .await
-        else {
-            unreachable!()
-        };
-        posts.to_vec()
+            .await;
+        match waited {
+            Ok(ChangeSet::Posts { posts, .. }) => posts.to_vec(),
+            Ok(_) => unreachable!(),
+            Err(connection) => panic!(
+                "timed out waiting for the channel's posts; last window: {}; connection changes: {connection:?}",
+                last.as_deref().unwrap_or("none")
+            ),
+        }
     }
 
     /// Waits for the sidebar to show `channel_id` as `stop` accepts it,
@@ -358,6 +395,19 @@ impl Engine {
         drop(self.sync);
         tokio::time::sleep(Duration::from_millis(300)).await;
         self._dir
+    }
+}
+
+/// A posts window in a line: how many, and the oldest and newest messages.
+fn describe(posts: &[Post]) -> String {
+    match (posts.first(), posts.last()) {
+        (Some(oldest), Some(newest)) => format!(
+            "{} posts, {:?} to {:?}",
+            posts.len(),
+            oldest.message,
+            newest.message
+        ),
+        _ => "empty".into(),
     }
 }
 
