@@ -2398,7 +2398,7 @@ fn react_locally(
     Ok(())
 }
 
-fn cached_crt(conn: &Db) -> Result<bool, StoreError> {
+pub(crate) fn cached_crt(conn: &Db) -> Result<bool, StoreError> {
     Ok(posts::cursor(conn, CRT_KEY)?.as_deref() == Some("1"))
 }
 

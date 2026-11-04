@@ -4699,6 +4699,9 @@ dependencies = [
 [[package]]
 name = "matty-notify"
 version = "0.0.1"
+dependencies = [
+ "tracing",
+]
 
 [[package]]
 name = "matty-store"
