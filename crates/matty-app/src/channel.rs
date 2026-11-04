@@ -684,6 +684,9 @@ pub struct ChannelView {
     composer_cap: Pixels,
     /// The connection is down: sends wait, and their rows say so.
     away: bool,
+    /// Posts whose preview images the user collapsed (#187), as the web
+    /// app's per-post toggle; they expand again with the toggle.
+    collapsed_previews: std::collections::HashSet<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -926,6 +929,7 @@ impl ChannelView {
             open_at_end: false,
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
+            collapsed_previews: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -2085,6 +2089,29 @@ impl ChannelView {
         }
     }
 
+    /// Collapses or expands the images in a post's previews; the row's
+    /// height changes, so the list measures it again.
+    fn collapse_preview(&mut self, id: SharedString, collapsed: bool, cx: &mut Context<Self>) {
+        let changed = if collapsed {
+            self.collapsed_previews.insert(id.clone())
+        } else {
+            self.collapsed_previews.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        let posts = self.model.as_ref().map(|model| &model.posts);
+        let row = self.rows.iter().position(|row| {
+            matches!(row, Row::Post(index)
+                if posts.and_then(|posts| posts.get(*index)).is_some_and(|post| post.id == id))
+        });
+        if let Some(row) = row {
+            self.list
+                .update(cx, |list, cx| list.remeasure_items(row..row + 1, cx));
+        }
+        cx.notify();
+    }
+
     fn toggle_save(&mut self, id: SharedString, cx: &mut Context<Self>) {
         if self.mutate_post(&id, |post| post.saved = !post.saved, cx) {
             cx.emit(ChannelEvent::ToggleSave(id));
@@ -2801,7 +2828,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away): (bool, bool),
+        (menu_open, away, previews_collapsed): (bool, bool, bool),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
@@ -2961,7 +2988,18 @@ impl ChannelView {
             });
         }
         if !post.embeds.is_empty() {
-            row = row.child(crate::embeds::post_embeds(&id, &post.embeds, cx));
+            let (view, post_id) = (cx.entity().downgrade(), id.clone());
+            row = row.child(crate::embeds::post_embeds(
+                &id,
+                &post.embeds,
+                previews_collapsed,
+                std::rc::Rc::new(move |collapsed, _, cx| {
+                    let post_id = post_id.clone();
+                    view.update(cx, |this, cx| this.collapse_preview(post_id, collapsed, cx))
+                        .ok();
+                }),
+                cx,
+            ));
         }
         if !post.files.is_empty() {
             let (image_view, image_post) = (cx.entity().downgrade(), id.clone());
@@ -3160,12 +3198,13 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
+                        let previews_collapsed = this.collapsed_previews.contains(&post.id);
                         Self::post_row(
                             &post,
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (menu_open, away),
+                            (menu_open, away, previews_collapsed),
                             cx,
                         )
                         .into_any_element()
