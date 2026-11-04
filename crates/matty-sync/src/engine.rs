@@ -209,6 +209,13 @@ pub enum Command {
         /// For `dnd` with a duration: when it ends, in seconds since the epoch.
         dnd_end_time: Option<i64>,
     },
+    /// Replaces the user's notification preferences, such as
+    /// `mention_keys`, with this whole map;
+    /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
+    SetNotifyProps {
+        /// Every key, changed or not: the server replaces the map.
+        notify_props: std::collections::HashMap<String, String>,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -478,6 +485,8 @@ impl std::fmt::Debug for Command {
                 .debug_struct("SetStatus")
                 .field("status", status)
                 .finish_non_exhaustive(),
+            // Keywords are the user's own words: keep them out of logs.
+            Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
             Self::OpenDirect { user_ids } => f
                 .debug_struct("OpenDirect")
                 .field("user_ids", user_ids)
@@ -1013,6 +1022,9 @@ impl Engine {
                     status,
                     dnd_end_time,
                 }),
+                Message::Command(Command::SetNotifyProps { notify_props }) => {
+                    writes.push(Write::NotifyProps(notify_props))
+                }
                 Message::Command(Command::SetFavorite {
                     channel_id,
                     favorite,
@@ -1701,6 +1713,9 @@ impl Engine {
                 }
                 self.me = Some(me.id.clone());
                 self.capabilities = Some((*capabilities).clone());
+                // The window reads the user's own notification preferences
+                // (mention keywords) from here.
+                dirty.direct.push(ChangeSet::Me(Arc::from(me)));
                 dirty
                     .direct
                     .push(ChangeSet::Config(Arc::from(capabilities)));

@@ -19,7 +19,8 @@ const GROUP_MS: i64 = 5 * 60 * 1000;
 /// Who is looking, and where.
 pub struct Viewer<'a> {
     pub user_id: &'a str,
-    pub username: &'a str,
+    /// What counts as mentioning the viewer, for the mention highlight.
+    pub keys: &'a MentionKeys,
     pub zone: &'a TimeZone,
     pub now: Timestamp,
 }
@@ -46,7 +47,7 @@ pub fn channel_model(
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
     let mut previous: Option<(&str, i64, SharedString)> = None;
-    let mention = MentionKeys::username(viewer.username);
+    let mention = viewer.keys;
     for post in posts.unwrap_or_default() {
         if post.delete_at != 0 || !post.kind.is_empty() && post.kind.starts_with("system_") {
             continue;
@@ -57,9 +58,7 @@ pub fn channel_model(
             *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
         });
         previous = Some((&post.user_id, post.create_at, day.clone()));
-        rows.push(display_post(
-            post, users, viewer, &mention, stamp, continues,
-        ));
+        rows.push(display_post(post, users, viewer, mention, stamp, continues));
     }
     ChannelModel {
         id: row.id.clone(),
@@ -136,12 +135,12 @@ fn display_post(
 /// A post shown on its own, as in search results: never a continuation.
 pub fn listed_post(post: &ApiPost, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> Post {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
-    let mention = MentionKeys::username(viewer.username);
+    let mention = viewer.keys;
     display_post(
         post,
         users,
         viewer,
-        &mention,
+        mention,
         when(post.create_at, viewer.zone, today),
         false,
     )
@@ -239,10 +238,13 @@ mod tests {
         }
     }
 
+    static KEYS: std::sync::LazyLock<MentionKeys> =
+        std::sync::LazyLock::new(|| MentionKeys::username("arya"));
+
     fn viewer(zone: &TimeZone) -> Viewer<'_> {
         Viewer {
             user_id: "me",
-            username: "arya",
+            keys: &KEYS,
             zone,
             // 2026-11-04 12:00 UTC.
             now: Timestamp::from_second(1_793_793_600).unwrap(),

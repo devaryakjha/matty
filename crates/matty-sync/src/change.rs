@@ -158,6 +158,9 @@ pub enum ChangeSet {
         /// Its people.
         users: Arc<[User]>,
     },
+    /// The signed-in user as the server sent them at sign-in, with their
+    /// own `notify_props`; later changes come as [`ChangeSet::Users`].
+    Me(Arc<User>),
     /// These users' statuses changed.
     Presence(Arc<[Status]>),
     /// A channel the user asked to open ([`Command::OpenDirect`] or

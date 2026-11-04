@@ -690,6 +690,17 @@ pub fn uploads() -> Vec<Upload> {
     ]
 }
 
+/// The preview user's notification preferences, with two keywords.
+pub fn notify_props() -> std::collections::HashMap<String, String> {
+    [
+        ("desktop", "mention"),
+        ("mention_keys", "arya,@arya,release,design review"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect()
+}
+
 pub fn account() -> Account {
     Account {
         display_name: "Arya".into(),

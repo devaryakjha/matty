@@ -49,6 +49,7 @@ pub(crate) enum Write {
         status: String,
         dnd_end_time: Option<i64>,
     },
+    NotifyProps(std::collections::HashMap<String, String>),
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -101,6 +102,7 @@ impl Write {
             Self::SaveDraft(_) => "save draft",
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
+            Self::NotifyProps(_) => "save notification preferences",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
@@ -126,7 +128,7 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } => user_id.to_owned(),
+            Self::Status { .. } | Self::NotifyProps(_) => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -240,6 +242,10 @@ pub(crate) async fn run(
             } => {
                 let status = client.set_status(&user_id, &status, dnd_end_time).await?;
                 Some(Loaded::Statuses(vec![status]))
+            }
+            Write::NotifyProps(notify_props) => {
+                let user = client.patch_notify_props(&user_id, &notify_props).await?;
+                Some(Loaded::Users(vec![user]))
             }
             Write::OpenDirect { user_ids } => {
                 let channel = match user_ids.as_slice() {

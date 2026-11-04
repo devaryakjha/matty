@@ -148,6 +148,20 @@ impl Client {
         self.put(&format!("users/{user_id}/status"), &body).await
     }
 
+    /// `PUT users/{user_id}/patch` with the whole `notify_props` map: the
+    /// server replaces the map, so it carries every key, changed or not.
+    pub async fn patch_notify_props(
+        &self,
+        user_id: &str,
+        notify_props: &std::collections::HashMap<String, String>,
+    ) -> Result<User, ApiError> {
+        self.put(
+            &format!("users/{user_id}/patch"),
+            &json!({ "notify_props": notify_props }),
+        )
+        .await
+    }
+
     /// `GET channels/{channel_id}`.
     pub async fn channel(&self, channel_id: &str) -> Result<Channel, ApiError> {
         self.get(&format!("channels/{channel_id}")).await

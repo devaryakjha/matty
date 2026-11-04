@@ -39,6 +39,8 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_close, dialog_description, dialog_popup, dialog_title},
     drawer::{Drawer, DrawerContent, DrawerHandle, DrawerSide},
+    field::Field,
+    input::{InputEvent, InputState},
     kbd::Kbd,
     markdown::selection_root,
     resizable::{PaneLimits, Resizable},
@@ -115,6 +117,11 @@ pub struct MainWindow {
     sidebar_visible: bool,
     shortcuts: DialogHandle,
     preferences: DialogHandle,
+    /// Preferences' mention keywords, saved to the server on Enter or when
+    /// the field loses focus (#192).
+    keywords: Entity<InputState>,
+    /// The user's `notify_props` as the server last sent them.
+    notify_props: Option<std::collections::HashMap<String, String>>,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
     browse: Entity<BrowseView>,
     new_message: Entity<NewMessageView>,
@@ -643,6 +650,21 @@ impl MainWindow {
             },
         )
         .detach();
+        let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
+        let keywords = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("deploy, on-call");
+            if let Some(props) = &preview_props {
+                let text = matty_notify::mention::keywords_text("arya", props);
+                input.set_value(text, window, cx);
+            }
+            input
+        });
+        cx.subscribe(&keywords, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.save_keywords(cx);
+            }
+        })
+        .detach();
         let history: Vec<SharedString> = selected_channel.iter().cloned().collect();
         let mut this = Self {
             settings,
@@ -657,6 +679,8 @@ impl MainWindow {
             sidebar_visible: true,
             shortcuts: DialogHandle::new(false),
             preferences: DialogHandle::new(false),
+            keywords,
+            notify_props: preview_props,
             browse,
             new_message,
             create_channel,
@@ -1091,6 +1115,15 @@ impl MainWindow {
         if let Some(queued) = update.queued {
             self.queued = queued;
             cx.notify();
+        }
+        if let Some(props) = update.notify_props {
+            let text = matty_notify::mention::keywords_text(&self.username(cx), &props);
+            self.keywords.update(cx, |input, cx| {
+                if input.value() != text.as_str() {
+                    input.set_value(text, window, cx);
+                }
+            });
+            self.notify_props = Some(props);
         }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {
@@ -2329,6 +2362,25 @@ impl MainWindow {
     /// Preferences (DESIGN.md §5): appearance first, with every control a
     /// gpuicn one and every change written to settings straight away so
     /// the window re-themes behind the dialog.
+    fn username(&self, cx: &gpui_kit::App) -> String {
+        self.account.read(cx).account().username.to_string()
+    }
+
+    /// Sends the typed keywords when they differ from the server's.
+    fn save_keywords(&mut self, cx: &mut Context<Self>) {
+        let (Some(live), Some(props)) = (&self.live, &self.notify_props) else {
+            return;
+        };
+        let typed = self.keywords.read(cx).value().to_string();
+        let next = matty_notify::mention::with_keywords(&self.username(cx), props, &typed);
+        if next != *props {
+            live.send(matty_sync::Command::SetNotifyProps {
+                notify_props: next.clone(),
+            });
+            self.notify_props = Some(next);
+        }
+    }
+
     fn preferences(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let settings = self.settings.read(cx).get().clone();
@@ -2610,6 +2662,18 @@ impl MainWindow {
                         "Message display",
                         display_section.into_any_element(),
                     ))
+                    .when(self.notify_props.is_some(), |list| {
+                        list.child(section(
+                            "Notifications",
+                            Field::new("preferences.keywords", &self.keywords)
+                                .label("Mention keywords")
+                                .description(
+                                    "Words that count as mentioning you, separated by commas. \
+                                     @username always does.",
+                                )
+                                .into_any_element(),
+                        ))
+                    })
                     .child(section(
                         "Window",
                         div()

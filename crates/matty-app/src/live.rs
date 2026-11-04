@@ -33,6 +33,11 @@ pub struct Live {
     presence: HashMap<String, Presence>,
     /// The signed-in user's id and username.
     me: (String, String),
+    /// What counts as mentioning the user, from their `notify_props`.
+    keys: matty_notify::MentionKeys,
+    /// The user's own `notify_props`, the whole map, for Preferences to
+    /// edit and send back.
+    notify_props: HashMap<String, String>,
     /// Everyone whose posts have been on screen.
     users: HashMap<String, User>,
     /// The channel on screen and its latest posts snapshot.
@@ -126,6 +131,8 @@ pub struct Update {
     /// The user's own presence from the server, with when Do not disturb
     /// ends if the server said (#190).
     pub own_presence: Option<(Presence, Option<i64>)>,
+    /// The user's own `notify_props` from the server, for Preferences.
+    pub notify_props: Option<HashMap<String, String>>,
     /// The people in the open channel's posts.
     pub profiles: Option<Vec<UserProfile>>,
     /// The shown team's public channels, for Browse channels.
@@ -323,6 +330,8 @@ impl Live {
                 sections: HashMap::new(),
                 presence: HashMap::new(),
                 me: (account.user_id.clone(), account.username.clone()),
+                keys: matty_notify::MentionKeys::username(account.username.clone()),
+                notify_props: HashMap::new(),
                 users: HashMap::new(),
                 open: None,
                 posts: None,
@@ -417,11 +426,25 @@ impl Live {
         Some(update.unwrap_or(ChannelUpdate::Replace(model)))
     }
 
+    /// Takes the user's own `notify_props` from `user`. Other fetches of
+    /// the user leave the map out, so an empty one changes nothing.
+    fn take_notify_props(&mut self, user: &User, update: &mut Update) {
+        if user.id == self.me.0 && !user.notify_props.is_empty() {
+            self.keys = matty_notify::MentionKeys::from_props(
+                &user.username,
+                &user.first_name,
+                &user.notify_props,
+            );
+            self.notify_props = user.notify_props.clone();
+            update.notify_props = Some(self.notify_props.clone());
+        }
+    }
+
     fn channel_model(&self) -> Option<ChannelModel> {
         let row = self.open.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            username: &self.me.1,
+            keys: &self.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -575,7 +598,7 @@ impl Live {
         let (terms, posts) = self.search.as_ref()?;
         let viewer = crate::transcript::Viewer {
             user_id: &self.me.0,
-            username: &self.me.1,
+            keys: &self.keys,
             zone: &self.zone,
             now: jiff::Timestamp::now(),
         };
@@ -871,9 +894,16 @@ impl Live {
                     update.profiles = self.shown.is_some().then(|| self.profiles());
                 }
             }
+            ChangeSet::Me(user) => {
+                self.take_notify_props(user, &mut update);
+                if self.posts.is_some() {
+                    update.channel = self.channel_update();
+                }
+            }
             ChangeSet::Users(users) => {
                 for user in users.iter() {
                     self.users.insert(user.id.clone(), user.clone());
+                    self.take_notify_props(user, &mut update);
                 }
                 if self
                     .search
@@ -1249,6 +1279,30 @@ mod tests {
                 presence: Presence::Dnd
             }
         );
+    }
+
+    #[test]
+    fn the_users_notify_props_set_the_mention_keys() {
+        let mut live = live();
+        let me = User {
+            id: live.me.0.clone(),
+            username: "me".into(),
+            notify_props: [("mention_keys".to_string(), "me,@me,deploy".to_string())]
+                .into_iter()
+                .collect(),
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::Me(Arc::new(me.clone())));
+        assert_eq!(update.notify_props.as_ref().map(|p| p.len()), Some(1));
+        assert!(live.keys.mentioned("the deploy is out"));
+        // A later fetch without the map keeps the keywords.
+        let bare = User {
+            notify_props: Default::default(),
+            ..me
+        };
+        let update = live.apply(&ChangeSet::Users(Arc::from(vec![bare])));
+        assert_eq!(update.notify_props, None);
+        assert!(live.keys.mentioned("the deploy is out"));
     }
 
     #[test]

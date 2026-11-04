@@ -79,6 +79,48 @@ impl MentionKeys {
     }
 }
 
+/// The user's own keywords from `notify_props`, as Preferences shows them:
+/// comma-separated, without the username entries Mattermost keeps there.
+pub fn keywords_text(username: &str, props: &HashMap<String, String>) -> String {
+    MentionKeys::from_props(username, "", props)
+        .keywords
+        .join(", ")
+}
+
+/// `props` with `mention_keys` set to the keywords typed in Preferences.
+/// The username entries already there stay first, as the webapp keeps
+/// them; repeated and empty keywords drop out.
+pub fn with_keywords(
+    username: &str,
+    props: &HashMap<String, String>,
+    typed: &str,
+) -> HashMap<String, String> {
+    let is_username = |key: &str| {
+        key.strip_prefix('@')
+            .unwrap_or(key)
+            .eq_ignore_ascii_case(username)
+    };
+    let mut keys: Vec<String> = props
+        .get("mention_keys")
+        .map(|keys| {
+            keys.split(',')
+                .map(str::trim)
+                .filter(|key| is_username(key))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    for key in typed.split(',').map(str::trim) {
+        if !key.is_empty() && !is_username(key) && !keys.iter().any(|k| k.eq_ignore_ascii_case(key))
+        {
+            keys.push(key.to_owned());
+        }
+    }
+    let mut props = props.clone();
+    props.insert("mention_keys".into(), keys.join(","));
+    props
+}
+
 /// Characters that continue a word or a username.
 fn word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -157,6 +199,17 @@ mod tests {
         assert!(on.mentioned("arya, look"));
         assert!(!on.mentioned("aryan, look"));
         assert!(!on.mentioned("mail@arya"));
+    }
+
+    #[test]
+    fn keywords_round_trip_through_preferences() {
+        let stored = props(&[("desktop", "all"), ("mention_keys", "arya,@arya,deploy")]);
+        assert_eq!(keywords_text("arya", &stored), "deploy");
+        let saved = with_keywords("arya", &stored, " deploy, On-call ,, on-call, @Arya ");
+        assert_eq!(saved["mention_keys"], "arya,@arya,deploy,On-call");
+        assert_eq!(saved["desktop"], "all");
+        let cleared = with_keywords("arya", &stored, "");
+        assert_eq!(cleared["mention_keys"], "arya,@arya");
     }
 
     #[test]
