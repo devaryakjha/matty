@@ -20,7 +20,7 @@ use crate::channel::{
     message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
     reaction_tooltip, waiting_items, waiting_to_send,
 };
-use crate::profile::{ProfileActions, UserProfile, profile_card};
+use crate::profile::{ProfileActions, UserProfile, profile_card, profile_pane};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
@@ -95,6 +95,8 @@ pub enum RightPaneContent {
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
     Search(SearchModel),
+    /// Someone's profile (#212).
+    Profile(UserProfile),
 }
 
 /// What the pane asks the window to do.
@@ -169,6 +171,8 @@ pub enum RightPaneEvent {
     OpenPinned,
     /// The user clicked a link or an entity chip in a message (#103).
     OpenLink(SharedString),
+    /// View profile on a member's profile card; the window shows it here.
+    ViewProfile(UserProfile),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -2282,7 +2286,9 @@ impl RightPaneView {
         .content(move |_, _, cx| {
             let (message_profile, mention_profile) = (card_profile.clone(), card_profile.clone());
             let (message_view, mention_view) = (message_view.clone(), mention_view.clone());
-            let (close_message, close_mention) = (cx.entity(), cx.entity());
+            let (close_message, close_mention, close_view) =
+                (cx.entity(), cx.entity(), cx.entity());
+            let (view_view, view_profile) = (mention_view.clone(), card_profile.clone());
             profile_card(
                 &username,
                 &card_profile,
@@ -2301,6 +2307,11 @@ impl RightPaneView {
                         let event = RightPaneEvent::Mention(mention_profile.username.clone());
                         mention_view.update(cx, |_, cx| cx.emit(event)).ok();
                     }),
+                    on_view: Some(Box::new(move |window, cx| {
+                        close_view.update(cx, |state, cx| state.dismiss(window, cx));
+                        let event = RightPaneEvent::ViewProfile(view_profile.clone());
+                        view_view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })),
                 },
                 cx,
             )
@@ -2442,6 +2453,29 @@ impl Render for RightPaneView {
             Some(RightPaneContent::Search(model)) => root
                 .child(self.header("Search".into(), None, cx))
                 .child(self.search(&model, cx)),
+            Some(RightPaneContent::Profile(profile)) => {
+                let (message_view, mention_view) =
+                    (cx.entity().downgrade(), cx.entity().downgrade());
+                let (message_profile, username) = (profile.clone(), profile.username.clone());
+                root.child(self.header("Profile".into(), None, cx)).child(
+                    div().flex_1().min_h_0().child(profile_pane(
+                        &profile,
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::OpenDirect {
+                                user_id: message_profile.user_id.clone(),
+                                username: message_profile.username.clone(),
+                                display_name: message_profile.display_name.clone(),
+                            };
+                            message_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        Box::new(move |_, cx| {
+                            let event = RightPaneEvent::Mention(username.clone());
+                            mention_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        }),
+                        cx,
+                    )),
+                )
+            }
             None => root
                 .child(self.header("Thread".into(), None, cx))
                 .child(Self::empty(cx)),
