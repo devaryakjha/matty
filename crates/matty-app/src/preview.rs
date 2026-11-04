@@ -592,6 +592,7 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
+        names: crate::settings::NameFormat::default(),
     };
     crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None).posts
 }

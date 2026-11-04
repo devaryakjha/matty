@@ -20,7 +20,7 @@ use crate::channel::{
     reaction_tooltip,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
-use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
+use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
@@ -215,9 +215,7 @@ impl RightPaneView {
             &SettingsStore::global(cx),
             |this, store, _: &SettingsChanged, cx| {
                 let send_on = store.read(cx).get().send_on;
-                this.composer.update(cx, |composer, _| {
-                    composer.set_submit_on_enter(send_on == SendKey::Enter)
-                });
+                crate::channel::follow_send_key(&this.composer, send_on, cx);
                 this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
             },
@@ -230,7 +228,7 @@ impl RightPaneView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
-            state.set_submit_on_enter(send_on == SendKey::Enter);
+            state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
                 if let Some(composer) = keys.upgrade().map(|view| view.read(cx).composer.clone())
@@ -295,6 +293,8 @@ impl RightPaneView {
                 window,
                 |this, composer, event: &ComposerEvent, window, cx| match event {
                     ComposerEvent::Change => {
+                        let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+                        crate::channel::follow_send_key(composer, send_on, cx);
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
