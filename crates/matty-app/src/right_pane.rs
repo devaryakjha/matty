@@ -192,6 +192,8 @@ pub enum RightPaneEvent {
         pinned: bool,
     },
     Forward(SharedString),
+    /// Mark the channel unread from this reply on.
+    MarkUnread(SharedString),
     Remind {
         post: SharedString,
         at: crate::channel::RemindAt,
@@ -1389,6 +1391,11 @@ impl RightPaneView {
                     "forward",
                     "Forward\u{2026}".into(),
                     RightPaneEvent::Forward(id.clone()),
+                ),
+                emit(
+                    "unread",
+                    "Mark as unread".into(),
+                    RightPaneEvent::MarkUnread(id.clone()),
                 ),
                 MenuItem::submenu(
                     "thread.context.remind",

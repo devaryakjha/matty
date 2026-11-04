@@ -604,19 +604,7 @@ impl MainWindow {
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
                 ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
-                ChannelEvent::MarkUnread(post) => {
-                    if let Some(live) = &this.live {
-                        live.send(matty_sync::Command::MarkUnread {
-                            post_id: post.to_string(),
-                        });
-                    }
-                    if let Some(id) = this.selected_channel.clone() {
-                        this.sidebar
-                            .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
-                        // Stays unread until the user leaves and comes back.
-                        this.kept_unread = Some(id);
-                    }
-                }
+                ChannelEvent::MarkUnread(post) => this.mark_unread(post, cx),
                 ChannelEvent::Leave => {
                     if let Some(id) = this.selected_channel.clone() {
                         this.leave_channel(id, window, cx);
@@ -1131,6 +1119,32 @@ impl MainWindow {
                 cx,
             );
         });
+    }
+
+    /// Marks the channel unread from `post` on, here and on the server.
+    fn mark_unread(&mut self, post: &str, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::MarkUnread {
+                post_id: post.to_string(),
+            });
+        }
+        // A reply in the thread pane may be from another channel than the
+        // open one.
+        let channel = self
+            .live
+            .as_ref()
+            .and_then(|live| live.post_channel(post))
+            .map(SharedString::from)
+            .or_else(|| self.selected_channel.clone());
+        if let Some(id) = channel {
+            self.sidebar
+                .update(cx, |sidebar, cx| sidebar.mark_unread(&id, cx));
+            // The open channel stays unread until the user leaves and comes
+            // back.
+            if self.selected_channel.as_ref() == Some(&id) {
+                self.kept_unread = Some(id);
+            }
+        }
     }
 
     /// Asks the server to remind the user of a post, and says when.
@@ -2243,6 +2257,7 @@ impl MainWindow {
                     live.set_pinned(post, *pinned);
                 }
             }
+            RightPaneEvent::MarkUnread(post) => self.mark_unread(post, cx),
             RightPaneEvent::Forward(post) => {
                 let post = post.clone();
                 let switcher = self.switcher.clone();
