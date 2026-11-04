@@ -13,7 +13,8 @@ use gpui_kit::{
 use crate::actions::{self, CloseRightPane};
 use crate::attachments::post_files;
 use crate::channel::{
-    ChannelModel, Post, PostStatus, QUICK_REACTIONS, post_markers, reaction_tooltip,
+    ChannelModel, Post, PostStatus, QUICK_REACTIONS, message_density, post_markers,
+    reaction_tooltip,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, SendKey, SettingsChanged, SettingsStore};
@@ -183,6 +184,7 @@ impl RightPaneView {
                 this.composer.update(cx, |composer, _| {
                     composer.set_submit_on_enter(send_on == SendKey::Enter)
                 });
+                this.list.update(cx, |list, cx| list.remeasure(cx));
                 cx.notify();
             },
         )
@@ -736,6 +738,7 @@ impl RightPaneView {
             .timestamp(time.clone())
             .gutter_time(time)
             .continuation(post.continues && !root)
+            .density(message_density(cx))
             .highlight(highlight)
             .avatar(
                 Avatar::new(gpui_kit::ElementId::Name(
