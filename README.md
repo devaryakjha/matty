@@ -108,9 +108,8 @@ getting patches. CI tests against Mattermost 12.0, 11.7, 10.11 and 10.5.
 [Open an issue](https://github.com/devaryakjha/matty/issues/new) with your
 Matty version (`/Applications/Matty.app/Contents/MacOS/matty --version`),
 your macOS version and your Mattermost server version. Preferences has a
-button that opens the logs folder;
-logs leave out tokens and message text by default, but look
-before you attach one.
+button that opens the logs folder. Logs leave out tokens and message text
+by default, but look before you attach one.
 
 ## Building
 
