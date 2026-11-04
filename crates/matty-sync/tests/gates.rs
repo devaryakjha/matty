@@ -94,3 +94,94 @@ async fn drafts_are_saved_to_the_server_when_it_syncs_them() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drafts_on_the_server_load_on_connect_when_it_syncs_them() {
+    let server = server_with_config(json!({"AllowSyncedDrafts": "true"})).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v4/users/{ME}/teams/t1/drafts")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "user_id": ME, "channel_id": "c1", "root_id": "r1",
+            "message": "from the web app", "file_ids": ["f1"],
+            "create_at": 1, "update_at": 2
+        }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let sync = matty_sync::spawn(matty_store::Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("token"),
+    });
+    let ChangeSet::Draft {
+        channel_id,
+        root_id,
+        draft,
+    } = next(&changes, |c| matches!(c, ChangeSet::Draft { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!((channel_id.as_str(), root_id.as_str()), ("c1", "r1"));
+    let draft = draft.unwrap();
+    assert_eq!(draft.message, "from the web app");
+    assert_eq!(draft.file_ids, ["f1"]);
+}
+
+/// A draft with files survives a relaunch: the next run publishes it from
+/// the store before the server answers, so the composer gets it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_draft_and_its_files_come_back_after_a_relaunch() {
+    let dir = tempfile::tempdir().unwrap();
+    let on_disk = dir.path().join("account.sqlite");
+    let server = server_with_config(json!({"AllowSyncedDrafts": "false"})).await;
+    let connect = |sync: &matty_sync::SyncHandle| {
+        sync.send(Command::Connect {
+            client: matty_api::Client::new(server.uri())
+                .unwrap()
+                .with_token("token"),
+        });
+    };
+    {
+        let sync = matty_sync::spawn(matty_store::Store::open(&on_disk).unwrap()).unwrap();
+        let changes = sync.subscribe();
+        connect(&sync);
+        sync.send(Command::SaveDraft {
+            channel_id: "c1".into(),
+            root_id: String::new(),
+            message: "half a thought".into(),
+            file_ids: vec!["f1".into()],
+        });
+        next(&changes, |c| matches!(c, ChangeSet::Draft { .. })).await;
+        drop(sync);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let sync = matty_sync::spawn(matty_store::Store::open(&on_disk).unwrap()).unwrap();
+    let changes = sync.subscribe();
+    connect(&sync);
+    let ChangeSet::Draft { draft, .. } =
+        next(&changes, |c| matches!(c, ChangeSet::Draft { .. })).await
+    else {
+        unreachable!()
+    };
+    let draft = draft.unwrap();
+    assert_eq!(draft.message, "half a thought");
+    assert_eq!(draft.file_ids, ["f1"]);
+
+    // Sending clears it: an empty draft deletes it, here and on relaunch.
+    sync.send(Command::SaveDraft {
+        channel_id: "c1".into(),
+        root_id: String::new(),
+        message: String::new(),
+        file_ids: Vec::new(),
+    });
+    let ChangeSet::Draft { draft, .. } = next(&changes, |c| {
+        matches!(c, ChangeSet::Draft { draft: None, .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert!(draft.is_none());
+}

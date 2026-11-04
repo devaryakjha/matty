@@ -46,6 +46,25 @@ pub enum UpdateChannel {
     Beta,
 }
 
+impl UpdateChannel {
+    /// The channel a fresh install follows (#180): beta for a build with a
+    /// pre-release suffix (an alpha or beta), else stable.
+    pub fn for_this_build() -> Self {
+        match matty_update::Channel::default_for(matty_update::CURRENT_VERSION) {
+            matty_update::Channel::Stable => Self::Stable,
+            matty_update::Channel::Beta => Self::Beta,
+        }
+    }
+
+    /// The feed this channel reads.
+    pub fn feed(self) -> matty_update::Channel {
+        match self {
+            Self::Stable => matty_update::Channel::Stable,
+            Self::Beta => matty_update::Channel::Beta,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteImages {
@@ -231,7 +250,7 @@ impl Default for Settings {
             close_to_tray: false,
             cache_size_mb: 500,
             download_folder: None,
-            update_channel: UpdateChannel::Stable,
+            update_channel: UpdateChannel::for_this_build(),
             log_level: LogLevel::Info,
             load_remote_images: RemoteImages::Always,
             clock: ClockFormat::TwentyFourHour,
@@ -483,6 +502,25 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["from_the_future"]["x"], 1);
+    }
+
+    #[test]
+    fn the_update_channel_defaults_by_build_and_a_choice_sticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let (settings, _) = load(&path);
+        assert_eq!(settings.update_channel, UpdateChannel::for_this_build());
+        let expected = if matty_update::CURRENT_VERSION.contains('-') {
+            UpdateChannel::Beta
+        } else {
+            UpdateChannel::Stable
+        };
+        assert_eq!(UpdateChannel::for_this_build(), expected);
+        std::fs::write(&path, r#"{"update_channel": "beta"}"#).unwrap();
+        assert_eq!(load(&path).0.update_channel, UpdateChannel::Beta);
+        std::fs::write(&path, r#"{"update_channel": "stable"}"#).unwrap();
+        assert_eq!(load(&path).0.update_channel, UpdateChannel::Stable);
     }
 
     #[test]

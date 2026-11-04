@@ -142,6 +142,7 @@ const PREVIEW_SERVER: &str = "https://chat.example.com";
 /// What a toast's Retry button runs.
 type Retry = Box<dyn Fn(&mut Window, &mut gpui_kit::App)>;
 
+mod drafts;
 mod preferences;
 mod sso;
 
@@ -211,6 +212,8 @@ pub struct MainWindow {
     /// The notification queue, mounted once above the page (PLAN §4.5:
     /// results and failures of background work are toasts, never dialogs).
     toasts: Entity<ToastState>,
+    /// Update checks and the "Restart to update" toast (#180).
+    _updater: Entity<crate::updater::UpdatePrompt>,
     /// Files asked for and not yet saved, oldest first, so a failed
     /// download can offer Retry when only one was in flight.
     downloads: std::collections::VecDeque<SharedString>,
@@ -318,6 +321,9 @@ impl MainWindow {
         } else {
             "You"
         };
+        if crate::preview::enabled() {
+            crate::preview::seed_drafts(cx);
+        }
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
         channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
         let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
@@ -417,6 +423,7 @@ impl MainWindow {
         };
         let threads = cx.new(|cx| ThreadsView::new(threads_model, me, window, cx));
         let toasts = cx.new(ToastState::new);
+        let _updater = crate::updater::UpdatePrompt::start(toasts.clone(), window, cx);
         let drafts_model = if crate::preview::enabled() {
             crate::preview::drafts()
         } else {
@@ -434,11 +441,15 @@ impl MainWindow {
                     model.drafts = count;
                     sidebar.set_model(model, cx);
                 });
-                if let DraftsEvent::Open(draft) = event {
-                    this.open_channel(draft.channel_id.clone(), window, cx);
-                    if let Some(root) = draft.thread_root.clone() {
-                        this.open_thread(root, cx);
+                match event {
+                    DraftsEvent::Open(draft) => {
+                        this.open_channel(draft.channel_id.clone(), window, cx);
+                        if let Some(root) = draft.thread_root.clone() {
+                            this.open_thread(root, cx);
+                        }
                     }
+                    DraftsEvent::Delete(draft) => this.drop_draft(draft, window, cx),
+                    DraftsEvent::Send(draft) => this.send_draft(draft, window, cx),
                 }
             },
         )
@@ -531,6 +542,7 @@ impl MainWindow {
                         });
                     }
                 }
+                ChannelEvent::SaveDraft(save) => this.save_draft(save, cx),
                 ChannelEvent::PreviewLink(url) => {
                     if let Some(live) = &this.live {
                         if !live.link_previews() {
@@ -915,6 +927,7 @@ impl MainWindow {
             sidebar_drawer_shown: false,
             threads,
             toasts,
+            _updater,
             downloads: Default::default(),
             threads_open: false,
             drafts,
@@ -1530,12 +1543,16 @@ impl MainWindow {
         }
         if update.signed_out {
             cx.set_global(crate::avatars::Avatars::default());
+            cx.set_global(crate::composer_draft::DraftBook::default());
             self.live = None;
             self._live_task = None;
             self.forget_signed_out(cx);
         }
         if update.expired && self.login.is_none() {
             self.session_expired(window, cx);
+        }
+        if let Some((key, draft)) = update.draft {
+            self.draft_stored(key, draft, window, cx);
         }
     }
 
@@ -2327,6 +2344,7 @@ impl MainWindow {
                     pane.update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
                 }
             }
+            RightPaneEvent::SaveDraft(save) => self.save_draft(save, cx),
             RightPaneEvent::PreviewLink(url) => {
                 if let Some(live) = &self.live {
                     if !live.link_previews() {

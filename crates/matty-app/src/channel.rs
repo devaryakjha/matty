@@ -214,6 +214,7 @@ pub(crate) fn edit_composer(
         });
         state
     });
+    crate::updater::watch_composer(&composer, cx);
     let focus = composer.clone();
     window.on_next_frame(move |window, cx| {
         focus.update(cx, |composer, cx| {
@@ -777,6 +778,9 @@ pub enum ChannelEvent {
     /// The draft has this link; sync asks the server for its preview and
     /// the window hands it back through `set_link_preview`.
     PreviewLink(SharedString),
+    /// The composer's draft changed, after a pause in typing, on leaving
+    /// the channel or on sending; sync stores it (#114).
+    SaveDraft(crate::composer_draft::DraftSave),
     /// The user removed a file from the tray before sending.
     CancelUpload(SharedString),
     /// The user asked to upload a failed file again.
@@ -968,6 +972,9 @@ pub struct ChannelView {
     me: SharedString,
     /// Characters in the composer, for the Send button and the counter.
     draft_len: usize,
+    /// Which channel's draft the composer holds, and what was saved of it.
+    draft: crate::composer_draft::ComposerDraft,
+    _draft_task: Option<gpui_kit::Task<()>>,
     /// Numbers the optimistic rows until sync assigns ids.
     pending_seq: usize,
     /// Set by the jump pill so the latest snapshot opens at the end.
@@ -1136,6 +1143,7 @@ impl ChannelView {
             });
             state
         });
+        crate::updater::watch_composer(&composer, cx);
         let menu = cx.new(|cx| MenuState::new([], cx));
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
@@ -1181,8 +1189,12 @@ impl ChannelView {
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
-                        if this.draft_len > 0 {
-                            cx.emit(ChannelEvent::Typing { root: None });
+                        // A restored draft is not the user typing.
+                        if !this.draft.is_saved(&text) {
+                            this.schedule_draft_save(cx);
+                            if this.draft_len > 0 {
+                                cx.emit(ChannelEvent::Typing { root: None });
+                            }
                         }
                         cx.notify();
                     }
@@ -1244,6 +1256,8 @@ impl ChannelView {
             deleting: None,
             me: me.into(),
             draft_len: 0,
+            draft: Default::default(),
+            _draft_task: None,
             pending_seq: 0,
             open_at_end: false,
             composer_cap: px(320.),
@@ -1315,6 +1329,12 @@ impl ChannelView {
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(placeholder, window, cx);
         });
+        let key = model
+            .as_ref()
+            .map(|model| crate::composer_draft::DraftKey::channel(model.id.clone()));
+        if self.draft.key() != key.as_ref() {
+            self.switch_draft(key, window, cx);
+        }
         self.model = model;
         self.apply_pending_jump(cx);
         cx.notify();
@@ -1860,14 +1880,25 @@ impl ChannelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.tray.uploads().iter().any(|upload| upload.id == id) {
+            // A file in another channel's draft.
+            if let Some(save) = crate::composer_draft::DraftBook::set_upload_status(id, status, cx)
+            {
+                cx.emit(ChannelEvent::SaveDraft(save));
+            }
+            return;
+        }
         if self.tray.set_status(id, status) {
             self.send_queued(window, cx);
+        } else if status == AttachmentStatus::Ready {
+            self.schedule_draft_save(cx);
         }
         cx.notify();
     }
 
     fn remove_upload(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let due = self.tray.remove(id);
+        self.schedule_draft_save(cx);
         cx.emit(ChannelEvent::CancelUpload(id.clone()));
         if due {
             self.send_queued(window, cx);
@@ -2006,6 +2037,54 @@ impl ChannelView {
         )
     }
 
+    /// Puts the composer on `key`'s draft, saving the one it leaves.
+    fn switch_draft(
+        &mut self,
+        key: Option<crate::composer_draft::DraftKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._draft_task = None;
+        let left = self
+            .draft
+            .switch(key, &self.composer, &mut self.tray, Some(window), cx);
+        if let Some(left) = left {
+            cx.emit(ChannelEvent::SaveDraft(left));
+        }
+        self.draft_len = self.composer.read(cx).value(cx).chars().count();
+        self.link = Default::default();
+        self._link_task = None;
+    }
+
+    /// Saves the draft once typing pauses (#114).
+    fn schedule_draft_save(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::composer_draft::SAVE_PAUSE)
+                .await;
+            this.update(cx, |this, cx| this.save_draft(cx)).ok();
+        }));
+    }
+
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        self._draft_task = None;
+        if let Some(save) = self.draft.save(&self.composer, &self.tray, cx) {
+            cx.emit(ChannelEvent::SaveDraft(save));
+        }
+    }
+
+    /// The channel's draft changed elsewhere; the composer follows unless
+    /// the user has typed since it was saved.
+    pub fn refresh_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .draft
+            .refresh(&self.composer, &mut self.tray, window, cx)
+        {
+            self.draft_len = self.composer.read(cx).value(cx).chars().count();
+            cx.notify();
+        }
+    }
+
     /// Follows the draft's first link: a new one is asked about after a
     /// pause in typing, so a link being typed is not asked about letter by
     /// letter.
@@ -2088,6 +2167,10 @@ impl ChannelView {
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
+        self._draft_task = None;
+        if let Some(cleared) = self.draft.sent(cx) {
+            cx.emit(ChannelEvent::SaveDraft(cleared));
+        }
         self.composer
             .update(cx, |composer, cx| composer.set_value("", window, cx));
         self.draft_len = 0;
@@ -4860,5 +4943,133 @@ mod tests {
             type_then_enter("```\nfn x() {}\n```", super::SendKey::CodeBlocks).as_deref(),
             Some("```\nfn x() {}\n```")
         );
+    }
+
+    /// #114: what is typed stays with its channel: switching away saves it,
+    /// switching back restores it with the caret at the end, and sending
+    /// clears it.
+    #[gpui_kit::test]
+    fn a_channels_draft_survives_switching_and_sending_clears_it(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::composer_draft::{DraftBook, DraftKey, SAVE_PAUSE};
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let design = crate::preview::channel("design").unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            ChannelView::new(Some(general.clone()), "me", window, cx)
+        });
+        let saves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let saves = saves.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if let ChannelEvent::SaveDraft(save) = event {
+                    saves
+                        .borrow_mut()
+                        .push((save.key.channel_id.to_string(), save.text.to_string()));
+                }
+            })
+            .detach();
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        let text = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| view.read(cx).composer.read(cx).value(cx).to_string())
+        };
+
+        // Typing saves once it pauses.
+        cx.simulate_input("half a thought");
+        cx.run_until_parked();
+        assert!(saves.borrow().is_empty(), "nothing before the pause");
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), "half a thought".to_owned())]
+        );
+
+        // More typing, then leaving before the pause: saved on the way out.
+        cx.simulate_input(" and more");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_model(Some(design.clone()), window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), "half a thought and more".to_owned())]
+        );
+
+        // Back again: the text returns, caret at the end, and is not saved
+        // again or sent as typing.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_model(Some(general.clone()), window, cx)
+            })
+        });
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(text(cx), "half a thought and more");
+        let caret = cx.update(|_, cx| view.read(cx).composer.read(cx).selection(cx));
+        assert_eq!(caret, 23..23);
+        assert!(saves.borrow().is_empty());
+        assert!(cx.update(|_, cx| DraftBook::channels(cx).contains("general")));
+
+        // Sending clears it here and in sync.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let text = view.composer.read(cx).value(cx);
+                view.send(text, window, cx);
+            })
+        });
+        cx.executor().advance_clock(SAVE_PAUSE);
+        cx.run_until_parked();
+        assert_eq!(text(cx), "");
+        assert_eq!(
+            saves.borrow_mut().drain(..).collect::<Vec<_>>(),
+            [("general".to_owned(), String::new())]
+        );
+        assert!(cx.update(|_, cx| DraftBook::get(cx, &DraftKey::channel("general")).is_none()));
+    }
+
+    /// #114: a draft changed on another device replaces the composer only
+    /// while the user has nothing unsaved in it.
+    #[gpui_kit::test]
+    fn a_draft_from_elsewhere_never_overwrites_unsaved_typing(cx: &mut gpui_kit::TestAppContext) {
+        use crate::composer_draft::{DraftBook, DraftKey, Kept};
+        use gpui_kit::Focusable as _;
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let (view, cx) =
+            cx.add_window_view(|window, cx| ChannelView::new(Some(general), "me", window, cx));
+        let remote = |text: &str, cx: &mut gpui_kit::VisualTestContext| {
+            let kept = Kept {
+                text: text.to_owned().into(),
+                ..Kept::default()
+            };
+            cx.update(|window, cx| {
+                DraftBook::put(DraftKey::channel("general"), kept, cx);
+                view.update(cx, |view, cx| view.refresh_draft(window, cx));
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| view.read(cx).composer.read(cx).value(cx).to_string())
+        };
+        assert_eq!(remote("from the web app", cx), "from the web app");
+        cx.update(|window, cx| {
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        cx.simulate_input("!");
+        cx.run_until_parked();
+        assert_eq!(remote("edited again", cx), "from the web app!");
     }
 }

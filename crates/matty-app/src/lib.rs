@@ -14,6 +14,7 @@ pub mod badge;
 pub mod categories;
 pub mod channel;
 pub mod channel_settings;
+pub mod composer_draft;
 pub mod contrast;
 pub mod deeplink;
 pub mod directory;
@@ -42,6 +43,7 @@ pub mod switcher;
 pub mod threads;
 pub mod transcript;
 mod ui;
+mod updater;
 
 use std::borrow::Cow;
 
@@ -53,6 +55,9 @@ use gpui_kit::{
 use settings::{SettingsStore, ThemeChoice};
 use ui::theme::{ThemeMode, UiTheme};
 use ui::title_bar::title_bar_window_options;
+
+/// This build's version, with the release tag's pre-release suffix.
+pub const VERSION: &str = matty_update::CURRENT_VERSION;
 
 /// The smallest window PLAN §4.1 supports.
 pub const MIN_WINDOW: (f32, f32) = (480., 400.);
@@ -98,7 +103,7 @@ pub fn run_with_links(links: Vec<String>) {
     app.run(move |cx: &mut App| {
         // Settings load after this, so their level applies just below.
         let logs = logging::init(logging::default_dir().as_deref(), Default::default());
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), "matty starting");
+        tracing::info!(version = VERSION, "matty starting");
         ui::theme::init(cx);
         style::install(ThemeMode::Light, cx);
         load_fonts(cx);
