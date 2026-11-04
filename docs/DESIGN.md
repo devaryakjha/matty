@@ -374,6 +374,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   stands off the tile (`design-36`). Clicking a square makes it current and
   emits `RailEvent::Select`; the dashed square emits `RailEvent::Join`.
   Switching and joining teams are sync's (M2).
+- **Channel row options** (PLAN §3 M1): hovering a sidebar row swaps its
+  count or dot for a "…" button, gpuicn's `sidebar_menu_action`, and the
+  button or a right-click opens one shared menu for that row: Mark as read
+  (while unread), Add to or Remove from favorites, Mute or Unmute, then
+  Leave channel or Close conversation (`design-37`). Favoriting moves the
+  row between Favorites and its home category at once, and the header
+  star follows; muting dims the row as before. The button stops its click
+  so the row beneath does not open the channel.
 
 ## 5. Components
 

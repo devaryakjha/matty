@@ -350,7 +350,13 @@ impl MainWindow {
                         });
                     }
                 }
-                ChannelEvent::ToggleFavorite(_) => this.refresh_channel_info(cx),
+                ChannelEvent::ToggleFavorite(favorite) => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.set_favorite(&id, *favorite, cx));
+                    }
+                    this.refresh_channel_info(cx);
+                }
                 ChannelEvent::Rename(name) => {
                     let name = name.clone();
                     if let Some(id) = this.selected_channel.clone() {
@@ -468,6 +474,21 @@ impl MainWindow {
                     SidebarEvent::BrowseChannels => return this.browse_channels(window, cx),
                     SidebarEvent::NewMessage => return this.new_message(window, cx),
                     SidebarEvent::CreateChannel => return this.open_create_channel(window, cx),
+                    SidebarEvent::MarkRead(id) => {
+                        // The row is clear; sync owes the server-side read.
+                        let id = id.clone();
+                        return this
+                            .sidebar
+                            .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
+                    }
+                    SidebarEvent::SetFavorite { id, favorite } => {
+                        return this.set_favorite(id.clone(), *favorite, cx);
+                    }
+                    SidebarEvent::SetMuted { id, muted } => {
+                        return this.set_muted(id.clone(), *muted, cx);
+                    }
+                    SidebarEvent::Leave(id) => return this.leave_channel(id.clone(), window, cx),
+                    SidebarEvent::Close(id) => return this.close_direct(id.clone(), window, cx),
                 };
                 this.open_channel(id, window, cx);
             },
@@ -1083,6 +1104,62 @@ impl MainWindow {
 
     /// Leaves `id`: sync owns the server side; the row goes and the first
     /// remaining public channel opens.
+    /// Moves `id` into or out of Favorites in the sidebar and on the open
+    /// channel's header star. Sync owes the server-side category move.
+    fn set_favorite(&mut self, id: SharedString, favorite: bool, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_favorite(&id, favorite, cx));
+        if self.selected_channel.as_ref() == Some(&id) {
+            self.channel
+                .update(cx, |channel, cx| channel.set_favorite(favorite, cx));
+            self.refresh_channel_info(cx);
+        }
+    }
+
+    /// Mutes or unmutes `id`: the sidebar row, the open channel and the
+    /// server's `mark_unread` notify prop, as the info pane's switch does.
+    fn set_muted(&mut self, id: SharedString, muted: bool, cx: &mut Context<Self>) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::SetChannelNotifications {
+                channel_id: id.to_string(),
+                props: std::collections::HashMap::from([(
+                    "mark_unread".to_string(),
+                    if muted { "mention" } else { "all" }.to_string(),
+                )]),
+            });
+        }
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_muted(&id, muted, cx));
+        if self.selected_channel.as_ref() == Some(&id) {
+            self.channel
+                .update(cx, |channel, cx| channel.set_muted(muted, cx));
+            self.refresh_channel_info(cx);
+        }
+    }
+
+    /// Closes a direct or group conversation: the row goes and the next
+    /// channel opens. Mattermost keeps the channel and hides it by
+    /// preference, which sync owes; the posts stay on the server.
+    fn close_direct(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let mut model = self.sidebar.read(cx).model().clone();
+        model.remove(&id);
+        let next = model
+            .categories
+            .iter()
+            .flat_map(|c| c.rows.iter())
+            .find(|row| matches!(row.kind, crate::sidebar::ChannelKind::Public))
+            .map(|row| row.id.clone());
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_model(model, cx));
+        if self.selected_channel.as_ref() == Some(&id)
+            && let Some(next) = next
+        {
+            self.right_pane_open = false;
+            self.open_channel(next, window, cx);
+        }
+        cx.notify();
+    }
+
     fn leave_channel(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(live) = &self.live {
             live.send(matty_sync::Command::LeaveChannel {
