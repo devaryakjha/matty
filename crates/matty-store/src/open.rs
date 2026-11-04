@@ -69,12 +69,12 @@ impl Store {
 /// answers it with BUSY at once, without calling the busy handler, when
 /// another connection is opening or migrating the same new file.
 fn retry_busy<T>(mut step: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
-    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    let deadline = web_time::Instant::now() + BUSY_TIMEOUT;
     loop {
         match step() {
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::DatabaseBusy
-                    && std::time::Instant::now() < deadline =>
+                    && web_time::Instant::now() < deadline =>
             {
                 std::thread::sleep(Duration::from_millis(5));
             }

@@ -8,6 +8,21 @@
 use crate::login::{LoginModel, LoginStep, SignInMethods, SsoProvider};
 use crate::sidebar::{Category, CategoryKind, ChannelKind, ChannelRow, Presence, SidebarModel};
 
+static WEB_VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the preview value where there is no environment (the web build reads
+/// it from the page's `?preview=` query).
+pub fn set(value: String) {
+    let _ = WEB_VALUE.set(value);
+}
+
+fn value() -> Option<String> {
+    WEB_VALUE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("MATTY_PREVIEW").ok())
+}
+
 /// Whether the preview fixtures are on for this process.
 /// Who is typing a reply in any preview thread.
 pub fn thread_typing() -> Vec<SharedString> {
@@ -15,7 +30,7 @@ pub fn thread_typing() -> Vec<SharedString> {
 }
 
 pub fn enabled() -> bool {
-    std::env::var_os("MATTY_PREVIEW").is_some_and(|value| !value.is_empty() && value != "0")
+    value().is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// A sidebar with every row state DESIGN.md §4 describes.
@@ -28,7 +43,7 @@ pub fn enabled() -> bool {
 /// waiting for the browser after GitLab, and `sso-expired` the same after
 /// the three minutes ran out.
 pub fn login() -> Option<LoginModel> {
-    let value = std::env::var("MATTY_PREVIEW").ok()?;
+    let value = value()?;
     let methods = SignInMethods {
         password: true,
         ldap: value == "login-ldap",
@@ -95,7 +110,7 @@ pub fn login() -> Option<LoginModel> {
 /// `MATTY_PREVIEW=offline` and `reconnecting` show the connection banner.
 pub fn connection() -> crate::main_window::ConnectionState {
     use crate::main_window::ConnectionState;
-    match std::env::var("MATTY_PREVIEW").ok().as_deref() {
+    match value().as_deref() {
         Some("offline") => ConnectionState::Offline,
         Some("reconnecting") => ConnectionState::Reconnecting { attempt: 3 },
         _ => ConnectionState::Online,
@@ -677,7 +692,7 @@ fn activity(row: &ChannelRow) -> Vec<Post> {
         zone: &zone,
         now: jiff::Timestamp::from_second(1_793_793_600).unwrap_or(jiff::Timestamp::UNIX_EPOCH),
         link_previews: true,
-        collapsed_threads: std::env::var("MATTY_PREVIEW").as_deref() != Ok("crt-off"),
+        collapsed_threads: value().as_deref() != Some("crt-off"),
         names: crate::settings::NameFormat::default(),
     };
     crate::transcript::channel_model(row, Some(&posts), &users, &viewer, None, &[]).posts

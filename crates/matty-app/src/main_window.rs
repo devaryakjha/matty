@@ -1173,7 +1173,7 @@ impl MainWindow {
             if let Some(name) = crate::preview::file_name(file_id) {
                 // Preview has no server: show the toast a finished download
                 // would.
-                let folder = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+                let folder = dirs::download_dir().unwrap_or_else(fallback_folder);
                 self.push_download_toast(&folder.join(name), cx);
             }
             return;
@@ -1190,7 +1190,7 @@ impl MainWindow {
             .clone()
             .or_else(dirs::download_dir)
             .or_else(dirs::home_dir)
-            .unwrap_or_else(std::env::temp_dir);
+            .unwrap_or_else(fallback_folder);
         self.downloads.push_back(file_id.clone());
         live.send(matty_sync::Command::Download {
             file_id: file_id.to_string(),
@@ -1438,7 +1438,7 @@ impl MainWindow {
                     .await;
                 let left = this.update(cx, |this, cx| {
                     let live = this.live.as_mut()?;
-                    let (names, thread) = live.expire_typing(std::time::Instant::now());
+                    let (names, thread) = live.expire_typing(web_time::Instant::now());
                     let left = live.is_typing();
                     if let Some(names) = names {
                         this.channel
@@ -4063,6 +4063,16 @@ fn opens_safely(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| SAFE.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// Where a download goes when the OS names no folder: the temporary folder
+/// on the desktop. In the browser, which picks the folder itself, only the
+/// file name is used.
+fn fallback_folder() -> std::path::PathBuf {
+    #[cfg(target_family = "wasm")]
+    return std::path::PathBuf::new();
+    #[cfg(not(target_family = "wasm"))]
+    std::env::temp_dir()
 }
 
 #[cfg(test)]

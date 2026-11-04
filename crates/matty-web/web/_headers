@@ -1,0 +1,15 @@
+# GPUI's web platform shares WebAssembly memory with worker threads, which
+# browsers only allow on cross-origin isolated pages. Requests to Mattermost
+# servers are CORS fetches, which isolation allows.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+# The app is rebuilt on every deploy under the same names, so the browser
+# checks for a new one on each load.
+/*.wasm
+  Cache-Control: no-cache
+/*.js
+  Cache-Control: no-cache

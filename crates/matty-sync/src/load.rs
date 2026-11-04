@@ -317,10 +317,14 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
     for team_id in team_ids {
         let client = client.clone();
         let user_id = user_id.clone();
-        tasks.spawn(async move {
+        let load = async move {
             let loaded = team(&client, &user_id, &team_id).await;
             (team_id, loaded)
-        });
+        };
+        #[cfg(not(target_family = "wasm"))]
+        tasks.spawn(load);
+        #[cfg(target_family = "wasm")]
+        tasks.spawn_local(load);
     }
     let mut partners = BTreeSet::new();
     while let Some(joined) = tasks.join_next().await {

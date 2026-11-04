@@ -1,0 +1,20 @@
+[package]
+name = "matty-web"
+description = "Matty in the browser, on GPUI's web platform. Built by scripts/web."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "matty-web"
+path = "src/main.rs"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+matty-app.workspace = true
+web-sys = { version = "0.3", features = ["Location", "Window", "UrlSearchParams"] }

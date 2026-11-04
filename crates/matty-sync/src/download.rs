@@ -18,6 +18,15 @@ pub(crate) async fn download(
     results: UnboundedSender<Loaded>,
 ) {
     let state = match client.file(&file_id, None).await {
+        #[cfg(target_family = "wasm")]
+        Ok(Fetched::Fresh { bytes, .. }) => {
+            let _ = folder;
+            match crate::web::save_download(&name, &bytes) {
+                Ok(()) => DownloadState::Done(PathBuf::from(name)),
+                Err(error) => DownloadState::Failed(error),
+            }
+        }
+        #[cfg(not(target_family = "wasm"))]
         Ok(Fetched::Fresh { bytes, .. }) => {
             match tokio::task::spawn_blocking(move || save(&folder, &name, &bytes)).await {
                 Ok(Ok(path)) => DownloadState::Done(path),
@@ -33,6 +42,7 @@ pub(crate) async fn download(
 
 /// Writes `bytes` beside their final name and renames, so a half-written
 /// file never sits under it.
+#[cfg(not(target_family = "wasm"))]
 fn save(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(folder)?;
     let path = unique_path(folder, name);
@@ -47,6 +57,7 @@ fn save(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 /// `folder/name`, or `name (1).ext` and up when that is taken. Only the
 /// name's last component counts, so a server name never leaves `folder`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn unique_path(folder: &Path, name: &str) -> PathBuf {
     let name = Path::new(name)
         .file_name()

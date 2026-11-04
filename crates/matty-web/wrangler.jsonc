@@ -1,0 +1,11 @@
+// Cloudflare Workers static assets for https://matty.jha.sh. Deploy with
+// `scripts/web deploy`, which builds into crates/matty-web/dist first.
+{
+  "name": "matty-web",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist"
+  },
+  "routes": [{ "pattern": "matty.jha.sh", "custom_domain": true }],
+  "workers_dev": false
+}

@@ -9,23 +9,26 @@
 //! ends the connection with [`DisconnectReason::Timeout`] when nothing at
 //! all arrives for [`WsConfig::pong_timeout`] after a ping.
 
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, time::Duration};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot},
-    time::Instant,
 };
-use tokio_tungstenite::{
-    Connector, WebSocketStream,
-    tungstenite::{self, Message, client::IntoClientRequest, http::HeaderValue},
-};
+#[cfg(not(target_family = "wasm"))]
+use tokio_tungstenite::Connector;
+use tokio_tungstenite::tungstenite::{self, Message, client::IntoClientRequest, http::HeaderValue};
 
-use crate::{ApiError, Client, models::null_as_default, tls};
+use crate::rt::{Instant, MaybeSend};
+#[cfg(not(target_family = "wasm"))]
+use crate::tls;
+use crate::{ApiError, Client, models::null_as_default};
 
+#[cfg(target_family = "wasm")]
+mod browser;
 mod events;
 mod reconnect;
 mod seq;
@@ -72,6 +75,25 @@ impl Default for WsConfig {
 /// A byte stream a WebSocket can run over.
 pub trait Transport: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Transport for T {}
+
+/// An open WebSocket, in tungstenite's frames: tokio-tungstenite's stream on
+/// the desktop, the browser's `WebSocket` on the web.
+trait Socket:
+    Stream<Item = Result<Message, tungstenite::Error>>
+    + Sink<Message, Error = tungstenite::Error>
+    + Unpin
+    + MaybeSend
+    + 'static
+{
+}
+impl<T> Socket for T where
+    T: Stream<Item = Result<Message, tungstenite::Error>>
+        + Sink<Message, Error = tungstenite::Error>
+        + Unpin
+        + MaybeSend
+        + 'static
+{
+}
 
 /// Who a server event is for.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -218,9 +240,22 @@ impl WsConnection {
         resume: Option<&Resume>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         let token = session_token(client)?;
-        let request = upgrade_request(&websocket_url(client, resume)?, &token)?;
-        tokio::time::timeout(CONNECT_TIMEOUT, async move {
-            let connector = Connector::Rustls(Arc::new(tls::client_config(tls::WEBSOCKET_ALPN)?));
+        let url = websocket_url(client, resume)?;
+        // The browser cannot set headers on a WebSocket; the
+        // `authentication_challenge` in the handshake signs it in instead.
+        #[cfg(target_family = "wasm")]
+        return crate::rt::timeout(CONNECT_TIMEOUT, async move {
+            let socket = browser::open(&url).await?;
+            Self::handshake(socket, token, config, resume).await
+        })
+        .await
+        .map_err(|_| ApiError::Timeout)?;
+        #[cfg(not(target_family = "wasm"))]
+        crate::rt::timeout(CONNECT_TIMEOUT, async move {
+            let request = upgrade_request(&url, &token)?;
+            let connector = Connector::Rustls(std::sync::Arc::new(tls::client_config(
+                tls::WEBSOCKET_ALPN,
+            )?));
             let (socket, _) = tokio_tungstenite::connect_async_tls_with_config(
                 request,
                 None,
@@ -245,7 +280,7 @@ impl WsConnection {
     ) -> Result<(Self, mpsc::UnboundedReceiver<WsMessage>), ApiError> {
         let token = session_token(client)?;
         let request = upgrade_request(&websocket_url(client, resume)?, &token)?;
-        tokio::time::timeout(CONNECT_TIMEOUT, async move {
+        crate::rt::timeout(CONNECT_TIMEOUT, async move {
             let (socket, _) = tokio_tungstenite::client_async(request, stream)
                 .await
                 .map_err(from_tungstenite)?;
@@ -255,8 +290,8 @@ impl WsConnection {
         .map_err(|_| ApiError::Timeout)?
     }
 
-    async fn handshake<S: Transport>(
-        mut socket: WebSocketStream<S>,
+    async fn handshake(
+        mut socket: impl Socket,
         token: String,
         config: WsConfig,
         resume: Option<&Resume>,
@@ -283,7 +318,7 @@ impl WsConnection {
                 connection_id: resume.connection_id.clone(),
                 server_version: String::new(),
             };
-            tokio::spawn(run(socket, command_rx, events, config));
+            crate::rt::spawn(run(socket, command_rx, events, config));
             return Ok((Self { hello, commands }, receiver));
         }
 
@@ -319,7 +354,7 @@ impl WsConnection {
         for event in early {
             let _ = events.send(WsMessage::Event(event));
         }
-        tokio::spawn(run(socket, command_rx, events, config));
+        crate::rt::spawn(run(socket, command_rx, events, config));
         Ok((Self { hello, commands }, receiver))
     }
 
@@ -340,7 +375,7 @@ impl WsConnection {
                 reply,
             })
             .map_err(|_| closed())?;
-        tokio::time::timeout(REPLY_TIMEOUT, answer)
+        crate::rt::timeout(REPLY_TIMEOUT, answer)
             .await
             .map_err(|_| ApiError::Timeout)?
             .map_err(|_| closed())?
@@ -399,8 +434,8 @@ fn parse(frame: &Message) -> Option<Incoming> {
     }
 }
 
-async fn run<S: Transport>(
-    mut socket: WebSocketStream<S>,
+async fn run(
+    mut socket: impl Socket,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<WsMessage>,
     config: WsConfig,
@@ -408,14 +443,13 @@ async fn run<S: Transport>(
     let mut next_seq: u64 = 2;
     let mut pending: HashMap<u64, oneshot::Sender<Result<WsReply, ApiError>>> = HashMap::new();
     let mut ping =
-        tokio::time::interval_at(Instant::now() + config.ping_interval, config.ping_interval);
-    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        crate::rt::interval_at(Instant::now() + config.ping_interval, config.ping_interval);
     // Set when a ping goes out with nothing heard since; any frame clears it.
     let mut deadline: Option<Instant> = None;
     let reason = loop {
         let silent_until = deadline;
         tokio::select! {
-            () = async { tokio::time::sleep_until(silent_until.unwrap_or_else(Instant::now)).await },
+            () = async { crate::rt::sleep_until(silent_until.unwrap_or_else(Instant::now)).await },
                 if silent_until.is_some() => {
                 break DisconnectReason::Timeout;
             }
@@ -479,7 +513,8 @@ async fn run<S: Transport>(
                     }
                 }
                 Some(Command::Close) | None => {
-                    let _ = socket.close(None).await;
+                    // Sends a close frame and waits for the socket to shut.
+                    let _ = socket.close().await;
                     break DisconnectReason::ClientClosed;
                 }
             },
@@ -503,6 +538,7 @@ fn session_token(client: &Client) -> Result<String, ApiError> {
 /// in the `Authorization` header as well as in the challenge after it (which
 /// the server ignores when the header already signed the socket in, and
 /// which still works behind a proxy that strips the header).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn upgrade_request(
     url: &url::Url,
     token: &str,

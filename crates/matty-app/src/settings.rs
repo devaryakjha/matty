@@ -10,7 +10,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
@@ -340,13 +340,21 @@ pub enum Loaded {
 
 /// The default settings file: `<config dir>/Matty/settings.json`.
 pub fn default_path() -> Option<PathBuf> {
+    // On the web this names the `localStorage` entry instead.
+    #[cfg(target_family = "wasm")]
+    return Some(PathBuf::from("Matty/settings.json"));
+    #[cfg(not(target_family = "wasm"))]
     dirs::config_dir().map(|dir| dir.join("Matty").join("settings.json"))
 }
 
 /// Reads settings from `path`. A file that does not parse is renamed to
 /// `settings.json.corrupt-<unix seconds>` so the user's data is not lost.
 pub fn load(path: &Path) -> (Settings, Loaded) {
-    let bytes = match std::fs::read(path) {
+    #[cfg(target_family = "wasm")]
+    let bytes = crate::web_storage::get(&path.to_string_lossy()).map(String::into_bytes);
+    #[cfg(not(target_family = "wasm"))]
+    let bytes = std::fs::read(path);
+    let bytes = match bytes {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return (Settings::default(), Loaded::Missing);
@@ -359,8 +367,8 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
     match serde_json::from_slice::<Settings>(&bytes) {
         Ok(settings) => (settings.sanitize(), Loaded::Read),
         Err(error) => {
-            let stamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            let stamp = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
             let mut aside = path.as_os_str().to_owned();
             aside.push(format!(".corrupt-{stamp}"));
@@ -371,7 +379,13 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
                 %error,
                 "settings file is not valid; using defaults"
             );
-            if let Err(error) = std::fs::rename(path, &aside) {
+            #[cfg(target_family = "wasm")]
+            let moved =
+                crate::web_storage::set(&aside.to_string_lossy(), &String::from_utf8_lossy(&bytes))
+                    .and_then(|()| crate::web_storage::remove(&path.to_string_lossy()));
+            #[cfg(not(target_family = "wasm"))]
+            let moved = std::fs::rename(path, &aside);
+            if let Err(error) = moved {
                 tracing::warn!(%error, "could not move the corrupt settings aside");
             }
             (Settings::default(), Loaded::Corrupt(aside))
@@ -381,6 +395,17 @@ pub fn load(path: &Path) -> (Settings, Loaded) {
 
 /// Writes settings atomically: a temporary file in the same directory, then a rename.
 pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
+    #[cfg(target_family = "wasm")]
+    {
+        let json = serde_json::to_string_pretty(settings).map_err(io::Error::other)?;
+        crate::web_storage::set(&path.to_string_lossy(), &json)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    save_file(path, settings)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn save_file(path: &Path, settings: &Settings) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent")
     })?;
@@ -460,6 +485,10 @@ impl SettingsStore {
             let settings = self.settings.clone();
             self.save = Some(cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(SAVE_DELAY).await;
+                // localStorage lives on the page, not in a worker.
+                #[cfg(target_family = "wasm")]
+                let written = save(&path, &settings).map_err(|e| (path, e));
+                #[cfg(not(target_family = "wasm"))]
                 let written = cx
                     .background_spawn(async move { save(&path, &settings).map_err(|e| (path, e)) })
                     .await;

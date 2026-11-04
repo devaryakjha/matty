@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use gpui_kit::SharedString;
 use matty_api::models::{Channel, ChannelMember, ChannelStats, User};
@@ -2218,7 +2220,15 @@ pub fn database_path(account: &SavedAccount) -> PathBuf {
     url::Url::parse(&account.server)
         .ok()
         .and_then(|server| matty_sync::database_path(&server, &account.user_id))
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("matty-{}.sqlite", account.user_id)))
+        .unwrap_or_else(|| {
+            // The browser has no temporary folder; this path only names
+            // the database, which is kept in memory there.
+            #[cfg(target_family = "wasm")]
+            let dir = PathBuf::new();
+            #[cfg(not(target_family = "wasm"))]
+            let dir = std::env::temp_dir();
+            dir.join(format!("matty-{}.sqlite", account.user_id))
+        })
 }
 
 /// The sentence for a server check that stopped at `error`, naming
