@@ -3973,6 +3973,7 @@ mod tests {
         };
         let channel = ChannelModel {
             purpose: None,
+            offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
