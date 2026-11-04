@@ -145,7 +145,13 @@ pub(crate) enum Loaded {
     SendFailed {
         pending_post_id: String,
         error: String,
+        /// The network or the server failed rather than the post: it stays
+        /// queued and goes again later.
+        transient: bool,
     },
+    /// Time to try a channel's queued sends again after a transient
+    /// failure.
+    Drain { channel_id: String },
     /// An edit the user made, as the server stored it.
     Edited(Box<matty_api::models::Post>),
     /// A delete the user made went through.

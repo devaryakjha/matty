@@ -42,6 +42,9 @@ pub struct Live {
     zone: jiff::tz::TimeZone,
     /// The posts the channel view shows now, to send it only what changed.
     shown: Option<Vec<Post>>,
+    /// The open channel's sends that failed and wait for Retry or Delete;
+    /// their rows read "Not sent".
+    failed: std::collections::HashSet<String>,
     /// The open channel as stored, the user's membership, and its counts
     /// once fetched.
     channel: Option<Arc<Channel>>,
@@ -318,6 +321,7 @@ impl Live {
                 max_post_size: None,
                 zone: jiff::tz::TimeZone::system(),
                 shown: None,
+                failed: Default::default(),
                 channel: None,
                 member: None,
                 stats: None,
@@ -379,6 +383,7 @@ impl Live {
         });
         self.posts = None;
         self.shown = None;
+        self.failed.clear();
         self.channel = None;
         self.member = None;
         self.stats = None;
@@ -428,6 +433,11 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        for post in &mut model.posts {
+            if self.failed.contains(post.id.as_ref()) {
+                post.status = crate::channel::PostStatus::Failed;
+            }
+        }
         for file in model.posts.iter_mut().flat_map(|post| &mut post.files) {
             if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
                 file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
@@ -801,6 +811,17 @@ impl Live {
                 self.typing.retain(|(id, _)| id != user_id);
                 self.typing.push((user_id.clone(), Instant::now()));
                 update.typing = Some(self.typing_names());
+            }
+            ChangeSet::Outbox { channel_id, sends } if self.is_open(channel_id) => {
+                let failed = sends
+                    .iter()
+                    .filter(|send| send.last_error.is_some())
+                    .map(|send| send.pending_post_id.clone())
+                    .collect();
+                if failed != self.failed {
+                    self.failed = failed;
+                    update.channel = self.channel_update();
+                }
             }
             ChangeSet::Posts { channel_id, posts } => {
                 if self
@@ -1314,6 +1335,43 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn a_failed_send_reads_not_sent_until_it_goes_again() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        live.apply(&ChangeSet::Posts {
+            channel_id: "c1".into(),
+            posts: Arc::from(vec![matty_api::models::Post {
+                id: "me:1".into(),
+                pending_post_id: "me:1".into(),
+                user_id: "ada".into(),
+                ..Default::default()
+            }]),
+        });
+        let outbox = |error: Option<&str>| ChangeSet::Outbox {
+            channel_id: "c1".into(),
+            sends: Arc::from(vec![matty_sync::Outgoing {
+                pending_post_id: "me:1".into(),
+                channel_id: "c1".into(),
+                last_error: error.map(str::to_owned),
+                ..Default::default()
+            }]),
+        };
+        let status = |update: Update| match update.channel {
+            Some(ChannelUpdate::Patch { updated, .. }) => updated.first().map(|post| post.status),
+            _ => None,
+        };
+        assert_eq!(
+            status(live.apply(&outbox(Some("refused")))),
+            Some(crate::channel::PostStatus::Failed)
+        );
+        // Retry: queued again, so it reads "Sending…".
+        assert_eq!(
+            status(live.apply(&outbox(None))),
+            Some(crate::channel::PostStatus::Pending)
+        );
     }
 
     #[test]

@@ -512,9 +512,22 @@ impl MainWindow {
                             .update(cx, |view, cx| view.set_full_image(id, image, cx));
                     }
                 }
+                ChannelEvent::Retry(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Retry {
+                            pending_post_id: post.to_string(),
+                        });
+                    }
+                }
+                ChannelEvent::Discard(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Discard {
+                            pending_post_id: post.to_string(),
+                        });
+                    }
+                }
                 ChannelEvent::ToggleSave(_)
                 | ChannelEvent::TogglePin(_)
-                | ChannelEvent::Retry(_)
                 | ChannelEvent::ToggleFollow { .. } => {}
             },
         )
@@ -571,6 +584,13 @@ impl MainWindow {
                     for (id, image) in here {
                         this.right_pane
                             .update(cx, |pane, cx| pane.set_full_image(&id, image, cx));
+                    }
+                }
+                RightPaneEvent::Retry(post) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::Retry {
+                            pending_post_id: post.to_string(),
+                        });
                     }
                 }
                 // Sync owns the rest (PLAN §4.3); the pane already shows them.

@@ -601,6 +601,10 @@ struct Session {
     /// The socket has been connected before, so the next connect is a
     /// reconnect that needs a catch-up.
     was_connected: bool,
+    /// False once a socket that was connected drops; queued sends wait
+    /// for it to come back. Before the first connect sends go over REST
+    /// as soon as they are written.
+    online: bool,
     /// A resync is running; another request waits for it.
     resyncing: bool,
     resync_again: bool,
@@ -634,6 +638,9 @@ pub(crate) struct Engine {
     /// How far back each open channel's snapshot reaches beyond the
     /// latest [`POSTS_WINDOW`] posts.
     history: std::collections::HashMap<String, History>,
+    /// Per channel, the queued send on its way. A channel sends one at a
+    /// time so its posts reach the server in order (#194).
+    sending: std::collections::HashMap<String, String>,
     /// Per channel, the creation time at or before which stored posts are
     /// left over from a jump into the past that was given up (Jump to
     /// latest, or leaving the channel) and may not join the latest posts;
@@ -666,6 +673,7 @@ impl Engine {
             media: None,
             fetching: BTreeSet::new(),
             history: std::collections::HashMap::new(),
+            sending: std::collections::HashMap::new(),
             floors: std::collections::HashMap::new(),
         }
     }
@@ -760,6 +768,7 @@ impl Engine {
                         load,
                         socket,
                         was_connected: false,
+                        online: true,
                         resyncing: false,
                         resync_again: false,
                     });
@@ -790,6 +799,9 @@ impl Engine {
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
                     to_fetch.push(channel_id.clone());
+                    // Which of its rows failed to send, even from an
+                    // earlier run.
+                    dirty.outbox.insert(channel_id.clone());
                     dirty.channels.insert(channel_id);
                 }
                 Message::Command(Command::LoadOlder { channel_id }) => {
@@ -868,11 +880,13 @@ impl Engine {
                         ..Outgoing::default()
                     };
                     outbox::queue(&tx, &outgoing, &me, dirty)?;
-                    sends.push(outgoing.pending_post_id);
+                    sends.push(outgoing.channel_id);
                 }
                 Message::Command(Command::Retry { pending_post_id }) => {
-                    if queue::get(&tx, &pending_post_id)?.is_some() {
-                        sends.push(pending_post_id);
+                    if let Some(outgoing) = queue::get(&tx, &pending_post_id)? {
+                        queue::unfail(&tx, &pending_post_id)?;
+                        dirty.outbox.insert(outgoing.channel_id.clone());
+                        sends.push(outgoing.channel_id);
                     }
                 }
                 Message::Command(Command::Discard { pending_post_id }) => {
@@ -1139,8 +1153,8 @@ impl Engine {
         for upload in uploads {
             self.upload(upload, dirty);
         }
-        for pending_post_id in sends {
-            self.send(&pending_post_id, dirty)?;
+        for channel_id in sends {
+            self.drain(&channel_id, dirty)?;
         }
         for write in writes {
             self.write(write, dirty);
@@ -1148,23 +1162,45 @@ impl Engine {
         Ok(())
     }
 
-    /// Starts sending a queued post, or fails it when offline.
-    fn send(&mut self, pending_post_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
-        let conn = self.store.conn();
-        let Some(outgoing) = queue::get(conn, pending_post_id)? else {
+    /// Starts sending a channel's oldest queued post, unless one is on its
+    /// way or the socket is down; the rest follow one by one as each is
+    /// confirmed (#194). Failed sends wait for Retry and do not hold up
+    /// the ones after them.
+    fn drain(&mut self, channel_id: &str, dirty: &mut Dirty) -> Result<(), StoreError> {
+        if self.sending.contains_key(channel_id) {
+            return Ok(());
+        }
+        let Some(session) = self.session.as_ref().filter(|session| session.online) else {
             return Ok(());
         };
-        let Some(session) = &self.session else {
-            return outbox::fail(conn, pending_post_id, "not connected", dirty);
+        let conn = self.store.conn();
+        let Some(outgoing) = queue::for_channel(conn, channel_id)?
+            .into_iter()
+            .find(|outgoing| outgoing.last_error.is_none())
+        else {
+            return Ok(());
         };
-        queue::attempt(conn, pending_post_id)?;
+        queue::attempt(conn, &outgoing.pending_post_id)?;
         dirty.outbox.insert(outgoing.channel_id.clone());
+        self.sending
+            .insert(channel_id.to_owned(), outgoing.pending_post_id.clone());
         tokio::spawn(outbox::send(
             session.client.clone(),
             outgoing,
             self.loaded.clone(),
         ));
         Ok(())
+    }
+
+    /// A send came back: the channel may send its next one.
+    fn sent(&mut self, pending_post_id: &str) -> Option<String> {
+        let channel_id = self
+            .sending
+            .iter()
+            .find(|(_, id)| id.as_str() == pending_post_id)
+            .map(|(channel_id, _)| channel_id.clone())?;
+        self.sending.remove(&channel_id);
+        Some(channel_id)
     }
 
     /// Starts saving a file; it reports back as [`Loaded::Download`].
@@ -1909,15 +1945,25 @@ impl Engine {
             }
             Loaded::Ws(signal) => match signal {
                 WsSignal::State(state) => {
-                    if let ConnectionState::Connected { .. } = state
-                        && let Some(session) = &mut self.session
+                    let online = matches!(state, ConnectionState::Connected { .. });
+                    if let Some(session) = &mut self.session
+                        && (online || session.was_connected)
+                        && !matches!(state, ConnectionState::Connecting)
                     {
+                        session.online = online;
+                    }
+                    if online && let Some(session) = &mut self.session {
                         // Even a resumed stream can miss channel events, so
                         // every reconnect catches up (WsSignal docs).
                         if session.was_connected {
                             dirty.resync = true;
                         }
                         session.was_connected = true;
+                        // What was written while offline, or before a
+                        // restart, goes now, channel by channel.
+                        for channel_id in queue::channels(self.store.conn())? {
+                            self.drain(&channel_id, dirty)?;
+                        }
                     }
                     dirty
                         .direct
@@ -1979,14 +2025,37 @@ impl Engine {
                 let tx = self.store.conn_mut().transaction()?;
                 outbox::confirm(&tx, &pending_post_id, &post, self.me.as_deref(), dirty)?;
                 tx.commit()?;
+                self.sent(&pending_post_id);
+                self.drain(&post.channel_id, dirty)?;
             }
             Loaded::SendFailed {
                 pending_post_id,
                 error,
+                transient,
             } => {
-                tracing::warn!(%pending_post_id, %error, "a send failed");
-                outbox::fail(self.store.conn(), &pending_post_id, &error, dirty)?;
+                tracing::warn!(%pending_post_id, %error, transient, "a send failed");
+                let channel_id = self.sent(&pending_post_id);
+                let queued = queue::get(self.store.conn(), &pending_post_id)?;
+                match (queued, channel_id) {
+                    // Still queued, first in line: it goes again after a
+                    // pause, or when the socket is back.
+                    (Some(outgoing), Some(channel_id)) if transient => {
+                        let loaded = self.loaded.clone();
+                        let wait = outbox::backoff(outgoing.attempts);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(wait).await;
+                            let _ = loaded.send(Loaded::Drain { channel_id });
+                        });
+                    }
+                    (_, channel_id) => {
+                        outbox::fail(self.store.conn(), &pending_post_id, &error, dirty)?;
+                        if let Some(channel_id) = channel_id {
+                            self.drain(&channel_id, dirty)?;
+                        }
+                    }
+                }
             }
+            Loaded::Drain { channel_id } => self.drain(&channel_id, dirty)?,
             Loaded::Edited(post) => {
                 let mut fetches = Vec::new();
                 events::apply(

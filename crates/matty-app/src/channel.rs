@@ -513,6 +513,9 @@ pub enum ChannelEvent {
     Delete(SharedString),
     /// Retry a failed send; the view shows it pending again.
     Retry(SharedString),
+    /// Delete on a send that never reached the server: sync drops it
+    /// from the outbox. The row is already gone.
+    Discard(SharedString),
     /// The user toggled following the thread under `post`.
     ToggleFollow { post: SharedString, following: bool },
     /// The user renamed the channel from its header menu; the view already
@@ -1986,7 +1989,7 @@ impl ChannelView {
         let Some(at) = model.posts.iter().position(|post| post.id == id) else {
             return;
         };
-        let reached_server = model.posts[at].status == PostStatus::Sent;
+        let status = model.posts[at].status;
         model.posts.remove(at);
         // The "New messages" line stays above the same post.
         model.first_unread = model.first_unread.and_then(|first| {
@@ -1994,8 +1997,10 @@ impl ChannelView {
             (first < model.posts.len()).then_some(first)
         });
         self.set_model(Some(model), window, cx);
-        if reached_server {
-            cx.emit(ChannelEvent::Delete(id));
+        match status {
+            PostStatus::Sent => cx.emit(ChannelEvent::Delete(id)),
+            PostStatus::Failed => cx.emit(ChannelEvent::Discard(id)),
+            PostStatus::Pending => {}
         }
     }
 

@@ -111,6 +111,23 @@ pub fn fail(conn: &Connection, pending_post_id: &str, error: &str) -> Result<()>
     Ok(())
 }
 
+/// Clears a failure so the send queues again, for Retry.
+pub fn unfail(conn: &Connection, pending_post_id: &str) -> Result<()> {
+    conn.prepare_cached("UPDATE outbox SET last_error = NULL WHERE pending_post_id = ?1")?
+        .execute([pending_post_id])?;
+    Ok(())
+}
+
+/// Every channel with a queued send.
+pub fn channels(conn: &Connection) -> Result<Vec<String>> {
+    let mut statement =
+        conn.prepare_cached("SELECT DISTINCT channel_id FROM outbox ORDER BY channel_id")?;
+    let rows = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
 /// Removes a send: the server has it, or the user discarded it.
 pub fn remove(conn: &Connection, pending_post_id: &str) -> Result<bool> {
     let removed = conn
