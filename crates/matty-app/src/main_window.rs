@@ -911,11 +911,10 @@ impl MainWindow {
             }),
             None => {}
         }
-        // Live reports (at_start, failed) for now; at_end follows once it
-        // carries `ChangeSet::History::at_end` through.
-        if let Some((at_start, failed)) = update.history {
-            self.channel
-                .update(cx, |view, cx| view.set_history(at_start, true, failed, cx));
+        if let Some((at_start, at_end, failed)) = update.history {
+            self.channel.update(cx, |view, cx| {
+                view.set_history(at_start, at_end, failed, cx)
+            });
         }
         if let Some(details) = update.details {
             self.channel.update(cx, |view, cx| {
