@@ -1948,6 +1948,9 @@ impl Live {
                         }
                         if let Some(person) = &channel.dm_user {
                             row = row.handle(person.username.clone());
+                        } else if matches!(row.kind, ChannelKind::Public | ChannelKind::Private) {
+                            // `~` mentions and links use the URL name.
+                            row = row.handle(channel.name.clone());
                         }
                         if channel.unreads.messages > 0 {
                             row = row.unread();
@@ -2479,6 +2482,24 @@ mod tests {
         );
         // Another team's sidebar changing leaves the shown one alone.
         assert_eq!(live.apply(&t2).categories, None);
+    }
+
+    #[test]
+    fn a_channel_row_keeps_its_url_name_for_tilde_mentions() {
+        let mut live = live();
+        live.apply(&ChangeSet::Unreads {
+            teams: Arc::from(vec![team("t1")]),
+        });
+        let mut town = channel("c1", "O", 0, 0);
+        town.name = "town-square".into();
+        town.display_name = "Town Square".into();
+        let update = live.apply(&ChangeSet::Sidebar {
+            team_id: "t1".into(),
+            sections: Arc::from(vec![section("c", vec![town])]),
+        });
+        let row = &update.categories.unwrap()[0].rows[0];
+        assert_eq!(row.name.as_ref(), "Town Square");
+        assert_eq!(row.handle.as_deref(), Some("town-square"));
     }
 
     #[test]

@@ -983,10 +983,8 @@ pub struct ChannelView {
     recent_emoji: Vec<SharedString>,
     /// The sidebar's channels, for `~` autocomplete.
     directory: Vec<ChannelRow>,
-    /// The `@` query the composer shows suggestions for, if any.
-    asking: Option<String>,
-    /// The server's matches for a typed `@name`, by what was typed.
-    suggested: Option<(String, Vec<UserProfile>)>,
+    /// What the server said about typed `@` names.
+    people: PeopleAsk,
     /// Files waiting in the composer tray, and a send waiting on them.
     tray: UploadTray,
     /// The image viewer over the clicked post's images.
@@ -1286,8 +1284,7 @@ impl ChannelView {
             picker_target: None,
             recent_emoji: Vec::new(),
             directory: Vec::new(),
-            asking: None,
-            suggested: None,
+            people: PeopleAsk::default(),
             tray: UploadTray::new("upload"),
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
@@ -1360,8 +1357,7 @@ impl ChannelView {
         self.permalink = None;
         self.selection = None;
         // The server ranked its matches for the channel that was open.
-        self.asking = None;
-        self.suggested = None;
+        self.people = PeopleAsk::default();
         // Preview has no server to page from, so it starts at the beginning.
         self.history = History {
             at_start: crate::preview::enabled(),
@@ -2337,21 +2333,8 @@ impl ChannelView {
     /// Asks the server who matches an `@` query the channel's own
     /// profiles may not cover, once per query.
     fn ask_people(&mut self, trigger: char, query: &str, cx: &mut Context<Self>) {
-        if trigger != '@' {
-            self.asking = None;
-            return;
-        }
-        let query = query.to_lowercase();
-        if self.asking.as_deref() == Some(query.as_str()) {
-            return;
-        }
-        self.asking = Some(query.clone());
-        if self
-            .suggested
-            .as_ref()
-            .is_none_or(|(term, _)| *term != query)
-        {
-            cx.emit(ChannelEvent::SuggestPeople(query.into()));
+        if let Some(term) = self.people.ask(trigger, query) {
+            cx.emit(ChannelEvent::SuggestPeople(term.into()));
         }
     }
 
@@ -2363,9 +2346,7 @@ impl ChannelView {
         people: Vec<UserProfile>,
         cx: &mut Context<Self>,
     ) {
-        let current = self.asking.as_deref() == Some(term.as_str());
-        self.suggested = Some((term.clone(), people));
-        if current {
+        if self.people.answer(&term, people) {
             let suggestions = self.suggestions('@', &term);
             self.composer
                 .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
@@ -2382,60 +2363,18 @@ impl ChannelView {
     /// channel's profiles, `~` channels from the sidebar, `:` emoji from the
     /// catalog once two characters narrow it.
     fn suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
-        const LIMIT: usize = 8;
-        let query = query.to_lowercase();
-        match trigger {
-            '@' => {
-                let in_channel = self.model.as_ref().is_some_and(|model| {
-                    matches!(model.kind, ChannelKind::Public | ChannelKind::Private)
-                });
-                // The groups keep their rows even when many people match.
-                let groups = if in_channel {
-                    group_mentions(&query, LIMIT)
-                } else {
-                    Vec::new()
-                };
-                // The channel's posters first, then whoever the server
-                // found, each person once.
-                let mut seen = std::collections::HashSet::new();
-                let suggested = self
-                    .suggested
-                    .iter()
-                    .filter(|(term, _)| query.starts_with(term.as_str()))
-                    .flat_map(|(_, people)| people.iter());
-                let mut found = people_suggestions(
-                    self.model
-                        .iter()
-                        .flat_map(|model| model.profiles.iter())
-                        .chain(suggested)
-                        .filter(|profile| seen.insert(profile.username.clone())),
-                    &query,
-                    LIMIT - groups.len(),
-                );
-                found.extend(groups);
-                found
-            }
-            '~' => self
-                .directory
-                .iter()
-                .filter(|row| matches!(row.kind, ChannelKind::Public | ChannelKind::Private))
-                .filter(|row| row.name.to_lowercase().contains(&query))
-                .take(LIMIT)
-                .map(|row| {
-                    ComposerSuggestion::new(format!("~{}", row.name), row.name.clone()).icon(
-                        match row.kind {
-                            ChannelKind::Private => LucideIcon::Lock,
-                            _ => LucideIcon::Hash,
-                        },
-                    )
-                })
-                .collect(),
-            ':' => crate::emoji::suggest(&query, LIMIT)
-                .into_iter()
-                .map(|(name, glyph)| ComposerSuggestion::new(glyph, format!(":{name}:")))
-                .collect(),
-            _ => Vec::new(),
-        }
+        let in_channel = self
+            .model
+            .as_ref()
+            .is_some_and(|model| matches!(model.kind, ChannelKind::Public | ChannelKind::Private));
+        composer_suggestions(
+            trigger,
+            query,
+            self.model.iter().flat_map(|model| model.profiles.iter()),
+            &self.people,
+            &self.directory,
+            in_channel,
+        )
     }
 
     fn typing_line(channel: &ChannelModel, cx: &App) -> impl IntoElement + use<> {
@@ -4560,6 +4499,116 @@ fn group_mentions(query: &str, limit: usize) -> Vec<ComposerSuggestion> {
         .collect()
 }
 
+/// The `@` name a composer last asked the server about, and the answer.
+/// Shared by the channel and thread composers.
+#[derive(Default)]
+pub(crate) struct PeopleAsk {
+    /// The `@` query the composer shows suggestions for, if any.
+    asking: Option<String>,
+    /// The server's matches for a typed `@name`, by what was typed.
+    answer: Option<(String, Vec<UserProfile>)>,
+}
+
+impl PeopleAsk {
+    /// Notes what the composer is completing; the term to ask the server
+    /// about, once per `@` query.
+    pub(crate) fn ask(&mut self, trigger: char, query: &str) -> Option<String> {
+        if trigger != '@' {
+            self.asking = None;
+            return None;
+        }
+        let query = query.to_lowercase();
+        if self.asking.as_deref() == Some(query.as_str()) {
+            return None;
+        }
+        self.asking = Some(query.clone());
+        self.answer
+            .as_ref()
+            .is_none_or(|(term, _)| *term != query)
+            .then_some(query)
+    }
+
+    /// Keeps the server's matches for `term`; whether the composer still
+    /// shows that query.
+    pub(crate) fn answer(&mut self, term: &str, people: Vec<UserProfile>) -> bool {
+        self.answer = Some((term.to_owned(), people));
+        self.asking.as_deref() == Some(term)
+    }
+
+    /// The server's matches that still fit `query`.
+    fn matches(&self, query: &str) -> impl Iterator<Item = &UserProfile> + use<'_> {
+        let query = query.to_owned();
+        self.answer
+            .iter()
+            .filter(move |(term, _)| query.starts_with(term.as_str()))
+            .flat_map(|(_, people)| people.iter())
+    }
+}
+
+/// Suggestions for a composer trigger (PLAN §4.3): `@` people from `local`
+/// then the server's matches, plus the group mentions in a channel; `~`
+/// channels from the sidebar; `:` emoji from the catalog once two
+/// characters narrow it.
+pub(crate) fn composer_suggestions<'a>(
+    trigger: char,
+    query: &str,
+    local: impl Iterator<Item = &'a UserProfile>,
+    people: &'a PeopleAsk,
+    directory: &[ChannelRow],
+    groups: bool,
+) -> Vec<ComposerSuggestion> {
+    const LIMIT: usize = 8;
+    let query = query.to_lowercase();
+    match trigger {
+        '@' => {
+            // The groups keep their rows even when many people match.
+            let groups = if groups {
+                group_mentions(&query, LIMIT)
+            } else {
+                Vec::new()
+            };
+            // Local people first, then whoever the server found, each once.
+            let mut seen = std::collections::HashSet::new();
+            let mut found = people_suggestions(
+                local
+                    .chain(people.matches(&query))
+                    .filter(|profile| seen.insert(profile.username.clone())),
+                &query,
+                LIMIT - groups.len(),
+            );
+            found.extend(groups);
+            found
+        }
+        '~' => directory
+            .iter()
+            .filter(|row| matches!(row.kind, ChannelKind::Public | ChannelKind::Private))
+            .filter(|row| {
+                row.name.to_lowercase().contains(&query)
+                    || row
+                        .handle
+                        .as_ref()
+                        .is_some_and(|handle| handle.to_lowercase().contains(&query))
+            })
+            .take(LIMIT)
+            .map(|row| {
+                // Mattermost links `~url-name`, not the display name.
+                let handle = row.handle.as_ref().unwrap_or(&row.name);
+                ComposerSuggestion::new(format!("~{handle}"), row.name.clone())
+                    .description(format!("~{handle}"))
+                    .icon(match row.kind {
+                        ChannelKind::Private => LucideIcon::Lock,
+                        _ => LucideIcon::Hash,
+                    })
+            })
+            .collect(),
+        ':' => crate::emoji::suggest(&query, LIMIT)
+            .into_iter()
+            .map(|(name, glyph)| ComposerSuggestion::new(glyph, format!(":{name}:")))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn people_suggestions<'a>(
     profiles: impl Iterator<Item = &'a UserProfile>,
     query: &str,
@@ -4606,6 +4655,47 @@ mod tests {
                 .unwrap()
                 .as_second()
         );
+    }
+
+    #[test]
+    fn tilde_inserts_the_channels_url_name() {
+        let rows = [
+            ChannelRow::new("c1", "Town Square", ChannelKind::Public).handle("town-square"),
+            ChannelRow::new("c2", "Ops", ChannelKind::Private),
+            ChannelRow::new(
+                "d",
+                "Ada",
+                ChannelKind::Direct {
+                    presence: crate::sidebar::Presence::Offline,
+                },
+            )
+            .handle("ada"),
+        ];
+        let values = |query: &str| {
+            composer_suggestions(
+                '~',
+                query,
+                std::iter::empty(),
+                &PeopleAsk::default(),
+                &rows,
+                true,
+            )
+            .into_iter()
+            .map(|s| (s.value.to_string(), s.label.to_string()))
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            values("town-"),
+            [("~town-square".to_owned(), "Town Square".to_owned())]
+        );
+        assert_eq!(
+            values("o"),
+            [
+                ("~town-square".to_owned(), "Town Square".to_owned()),
+                ("~Ops".to_owned(), "Ops".to_owned()),
+            ]
+        );
+        assert!(values("ada").is_empty());
     }
 
     #[test]

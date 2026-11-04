@@ -325,8 +325,14 @@ impl MainWindow {
             "You"
         };
         let channel = cx.new(|cx| ChannelView::new(initial, me, window, cx));
-        channel.update(cx, |channel, cx| channel.set_directory(directory, cx));
-        let right_pane = cx.new(|cx| RightPaneView::new(me, window, cx));
+        channel.update(cx, |channel, cx| {
+            channel.set_directory(directory.clone(), cx)
+        });
+        let right_pane = cx.new(|cx| {
+            let mut pane = RightPaneView::new(me, window, cx);
+            pane.set_directory(directory.clone());
+            pane
+        });
         if crate::preview::enabled() {
             cx.set_global(crate::preview::avatars());
         }
@@ -1432,8 +1438,16 @@ impl MainWindow {
                 .update(cx, |browse, cx| browse.set_channels(channels, cx));
         }
         if let Some((term, people)) = update.suggested {
-            self.channel
-                .update(cx, |channel, cx| channel.set_suggested(term, people, cx));
+            self.channel.update(cx, |channel, cx| {
+                channel.set_suggested(term.clone(), people.clone(), cx)
+            });
+            // The Threads view's thread has a reply composer of its own.
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, cx| {
+                pane.set_suggested(term.clone(), people.clone(), cx)
+            });
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_suggested(term, people, cx));
         }
         if let Some(people) = update.people {
             self.new_message
@@ -1478,6 +1492,18 @@ impl MainWindow {
             });
             self.switcher
                 .update(cx, |switcher, cx| switcher.set_model(&model, cx));
+            // `~` completes from the sidebar's channels in both composers.
+            let directory: Vec<_> = model
+                .categories
+                .iter()
+                .flat_map(|category| category.rows.iter().cloned())
+                .collect();
+            self.right_pane
+                .update(cx, |pane, _| pane.set_directory(directory.clone()));
+            let detail = self.threads.read(cx).detail().clone();
+            detail.update(cx, |pane, _| pane.set_directory(directory.clone()));
+            self.channel
+                .update(cx, |channel, cx| channel.set_directory(directory, cx));
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -2442,6 +2468,15 @@ impl MainWindow {
                 }
             }
             RightPaneEvent::MarkUnread(post) => self.mark_unread(post, cx),
+            RightPaneEvent::SuggestPeople(term) => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::SuggestPeople {
+                        term: term.to_string(),
+                        team_id: live.team().map(str::to_string),
+                        channel_id: live.thread_channel(),
+                    });
+                }
+            }
             RightPaneEvent::Forward(post) => {
                 let post = post.clone();
                 let switcher = self.switcher.clone();

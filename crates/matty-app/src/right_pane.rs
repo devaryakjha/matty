@@ -30,7 +30,7 @@ use crate::ui::{
     attachment::Attachment,
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
-    composer::{Composer, ComposerEvent, ComposerState},
+    composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
@@ -185,6 +185,9 @@ pub enum RightPaneEvent {
     Search(SharedString),
     /// The user asked for the search's next page.
     SearchMore,
+    /// The reply composer typed `@` and this much of a name; sync asks
+    /// the server and [`RightPaneView::set_suggested`] takes the answer.
+    SuggestPeople(SharedString),
     /// Message menu actions on a thread post, as in the channel (#213).
     CopyLink(SharedString),
     SetSaved {
@@ -312,6 +315,10 @@ pub struct RightPaneView {
     /// People the thread's authors are looked up in for their presence
     /// dots (#135); the window keeps it in step with the channel's.
     profiles: Vec<UserProfile>,
+    /// What the server said about names typed after `@` in a reply.
+    people: crate::channel::PeopleAsk,
+    /// The channels `~` can complete in a reply.
+    directory: Vec<crate::sidebar::ChannelRow>,
     /// Who is typing a reply in the thread (#137).
     typing: Vec<SharedString>,
     draft_len: usize,
@@ -383,6 +390,7 @@ impl RightPaneView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
+            state.set_triggers(['@', '~', ':'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
@@ -456,6 +464,14 @@ impl RightPaneView {
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete { trigger, query } => {
+                        if let Some(term) = this.people.ask(*trigger, query) {
+                            cx.emit(RightPaneEvent::SuggestPeople(term.into()));
+                        }
+                        let suggestions = this.reply_suggestions(*trigger, query);
+                        composer
+                            .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+                    }
                     _ => {}
                 },
             ),
@@ -496,6 +512,8 @@ impl RightPaneView {
             menu: cx.new(|cx| MenuState::new([], cx)),
             me: me.into(),
             profiles: Vec::new(),
+            people: crate::channel::PeopleAsk::default(),
+            directory: Vec::new(),
             typing: Vec::new(),
             draft_len: 0,
             link: Default::default(),
@@ -1536,6 +1554,39 @@ impl RightPaneView {
     }
 
     /// Keeps the people whose presence the thread's avatars show.
+    /// Suggestions for the reply composer's triggers, as in the channel's;
+    /// the server's matches stand in for the thread's people.
+    fn reply_suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+        crate::channel::composer_suggestions(
+            trigger,
+            query,
+            std::iter::empty(),
+            &self.people,
+            &self.directory,
+            true,
+        )
+    }
+
+    /// Takes the server's matches for `term` and, while the reply composer
+    /// still asks for it, shows them.
+    pub fn set_suggested(
+        &mut self,
+        term: String,
+        people: Vec<UserProfile>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.people.answer(&term, people) {
+            let suggestions = self.reply_suggestions('@', &term);
+            self.composer
+                .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
+        }
+    }
+
+    /// The channels `~` can complete in a reply.
+    pub fn set_directory(&mut self, rows: Vec<crate::sidebar::ChannelRow>) {
+        self.directory = rows;
+    }
+
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
         if self.profiles != profiles {
             self.profiles = profiles;

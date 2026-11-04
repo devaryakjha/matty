@@ -51,7 +51,8 @@ pub struct ChannelRow {
     /// A direct message's other person, whose picture the row shows.
     pub person: Option<SharedString>,
     /// A direct message's other person's username, so the quick switcher
-    /// finds the row by it whatever the name format shows (#156).
+    /// finds the row by it whatever the name format shows (#156); for a
+    /// channel, its URL name, which `~` mentions use.
     pub handle: Option<SharedString>,
 }
 
