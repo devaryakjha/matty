@@ -366,6 +366,14 @@ text scale 1; everything multiplies by the user's text scale and zoom.
   dialogs: Cmd/Ctrl+Shift+J for Browse channels and Cmd/Ctrl+Shift+N for
   Create channel (`design-35`). The shortcut sheet lists them from the
   same table, so the sheet and the bindings cannot drift apart.
+- **Team rail states** (§4 above, PLAN §3 M1): the rail is its own view,
+  `rail.rs`, with a `Team` per square. The current team is a primary
+  button, so its hover stays primary; the others are ghost buttons on the
+  sidebar accent. A team with mentions wears a count badge on its top-right
+  corner and an unread team a dot, each ringed in the rail's color so it
+  stands off the tile (`design-36`). Clicking a square makes it current and
+  emits `RailEvent::Select`; the dashed square emits `RailEvent::Join`.
+  Switching and joining teams are sync's (M2).
 
 ## 5. Components
 

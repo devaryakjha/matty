@@ -24,6 +24,7 @@ use crate::directory::{BrowseView, CreateChannelView, DirectoryEvent, NewMessage
 use crate::drafts::{DraftsEvent, DraftsModel, DraftsView};
 use crate::live::{ChannelUpdate, Live};
 use crate::login::{LoginEvent, LoginModel, LoginStep, LoginView, SignInMethods, SsoProvider};
+use crate::rail::{RailEvent, RailView, Team};
 use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView, SearchModel};
 use crate::settings::{
     ClockFormat, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SIDEBAR_MAX, SIDEBAR_MIN, SendKey,
@@ -109,8 +110,8 @@ pub struct MainWindow {
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
-    /// Shown when the user belongs to more than one team (M1).
-    rail_visible: bool,
+    /// The team rail, shown when the user belongs to more than one team.
+    rail: Entity<RailView>,
     /// Holds threads, search results and the other right-pane views (M1).
     right_pane_open: bool,
     /// The Threads view stands in for the channel while the sidebar's
@@ -201,6 +202,21 @@ impl MainWindow {
             });
         }
         let create_channel = cx.new(|cx| CreateChannelView::new(window, cx));
+        let rail = cx.new(|_| {
+            let teams = if crate::preview::enabled() {
+                crate::preview::teams()
+            } else {
+                vec![Team::new("team", "Matty")]
+            };
+            let current = teams.first().map(|team| team.id.clone());
+            RailView::new(teams, current)
+        });
+        cx.subscribe(&rail, |_, _, event: &RailEvent, cx| match event {
+            // Switching teams and joining one are sync's (PLAN §3 M2); the
+            // rail already shows the pick.
+            RailEvent::Select(_) | RailEvent::Join => cx.notify(),
+        })
+        .detach();
         cx.subscribe_in(&browse, window, Self::on_directory_event)
             .detach();
         cx.subscribe_in(&new_message, window, Self::on_directory_event)
@@ -475,7 +491,7 @@ impl MainWindow {
             new_message,
             create_channel,
             joined: Vec::new(),
-            rail_visible: crate::preview::enabled(),
+            rail,
             right_pane_open: false,
             threads,
             threads_open: false,
@@ -1365,7 +1381,7 @@ impl MainWindow {
         }
         let settings = self.settings.read(cx).get().clone();
         let theme = UiTheme::read(cx);
-        let rail = if self.rail_visible {
+        let rail = if self.rail.read(cx).is_multi() {
             f32::from(scaled(theme, metrics::RAIL_WIDTH))
         } else {
             0.
@@ -1991,106 +2007,6 @@ impl MainWindow {
                 cx,
             ))
     }
-
-    /// DESIGN.md §4: 56px rail of 32px team squares, the current one
-    /// outlined in `primary`. Hidden until the user has a second team.
-    fn team_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = UiTheme::read(cx).clone();
-        let teams = if crate::preview::enabled() {
-            crate::preview::teams()
-        } else {
-            vec![("Matty", true)]
-        };
-        let squares = teams
-            .into_iter()
-            .enumerate()
-            .map(|(index, (name, current))| {
-                let initials: String = name
-                    .split_whitespace()
-                    .filter_map(|word| word.chars().next())
-                    .take(2)
-                    .collect();
-                let square = Button::new(gpui_kit::ElementId::Name(
-                    format!("rail.team.{index}").into(),
-                ))
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Icon)
-                .aria_label(name)
-                .rounded(theme.radius.lg)
-                .bg(if current {
-                    theme.colors.primary
-                } else {
-                    theme.colors.sidebar_accent
-                })
-                .text_color(if current {
-                    theme.colors.primary_foreground
-                } else {
-                    theme.colors.sidebar_foreground
-                })
-                .type_style(style::UI_STRONG, &theme)
-                .child(initials);
-                // The current team carries a 2px marker in `primary` on the rail's
-                // edge, so the square itself stays a plain tile.
-                div()
-                    .relative()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .id(gpui_kit::ElementId::Name(
-                                format!("rail.team.{index}.tip").into(),
-                            ))
-                            .tooltip(move |_, cx| text_tooltip(name.into(), cx))
-                            .child(square),
-                    )
-                    .when(current, |cell| {
-                        cell.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top(theme.space(1.))
-                                .bottom(theme.space(1.))
-                                .w(px(2.))
-                                .rounded_r(px(2.))
-                                .bg(theme.colors.primary),
-                        )
-                    })
-            });
-        div()
-            .w(scaled(&theme, metrics::RAIL_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(theme.space(2.))
-            .py(theme.space(2.))
-            .bg(theme.colors.sidebar)
-            .border_r(style::hairline())
-            .border_color(theme.colors.sidebar_border)
-            .children(squares)
-            .child(
-                div()
-                    .id("rail.add.tip")
-                    .tooltip(move |_, cx| text_tooltip("Join another team".into(), cx))
-                    .child(
-                        Button::new("rail.add")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .aria_label("Join another team")
-                            .rounded(theme.radius.lg)
-                            .border_1()
-                            .border_dashed()
-                            .border_color(theme.colors.border)
-                            .child(
-                                lucide(LucideIcon::Plus)
-                                    .size(scaled(&theme, metrics::ICON))
-                                    .text_color(theme.colors.muted_foreground),
-                            ),
-                    ),
-            )
-    }
 }
 
 impl Render for MainWindow {
@@ -2209,7 +2125,9 @@ impl Render for MainWindow {
                     .min_h_0()
                     .w_full()
                     .flex()
-                    .when(self.rail_visible, |row| row.child(self.team_rail(cx)))
+                    .when(self.rail.read(cx).is_multi(), |row| {
+                        row.child(self.rail.clone())
+                    })
                     .child(div().flex_1().min_w_0().h_full().child(frame))
                     .into_any_element(),
             })

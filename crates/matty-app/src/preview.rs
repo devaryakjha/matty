@@ -48,11 +48,11 @@ pub fn connection() -> crate::main_window::ConnectionState {
 }
 
 /// The teams in the rail: name and whether it is the current one.
-pub fn teams() -> Vec<(&'static str, bool)> {
+pub fn teams() -> Vec<Team> {
     vec![
-        ("Matty", true),
-        ("Design Guild", false),
-        ("Open Source", false),
+        Team::new("matty", "Matty"),
+        Team::new("design-guild", "Design Guild").mentions(3),
+        Team::new("open-source", "Open Source").unread(),
     ]
 }
 
@@ -111,6 +111,7 @@ use crate::channel::{
 use crate::directory::DirectoryChannel;
 use crate::drafts::{Draft, DraftsModel};
 use crate::profile::UserProfile;
+use crate::rail::Team;
 use crate::right_pane::{ListedPost, ThreadModel};
 use crate::threads::{ThreadRow, ThreadsModel};
 use gpui_kit::SharedString;
