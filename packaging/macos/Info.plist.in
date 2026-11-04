@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The app bundle's identity (PLAN §6.7). scripts/dev-bundle fills in the
-     @…@ fields; a release bundle will use its own id and schemes, so the
-     two can be installed side by side. -->
+<!-- The app bundle's identity (PLAN §6.7, §10). scripts/macos-bundle fills
+     in the @…@ fields, for the development bundle (scripts/dev-bundle) and
+     the release one (scripts/release-bundle), which use different ids and
+     schemes so the two can be installed side by side. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
@@ -18,7 +19,10 @@
 	<key>CFBundleShortVersionString</key>
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
-	<string>@VERSION@</string>
+	<string>@BUILD@</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Matty, an unofficial client for Mattermost. MIT licensed.</string>
+@ICON@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>LSMinimumSystemVersion</key>

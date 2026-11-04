@@ -4,13 +4,14 @@
 
 use gpui_icons::LucideIcon;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, SharedString, Styled as _,
-    Subscription, Window,
+    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _,
+    SharedString, Styled as _, Subscription, Window, div,
 };
 
-use crate::sidebar::{ChannelKind, SidebarModel};
+use crate::sidebar::{ChannelKind, Presence, SidebarModel};
 use crate::style::{self, TypeStyleExt as _};
 use crate::ui::{
+    avatar::{Avatar, AvatarSize},
     badge::Badge,
     command::{CommandEvent, CommandItem, CommandState, command_dialog_popup},
     dialog::{DialogHandle, dialog},
@@ -179,7 +180,53 @@ impl Switcher {
             .filter(|row| row.mentions > 0)
             .map(|row| (row.id.clone(), row.mentions))
             .collect();
+        // Direct messages lead with the person's avatar and presence (#135).
+        let people: Vec<(SharedString, SharedString, Presence)> = model
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .filter_map(|row| match row.kind {
+                ChannelKind::Direct { presence } => {
+                    Some((row.id.clone(), row.name.clone(), presence))
+                }
+                _ => None,
+            })
+            .collect();
         command.update(cx, |state, cx| {
+            state.set_leading(
+                move |item, _, cx| {
+                    let (id, name, presence) = people.iter().find(|(id, ..)| *id == item.value)?;
+                    let theme = UiTheme::read(cx);
+                    let slot = style::scaled(theme, 18.);
+                    let initial: String = name.chars().take(1).collect();
+                    Some(
+                        div()
+                            .relative()
+                            .size(slot)
+                            .flex_shrink_0()
+                            .child(
+                                Avatar::new(gpui_kit::ElementId::Name(
+                                    format!("switcher.avatar.{id}").into(),
+                                ))
+                                .size(AvatarSize::Sm)
+                                .fallback(initial)
+                                .aria_label(style::presence_name(name, *presence))
+                                .w(slot)
+                                .h(slot)
+                                .text_size(theme.text(9.)),
+                            )
+                            .child(style::presence_dot(
+                                *presence,
+                                style::scaled(theme, 8.),
+                                theme.colors.popover,
+                                theme,
+                                &style::Palette::read(cx),
+                            ))
+                            .into_any_element(),
+                    )
+                },
+                cx,
+            );
             state.set_trailing(
                 move |item, _, cx| {
                     let theme = UiTheme::read(cx);
