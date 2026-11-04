@@ -677,6 +677,20 @@ impl SidebarView {
             )
     }
 
+    /// The pencil a row with a draft shows in its icon's slot.
+    fn draft_icon(theme: &UiTheme) -> impl IntoElement + use<> {
+        div()
+            .size(scaled(theme, metrics::ROW_SLOT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                lucide(LucideIcon::Pencil)
+                    .size(scaled(theme, metrics::ICON))
+                    .text_color(theme.colors.muted_foreground),
+            )
+    }
+
     /// The icon slot: `#` and lock for channels, an avatar with a presence
     /// dot for people, a member count for group messages.
     fn row_icon(
@@ -783,7 +797,13 @@ impl SidebarView {
         let mut item = SidebarItem::new(element_id("sidebar.channel", &row.id), row.name.clone())
             .size(SidebarItemSize::Small)
             .selected(selected)
-            .icon(Self::row_icon(row, &theme, &palette, cx))
+            .icon(if self.model.drafted.contains(&row.id) && !selected {
+                // An unsent draft takes the icon's place, as in Mattermost
+                // (#114).
+                Self::draft_icon(&theme).into_any_element()
+            } else {
+                Self::row_icon(row, &theme, &palette, cx).into_any_element()
+            })
             .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
             .on_activate(cx.listener(move |this, _, _, cx| {
                 this.model.selected = Some(id.clone());
@@ -809,20 +829,6 @@ impl SidebarView {
                             .px(theme.space(1.5))
                             .text_size(theme.text(11.))
                             .line_height(theme.text(11.)),
-                    ),
-            );
-        } else if self.model.drafted.contains(&row.id) && !selected {
-            // An unsent draft (#114), as Mattermost marks it.
-            item = item.trailing(
-                div()
-                    .flex()
-                    .items_center()
-                    .mr(theme.space(0.5))
-                    .group_hover(ROW_GROUP, |style| style.invisible())
-                    .child(
-                        lucide(LucideIcon::Pencil)
-                            .size(scaled(&theme, metrics::ICON_SMALL))
-                            .text_color(theme.colors.muted_foreground),
                     ),
             );
         } else if row.unread && !row.muted {
