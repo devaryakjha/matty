@@ -14,9 +14,9 @@ use gpui_kit::{
 
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
-    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusComposer,
-    FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead, NextChannel,
-    NextUnreadChannel, OpenInNewWindow, OpenPreferences, Platform, PreviousChannel,
+    self, AllUnreads, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu,
+    FocusComposer, FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead,
+    NextChannel, NextUnreadChannel, OpenInNewWindow, OpenPreferences, Platform, PreviousChannel,
     PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search,
     ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, UploadFiles, ZoomIn, ZoomOut,
 };
@@ -189,6 +189,7 @@ mod sounds;
 mod split;
 mod sso;
 mod teams;
+mod triage;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
@@ -301,6 +302,9 @@ pub struct MainWindow {
     /// The open channel the user marked unread: it is not viewed again
     /// until they switch away and back (#146).
     kept_unread: Option<gpui_kit::SharedString>,
+    /// The channel Alt+Shift+Up/Down last reached: while it is open,
+    /// Escape reads it and moves on to the next unread (#223).
+    triaging: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     /// The browser sign-in the card waits on (#75).
@@ -309,6 +313,8 @@ pub struct MainWindow {
     split: split::Split,
     /// The link sync is finding, with the permalink's post (#85, #103).
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
+    /// A link to a server being added, opened once signed in (#206).
+    pending_page: Option<crate::server_links::PendingPage>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
     /// "Forward to …" with an optional comment, once the switcher picked
@@ -496,7 +502,13 @@ impl MainWindow {
                     }
                 }
                 // Custom status text has no sync command yet (#136).
-                AccountEvent::SetStatus(_) => {}
+                AccountEvent::SetStatus(status) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::SetCustomStatus {
+                            status: status.clone(),
+                        });
+                    }
+                }
                 AccountEvent::EditProfile => this.edit_profile(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
@@ -1165,7 +1177,9 @@ impl MainWindow {
             persistent: matty_notify::Persistent::default(),
             _persistent_task: None,
             kept_unread: None,
+            triaging: None,
             link_asked: None,
+            pending_page: None,
             link_join: DialogHandle::new(false),
             forward,
             link_join_offer: None,
@@ -1177,11 +1191,10 @@ impl MainWindow {
             interactive_dialog: cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new()),
         };
         cx.subscribe(&this.interactive_dialog, |this, _, event, _| {
-            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
             if let Some(live) = &this.live {
                 let channel = this.selected_channel.clone().unwrap_or_default();
                 let team = live.team().unwrap_or_default().to_owned();
-                live.send(submit.command(channel.to_string(), team));
+                live.send(event.command(channel.to_string(), team));
             }
         })
         .detach();
@@ -1307,7 +1320,7 @@ impl MainWindow {
                     } else {
                         crate::sidebar::Presence::Online
                     },
-                    status_text: None,
+                    status: None,
                     dnd_end: None,
                 },
                 cx,
@@ -1922,6 +1935,10 @@ impl MainWindow {
             {
                 self.open_channel(first.id.clone(), window, cx);
             }
+            self.channel
+                .update(cx, |view, cx| view.set_connected(true, cx));
+            self.open_first_channel(window, cx);
+            self.open_pending_page(window, cx);
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -2087,6 +2104,10 @@ impl MainWindow {
             if self.selected_channel.as_deref() == Some(arrival.event.channel_id.as_str()) {
                 self.view_later(window, cx);
             }
+        }
+        if let Some((status, recent)) = update.own_status.take() {
+            self.account
+                .update(cx, |view, cx| view.set_server_status(status, recent, cx));
         }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {
@@ -3057,6 +3078,19 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::Schedule {
+                channel,
+                root,
+                text,
+                files,
+                at,
+            } => self.schedule_message(
+                channel.to_string(),
+                root.to_string(),
+                (text, files, *at),
+                None,
+                cx,
+            ),
             RightPaneEvent::Upload { id, name, source } => {
                 if let Some(channel) = self.live.as_ref().and_then(|live| live.thread_channel()) {
                     let job =
@@ -3139,7 +3173,7 @@ impl MainWindow {
         }
     }
 
-    fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
+    pub(super) fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
         self.leave_thread();
         self.threads_open = false;
         self.drafts_open = false;
@@ -3169,6 +3203,7 @@ impl MainWindow {
         }
         let preview = crate::preview::enabled();
         let model = SearchModel {
+            files: Vec::new(),
             more: false,
             loading_more: false,
             results: if preview && !offline {
@@ -3548,6 +3583,14 @@ impl MainWindow {
                     .pr(theme.space(2.))
                     .flex_shrink_0()
                     .child(Self::icon_button(
+                        "titlebar.unreads",
+                        "All unreads",
+                        LucideIcon::Inbox,
+                        Box::new(AllUnreads),
+                        true,
+                        cx,
+                    ))
+                    .child(Self::icon_button(
                         "titlebar.mentions",
                         "Recent mentions",
                         LucideIcon::AtSign,
@@ -3847,22 +3890,24 @@ impl MainWindow {
     /// Escape in the channel (#147): closes the right pane when one is
     /// open, else views the open channel on the server and clears its
     /// unread mark.
-    fn mark_channel_read(&mut self, cx: &mut Context<Self>) {
+    /// Returns whether it read the channel.
+    fn mark_channel_read(&mut self, cx: &mut Context<Self>) -> bool {
         if self.right_pane_open {
             self.right_pane_open = false;
             cx.notify();
-            return;
+            return false;
         }
         if self.threads_open || self.drafts_open {
-            return;
+            return false;
         }
         let Some(id) = self.selected_channel.clone() else {
-            return;
+            return false;
         };
         self.kept_unread = None;
         self.view_channels(std::slice::from_ref(&id));
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
+        true
     }
 
     /// Shift+Escape (#147): views every unread channel in the team on the
@@ -4419,10 +4464,10 @@ impl Render for MainWindow {
                 this.step_channel(Step::Next, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &PreviousUnreadChannel, window, cx| {
-                this.step_channel(Step::Previous, true, window, cx)
+                this.step_unread(Step::Previous, window, cx)
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
-                this.step_channel(Step::Next, true, window, cx)
+                this.step_unread(Step::Next, window, cx)
             }))
             // File > Upload files with focus outside both composers goes
             // to the channel's; each composer answers it first itself.
@@ -4434,7 +4479,12 @@ impl Render for MainWindow {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
             }))
-            .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
+            .on_action(cx.listener(|this, _: &MarkChannelRead, window, cx| {
+                let triaging = this.triaging.is_some() && this.triaging == this.selected_channel;
+                if this.mark_channel_read(cx) && triaging {
+                    this.step_unread(Step::Next, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .on_action(
@@ -4452,6 +4502,7 @@ impl Render for MainWindow {
                 this.open_in_new_window(window, cx)
             }))
             .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
+            .on_action(cx.listener(|this, _: &AllUnreads, _, cx| this.show_unreads(cx)))
             .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
             .on_action(
                 cx.listener(|this, _: &DirectMessagesMenu, window, cx| {

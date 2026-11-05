@@ -104,6 +104,8 @@ pub struct Live {
     /// The search's last page asked for, whether another may follow, and
     /// whether it is on its way.
     search_page: (u32, bool, bool),
+    /// The files the search on screen found (#207).
+    search_files: Arc<[matty_api::models::FileInfo]>,
     /// The saved, pinned or mentions listing on screen and its posts once
     /// they come (#130–#132).
     listing: Option<(matty_sync::Listing, Option<Arc<[matty_api::models::Post]>>)>,
@@ -212,6 +214,12 @@ pub struct Update {
     /// The user's own presence from the server, with when Do not disturb
     /// ends if the server said (#190).
     pub own_presence: Option<(Presence, Option<i64>)>,
+    /// The user's own custom status and their recent ones, newest first,
+    /// when the server sent the user (#221).
+    pub own_status: Option<(
+        Option<crate::custom_status::StatusLine>,
+        Vec<crate::custom_status::StatusLine>,
+    )>,
     /// The open thread, for the right pane.
     pub thread: Option<crate::right_pane::ThreadModel>,
     /// The shown team's followed threads, for the Threads view (#124).
@@ -599,6 +607,7 @@ impl Live {
                 ready: None,
                 search: None,
                 search_page: (0, false, false),
+                search_files: Arc::from(Vec::new()),
                 listing: None,
                 saved: Default::default(),
                 uploads: HashMap::new(),
@@ -765,6 +774,23 @@ impl Live {
         if user.id == self.me.0 {
             self.me.1 = user.username.clone();
             update.me = Some((crate::transcript::display_name(user), user.username.clone()));
+            let now = jiff::Timestamp::now();
+            let recent = user
+                .recent_custom_statuses()
+                .iter()
+                // Recents offer the status again, so an old end does not
+                // hide them.
+                .filter_map(|status| {
+                    crate::custom_status::StatusLine::from_server(
+                        &matty_api::models::CustomStatus {
+                            expires_at: String::new(),
+                            ..status.clone()
+                        },
+                        now,
+                    )
+                })
+                .collect();
+            update.own_status = Some((crate::custom_status::StatusLine::of(user), recent));
         }
         self.take_notify_props(user, update);
     }
@@ -807,6 +833,11 @@ impl Live {
             &self.reply_roots,
         );
         let details = self.details(model.pinned);
+        model.person = row
+            .person
+            .as_ref()
+            .and_then(|id| self.users.get(id.as_ref()))
+            .map(|user| Box::new(self.profile(user)));
         model.header = details.header;
         model.purpose = details.purpose;
         model.members = details.members;
@@ -859,8 +890,24 @@ impl Live {
             .chain(searched)
             .flatten()
             .flat_map(|post| &post.metadata.files)
+            .chain(self.search_files.iter())
             .find(|file| file.id == file_id)
             .map(|file| file.name.clone())
+    }
+
+    /// Asks sync for the thumbnails of the found image files (#207).
+    fn ask_file_thumbnails(&mut self) {
+        let files = self.search_files.clone();
+        for file in files.iter() {
+            if crate::attachments::is_image(&file.name)
+                && self.asked_thumbnails.insert(file.id.clone())
+            {
+                self.sync.send(Command::LoadImage {
+                    file_id: file.id.clone(),
+                    size: ImageSize::Thumbnail,
+                });
+            }
+        }
     }
 
     /// The full-size images already here for `file_ids`; sync is asked
@@ -1013,6 +1060,7 @@ impl Live {
         let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
         self.search = Some((terms.to_owned(), None));
         self.search_page = (0, false, false);
+        self.search_files = Arc::from(Vec::new());
         self.send(Command::Search {
             team_id,
             terms: terms.to_owned(),
@@ -1073,7 +1121,11 @@ impl Live {
             })
             .collect();
         people.sort();
-        crate::right_pane::SearchHints { channels, people }
+        crate::right_pane::SearchHints {
+            channels,
+            people,
+            today: Some(jiff::Timestamp::now().to_zoned(self.zone.clone()).date()),
+        }
     }
 
     /// Loads the user's saved posts; they come as [`Update::listing`].
@@ -1098,6 +1150,15 @@ impl Live {
         self.show_listing(matty_sync::Listing::Mentions {
             team_id,
             terms: mention_terms(&self.prefs.keys),
+        });
+    }
+
+    /// Loads the unread digest (#223): the first unread posts of each of
+    /// `channel_ids`, in that order. They come as [`Update::listing`].
+    pub fn show_unreads(&mut self, channel_ids: Vec<String>) {
+        self.show_listing(matty_sync::Listing::Unreads {
+            channel_ids,
+            collapsed_threads: self.threads_on.unwrap_or(false),
         });
     }
 
@@ -1230,6 +1291,7 @@ impl Live {
         Some(match listing {
             matty_sync::Listing::Saved => RightPaneContent::Saved(listed),
             matty_sync::Listing::Mentions { .. } => RightPaneContent::Mentions(listed),
+            matty_sync::Listing::Unreads { .. } => RightPaneContent::Unreads(listed),
             matty_sync::Listing::Pinned { channel_id } => RightPaneContent::Pinned {
                 channel_name: self.channel_name(channel_id).unwrap_or_default(),
                 posts: listed,
@@ -1486,7 +1548,35 @@ impl Live {
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
         };
+        let files = self
+            .search_files
+            .iter()
+            .map(|info| {
+                let mut file = crate::attachments::PostFile::from_info(info);
+                if let Some(image) = self.thumbnails.get(&info.id) {
+                    file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+                }
+                let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+                let (_, day, _) = crate::transcript::when(info.create_at, viewer.zone, today);
+                crate::right_pane::FoundFile {
+                    file,
+                    channel_id: info.channel_id.clone().into(),
+                    channel_name: self
+                        .channel_name(&info.channel_id)
+                        .unwrap_or_else(|| "Another channel".into()),
+                    post_id: info.post_id.clone().into(),
+                    author: self
+                        .users
+                        .get(&info.user_id)
+                        .map(|user| crate::transcript::display_name_as(user, self.names))
+                        .unwrap_or_else(|| "Someone".into())
+                        .into(),
+                    day,
+                }
+            })
+            .collect();
         Some(crate::right_pane::SearchModel {
+            files,
             query: terms.clone().into(),
             searching: posts.is_none(),
             more: self.search_page.1,
@@ -1571,7 +1661,7 @@ impl Live {
                 .get(&user.id)
                 .copied()
                 .unwrap_or(Presence::Offline),
-            status_text: None,
+            status: crate::custom_status::StatusLine::of(user),
             time_zone: crate::profile::time_zone(&user.timezone),
         }
     }
@@ -1739,11 +1829,18 @@ impl Live {
                 let shown = self.shown.as_ref().is_some_and(|posts| {
                     posts
                         .iter()
-                        .flat_map(|post| &post.files)
+                        .flat_map(|post| {
+                            post.files
+                                .iter()
+                                .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
+                        })
                         .any(|file| file.id.as_ref() == file_id)
                 });
                 if shown {
                     update.channel = self.channel_update();
+                }
+                if self.search_files.iter().any(|file| &file.id == file_id) {
+                    update.search = self.search_model();
                 }
             }
             ChangeSet::Picture {
@@ -1843,6 +1940,7 @@ impl Live {
                 page,
                 posts,
                 more,
+                files,
             } => {
                 if let Some((asked, results)) = self.search.as_mut()
                     && asked == terms
@@ -1862,6 +1960,10 @@ impl Live {
                         _ => posts.clone(),
                     });
                     self.search_page = (*page, *more, false);
+                    if *page == 0 {
+                        self.search_files = files.clone();
+                        self.ask_file_thumbnails();
+                    }
                     update.search = self.search_model();
                 }
             }
@@ -2303,6 +2405,14 @@ impl Live {
                             && let Some(user_id) = &channel.dm_user_id
                         {
                             row = row.person(user_id.clone());
+                            // The freshest copy of the person: a status
+                            // change arrives as a user update.
+                            let person = self.users.get(user_id).or(channel.dm_user.as_ref());
+                            if let Some(status) =
+                                person.and_then(crate::custom_status::StatusLine::of)
+                            {
+                                row = row.status_emoji(status.emoji);
+                            }
                         }
                         if let Some(person) = &channel.dm_user {
                             row = row.handle(person.username.clone());
@@ -2975,6 +3085,67 @@ mod tests {
     }
 
     #[test]
+    fn custom_statuses_reach_the_account_and_profiles() {
+        let mut live = live();
+        let status = |emoji: &str, text: &str, expires_at: &str| {
+            serde_json::to_string(&matty_api::models::CustomStatus {
+                emoji: emoji.into(),
+                text: text.into(),
+                duration: "one_hour".into(),
+                expires_at: expires_at.into(),
+            })
+            .unwrap()
+        };
+        let me = User {
+            id: live.me.0.clone(),
+            username: "me".into(),
+            props: [
+                (
+                    "customStatus".to_string(),
+                    status("calendar", "In a meeting", ""),
+                ),
+                (
+                    "recentCustomStatuses".to_string(),
+                    format!(
+                        "[{}]",
+                        status("palm_tree", "On a vacation", "2020-01-01T00:00:00Z")
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::Me(Arc::new(me)));
+        let (own, recent) = update.own_status.unwrap();
+        assert_eq!(own.unwrap().text, "In a meeting");
+        // A recent status is offered again even though its end has passed.
+        assert_eq!(recent[0].text, "On a vacation");
+
+        // Someone else's expired status shows nowhere.
+        let other = |expires_at: &str| User {
+            id: "u2".into(),
+            username: "ana".into(),
+            props: [(
+                "customStatus".to_string(),
+                status("coffee", "Break", expires_at),
+            )]
+            .into_iter()
+            .collect(),
+            ..User::default()
+        };
+        live.apply(&ChangeSet::Users(Arc::from(vec![other(
+            "2020-01-01T00:00:00Z",
+        )])));
+        assert_eq!(live.known_user("ana").unwrap().status, None);
+        live.apply(&ChangeSet::Users(Arc::from(vec![other(
+            "2999-01-01T00:00:00Z",
+        )])));
+        let profile = live.known_user("ana").unwrap();
+        assert_eq!(profile.status.unwrap().emoji, "coffee");
+    }
+
+    #[test]
     fn the_users_notify_props_set_the_mention_keys() {
         let mut live = live();
         let me = User {
@@ -3232,6 +3403,7 @@ mod tests {
 
     fn shown(id: &str, body: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),
@@ -3770,6 +3942,41 @@ mod tests {
     }
 
     #[test]
+    fn the_unread_digest_keeps_the_channel_order_it_asked_for() {
+        let mut live = live();
+        let post = |id: &str, channel: &str, at: i64| matty_api::models::Post {
+            id: id.into(),
+            channel_id: channel.into(),
+            user_id: "ada".into(),
+            message: "news".into(),
+            create_at: at,
+            ..Default::default()
+        };
+        live.show_unreads(vec!["b".into(), "a".into()]);
+        let asked = matty_sync::Listing::Unreads {
+            channel_ids: vec!["b".into(), "a".into()],
+            collapsed_threads: false,
+        };
+        // Channel by channel, oldest first within each, as sync sends them;
+        // never re-sorted newest first like the other listings.
+        let shown = live
+            .apply(&ChangeSet::Listing {
+                listing: asked,
+                posts: Arc::from(vec![
+                    post("b1", "b", 1),
+                    post("b2", "b", 5),
+                    post("a1", "a", 3),
+                ]),
+            })
+            .listing;
+        let Some(crate::right_pane::RightPaneContent::Unreads(posts)) = shown else {
+            panic!("expected the unread digest, got {shown:?}");
+        };
+        let ids: Vec<&str> = posts.iter().map(|item| item.post.id.as_ref()).collect();
+        assert_eq!(ids, ["b1", "b2", "a1"]);
+    }
+
+    #[test]
     fn listings_show_once_loaded_and_unsaving_drops_a_saved_post() {
         let mut live = live();
         live.apply(&ChangeSet::Unreads {
@@ -3864,10 +4071,28 @@ mod tests {
                 page: 0,
                 posts: Arc::from(vec![hit("p1"), hit("p2")]),
                 more: true,
+                files: Arc::from(vec![matty_api::models::FileInfo {
+                    id: "f1".into(),
+                    user_id: "ada".into(),
+                    post_id: "p9".into(),
+                    channel_id: "c1".into(),
+                    name: "plan.pdf".into(),
+                    size: 2048,
+                    ..Default::default()
+                }]),
             })
             .search
             .unwrap();
         assert!(first.more && !first.loading_more);
+        // Found files come with the first page, under where they were posted.
+        let [found] = first.files.as_slice() else {
+            panic!("expected one found file, got {:?}", first.files);
+        };
+        assert_eq!(
+            (found.file.name.as_ref(), found.post_id.as_ref()),
+            ("plan.pdf", "p9")
+        );
+        assert_eq!(live.file_name("f1").as_deref(), Some("plan.pdf"));
         let asked = live.search_more().unwrap();
         assert!(asked.loading_more);
         assert!(live.search_more().is_none(), "one page at a time");
@@ -3877,6 +4102,7 @@ mod tests {
                 page: 1,
                 posts: Arc::from(vec![hit("p2"), hit("p3")]),
                 more: false,
+                files: Arc::from(Vec::new()),
             })
             .search
             .unwrap();
@@ -3926,6 +4152,7 @@ mod tests {
             more: false,
             terms: "lunc".into(),
             posts: Arc::from(vec![hit("p0", "town")]),
+            files: Arc::from(Vec::new()),
         });
         assert_eq!(stale.search, None);
         let model = live
@@ -3934,6 +4161,7 @@ mod tests {
                 more: false,
                 terms: "lunch".into(),
                 posts: Arc::from(vec![hit("p1", "town"), hit("p2", "elsewhere")]),
+                files: Arc::from(Vec::new()),
             })
             .search
             .unwrap();

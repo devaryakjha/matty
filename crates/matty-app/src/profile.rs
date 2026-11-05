@@ -28,8 +28,8 @@ pub struct UserProfile {
     /// Job title or role, when the user set one.
     pub position: Option<SharedString>,
     pub presence: Presence,
-    /// The custom status text, when set.
-    pub status_text: Option<SharedString>,
+    /// The custom status, when set and not expired (#221).
+    pub status: Option<crate::custom_status::StatusLine>,
     /// The user's IANA time zone, such as `Europe/Berlin`, when they
     /// share one; the card shows the time there.
     pub time_zone: Option<SharedString>,
@@ -202,11 +202,49 @@ fn details(profile: &UserProfile, cx: &App) -> gpui_kit::Div {
                 .rounded_full()
                 .bg(dot)
                 .into_any_element(),
-            match &profile.status_text {
-                Some(text) => format!("{} · {text}", profile.presence_label()),
-                None => profile.presence_label().to_string(),
-            },
+            profile.presence_label().to_string(),
         ))
+        .children(profile.status.as_ref().map(|status| {
+            let until = status.until_label(
+                &jiff::Zoned::now(),
+                crate::settings::ClockFormat::current(cx),
+            );
+            div()
+                .flex()
+                .items_center()
+                .gap(theme.space(2.))
+                .child(
+                    div()
+                        .w(scaled(&theme, metrics::ICON_SMALL))
+                        .flex()
+                        .justify_center()
+                        .child(crate::custom_status::emoji(
+                            &status.emoji,
+                            scaled(&theme, metrics::ICON_SMALL),
+                            cx,
+                        )),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .gap(theme.space(1.5))
+                        .type_style(style::UI, &theme)
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.colors.foreground)
+                                .child(status.text.clone()),
+                        )
+                        .children(until.map(|until| {
+                            div()
+                                .flex_shrink_0()
+                                .text_color(theme.colors.muted_foreground)
+                                .child(until)
+                        })),
+                )
+        }))
         .children(
             profile
                 .time_zone

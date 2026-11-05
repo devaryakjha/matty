@@ -273,6 +273,8 @@ pub enum ChangeSet {
         posts: Arc<[Post]>,
         /// A full page came back, so another may follow.
         more: bool,
+        /// The files that matched, on the first page only (#207).
+        files: Arc<[matty_api::models::FileInfo]>,
     },
     /// A listing of posts outside their channel: the answer to
     /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors
@@ -379,6 +381,19 @@ pub enum ChangeSet {
         call_id: String,
         /// What happened.
         answer: crate::AppAnswer,
+    },
+    /// A dynamic select's options: the answer to
+    /// [`AppCommand::Lookup`](crate::AppCommand::Lookup) (#226). Empty when
+    /// the App found none or the lookup failed.
+    AppLookup {
+        /// The form's dialog, by its callback id.
+        callback_id: String,
+        /// The field.
+        field: String,
+        /// What the user had typed.
+        query: String,
+        /// The options, in the App's order.
+        options: Vec<matty_api::models::AppSelectOption>,
     },
 }
 
@@ -580,5 +595,13 @@ pub enum Listing {
         team_id: String,
         /// The mention keys, space separated, such as `@ada ada deploy`.
         terms: String,
+    },
+    /// The unread digest (#223): the first unread posts of each channel,
+    /// channel by channel in the order given, oldest first within each.
+    Unreads {
+        /// The unread channels, in the order the digest lists them.
+        channel_ids: Vec<String>,
+        /// Whether collapsed reply threads are on, so replies stay out.
+        collapsed_threads: bool,
     },
 }

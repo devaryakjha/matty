@@ -32,7 +32,13 @@ impl MainWindow {
                     self.go_to_link(&url, false, window, cx);
                 }
             }
-            PageServer::Unsaved { address } => self.offer_server(address, window, cx),
+            PageServer::Unsaved { address } => {
+                let offered = self.login.is_none();
+                self.offer_server(address, window, cx);
+                if offered && self.login.is_some() {
+                    self.pending_page = Some(server_links::PendingPage::new(host, path));
+                }
+            }
         }
     }
 
@@ -101,6 +107,28 @@ impl MainWindow {
         self.add_server(None, window, cx);
         if let Some(login) = &self.login {
             login.update(cx, |login, cx| login.prefill_server(&address, window, cx));
+        }
+    }
+}
+
+impl MainWindow {
+    /// The sidebar of a server just added from a link's Add server card
+    /// came: the link opens there, a channel, post or thread, in place of
+    /// the default channel (#206). Waits while the card is up or the
+    /// server's teams are unknown.
+    pub(super) fn open_pending_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        if self.pending_page.is_none() || self.login.is_some() || live.team_names().is_empty() {
+            return;
+        }
+        let Some(page) = self.pending_page.take() else {
+            return;
+        };
+        match page.url_on(live.server()) {
+            Some(url) => self.go_to_link(&url, false, window, cx),
+            None => tracing::info!("dropped a link to a server other than the one added"),
         }
     }
 }

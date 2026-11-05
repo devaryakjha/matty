@@ -5,7 +5,10 @@
 //! number or URL), then sync posts the values to `actions/dialogs/submit`;
 //! the integration may answer with problems, by field or for the whole
 //! form, which the dialog shows and the user can fix. Closing it tells the
-//! integration when it asked to hear.
+//! integration when it asked to hear. An App form's dynamic selects look
+//! their options up as the user types ([`lookup`]).
+
+mod lookup;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,11 +71,25 @@ impl DialogSubmit {
     }
 }
 
+pub use lookup::DialogLookup;
+
 /// What the dialog emits.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InteractiveDialogEvent {
     /// Send this to the integration.
     Submit(DialogSubmit),
+    /// Ask an App for a dynamic select's options (#226).
+    Lookup(DialogLookup),
+}
+
+impl InteractiveDialogEvent {
+    /// The sync command, from the channel the user is in and its team.
+    pub fn command(&self, channel_id: String, team_id: String) -> matty_sync::Command {
+        match self {
+            Self::Submit(submit) => submit.command(channel_id, team_id),
+            Self::Lookup(lookup) => lookup.command(),
+        }
+    }
 }
 
 /// What sync said that concerns dialogs.
@@ -88,6 +105,14 @@ pub enum DialogChange {
     },
     /// The submission did not reach it.
     Failed(SharedString),
+    /// An App's options for a dynamic select, `(value, label)`, for what
+    /// the user had typed.
+    Options {
+        callback_id: String,
+        field: String,
+        query: String,
+        options: Vec<(SharedString, SharedString)>,
+    },
 }
 
 impl DialogChange {
@@ -113,6 +138,20 @@ impl DialogChange {
             ChangeSet::Failed(CommandError::Offline {
                 action: "submit dialog",
             }) => Self::Failed("You're offline. Try again once you're back online.".into()),
+            ChangeSet::AppLookup {
+                callback_id,
+                field,
+                query,
+                options,
+            } => Self::Options {
+                callback_id: callback_id.clone(),
+                field: field.clone(),
+                query: query.clone(),
+                options: options
+                    .iter()
+                    .map(|option| (option.value.clone().into(), option.label.clone().into()))
+                    .collect(),
+            },
             _ => return None,
         })
     }
@@ -205,6 +244,8 @@ enum Control {
     Select(Entity<SelectState>, bool),
     Bool(bool),
     Radio(Option<SharedString>),
+    /// A dynamic select, whose options an App looks up (#226).
+    Lookup(lookup::Lookup),
 }
 
 struct DialogField {
@@ -227,6 +268,9 @@ impl DialogField {
                     .default_value(default)
                     .rows(4)
             })),
+            "select" if lookup::is_dynamic(&element) => {
+                Control::Lookup(lookup::Lookup::new(&element, window, cx))
+            }
             "select" => {
                 let (options, searchable) = match element.data_source.as_str() {
                     "users" => (sources.people.clone(), true),
@@ -277,6 +321,15 @@ impl DialogField {
             Control::Select(state, _) => FieldValue::Choice(state.read(cx).value().cloned()),
             Control::Bool(checked) => FieldValue::Bool(*checked),
             Control::Radio(choice) => FieldValue::Choice(choice.clone()),
+            Control::Lookup(lookup) => FieldValue::Choice(lookup.state.read(cx).value().cloned()),
+        }
+    }
+
+    /// The value as the integration reads it.
+    fn submitted(&self, cx: &App) -> Value {
+        match &self.control {
+            Control::Lookup(lookup) => lookup.submitted(cx),
+            _ => submitted(&self.element, &self.value(cx)),
         }
     }
 }
@@ -349,6 +402,12 @@ impl InteractiveDialogView {
                     cx.notify();
                 }
             }
+            DialogChange::Options {
+                callback_id,
+                field,
+                query,
+                options,
+            } => self.lookup_options(&callback_id, &field, &query, options, window, cx),
         }
     }
 
@@ -375,6 +434,17 @@ impl InteractiveDialogView {
             error: None,
             submitting: false,
         });
+        // Dynamic selects show the App's first options when opened.
+        let dynamic: Vec<String> = self
+            .shown
+            .iter()
+            .flat_map(|shown| &shown.fields)
+            .filter(|field| matches!(field.control, Control::Lookup(_)))
+            .map(|field| field.element.name.clone())
+            .collect();
+        for field in dynamic {
+            self.ask_lookup(&field, String::new(), cx);
+        }
         self.focus_first = true;
         self.handle.open(window, cx);
         cx.notify();
@@ -432,7 +502,7 @@ impl InteractiveDialogView {
             .collect();
         let submission: HashMap<String, Value> = values
             .iter()
-            .map(|(field, value)| (field.element.name.clone(), submitted(&field.element, value)))
+            .map(|(field, _)| (field.element.name.clone(), field.submitted(cx)))
             .collect();
         shown.error = None;
         shown.errors = errors;
@@ -520,6 +590,25 @@ impl InteractiveDialogView {
                 .label(label)
                 .required(required)
                 .disabled(disabled);
+                field = match (error, help) {
+                    (Some(error), _) => field.error(error),
+                    (None, Some(help)) => field.description(help),
+                    (None, None) => field,
+                };
+                field.into_any_element()
+            }
+            Control::Lookup(lookup) => {
+                let placeholder: SharedString = if element.placeholder.is_empty() {
+                    "Type to search".into()
+                } else {
+                    element.placeholder.clone().into()
+                };
+                let combobox =
+                    crate::ui::combobox::combobox(&lookup.state).placeholder(placeholder);
+                let mut field = Field::from_control(id("select"), combobox)
+                    .label(label)
+                    .required(required)
+                    .disabled(disabled);
                 field = match (error, help) {
                     (Some(error), _) => field.error(error),
                     (None, Some(help)) => field.description(help),
@@ -985,8 +1074,9 @@ mod tests {
                 let dialog = cx.new(|_| InteractiveDialogView::new());
                 let record = sent.clone();
                 cx.subscribe(&dialog, move |_, _, event: &InteractiveDialogEvent, _| {
-                    let InteractiveDialogEvent::Submit(submit) = event;
-                    record.borrow_mut().push(submit.clone());
+                    if let InteractiveDialogEvent::Submit(submit) = event {
+                        record.borrow_mut().push(submit.clone());
+                    }
                 })
                 .detach();
                 dialog.update(cx, |dialog, cx| {
@@ -1096,8 +1186,9 @@ mod tests {
                 let dialog = cx.new(|_| InteractiveDialogView::new());
                 let record = sent.clone();
                 cx.subscribe(&dialog, move |_, _, event: &InteractiveDialogEvent, _| {
-                    let InteractiveDialogEvent::Submit(submit) = event;
-                    record.borrow_mut().push(submit.clone());
+                    if let InteractiveDialogEvent::Submit(submit) = event {
+                        record.borrow_mut().push(submit.clone());
+                    }
                 })
                 .detach();
                 dialog.update(cx, |dialog, cx| {

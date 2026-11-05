@@ -18,6 +18,7 @@ pub mod channel;
 pub mod channel_settings;
 pub mod composer_draft;
 pub mod contrast;
+pub mod custom_status;
 pub mod deeplink;
 pub mod directory;
 pub mod dnd;
@@ -67,6 +68,7 @@ mod updater;
 pub mod watch;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;
+pub mod webhooks;
 
 use std::borrow::Cow;
 

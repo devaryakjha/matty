@@ -3,6 +3,7 @@
 //! height, separates from the channel with a hairline, and closes on
 //! Escape.
 
+mod schedule;
 mod slash;
 
 use gpui_icons::{LucideIcon, lucide};
@@ -74,9 +75,22 @@ pub struct ListedPost {
     pub post: Post,
 }
 
+/// A file a search found (#207), with where and when it was posted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundFile {
+    pub file: crate::attachments::PostFile,
+    pub channel_id: SharedString,
+    pub channel_name: SharedString,
+    pub post_id: SharedString,
+    pub author: SharedString,
+    pub day: SharedString,
+}
+
 /// A message search and what came back (PLAN §3 M1 "Search").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchModel {
+    /// The files that matched, from the first page (#207).
+    pub files: Vec<FoundFile>,
     pub query: SharedString,
     pub results: Vec<ListedPost>,
     /// True while sync runs the query.
@@ -92,6 +106,9 @@ pub struct SearchModel {
 pub struct SearchHints {
     pub channels: Vec<(SharedString, SharedString)>,
     pub people: Vec<(SharedString, SharedString)>,
+    /// Today in the user's time zone, for the dates `on:`, `before:` and
+    /// `after:` suggest (#207).
+    pub today: Option<jiff::civil::Date>,
 }
 
 /// One suggestion under the search field: what replaces the word being
@@ -121,13 +138,50 @@ fn step(at: Option<usize>, count: usize, down: bool) -> Option<usize> {
 /// At most this many suggestions show at once.
 const SUGGESTIONS: usize = 6;
 
+/// The date modifiers search takes, as the server reads them (#207).
+const DATE_MODIFIERS: [&str; 3] = ["on:", "before:", "after:"];
+
+/// The suggestions for a date modifier: today, yesterday and the five days
+/// before, by name, each inserting the date as the server reads it
+/// (`on:2026-11-05`). What was typed narrows them by name or by date.
+fn date_suggestions(prefix: &str, typed: &str, today: jiff::civil::Date) -> Vec<Suggestion> {
+    let typed = typed.to_lowercase();
+    (0..7)
+        .filter_map(|back| {
+            let date = today.checked_sub(jiff::Span::new().days(back)).ok()?;
+            let label = match back {
+                0 => "Today".to_string(),
+                1 => "Yesterday".to_string(),
+                _ => date.strftime("%A").to_string(),
+            };
+            let iso = date.strftime("%Y-%m-%d").to_string();
+            (iso.starts_with(&typed) || label.to_lowercase().starts_with(&typed)).then(|| {
+                Suggestion {
+                    insert: format!("{prefix}{iso}").into(),
+                    label: label.into(),
+                    detail: date.strftime("%B %-d").to_string().into(),
+                }
+            })
+        })
+        .filter(|suggestion| suggestion.insert.as_ref() != format!("{prefix}{typed}"))
+        .take(SUGGESTIONS)
+        .collect()
+}
+
 /// The suggestions for `query`'s last word when it starts with `from:` or
-/// `in:` (#129).
+/// `in:` (#129), or a date modifier (#207).
 fn suggestions(query: &str, hints: &SearchHints) -> Vec<Suggestion> {
     if query.ends_with(char::is_whitespace) {
         return Vec::new();
     }
     let word = query.rsplit(char::is_whitespace).next().unwrap_or("");
+    if let Some(today) = hints.today
+        && let Some((prefix, typed)) = DATE_MODIFIERS
+            .iter()
+            .find_map(|prefix| Some((*prefix, word.strip_prefix(prefix)?)))
+    {
+        return date_suggestions(prefix, typed, today);
+    }
     let (prefix, typed, options) = if let Some(typed) = word.strip_prefix("from:") {
         ("from:", typed.trim_start_matches('@'), &hints.people)
     } else if let Some(typed) = word.strip_prefix("in:") {
@@ -173,6 +227,9 @@ pub enum RightPaneContent {
     Saved(Vec<ListedPost>),
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
+    /// The unread digest (#223): each unread channel's first unread
+    /// posts, channel by channel.
+    Unreads(Vec<ListedPost>),
     Search(SearchModel),
     /// Someone's profile (#212).
     Profile(UserProfile),
@@ -226,6 +283,16 @@ pub enum RightPaneEvent {
         files: Vec<SharedString>,
         /// False when the user removed the link's preview while replying.
         unfurl: bool,
+    },
+    /// The user scheduled the reply composer's text and these uploads for
+    /// `at` (ms since the epoch) under `root` in `channel` (#220); the
+    /// composer is already clear.
+    Schedule {
+        channel: SharedString,
+        root: SharedString,
+        text: SharedString,
+        files: Vec<SharedString>,
+        at: i64,
     },
     /// A file went into the reply tray; sync uploads it to the thread's
     /// channel and reports back through `set_upload_status`.
@@ -373,6 +440,8 @@ pub struct RightPaneView {
     loading: bool,
     /// What `from:` and `in:` can suggest, and what they suggest now.
     hints: SearchHints,
+    /// The search shows its Files tab, not its Messages one (#207).
+    search_files_tab: bool,
     suggestions: Vec<Suggestion>,
     /// The suggestion the arrow keys point at, which Enter picks.
     suggestion_at: Option<usize>,
@@ -406,6 +475,8 @@ pub struct RightPaneView {
     action_menus: std::rc::Rc<std::cell::RefCell<crate::interactive::Menus>>,
     /// Slash commands typed in the reply composer (#210).
     slash: crate::slash::Slash,
+    /// Picks a custom time for "Schedule message" (#220).
+    schedule_dialog: Entity<crate::scheduled::ScheduleDialog>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -507,7 +578,9 @@ impl RightPaneView {
         });
         crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
         let subscriptions = vec![
+            scheduling,
             cx.subscribe_in(
                 &composer,
                 window,
@@ -594,6 +667,7 @@ impl RightPaneView {
             search,
             loading: false,
             hints: SearchHints::default(),
+            search_files_tab: false,
             suggestions: Vec::new(),
             suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
@@ -609,6 +683,7 @@ impl RightPaneView {
             popped_out: false,
             action_menus: Default::default(),
             slash: Default::default(),
+            schedule_dialog,
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -636,9 +711,21 @@ impl RightPaneView {
             ClockFormat::current(cx).format(post.time)
         )
         .into();
+        self.open_images(&post.files, caption, index, window, cx);
+    }
+
+    /// Opens `files`' images in the lightbox at the `index`th, each under
+    /// `caption`.
+    fn open_images(
+        &mut self,
+        files: &[crate::attachments::PostFile],
+        caption: SharedString,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut ids = Vec::new();
-        let images: Vec<LightboxImage> = post
-            .files
+        let images: Vec<LightboxImage> = files
             .iter()
             .filter_map(|file| {
                 let image = file.image()?;
@@ -746,6 +833,7 @@ impl RightPaneView {
             &[std::slice::from_ref(&thread.root), &thread.replies[..]].concat(),
         );
         let reply = Post {
+            webhook: None,
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
             author_id: own,
@@ -1333,6 +1421,13 @@ impl RightPaneView {
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
         let focus = model.query.is_empty() || model.searching;
+        // A new search starts on its messages, or on its files when only
+        // files matched.
+        if model.searching {
+            self.search_files_tab = false;
+        } else if model.results.is_empty() && !model.files.is_empty() {
+            self.search_files_tab = true;
+        }
         self.search.update(cx, |input, cx| {
             if input.value() != model.query {
                 input.set_value(model.query.clone(), window, cx);
@@ -2139,6 +2234,10 @@ impl RightPaneView {
         initial: String,
         cx: &App,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("thread.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
                 format!("thread.{id}.avatar").into(),
@@ -2631,6 +2730,7 @@ impl RightPaneView {
                                     })),
                             ))
                             .child(div().flex_1())
+                            .children(self.schedule_button(cx))
                             .child(style::tipped(
                                 "right-pane.send.tip",
                                 actions::send_tooltip("Reply", send_on),
@@ -2649,6 +2749,158 @@ impl RightPaneView {
             "Hover a message and choose Reply in thread to follow it here.",
             cx,
         )
+    }
+
+    /// The search's message results: a count, then the listing.
+    fn search_messages(
+        &self,
+        body: gpui_kit::Div,
+        model: &SearchModel,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        let theme = UiTheme::read(cx).clone();
+        body.when(
+            !model.results.is_empty() && model.files.is_empty(),
+            |body| {
+                body.child(
+                    div()
+                        .px(theme.space(4.))
+                        .pt(theme.space(2.))
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child(match model.results.len() {
+                            1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
+                            n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
+                        }),
+                )
+            },
+        )
+        .child(self.listing(
+            "right-pane.search",
+            &model.results,
+            (
+                LucideIcon::SearchX,
+                "Nothing matched",
+                "Try fewer words, or narrow with from: and in:.",
+            ),
+            model.more.then_some(model.loading_more),
+            cx,
+        ))
+    }
+
+    /// Messages and Files, with their counts, once a search found files
+    /// (#207).
+    fn search_tabs(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let view = cx.entity().downgrade();
+        let more = if model.more { "+" } else { "" };
+        div().px(theme.space(4.)).pt(theme.space(2.)).child(
+            crate::ui::tabs::Tabs::new("right-pane.search.tabs")
+                .aria_label("Search results")
+                .selected(if self.search_files_tab {
+                    "files"
+                } else {
+                    "messages"
+                })
+                .item(crate::ui::tabs::Tab::new(
+                    "right-pane.search.tabs.messages",
+                    "messages",
+                    format!("Messages ({}{more})", model.results.len()),
+                ))
+                .item(crate::ui::tabs::Tab::new(
+                    "right-pane.search.tabs.files",
+                    "files",
+                    format!("Files ({})", model.files.len()),
+                ))
+                .on_change(move |value, _, cx| {
+                    view.update(cx, |this, cx| {
+                        this.search_files_tab = value == "files";
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+        )
+    }
+
+    /// The files a search found (#207): each under its channel, who posted
+    /// it and when, with Jump to its message. An image opens the lightbox
+    /// and any other file downloads, as in the transcript.
+    fn found_files(&self, files: &[FoundFile], cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let view = cx.entity().downgrade();
+        div()
+            .id("right-pane.search.files")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .py(theme.space(2.))
+            .children(files.iter().map(|found| {
+                let channel = match found.channel_name.as_ref() {
+                    name if name.contains(' ') => name.to_string(),
+                    name => format!("#{name}"),
+                };
+                let (jump_channel, jump_post) = (found.channel_id.clone(), found.post_id.clone());
+                let (jump_view, image_view, file_view) = (view.clone(), view.clone(), view.clone());
+                let shown = vec![found.file.clone()];
+                let image_files = shown.clone();
+                let caption: SharedString = format!("{} · {}", found.author, found.day).into();
+                div()
+                    .pb(theme.space(2.))
+                    .mb(theme.space(2.))
+                    .border_b(style::hairline())
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .px(theme.space(4.))
+                            .pb(theme.space(1.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(theme.space(2.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .type_style(style::META, &theme)
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(format!("{channel} · {} · {}", found.author, found.day)),
+                            )
+                            .child(
+                                Button::new(gpui_kit::ElementId::Name(
+                                    format!("right-pane.search.files.{}.jump", found.file.id)
+                                        .into(),
+                                ))
+                                .variant(ButtonVariant::Link)
+                                .size(ButtonSize::Xs)
+                                .label("Jump")
+                                .on_click(move |_, _, cx| {
+                                    let event = RightPaneEvent::Jump {
+                                        channel: jump_channel.clone(),
+                                        post: jump_post.clone(),
+                                    };
+                                    jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+                                }),
+                            ),
+                    )
+                    .child(div().px(theme.space(4.)).child(post_files(
+                        "right-pane.search.files",
+                        &shown,
+                        move |_, window, cx| {
+                            let (files, caption) = (image_files.clone(), caption.clone());
+                            image_view
+                                .update(cx, |this, cx| {
+                                    this.open_images(&files, caption, 0, window, cx)
+                                })
+                                .ok();
+                        },
+                        move |file, _, cx| {
+                            file_view
+                                .update(cx, |_, cx| cx.emit(RightPaneEvent::OpenFile(file)))
+                                .ok();
+                        },
+                        cx,
+                    )))
+            }))
     }
 
     /// Saved, pinned and mention listings: each post under a caption with
@@ -2780,7 +3032,7 @@ impl RightPaneView {
             style::centered_empty(
                 LucideIcon::Search,
                 "Search messages",
-                "Words, \u{201c}exact phrases\u{201d}, from:someone and in:channel.",
+                "Words, \u{201c}exact phrases\u{201d}, from:someone, in:channel, on:, before: or after: a date, -word to leave a word out, and depl* for words that start with depl.",
                 cx,
             )
             .into_any_element()
@@ -2802,30 +3054,15 @@ impl RightPaneView {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .when(!model.results.is_empty(), |body| {
-                    body.child(
-                        div()
-                            .px(theme.space(4.))
-                            .pt(theme.space(2.))
-                            .type_style(style::META, &theme)
-                            .text_color(muted)
-                            .child(match model.results.len() {
-                                1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
-                                n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
-                            }),
-                    )
+                .when(!model.files.is_empty(), |body| {
+                    body.child(self.search_tabs(model, cx))
                 })
-                .child(self.listing(
-                    "right-pane.search",
-                    &model.results,
-                    (
-                        LucideIcon::SearchX,
-                        "Nothing matched",
-                        "Try fewer words, or narrow with from: and in:.",
-                    ),
-                    model.more.then_some(model.loading_more),
-                    cx,
-                ))
+                .when(self.search_files_tab && !model.files.is_empty(), |body| {
+                    body.child(self.found_files(&model.files, cx))
+                })
+                .when(!self.search_files_tab || model.files.is_empty(), |body| {
+                    self.search_messages(body, model, cx)
+                })
                 .into_any_element()
         };
         div()
@@ -2859,7 +3096,7 @@ impl RightPaneView {
                         div()
                             .type_style(style::META, &theme)
                             .text_color(muted)
-                            .child("from:name  in:channel  \u{201c}exact phrase\u{201d}"),
+                            .child("from:name  in:channel  on:date  -word  \u{201c}exact phrase\u{201d}"),
                     ),
             )
             .child(body)
@@ -3357,6 +3594,7 @@ impl Render for RightPaneView {
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
             .child(self.discard_dialog(window, cx))
+            .child(self.schedule_dialog.clone())
             .child(
                 Menu::new(&self.menu, "Message actions")
                     .context_area(div())
@@ -3452,6 +3690,19 @@ impl Render for RightPaneView {
                     None,
                     cx,
                 )),
+            Some(RightPaneContent::Unreads(posts)) => root
+                .child(self.header("Unreads".into(), None, cx))
+                .child(self.listing(
+                    "right-pane.unreads",
+                    &posts,
+                    (
+                        LucideIcon::Inbox,
+                        "You're all caught up",
+                        "Unread messages from every channel in the team show up here.",
+                    ),
+                    None,
+                    cx,
+                )),
             Some(RightPaneContent::Search(model)) => root
                 .child(self.header("Search".into(), None, cx))
                 .child(self.search(&model, cx)),
@@ -3516,6 +3767,7 @@ mod tests {
                 ("ada".into(), "Ada Lovelace".into()),
                 ("alan".into(), "Alan Turing".into()),
             ],
+            today: None,
         };
         let inserts = |query: &str| {
             suggestions(query, &hints)
@@ -3533,11 +3785,45 @@ mod tests {
         assert!(inserts("in:random").is_empty());
     }
 
+    #[test]
+    fn date_modifiers_suggest_recent_days() {
+        let hints = SearchHints {
+            today: Some(jiff::civil::date(2026, 11, 5)),
+            ..SearchHints::default()
+        };
+        let shown = |query: &str| {
+            suggestions(query, &hints)
+                .into_iter()
+                .map(|s| format!("{} {}", s.insert, s.label))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shown("deploy on:")[..3],
+            [
+                "on:2026-11-05 Today",
+                "on:2026-11-04 Yesterday",
+                "on:2026-11-03 Tuesday"
+            ]
+        );
+        assert_eq!(shown("on:").len(), SUGGESTIONS);
+        // By name or by date, for each modifier.
+        assert_eq!(shown("before:yes"), ["before:2026-11-04 Yesterday"]);
+        // November 5 back to November 1.
+        assert_eq!(shown("after:2026-11-0").len(), 5);
+        assert_eq!(shown("on:mon"), ["on:2026-11-02 Monday"]);
+        // A whole date, or one further back, suggests nothing.
+        assert!(shown("on:2026-11-05").is_empty());
+        assert!(shown("on:2025").is_empty());
+        // Without today, the modifiers suggest nothing.
+        assert!(suggestions("on:", &SearchHints::default()).is_empty());
+    }
+
     use std::cell::RefCell;
     use std::rc::Rc;
 
     fn post(id: &str) -> Post {
         Post {
+            webhook: None,
             id: id.to_string().into(),
             author: "Ada".into(),
             author_id: SharedString::default(),
@@ -3625,7 +3911,7 @@ mod tests {
                         display_name: "Ada".into(),
                         position: None,
                         presence: Presence::Online,
-                        status_text: None,
+                        status: None,
                         time_zone: None,
                     }],
                     cx,

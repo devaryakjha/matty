@@ -234,6 +234,25 @@ pub struct FileInfo {
     pub mini_preview: Option<String>,
 }
 
+/// A page of files, as `POST teams/{id}/files/search` answers.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct FileInfoList {
+    /// File ids in the order the server ranked them.
+    #[serde(deserialize_with = "null_as_default")]
+    pub order: Vec<String>,
+    /// The files by id.
+    #[serde(deserialize_with = "null_as_default")]
+    pub file_infos: HashMap<String, FileInfo>,
+}
+
+impl FileInfoList {
+    /// The files in the server's order.
+    pub fn ordered(&self) -> impl Iterator<Item = &FileInfo> {
+        self.order.iter().filter_map(|id| self.file_infos.get(id))
+    }
+}
+
 /// One user's reaction to a post.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]

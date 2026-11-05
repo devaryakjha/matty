@@ -100,6 +100,31 @@ pub fn message_link_server(url: &str, shown: Option<usize>, saved: &[&str]) -> O
         .map(|(index, _)| index)
 }
 
+/// A page link to a server Matty had not saved, kept while the person adds
+/// that server on the Add server card: once they are signed in and its
+/// teams are known, the link opens there instead of the default channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPage {
+    host: String,
+    path: String,
+}
+
+impl PendingPage {
+    pub fn new(host: &str, path: &str) -> Self {
+        Self {
+            host: host.to_owned(),
+            path: path.to_owned(),
+        }
+    }
+
+    /// The page's address on `server`, the one just signed in to; `None`
+    /// when the person added another server than the link's, so the link
+    /// is dropped rather than opened somewhere it does not belong.
+    pub fn url_on(&self, server: &str) -> Option<String> {
+        page_url(&self.host, &self.path, server)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +272,31 @@ mod tests {
         ] {
             assert_eq!(message_link_server(url, shown, &SAVED), None, "{url}");
         }
+    }
+
+    /// A link that offered to add its server opens there after sign-in,
+    /// under the server's subpath; signed in elsewhere, it does not.
+    #[test]
+    fn a_pending_page_opens_on_the_server_it_names() {
+        let page = match DeepLink::parse("mattermost://new.example.com:8065/eng/pl/abc") {
+            Some(DeepLink::Page { host, path }) => PendingPage::new(&host, &path),
+            other => panic!("not a page link: {other:?}"),
+        };
+        assert_eq!(
+            page.url_on("http://new.example.com:8065"),
+            Some("http://new.example.com:8065/eng/pl/abc".into())
+        );
+        assert_eq!(
+            page.url_on("http://NEW.example.com:8065/mm/"),
+            Some("http://new.example.com:8065/mm/eng/pl/abc".into())
+        );
+        let channel = PendingPage::new("new.example.com", "/eng/channels/town-square");
+        assert_eq!(
+            channel.url_on("https://new.example.com"),
+            Some("https://new.example.com/eng/channels/town-square".into())
+        );
+        // The person typed another server, or another port of it.
+        assert_eq!(page.url_on("https://chat.example.com"), None);
+        assert_eq!(page.url_on("https://new.example.com"), None);
     }
 }

@@ -55,6 +55,9 @@ pub struct ChannelRow {
     /// finds the row by it whatever the name format shows (#156); for a
     /// channel, its URL name, which `~` mentions use.
     pub handle: Option<SharedString>,
+    /// A direct message's other person's custom status emoji, shown after
+    /// the name (#221).
+    pub status_emoji: Option<SharedString>,
 }
 
 impl ChannelRow {
@@ -72,12 +75,19 @@ impl ChannelRow {
             muted: false,
             person: None,
             handle: None,
+            status_emoji: None,
         }
     }
 
     /// The direct message's other person, by user id.
     pub fn person(mut self, user_id: impl Into<SharedString>) -> Self {
         self.person = Some(user_id.into());
+        self
+    }
+
+    /// The other person's custom status emoji.
+    pub fn status_emoji(mut self, emoji: impl Into<SharedString>) -> Self {
+        self.status_emoji = Some(emoji.into());
         self
     }
 
@@ -247,6 +257,25 @@ impl SidebarModel {
         Some(order[next].clone())
     }
 
+    /// The nearest unread row past the selection in `step`'s direction,
+    /// without wrapping at the ends; from no selection, the first (or
+    /// last) unread row. Muted channels never count as unread.
+    pub fn unread_ahead(&self, step: Step) -> Option<SharedString> {
+        let order: Vec<&ChannelRow> = self.rows().collect();
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|id| order.iter().position(|row| &row.id == id));
+        let unread = |row: &&&ChannelRow| row.unread && !row.muted;
+        match (at, step) {
+            (None, Step::Next) => order.iter().find(unread),
+            (None, Step::Previous) => order.iter().rev().find(unread),
+            (Some(at), Step::Next) => order[at + 1..].iter().find(unread),
+            (Some(at), Step::Previous) => order[..at].iter().rev().find(unread),
+        }
+        .map(|row| row.id.clone())
+    }
+
     /// What the Unreads filter shows (PLAN §4.4): rows with unread posts
     /// (muted ones only for a mention) and the open channel, in their
     /// categories; categories left empty drop out.
@@ -330,6 +359,15 @@ impl SidebarModel {
     pub fn unread_ids(&self) -> Vec<SharedString> {
         self.rows()
             .filter(|row| row.unread || row.mentions > 0)
+            .map(|row| row.id.clone())
+            .collect()
+    }
+
+    /// The channels the unread digest lists, in sidebar order: unread
+    /// ones that are not muted, and any with a mention (#223).
+    pub fn digest_ids(&self) -> Vec<SharedString> {
+        self.rows()
+            .filter(|row| (row.unread && !row.muted) || row.mentions > 0)
             .map(|row| row.id.clone())
             .collect()
     }
@@ -1103,31 +1141,46 @@ impl SidebarView {
         if row.muted && !selected {
             item = item.opacity(0.6);
         }
-        // The count or dot hides while the row is hovered, where the options
-        // button takes its place, as in Mattermost.
+        let mut trailing: Vec<gpui_kit::AnyElement> = Vec::new();
+        if let Some(emoji) = &row.status_emoji {
+            trailing.push(crate::custom_status::emoji(
+                emoji,
+                scaled(&theme, metrics::ICON_SMALL),
+                cx,
+            ));
+        }
         if row.mentions > 0 {
-            item = item.trailing(
-                div()
-                    .group_hover(ROW_GROUP, |style| style.invisible())
-                    .child(
-                        Badge::count(row.mentions, 99)
-                            .bg(palette.mention)
-                            .text_color(palette.mention_foreground)
-                            .h(theme.space(4.5))
-                            .min_w(theme.space(4.5))
-                            .px(theme.space(1.5))
-                            .text_size(theme.text(11.))
-                            .line_height(theme.text(11.)),
-                    ),
+            trailing.push(
+                Badge::count(row.mentions, 99)
+                    .bg(palette.mention)
+                    .text_color(palette.mention_foreground)
+                    .h(theme.space(4.5))
+                    .min_w(theme.space(4.5))
+                    .px(theme.space(1.5))
+                    .text_size(theme.text(11.))
+                    .line_height(theme.text(11.))
+                    .into_any_element(),
             );
         } else if row.unread && !row.muted {
-            item = item.trailing(
+            trailing.push(
                 div()
                     .size(theme.space(1.5))
                     .rounded_full()
                     .bg(theme.colors.sidebar_foreground)
                     .mr(theme.space(1.))
-                    .group_hover(ROW_GROUP, |style| style.invisible()),
+                    .into_any_element(),
+            );
+        }
+        // The emoji and the count or dot hide while the row is hovered,
+        // where the options button takes their place, as in Mattermost.
+        if !trailing.is_empty() {
+            item = item.trailing(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .group_hover(ROW_GROUP, |style| style.invisible())
+                    .children(trailing),
             );
         }
         let menu_id = row.id.clone();
@@ -1681,6 +1734,19 @@ mod tests {
         read.mark_all_read();
         assert_eq!(read.neighbor(Step::Next, true), None);
         assert_eq!(read.neighbor(Step::Next, false).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn unread_ahead_stops_at_the_ends() {
+        // b and e are unread; the others are read or muted.
+        assert_eq!(model("a").unread_ahead(Step::Next).as_deref(), Some("b"));
+        assert_eq!(model("b").unread_ahead(Step::Next).as_deref(), Some("e"));
+        assert_eq!(model("e").unread_ahead(Step::Next), None);
+        assert_eq!(model("b").unread_ahead(Step::Previous), None);
+        let mut fresh = model("a");
+        fresh.selected = None;
+        assert_eq!(fresh.unread_ahead(Step::Next).as_deref(), Some("b"));
+        assert_eq!(fresh.unread_ahead(Step::Previous).as_deref(), Some("e"));
     }
 
     /// #124: the Threads entry shows its mentions as channel rows do,

@@ -134,6 +134,7 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             item("Channel info"),
             item("Recent mentions"),
+            item("All unreads"),
             item("Saved messages"),
             MenuItem::separator(),
             item("Zoom in"),

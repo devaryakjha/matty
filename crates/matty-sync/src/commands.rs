@@ -17,6 +17,10 @@ const BROWSE_PAGES: u32 = 5;
 const PEOPLE_PAGES: u32 = 5;
 /// Saved posts and recent mentions show this many, newest first.
 const LISTING_PAGE: u32 = 60;
+/// The unread digest's channels at most, and each one's first unread
+/// posts at most (#223).
+const DIGEST_CHANNELS: usize = 30;
+const DIGEST_POSTS: u32 = 5;
 
 /// A server write a command asked for.
 #[derive(Debug)]
@@ -52,6 +56,8 @@ pub(crate) enum Write {
         dnd_end_time: Option<i64>,
     },
     NotifyProps(std::collections::HashMap<String, String>),
+    /// A custom status, or `None` to clear it.
+    CustomStatus(Option<matty_api::models::CustomStatus>),
     Profile(matty_api::ProfilePatch),
     /// A new profile picture, or `None` to remove it.
     Picture(Option<(Vec<u8>, String)>),
@@ -203,6 +209,8 @@ impl Write {
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
+            Self::CustomStatus(Some(_)) => "set your status",
+            Self::CustomStatus(None) => "clear your status",
             Self::Profile(_) => "save your profile",
             Self::Picture(Some(_)) => "change your picture",
             Self::Picture(None) => "remove your picture",
@@ -218,6 +226,7 @@ impl Write {
             Self::Listing(crate::Listing::Saved) => "load saved messages",
             Self::Listing(crate::Listing::Pinned { .. }) => "load pinned messages",
             Self::Listing(crate::Listing::Mentions { .. }) => "load recent mentions",
+            Self::Listing(crate::Listing::Unreads { .. }) => "load unread messages",
             Self::Pin { pinned: true, .. } => "pin message",
             Self::Pin { pinned: false, .. } => "unpin message",
             Self::DeletePreferences(_) => "delete preferences",
@@ -262,9 +271,11 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) | Self::Picture(_) => {
-                user_id.to_owned()
-            }
+            Self::Status { .. }
+            | Self::NotifyProps(_)
+            | Self::CustomStatus(_)
+            | Self::Profile(_)
+            | Self::Picture(_) => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -274,7 +285,9 @@ impl Write {
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
-            Self::Listing(crate::Listing::Saved) => user_id.to_owned(),
+            Self::Listing(crate::Listing::Saved | crate::Listing::Unreads { .. }) => {
+                user_id.to_owned()
+            }
             Self::Listing(crate::Listing::Pinned { channel_id }) => channel_id.clone(),
             Self::Listing(crate::Listing::Mentions { team_id, .. })
             | Self::Browse { team_id }
@@ -529,6 +542,14 @@ pub(crate) async fn run(
                 let user = client.patch_notify_props(&user_id, &notify_props).await?;
                 Some(Loaded::Users(vec![user]))
             }
+            Write::CustomStatus(status) => {
+                match status {
+                    Some(status) => client.set_custom_status(&user_id, &status).await?,
+                    None => client.clear_custom_status(&user_id).await?,
+                }
+                // The user's props now hold it, and the recent statuses.
+                Some(Loaded::Users(vec![client.me().await?]))
+            }
             Write::Profile(patch) => {
                 let user = client.patch_profile(&user_id, &patch).await?;
                 Some(Loaded::Users(vec![user]))
@@ -647,11 +668,29 @@ pub(crate) async fn run(
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
                 let posts: Vec<_> = results.list.ordered().cloned().collect();
+                // The first page also finds files (#207); a server that
+                // cannot search them still answers with its posts.
+                let files = if query.page == 0 {
+                    match client.search_files(&team_id, &query).await {
+                        Ok(found) => found
+                            .ordered()
+                            .filter(|file| file.delete_at == 0)
+                            .cloned()
+                            .collect(),
+                        Err(error) => {
+                            tracing::warn!(%error, "file search failed");
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 Some(Loaded::Search {
                     more: posts.len() >= query.per_page as usize,
                     posts,
                     terms: query.terms,
                     page: query.page,
+                    files,
                 })
             }
             Write::CreateCategory { team_id, category } => {
@@ -779,6 +818,36 @@ pub(crate) async fn run(
                             .search_posts(team_id, &query)
                             .await
                             .map(|found| found.list)
+                    }
+                    crate::Listing::Unreads {
+                        channel_ids,
+                        collapsed_threads,
+                    } => {
+                        // Channel by channel, in the digest's order: each
+                        // one's first few unread posts, oldest first.
+                        let mut posts = Vec::new();
+                        for channel_id in channel_ids.iter().take(DIGEST_CHANNELS) {
+                            let list = match client
+                                .posts_around_unread(
+                                    &user_id,
+                                    channel_id,
+                                    0,
+                                    DIGEST_POSTS,
+                                    *collapsed_threads,
+                                )
+                                .await
+                            {
+                                Ok(list) => list,
+                                Err(error) if told(&error).is_none() => {
+                                    return Ok(Some(Loaded::ListingOffline(listing)));
+                                }
+                                Err(error) => return Err(error),
+                            };
+                            let mut found: Vec<_> = list.ordered().cloned().collect();
+                            found.sort_by_key(|post| post.create_at);
+                            posts.extend(found.into_iter().take(DIGEST_POSTS as usize));
+                        }
+                        return Ok(Some(Loaded::Listing { listing, posts }));
                     }
                 };
                 let list = match list {
