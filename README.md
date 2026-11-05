@@ -5,9 +5,10 @@ on [GPUI](https://www.gpui.rs) with the [gpuicn](https://github.com/devaryakjha/
 component library. The goal is a client that opens instantly, switches
 channels without a spinner, and stays usable offline.
 
-> **Status: early alpha.** Matty is under active development toward its first
-> milestone (M1). There are no releases yet:
-> [build it from source](#building). The plan of record is
+> **Status: beta.** Matty is under active development toward its first
+> milestone (M1). Beta builds for macOS are on
+> [GitHub Releases](https://github.com/devaryakjha/matty/releases) (see
+> [Install](#install)). The plan of record is
 > [docs/PLAN.md](docs/PLAN.md), and work is tracked in
 > [GitHub issues](https://github.com/devaryakjha/matty/issues).
 
@@ -60,31 +61,36 @@ below) at 1200×800.
 - **Keyboard and screen readers:** shortcuts for navigation and message
   actions, one tab stop per list, and accessible names on every control.
 
-Desktop notifications, the image viewer, link previews and signed release
-builds are next. See the [M1 milestones](docs/PLAN.md) for the full list.
+See the [M1 milestones](docs/PLAN.md) for the full list.
 
 ## Install
 
 Matty is an unofficial client for Mattermost, not made or endorsed by
 Mattermost, Inc.
 
-**There are no published builds yet.** No GitHub release exists and there is
-no Homebrew tap, so the only way to run Matty today is to
-[build it from source](#building). On macOS, `scripts/release-bundle` builds
-the same universal `Matty.app` a release would ship (see
-[Building](#building)).
+**macOS 13 or later, Apple silicon or Intel.** Download
+`Matty-<version>.dmg` from
+[GitHub Releases](https://github.com/devaryakjha/matty/releases), open it and
+drag Matty to Applications. Releases are signed and notarized, so macOS opens
+them without a warning. Builds are betas for now (the first is
+[0.1.0-beta.3](https://github.com/devaryakjha/matty/releases/tag/v0.1.0-beta.3)),
+and GitHub marks them as pre-releases. Each release lists the files' SHA-256
+checksums in `SHA256SUMS`:
 
-**Coming with the first release (M1 beta):**
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
 
-- A DMG for macOS 13 or later (Apple silicon and Intel) on
-  [GitHub Releases](https://github.com/devaryakjha/matty/releases), with
-  SHA-256 checksums in `SHA256SUMS`.
-- A Homebrew cask (`brew install --cask devaryakjha/matty/matty`). It does
-  not work yet: the tap doesn't exist.
-- In-app updates from signed release manifests.
+Matty updates itself from signed releases, so you don't need to download it
+again. Your sign-in tokens stay in the keychain under "Matty" until you sign
+out or delete them in Keychain Access.
 
-Windows and Linux builds come later (M2); until then, build from source.
-Matty also builds for the browser; see [docs/web.md](docs/web.md).
+**Homebrew: coming soon.** A cask (`devaryakjha/matty/matty`) arrives with the
+first stable release; it isn't published for betas.
+
+**From source:** see [Building](#building). Windows and Linux builds come
+later (M2); until then, build from source there too. Matty also builds for the
+browser; see [docs/web.md](docs/web.md).
 
 ### Supported servers
 
@@ -101,7 +107,8 @@ getting patches. CI tests against Mattermost 12.0, 11.7, 10.11 and 10.5.
 ### Reporting problems
 
 [Open an issue](https://github.com/devaryakjha/matty/issues/new) with your
-Matty version (`matty --version`, or the commit you built from),
+Matty version (`/Applications/Matty.app/Contents/MacOS/matty --version`, or
+the commit you built from),
 your macOS version and your Mattermost server version. Preferences has a
 button that opens the logs folder. Logs leave out tokens and message text
 by default, but look before you attach one.
@@ -127,7 +134,7 @@ MATTY_PREVIEW=1 cargo run -p matty
 
 On macOS, notifications only show from an app bundle. `scripts/dev-bundle`
 builds an ad-hoc signed `target/Matty Dev.app` with its own bundle id and
-URL schemes, so it can sit next to a release build:
+URL schemes, so it can sit next to a release install:
 
 ```sh
 scripts/dev-bundle && open "target/Matty Dev.app"
