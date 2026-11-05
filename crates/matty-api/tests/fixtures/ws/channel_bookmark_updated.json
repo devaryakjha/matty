@@ -1,0 +1,16 @@
+{
+  "_source": "hand-written from Mattermost's app/channel_bookmark.go; the 10.5 recorder does not drive bookmarks yet",
+  "broadcast": {
+    "channel_id": "865owkf9afre7myntpn9oupyae",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": ""
+  },
+  "data": {
+    "bookmarks": "{\"updated\": {\"id\": \"b2\", \"create_at\": 1793728922866, \"update_at\": 1793728922866, \"delete_at\": 0, \"channel_id\": \"865owkf9afre7myntpn9oupyae\", \"owner_id\": \"rm9qb436airnmmjzxy7soiff9c\", \"file_id\": \"\", \"display_name\": \"Handbook\", \"sort_order\": 0, \"link_url\": \"https://example.com/docs\", \"type\": \"link\", \"original_id\": \"b1\"}, \"deleted\": {\"id\": \"b1\", \"create_at\": 1793728922866, \"update_at\": 1793728922866, \"delete_at\": 1793728923000, \"channel_id\": \"865owkf9afre7myntpn9oupyae\", \"owner_id\": \"rm9qb436airnmmjzxy7soiff9c\", \"file_id\": \"\", \"display_name\": \"Docs\", \"sort_order\": 0, \"link_url\": \"https://example.com/docs\", \"type\": \"link\"}}"
+  },
+  "event": "channel_bookmark_updated",
+  "seq": 61
+}

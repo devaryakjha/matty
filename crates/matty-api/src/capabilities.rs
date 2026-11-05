@@ -149,6 +149,10 @@ pub struct ServerCapabilities {
     pub max_file_size: u64,
     /// Whether images go through the server's image proxy.
     pub image_proxy: bool,
+    /// Channel bookmarks are on (#226): the `ChannelBookmarks` feature flag
+    /// where the server still has it (9.x), and every server from 10.0 on,
+    /// which dropped the flag once bookmarks shipped.
+    pub channel_bookmarks: bool,
     /// The server has a license.
     pub licensed: bool,
     /// The license tier, such as `professional` or `enterprise`.
@@ -223,6 +227,10 @@ impl ServerCapabilities {
                 .unwrap_or(DEFAULT_MAX_POST_SIZE),
             max_file_size: number(config, "MaxFileSize").unwrap_or(DEFAULT_MAX_FILE_SIZE),
             image_proxy: flag(config, "HasImageProxy"),
+            channel_bookmarks: match config.get("FeatureFlagChannelBookmarks") {
+                Some(_) => flag(config, "FeatureFlagChannelBookmarks"),
+                None => version >= Version::new(10, 0, 0),
+            },
             licensed,
             sku: licensed
                 .then(|| text(license, "SkuShortName").map(str::to_string))
@@ -363,7 +371,29 @@ mod tests {
                 .available()
         );
         assert_eq!(gate("MaxPostSize", "4000").max_post_size, 4000);
+        assert!(gate("FeatureFlagChannelBookmarks", "true").channel_bookmarks);
+        assert!(!gate("FeatureFlagChannelBookmarks", "false").channel_bookmarks);
         assert_eq!(gate("MaxFileSize", "52428800").max_file_size, 52_428_800);
+    }
+
+    #[test]
+    fn bookmarks_follow_the_flag_or_the_version() {
+        let license = load("license_client_unlicensed.json");
+        let caps = |version: &str, flag: Option<&str>| {
+            let mut config = load("config_client_team.json");
+            config.insert("Version".into(), version.into());
+            config.remove("FeatureFlagChannelBookmarks");
+            if let Some(flag) = flag {
+                config.insert("FeatureFlagChannelBookmarks".into(), flag.into());
+            }
+            ServerCapabilities::from_old_format(&config, &license)
+                .unwrap()
+                .channel_bookmarks
+        };
+        assert!(!caps("9.11.0", None));
+        assert!(caps("9.11.0", Some("true")));
+        assert!(caps("12.0.1", None));
+        assert!(!caps("10.5.0", Some("false")));
     }
 
     #[test]

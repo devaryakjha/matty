@@ -315,6 +315,13 @@ pub(crate) async fn run(
     write: Write,
     results: UnboundedSender<Loaded>,
 ) {
+    // A dialog showing an App's form goes back to the App (#226).
+    let write = match write {
+        Write::SubmitDialog(submit) if crate::apps::is_app_dialog(&submit.url) => {
+            return crate::apps::submit(client, *submit, results).await;
+        }
+        other => other,
+    };
     let action = write.action();
     let target = write.target(&user_id);
     let outcome: Result<Option<Loaded>, ApiError> = async {

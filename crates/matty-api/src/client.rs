@@ -450,6 +450,45 @@ impl Client {
         extra_headers: &[(header::HeaderName, String)],
     ) -> Result<reqwest::Response, ApiError> {
         let url = self.api_url(path)?;
+        self.send_to(method, url, query, body, extra_headers).await
+    }
+
+    /// The URL for a plugin's path such as
+    /// `com.mattermost.apps/api/v1/bindings`, outside API v4.
+    pub fn plugin_url(&self, path: &str) -> Result<Url, ApiError> {
+        self.base
+            .join("plugins/")
+            .and_then(|plugins| plugins.join(path.trim_start_matches('/')))
+            .map_err(|e| ApiError::InvalidUrl(e.to_string()))
+    }
+
+    /// Sends JSON to a plugin's path (see [`Client::plugin_url`]) and
+    /// decodes the JSON answer, with the session and retries API calls get.
+    pub(crate) async fn plugin_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&B>,
+    ) -> Result<T, ApiError> {
+        let body = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| ApiError::Decode(e.to_string()))?;
+        let url = self.plugin_url(path)?;
+        let response = self.send_to(method, url, query, body, &[]).await?;
+        let bytes = response.bytes().await.map_err(ApiError::from_transport)?;
+        serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()))
+    }
+
+    async fn send_to(
+        &self,
+        method: Method,
+        url: Url,
+        query: &[(&str, String)],
+        body: Option<Vec<u8>>,
+        extra_headers: &[(header::HeaderName, String)],
+    ) -> Result<reqwest::Response, ApiError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
