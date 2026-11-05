@@ -85,8 +85,8 @@ use gpui_kit::{
     point, px, size,
 };
 use settings::{SettingsStore, ThemeChoice, ThemeSource};
+use style::title_bar_window_options;
 use ui::theme::{ThemeMode, UiTheme};
-use ui::title_bar::title_bar_window_options;
 
 /// This build's version, with the release tag's pre-release suffix.
 pub const VERSION: &str = matty_update::CURRENT_VERSION;
