@@ -22,8 +22,10 @@
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
+    <!-- A per-user file's key path is a registry value, so each component
+         keeps a fixed Guid: WiX only generates one for a file key path. -->
     <ComponentGroup Id="App" Directory="INSTALLFOLDER">
-      <Component Id="Binary">
+      <Component Id="Binary" Guid="50897474-57CA-449F-81B1-9F6B8798A97C">
         <File Id="MattyExe" Source="$(Binary)" Name="matty.exe" />
         <RegistryValue Root="HKCU" Key="Software\Matty" Name="Installed"
                        Type="integer" Value="1" KeyPath="yes" />
@@ -32,7 +34,7 @@
       </Component>
 
       <!-- The shortcut's AppUserModelID is what lets the app's toasts show. -->
-      <Component Id="StartMenu" Directory="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="E788F285-EB8C-4D1F-894E-1CBF35AC9950" Directory="ProgramMenuFolder">
         <Shortcut Id="MattyShortcut" Name="Matty"
                   Description="Chat on your Mattermost server"
                   Target="[INSTALLFOLDER]matty.exe" WorkingDirectory="INSTALLFOLDER">
@@ -42,7 +44,7 @@
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>
 
-      <Component Id="Links">
+      <Component Id="Links" Guid="3D98A06A-7918-4138-92EE-F64993630A60">
         <RegistryValue Root="HKCU" Key="Software\Classes\matty" Value="URL:Matty" Type="string" KeyPath="yes" />
         <RegistryValue Root="HKCU" Key="Software\Classes\matty" Name="URL Protocol" Value="" Type="string" />
         <RegistryValue Root="HKCU" Key="Software\Classes\matty\shell\open\command"
