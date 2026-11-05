@@ -579,7 +579,7 @@ fn quoted_element(
     }
     if !quoted.day.is_empty() {
         let time = crate::settings::ClockFormat::current(cx).format(quoted.time);
-        card = card.timestamp(if quoted.day == "Today" {
+        card = card.timestamp(if quoted.day == crate::transcript::today() {
             time.into()
         } else {
             SharedString::from(format!("{} at {time}", quoted.day))

@@ -12,10 +12,12 @@ use matty_notify::MentionKeys;
 
 use crate::attachments::PostFile;
 use crate::channel::{
-    ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostKind, PostReaction, PostStatus,
+    ChannelModel, DEFAULT_MAX_POST_SIZE, Post, PostKind, PostReaction, PostStatus, SystemChange,
+    SystemLine,
 };
 use crate::settings::NameFormat;
 use crate::sidebar::ChannelRow;
+use crate::t;
 
 /// Posts by one person within this many milliseconds share a header.
 const GROUP_MS: i64 = 5 * 60 * 1000;
@@ -108,18 +110,23 @@ pub fn channel_model(
         let day = stamp.1.clone();
         if let Some(entry) = Activity::of(post, users, viewer) {
             let last = rows.last_mut().filter(|last| {
-                last.kind == (PostKind::System { activity: true })
+                matches!(last.kind, PostKind::System { activity: true, .. })
                     && last.day == day
                     && !activity.is_empty()
             });
             match last {
                 Some(last) => {
                     activity.push(entry);
-                    last.body = activity_text(&activity).into();
+                    let lines = activity_lines(&activity);
+                    last.body = lines_text(&lines).into();
+                    last.kind = PostKind::System {
+                        activity: true,
+                        lines,
+                    };
                 }
                 None => {
                     activity = vec![entry];
-                    rows.push(system_post(post, activity_text(&activity), true, stamp));
+                    rows.push(system_post(post, activity_lines(&activity), true, stamp));
                 }
             }
             previous = None;
@@ -136,8 +143,8 @@ pub fn channel_model(
             // A system row breaks the run of one author's posts.
             previous = None;
             thread = None;
-            if let Some(text) = system_text(post, users, viewer) {
-                rows.push(system_post(post, text, false, stamp));
+            if let Some(line) = system_line(post, users, viewer) {
+                rows.push(system_post(post, vec![line], false, stamp));
             }
             continue;
         }
@@ -210,7 +217,7 @@ fn reply_context(
     let author = users
         .get(&root.user_id)
         .map(|user| display_name_as(user, viewer.names))
-        .unwrap_or_else(|| "Someone".into());
+        .unwrap_or_else(|| t!("sys-someone").to_string());
     let words = crate::channel::plain_text(&root.message);
     let excerpt = words.split_whitespace().collect::<Vec<_>>().join(" ");
     crate::channel::ReplyContext {
@@ -284,22 +291,23 @@ fn display_post(
     // web app. An integration's come from its bot.
     let from_system = ephemeral && (known.is_none() || post.user_id == viewer.user_id);
     let author = match (known, webhook_name(post)) {
-        _ if from_system => "System".into(),
+        _ if from_system => t!("sys-system").to_string(),
         (_, Some(name)) => name.to_owned(),
         (Some(user), None) => display_name_as(user, viewer.names),
-        (None, None) => "Someone".into(),
+        (None, None) => t!("sys-someone").to_string(),
     };
     let kind = if is_regular(&post.kind) || ephemeral {
         PostKind::Regular
     } else if is_system(&post.kind) {
-        PostKind::System { activity: false }
+        PostKind::System {
+            activity: false,
+            lines: system_line(post, users, viewer).into_iter().collect(),
+        }
     } else {
         PostKind::Unsupported(post.kind.clone().into())
     };
-    let body = match kind {
-        PostKind::System { .. } => system_text(post, users, viewer)
-            .unwrap_or_else(|| post.message.clone())
-            .into(),
+    let body = match &kind {
+        PostKind::System { lines, .. } if !lines.is_empty() => lines_text(lines).into(),
         _ => post.message.clone().into(),
     };
     Post {
@@ -359,7 +367,7 @@ fn display_post(
             .collect(),
         priority: crate::priority::Shown::of(&post.metadata, viewer.user_id, |id| {
             users.get(id).map_or_else(
-                || "Someone".into(),
+                || t!("sys-someone").to_string(),
                 |user| display_name_as(user, viewer.names),
             )
         }),
@@ -380,7 +388,7 @@ fn is_system(kind: &str) -> bool {
 /// viewer's own (so Up never edits it).
 fn system_post(
     post: &ApiPost,
-    text: String,
+    lines: Vec<SystemLine>,
     activity: bool,
     (time, day, date): (u16, SharedString, SharedString),
 ) -> Post {
@@ -389,11 +397,11 @@ fn system_post(
         id: post.id.clone().into(),
         author: SharedString::default(),
         author_id: SharedString::default(),
-        kind: PostKind::System { activity },
+        body: lines_text(&lines).into(),
+        kind: PostKind::System { activity, lines },
         time,
         day,
         date,
-        body: text.into(),
         reactions: Vec::new(),
         mentions_me: false,
         edited: false,
@@ -424,12 +432,12 @@ fn prop<'a>(post: &'a ApiPost, key: &str) -> &'a str {
 /// display name, then the username the post carries, then "Someone".
 fn person(id: &str, username: &str, users: &HashMap<String, User>, viewer: &Viewer<'_>) -> String {
     if !id.is_empty() && id == viewer.user_id {
-        return "You".into();
+        return t!("sys-you").to_string();
     }
     match users.get(id) {
         Some(user) => display_name_as(user, viewer.names),
         None if !username.is_empty() => format!("@{username}"),
-        None => "Someone".into(),
+        None => t!("sys-someone").to_string(),
     }
 }
 
@@ -465,21 +473,30 @@ impl Verb {
         })
     }
 
-    /// The predicate after the names, without the actor of an add.
-    fn words(self, many: bool) -> &'static str {
+    /// The Fluent id of its sentence, which takes `who`, `count` (how
+    /// many people `who` names) and, for an add, `by`.
+    fn id(self) -> &'static str {
         match self {
-            Self::JoinChannel => "joined the channel",
-            Self::JoinChannelAsGuest => "joined the channel as a guest",
-            Self::LeaveChannel => "left the channel",
-            Self::AddToChannel => "added to the channel by",
-            Self::AddGuestToChannel => "added to the channel as a guest by",
-            Self::RemoveFromChannel if many => "were removed from the channel",
-            Self::RemoveFromChannel => "was removed from the channel",
-            Self::JoinTeam => "joined the team",
-            Self::LeaveTeam => "left the team",
-            Self::AddToTeam => "added to the team by",
-            Self::RemoveFromTeam if many => "were removed from the team",
-            Self::RemoveFromTeam => "was removed from the team",
+            Self::JoinChannel => "sys-joined-channel",
+            Self::JoinChannelAsGuest => "sys-joined-channel-guest",
+            Self::LeaveChannel => "sys-left-channel",
+            Self::AddToChannel => "sys-added-to-channel",
+            Self::AddGuestToChannel => "sys-added-guest-to-channel",
+            Self::RemoveFromChannel => "sys-removed-from-channel",
+            Self::JoinTeam => "sys-joined-team",
+            Self::LeaveTeam => "sys-left-team",
+            Self::AddToTeam => "sys-added-to-team",
+            Self::RemoveFromTeam => "sys-removed-from-team",
+        }
+    }
+
+    fn change(self) -> SystemChange {
+        match self {
+            Self::LeaveChannel
+            | Self::RemoveFromChannel
+            | Self::LeaveTeam
+            | Self::RemoveFromTeam => SystemChange::Left,
+            _ => SystemChange::Arrived,
         }
     }
 }
@@ -528,16 +545,88 @@ fn name_list(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [one] => one.clone(),
-        [first, second] => format!("{first} and {second}"),
-        [first, second, third] => format!("{first}, {second} and {third}"),
-        [first, second, rest @ ..] => format!("{first}, {second} and {} others", rest.len()),
+        [first, second] => t!(
+            "sys-names-two",
+            first = first.clone(),
+            second = second.clone()
+        )
+        .to_string(),
+        [first, second, third] => t!(
+            "sys-names-three",
+            first = first.clone(),
+            second = second.clone(),
+            third = third.clone()
+        )
+        .to_string(),
+        [first, second, rest @ ..] => t!(
+            "sys-names-more",
+            first = first.clone(),
+            second = second.clone(),
+            others = rest.len()
+        )
+        .to_string(),
     }
 }
 
+/// A value in a system sentence: a person, set apart in the row, or
+/// other words, such as a channel's old header.
+enum Part {
+    Person(String),
+    Words(String),
+}
+
+/// The sentence `id` with `parts` in it, as spans: each part goes into
+/// the sentence as a marker, then the sentence is cut at the markers, so a
+/// language can put the people wherever its grammar needs them.
+fn sentence(change: SystemChange, id: &str, parts: &[(&str, Part)], count: usize) -> SystemLine {
+    const OPEN: char = '\u{e000}';
+    const CLOSE: char = '\u{e001}';
+    let markers: Vec<String> = (0..parts.len())
+        .map(|index| format!("{OPEN}{index}{CLOSE}"))
+        .collect();
+    let mut args: Vec<(&str, fluent_bundle::FluentValue<'_>)> = parts
+        .iter()
+        .zip(&markers)
+        .map(|((name, _), marker)| (*name, crate::i18n::arg(marker.as_str())))
+        .collect();
+    args.push(("count", crate::i18n::arg(count)));
+    let text = crate::i18n::text(id, &args);
+    let mut spans = Vec::new();
+    let mut rest = text.as_ref();
+    while let Some(start) = rest.find(OPEN) {
+        let Some(end) = rest[start..].find(CLOSE).map(|end| start + end) else {
+            break;
+        };
+        if start > 0 {
+            spans.push((rest[..start].to_owned().into(), false));
+        }
+        let index: Option<usize> = rest[start + OPEN.len_utf8()..end].parse().ok();
+        match index.and_then(|index| parts.get(index)) {
+            Some((_, Part::Person(name))) => spans.push((name.clone().into(), true)),
+            Some((_, Part::Words(words))) => spans.push((words.clone().into(), false)),
+            None => {}
+        }
+        rest = &rest[end + CLOSE.len_utf8()..];
+    }
+    if !rest.is_empty() {
+        spans.push((rest.to_owned().into(), false));
+    }
+    SystemLine { change, spans }
+}
+
+/// A system row's lines as plain text, one a line.
+fn lines_text(lines: &[SystemLine]) -> String {
+    lines
+        .iter()
+        .map(SystemLine::text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One sentence per kind of change, in the order they first happened, a
-/// line each: "Ada, Sam and 3 others joined the channel.\nLena left the
-/// channel."
-fn activity_text(entries: &[Activity]) -> String {
+/// line each: "Ada, Sam and 3 others joined the channel." then "Lena left
+/// the channel."
+fn activity_lines(entries: &[Activity]) -> Vec<SystemLine> {
     let mut groups: Vec<(Verb, Option<&str>, Vec<String>)> = Vec::new();
     for entry in entries {
         let by = entry.by.as_deref();
@@ -548,7 +637,7 @@ fn activity_text(entries: &[Activity]) -> String {
             Some(index) => &mut groups[index],
             None => {
                 groups.push((entry.verb, by, Vec::new()));
-                groups.last_mut().expect("just pushed")
+                groups.last_mut().expect("just pushed") // i18n-ignore
             }
         };
         if !group.2.contains(&entry.who) {
@@ -558,50 +647,80 @@ fn activity_text(entries: &[Activity]) -> String {
     groups
         .iter()
         .map(|(verb, by, names)| {
-            let words = verb.words(names.len() > 1);
-            match by {
-                Some(by) => format!("{} {words} {by}.", name_list(names)),
-                None => format!("{} {words}.", name_list(names)),
+            let mut parts = vec![("who", Part::Person(name_list(names)))];
+            if let Some(by) = by {
+                parts.push(("by", Part::Person((*by).to_owned())));
             }
+            sentence(verb.change(), verb.id(), &parts, names.len())
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
-/// The sentence for a system post other than a join or leave, in the web
-/// app's wording; the server's own text for types Matty does not word
-/// itself. `None` when there is nothing to say.
-fn system_text(
+/// The sentence for a system post, in the web app's wording; the server's
+/// own text for types Matty does not word itself. `None` when there is
+/// nothing to say.
+fn system_line(
     post: &ApiPost,
     users: &HashMap<String, User>,
     viewer: &Viewer<'_>,
-) -> Option<String> {
+) -> Option<SystemLine> {
     if let Some(activity) = Activity::of(post, users, viewer) {
-        return Some(activity_text(&[activity]));
+        return activity_lines(&[activity]).pop();
     }
-    let actor = || person(&post.user_id, prop(post, "username"), users, viewer);
-    let server_text = || Some(post.message.trim().to_string()).filter(|text| !text.is_empty());
+    let actor = || Part::Person(person(&post.user_id, prop(post, "username"), users, viewer));
+    let server_text = || {
+        Some(post.message.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .map(|text| SystemLine {
+                change: SystemChange::Other,
+                spans: vec![(text.into(), false)],
+            })
+    };
+    // `what` names the field in the ids: header, purpose or name.
     let change = |what: &str, old: &str, new: &str| {
         let (old, new) = (prop(post, old).trim(), prop(post, new).trim());
+        let id = |how: &str| format!("sys-{what}-{how}");
+        let old_part = ("old", Part::Words(old.to_owned()));
+        let new_part = ("new", Part::Words(new.to_owned()));
+        let edited = SystemChange::Edited;
         match (old.is_empty(), new.is_empty()) {
             (true, true) => server_text(),
-            (false, true) => Some(format!(
-                "{} removed the channel {what} (was: {old})",
-                actor()
+            (false, true) => Some(sentence(
+                edited,
+                &id("removed"),
+                &[("actor", actor()), old_part],
+                1,
             )),
-            (true, false) => Some(format!("{} updated the channel {what} to: {new}", actor())),
-            (false, false) => Some(format!(
-                "{} updated the channel {what} from: {old} to: {new}",
-                actor()
+            (true, false) => Some(sentence(
+                edited,
+                &id("set"),
+                &[("actor", actor()), new_part],
+                1,
+            )),
+            (false, false) => Some(sentence(
+                edited,
+                &id("changed"),
+                &[("actor", actor()), old_part, new_part],
+                1,
             )),
         }
     };
     match post.kind.as_str() {
         "system_header_change" => change("header", "old_header", "new_header"),
         "system_purpose_change" => change("purpose", "old_purpose", "new_purpose"),
-        "system_displayname_change" => change("display name", "old_displayname", "new_displayname"),
-        "system_channel_deleted" => Some(format!("{} archived the channel", actor())),
-        "system_channel_restored" => Some(format!("{} unarchived the channel", actor())),
+        "system_displayname_change" => change("name", "old_displayname", "new_displayname"),
+        "system_channel_deleted" => Some(sentence(
+            SystemChange::Archived,
+            "sys-archived",
+            &[("actor", actor())],
+            1,
+        )),
+        "system_channel_restored" => Some(sentence(
+            SystemChange::Unarchived,
+            "sys-unarchived",
+            &[("actor", actor())],
+            1,
+        )),
         _ => server_text(),
     }
 }
@@ -668,6 +787,30 @@ pub fn thread_row(
     }
 }
 
+/// The day label of today's posts, in the user's language.
+pub(crate) fn today() -> SharedString {
+    t!("day-today")
+}
+
+/// A weekday's name in the user's language.
+fn weekday_name(day: jiff::civil::Weekday) -> SharedString {
+    use jiff::civil::Weekday::*;
+    match day {
+        Monday => t!("day-monday"),
+        Tuesday => t!("day-tuesday"),
+        Wednesday => t!("day-wednesday"),
+        Thursday => t!("day-thursday"),
+        Friday => t!("day-friday"),
+        Saturday => t!("day-saturday"),
+        Sunday => t!("day-sunday"),
+    }
+}
+
+/// A month's name, 1 to 12, in the user's language.
+fn month_name(month: i8) -> SharedString {
+    crate::i18n::text(&format!("day-month-{month}"), &[])
+}
+
 /// Minutes since local midnight, the day label the post falls under, and
 /// the full date for the time's tooltip.
 pub(crate) fn when(
@@ -676,23 +819,39 @@ pub(crate) fn when(
     today: jiff::civil::Date,
 ) -> (u16, SharedString, SharedString) {
     let Ok(at) = Timestamp::from_millisecond(millis) else {
-        return (0, "Today".into(), SharedString::default());
+        return (0, self::today(), SharedString::default());
     };
     let local = at.to_zoned(zone.clone());
     let minutes =
         u16::try_from(i32::from(local.hour()) * 60 + i32::from(local.minute())).unwrap_or(0);
     let date = local.date();
     let day = if date == today {
-        "Today".to_string()
+        self::today()
     } else if today.yesterday().ok() == Some(date) {
-        "Yesterday".to_string()
+        t!("day-yesterday")
     } else if date.year() == today.year() {
-        date.strftime("%A, %B %-d").to_string()
+        t!(
+            "day-this-year",
+            weekday = weekday_name(date.weekday()).to_string(),
+            month = month_name(date.month()).to_string(),
+            day = date.day()
+        )
     } else {
-        date.strftime("%B %-d, %Y").to_string()
+        t!(
+            "day-other-year",
+            month = month_name(date.month()).to_string(),
+            day = date.day(),
+            year = date.year().to_string()
+        )
     };
-    let full = date.strftime("%A, %B %-d, %Y").to_string();
-    (minutes, day.into(), full.into())
+    let full = t!(
+        "day-full",
+        weekday = weekday_name(date.weekday()).to_string(),
+        month = month_name(date.month()).to_string(),
+        day = date.day(),
+        year = date.year().to_string()
+    );
+    (minutes, day, full)
 }
 
 /// Reaction chips in the order each emoji was first used.
@@ -966,12 +1125,27 @@ mod tests {
         model
             .posts
             .iter()
-            .map(|p| (p.kind.clone(), p.body.as_ref(), p.continues))
+            .map(|p| {
+                let kind = match &p.kind {
+                    PostKind::System { activity, .. } => PostKind::System {
+                        activity: *activity,
+                        lines: Vec::new(),
+                    },
+                    kind => kind.clone(),
+                };
+                (kind, p.body.as_ref(), p.continues)
+            })
             .collect()
     }
 
-    const ACTIVITY: PostKind = PostKind::System { activity: true };
-    const CHANGE: PostKind = PostKind::System { activity: false };
+    const ACTIVITY: PostKind = PostKind::System {
+        activity: true,
+        lines: Vec::new(),
+    };
+    const CHANGE: PostKind = PostKind::System {
+        activity: false,
+        lines: Vec::new(),
+    };
 
     #[test]
     fn a_channel_of_only_system_posts_is_not_empty() {

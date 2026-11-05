@@ -411,17 +411,52 @@ pub enum PostStatus {
 /// Mattermost's default `MaxPostSize`, until the server's config arrives.
 pub const DEFAULT_MAX_POST_SIZE: usize = 16383;
 
+/// What a system line is about, for its row's icon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SystemChange {
+    /// Someone joined or was added.
+    Arrived,
+    /// Someone left or was removed.
+    Left,
+    /// The channel's header, purpose or name changed.
+    Edited,
+    Archived,
+    Unarchived,
+    /// Anything else, such as the server's own words.
+    #[default]
+    Other,
+}
+
+/// One line of a system row, already in the user's language: its spans,
+/// `true` for the people's names, and what it is about.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SystemLine {
+    pub change: SystemChange,
+    pub spans: Vec<(SharedString, bool)>,
+}
+
+impl SystemLine {
+    /// The line as plain text.
+    pub fn text(&self) -> String {
+        self.spans.iter().map(|(span, _)| span.as_ref()).collect()
+    }
+}
+
 /// How a post draws (#104).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PostKind {
     /// A message someone wrote.
     #[default]
     Regular,
-    /// A system message, already worded in `body`: a muted line with no
-    /// author, actions or reactions that ends the run of grouped posts.
+    /// A system message: a muted row with no author, actions or reactions
+    /// that ends the run of grouped posts. `lines` are its words, with the
+    /// people set apart; `body` holds the same words as plain text.
     /// `activity` marks joins and leaves, which arrive combined into one
     /// row ("Ada, Sam and 3 others joined the channel.").
-    System { activity: bool },
+    System {
+        activity: bool,
+        lines: Vec<SystemLine>,
+    },
     /// A type Matty does not draw yet, such as a plugin's `custom_*`
     /// post: a card that offers to open it in the browser. Holds the type.
     Unsupported(SharedString),
@@ -857,7 +892,7 @@ impl ReplySummary {
 
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
-        if self.last_day.as_ref() == TODAY {
+        if self.last_day == crate::transcript::today() {
             clock.format(self.last_time).into()
         } else {
             self.last_day.clone()
@@ -2680,7 +2715,7 @@ impl ChannelView {
             author_id: own_id(&model.posts),
             kind: PostKind::Regular,
             time: last.map_or(0, |post| post.time),
-            day: last.map_or_else(|| TODAY.into(), |post| post.day.clone()),
+            day: last.map_or_else(crate::transcript::today, |post| post.day.clone()),
             date: SharedString::default(),
             body: body.clone(),
             reactions: vec![],
@@ -4492,12 +4527,21 @@ impl ChannelView {
     fn system_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let time: SharedString = ClockFormat::current(cx).format(post.time).into();
-        let lines: Vec<&str> = post
-            .body
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
+        let lines: Vec<SystemLine> = match &post.kind {
+            PostKind::System { lines, .. } if !lines.is_empty() => lines.clone(),
+            // Words without structure, such as a stored draft's: one plain
+            // span a line.
+            _ => post
+                .body
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| SystemLine {
+                    change: SystemChange::Other,
+                    spans: vec![(line.to_owned().into(), false)],
+                })
+                .collect(),
+        };
         let icon = system_icon(&lines);
         let slot = scaled(&theme, metrics::ROW_SLOT);
         Message::new(gpui_kit::ElementId::Name(
@@ -4546,7 +4590,7 @@ impl ChannelView {
                         .flex_col()
                         .children(lines.into_iter().map(|line| {
                             let mut text = div().text_color(theme.colors.muted_foreground);
-                            for (span, people) in system_spans(line) {
+                            for (span, people) in line.spans {
                                 text = text.child(if people {
                                     div()
                                         .text_color(theme.colors.foreground)
@@ -5729,81 +5773,21 @@ fn people_suggestions<'a>(
         .collect()
 }
 
-/// The day key sync sends for today's posts.
-const TODAY: &str = "Today"; // i18n-ignore: a key, not shown as is
-
-// What the server's system lines say, matched to style and pick an icon
-// for them; the lines themselves come from the server.
-const JOINED: &str = " joined the "; // i18n-ignore
-const LEFT: &str = " left the "; // i18n-ignore
-const ADDED: &str = " added to the "; // i18n-ignore
-const REMOVED: &str = " removed from the "; // i18n-ignore
-const ARCHIVED: &str = " archived the channel"; // i18n-ignore
-const UNARCHIVED: &str = " unarchived the channel"; // i18n-ignore
-const CHANGED: &str = " the channel "; // i18n-ignore
-const BY: &str = " by "; // i18n-ignore
-
-/// The words that end the people at the start of a system line and begin
-/// what happened to them.
-const SYSTEM_VERBS: [&str; 10] = [
-    " joined the ",            // i18n-ignore: matched in the server's text
-    " left the ",              // i18n-ignore: matched in the server's text
-    " added to the ",          // i18n-ignore: matched in the server's text
-    " was removed from the ",  // i18n-ignore: matched in the server's text
-    " were removed from the ", // i18n-ignore: matched in the server's text
-    " updated the channel ",   // i18n-ignore: matched in the server's text
-    " removed the channel ",   // i18n-ignore: matched in the server's text
-    " archived the channel",   // i18n-ignore: matched in the server's text
-    " unarchived the channel", // i18n-ignore: matched in the server's text
-    " was added to the ",      // i18n-ignore: matched in the server's text
-];
-
-/// A system line in spans, `true` for the people: the names before the
-/// verb, and whoever did an add ("… by Ada."). A line without a known verb
-/// is one plain span.
-fn system_spans(line: &str) -> Vec<(String, bool)> {
-    let Some(at) = SYSTEM_VERBS.iter().filter_map(|verb| line.find(verb)).min() else {
-        return vec![(line.to_owned(), false)];
-    };
-    let mut spans = vec![(line[..at].to_owned(), true)];
-    let rest = &line[at..];
-    let by = rest.contains(ADDED).then(|| rest.rfind(BY)).flatten();
-    match by {
-        Some(by) => {
-            let actor = rest[by + 4..].trim_end_matches('.');
-            spans.push((rest[..by + 4].to_owned(), false));
-            spans.push((actor.to_owned(), true));
-            if rest.ends_with('.') {
-                spans.push((".".to_owned(), false));
-            }
-        }
-        None => spans.push((rest.to_owned(), false)),
-    }
-    spans
-}
-
 /// The icon beside a system row: someone arrived, someone left, the
 /// channel changed, or a mix.
-fn system_icon(lines: &[&str]) -> LucideIcon {
-    let kind = |line: &&str| {
-        if line.contains(JOINED) || line.contains(ADDED) {
-            LucideIcon::UserPlus
-        } else if line.contains(LEFT) || line.contains(REMOVED) {
-            LucideIcon::UserMinus
-        } else if line.contains(UNARCHIVED) {
-            LucideIcon::ArchiveRestore
-        } else if line.contains(ARCHIVED) {
-            LucideIcon::Archive
-        } else if line.contains(CHANGED) {
-            LucideIcon::Pencil
-        } else {
-            LucideIcon::Info
-        }
+fn system_icon(lines: &[SystemLine]) -> LucideIcon {
+    let icon = |line: &SystemLine| match line.change {
+        SystemChange::Arrived => LucideIcon::UserPlus,
+        SystemChange::Left => LucideIcon::UserMinus,
+        SystemChange::Edited => LucideIcon::Pencil,
+        SystemChange::Archived => LucideIcon::Archive,
+        SystemChange::Unarchived => LucideIcon::ArchiveRestore,
+        SystemChange::Other => LucideIcon::Info,
     };
-    let mut kinds = lines.iter().map(kind);
-    match kinds.next() {
+    let mut icons = lines.iter().map(icon);
+    match icons.next() {
         None => LucideIcon::Info,
-        Some(first) if kinds.all(|other| other == first) => first,
+        Some(first) if icons.all(|other| other == first) => first,
         Some(_) => LucideIcon::Users,
     }
 }
@@ -6088,7 +6072,10 @@ mod tests {
         assert!(deletable(&theirs, false, true));
         // Not a system row, and not someone else's post still sending.
         let system = Post {
-            kind: PostKind::System { activity: false },
+            kind: PostKind::System {
+                activity: false,
+                lines: Vec::new(),
+            },
             ..post("p3", "Today")
         };
         assert!(!deletable(&system, false, true));
@@ -6499,64 +6486,41 @@ mod tests {
     }
 
     #[test]
-    fn system_lines_set_the_people_apart() {
-        assert_eq!(
-            system_spans("Sam, Lena and 3 others joined the channel."),
-            [
-                ("Sam, Lena and 3 others".to_owned(), true),
-                (" joined the channel.".to_owned(), false),
-            ]
-        );
-        assert_eq!(
-            system_spans("You added to the team by Ada Lovelace."),
-            [
-                ("You".to_owned(), true),
-                (" added to the team by ".to_owned(), false),
-                ("Ada Lovelace".to_owned(), true),
-                (".".to_owned(), false),
-            ]
-        );
-        assert_eq!(
-            system_spans("Priya updated the channel header to: hi"),
-            [
-                ("Priya".to_owned(), true),
-                (" updated the channel header to: hi".to_owned(), false),
-            ]
-        );
-        assert_eq!(
-            system_spans("Reminder from the server"),
-            [("Reminder from the server".to_owned(), false)]
-        );
-    }
-
-    #[test]
     fn system_rows_pick_an_icon_for_the_change() {
+        let line = |change| SystemLine {
+            change,
+            spans: Vec::new(),
+        };
         assert_eq!(
-            system_icon(&["Sam joined the channel."]),
+            system_icon(&[line(SystemChange::Arrived)]),
             LucideIcon::UserPlus
         );
         assert_eq!(
-            system_icon(&["retentionbot was removed from the team."]),
+            system_icon(&[line(SystemChange::Left)]),
             LucideIcon::UserMinus
         );
         assert_eq!(
-            system_icon(&["Sam joined the team.", "Ola left the team."]),
+            system_icon(&[line(SystemChange::Arrived), line(SystemChange::Left)]),
             LucideIcon::Users
         );
         assert_eq!(
-            system_icon(&["Priya archived the channel"]),
+            system_icon(&[line(SystemChange::Archived)]),
             LucideIcon::Archive
         );
         assert_eq!(
-            system_icon(&["Priya unarchived the channel"]),
+            system_icon(&[line(SystemChange::Unarchived)]),
             LucideIcon::ArchiveRestore
         );
+        assert_eq!(system_icon(&[]), LucideIcon::Info);
     }
 
     #[test]
     fn system_posts_get_their_own_rows_and_no_replies() {
         let system = |id: &str| Post {
-            kind: PostKind::System { activity: true },
+            kind: PostKind::System {
+                activity: true,
+                lines: Vec::new(),
+            },
             author: SharedString::default(),
             ..post(id, "Today")
         };
