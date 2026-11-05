@@ -9,7 +9,7 @@ use matty_api::models::{AppBinding, AppCall, AppContext, ChannelBookmark};
 use matty_api::ws::WsEvent;
 use matty_sync::{AppAnswer, AppCommand, BookmarkCommand, ChangeSet, Command, CommandError};
 use serde_json::json;
-use wiremock::matchers::{body_json, body_partial_json, method, path};
+use wiremock::matchers::{body_json, body_partial_json, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 fn bookmark(id: &str, order: i64) -> serde_json::Value {
@@ -133,6 +133,55 @@ async fn bookmarks_load_change_and_undo_a_refusal() {
     })
     .await;
     assert_eq!(ids(&back), ["a", "b"]);
+}
+
+/// A file bookmark uploads its file as a bookmark's, then points the new
+/// bookmark at it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_bookmark_uploads_its_file_first() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/bookmarks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/files"))
+        .and(query_param("bookmark", "true"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "file_infos": [{"id": "f1", "name": "plan.pdf", "extension": "pdf", "size": 8}],
+            "client_ids": ["bookmark"]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut made = bookmark("p", 0);
+    made["type"] = json!("file");
+    made["file_id"] = json!("f1");
+    made["link_url"] = json!("");
+    Mock::given(method("POST"))
+        .and(path("/api/v4/channels/c1/bookmarks"))
+        .and(body_partial_json(json!({
+            "display_name": "Plan", "type": "file", "file_id": "f1", "emoji": "memo"
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(made))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = opened(&server);
+    next(&changes, |c| is_bookmarks(c) && ids(c).is_empty()).await;
+    sync.send(Command::Bookmark(BookmarkCommand::AddFile {
+        channel_id: "c1".into(),
+        display_name: "Plan".into(),
+        emoji: "memo".into(),
+        file_name: "plan.pdf".into(),
+        bytes: b"%PDF-1.7".to_vec(),
+    }));
+    let added = next(&changes, |c| is_bookmarks(c) && !ids(c).is_empty()).await;
+    let ChangeSet::Bookmarks { bookmarks, .. } = added else {
+        unreachable!()
+    };
+    assert_eq!(bookmarks[0].file_id, "f1");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1525,6 +1525,18 @@ pub fn uploads() -> Vec<Upload> {
     }
 }
 
+/// The file "Add a file…" picks in the preview's bookmarks bar (#226).
+pub fn bookmark_file() -> Upload {
+    Upload {
+        id: "bookmark-file".into(),
+        name: "Q4 planning.pdf".into(),
+        size: 1_258_291,
+        source: UploadSource::Path("Q4 planning.pdf".into()),
+        status: AttachmentStatus::Ready,
+        queued: false,
+    }
+}
+
 /// A screen recording over the default 100 MB limit, which the tray
 /// refuses when the fixtures go in.
 pub fn oversize_upload() -> Upload {

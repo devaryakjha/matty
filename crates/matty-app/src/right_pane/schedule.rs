@@ -142,11 +142,7 @@ mod tests {
         (view, cx, events)
     }
 
-    fn type_reply(
-        view: &Entity<RightPaneView>,
-        cx: &mut gpui_kit::VisualTestContext,
-        text: &str,
-    ) {
+    fn type_reply(view: &Entity<RightPaneView>, cx: &mut gpui_kit::VisualTestContext, text: &str) {
         cx.update(|window, cx| {
             view.update(cx, |pane, cx| {
                 pane.composer

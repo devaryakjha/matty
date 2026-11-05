@@ -60,6 +60,33 @@ impl Client {
         upload: Upload,
         progress: Progress,
     ) -> Result<Uploaded, ApiError> {
+        self.upload_to("files", upload, progress).await
+    }
+
+    /// `POST files?bookmark=true`: uploads a file for a channel's file
+    /// bookmark (#226). The server keeps it for the bookmark rather than
+    /// a post; its id goes in the bookmark's `file_id`.
+    pub async fn upload_bookmark_file(
+        &self,
+        upload: Upload,
+        progress: Progress,
+    ) -> Result<FileInfo, ApiError> {
+        let uploaded = self
+            .upload_to("files?bookmark=true", upload, progress)
+            .await?;
+        uploaded
+            .file_infos
+            .into_iter()
+            .next()
+            .ok_or_else(|| ApiError::Decode("the server stored no file".into()))
+    }
+
+    async fn upload_to(
+        &self,
+        path: &str,
+        upload: Upload,
+        progress: Progress,
+    ) -> Result<Uploaded, ApiError> {
         let total = upload.bytes.len() as u64;
         let bytes = bytes::Bytes::from(upload.bytes);
         let mut sent = 0u64;
@@ -88,7 +115,7 @@ impl Client {
             .text("channel_id", upload.channel_id)
             .text("client_ids", upload.client_id)
             .part("files", file);
-        let response = self.send_multipart("files", form).await?;
+        let response = self.send_multipart(path, form).await?;
         let body = response.bytes().await.map_err(ApiError::from_transport)?;
         serde_json::from_slice(&body).map_err(|e| ApiError::Decode(e.to_string()))
     }
