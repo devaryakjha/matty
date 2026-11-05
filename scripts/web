@@ -26,17 +26,42 @@ bindgen_version() {
 }
 
 # SQLite is C, built for wasm32 by clang. Apple's clang has no wasm32
-# target, so on macOS use Homebrew's LLVM.
-use_wasm_clang() {
-    if [[ "$(uname)" == "Darwin" && -z "${CC_wasm32_unknown_unknown:-}" ]]; then
-        local llvm
-        llvm="$(brew --prefix llvm 2>/dev/null || true)"
-        if [[ -z "$llvm" || ! -x "$llvm/bin/clang" ]]; then
-            echo "error: SQLite needs a clang with the wasm32 target; run scripts/web setup" >&2
-            exit 1
+# target, so on macOS look for Homebrew's LLVM (keg-only, so it is never on
+# PATH), at either Homebrew prefix and at any version.
+has_wasm32() {
+    [[ -x "$1" ]] && [[ "$("$1" --print-targets 2>/dev/null)" == *wasm32* ]]
+}
+
+find_wasm_clang() {
+    local dir
+    for dir in \
+        "$(brew --prefix llvm 2>/dev/null || true)" \
+        /opt/homebrew/opt/llvm /usr/local/opt/llvm \
+        /opt/homebrew/opt/llvm@* /usr/local/opt/llvm@*; do
+        if [[ -n "$dir" ]] && has_wasm32 "$dir/bin/clang"; then
+            echo "$dir/bin"
+            return
         fi
-        export CC_wasm32_unknown_unknown="$llvm/bin/clang"
-        export AR_wasm32_unknown_unknown="$llvm/bin/llvm-ar"
+    done
+}
+
+use_wasm_clang() {
+    # Elsewhere the system clang has the target (CI uses Ubuntu's).
+    if [[ "$(uname)" != "Darwin" || -n "${CC_wasm32_unknown_unknown:-}" ]]; then
+        return
+    fi
+    local bin
+    bin="$(find_wasm_clang)"
+    if [[ -z "$bin" ]]; then
+        echo "error: SQLite is built for the browser with clang, and Apple's clang has no wasm32 target." >&2
+        echo "  Install Homebrew's LLVM, then try again:" >&2
+        echo "    brew install llvm" >&2
+        echo "  or point at a clang that has it: CC_wasm32_unknown_unknown=/path/to/clang" >&2
+        exit 1
+    fi
+    export CC_wasm32_unknown_unknown="$bin/clang"
+    if [[ -x "$bin/llvm-ar" ]]; then
+        export AR_wasm32_unknown_unknown="$bin/llvm-ar"
     fi
 }
 
@@ -45,10 +70,15 @@ setup() {
         --component rust-src --target wasm32-unknown-unknown
     cargo install wasm-bindgen-cli --locked --version "$(bindgen_version)"
     if [[ "$(uname)" == "Darwin" ]]; then
+        if ! command -v brew >/dev/null; then
+            echo "error: setup needs Homebrew (https://brew.sh) for LLVM and binaryen" >&2
+            exit 1
+        fi
         brew install llvm binaryen
     elif ! command -v wasm-opt >/dev/null; then
         echo "note: install binaryen (wasm-opt) for a smaller download, e.g. apt install binaryen"
     fi
+    use_wasm_clang
     echo "ready: scripts/web build"
 }
 
