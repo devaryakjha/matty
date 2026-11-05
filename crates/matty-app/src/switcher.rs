@@ -273,7 +273,10 @@ impl Switcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let placeholder = format!("Add {} to a channel\u{2026}", user.display_name);
+        let placeholder = t!(
+            "switcher-add-to-placeholder",
+            name = user.display_name.as_ref()
+        );
         self.forwarding = Some(Pick::AddTo(user));
         self.refresh(cx);
         self.command.update(cx, |state, cx| {
