@@ -14,6 +14,7 @@ use crate::dnd::{self, DURATIONS, DndDuration};
 use crate::settings::ClockFormat;
 use crate::sidebar::Presence;
 use crate::style::{Palette, TypeStyleExt as _, metrics, scaled, tipped_when};
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
@@ -62,18 +63,20 @@ pub enum AccountEvent {
 /// Mattermost.
 const DEFAULT_EMOJI: &str = "speech_balloon";
 
-const PRESENCES: [(Presence, &str, &str); 4] = [
-    (Presence::Online, "online", "Online"),
-    (Presence::Away, "away", "Away"),
-    (Presence::Dnd, "dnd", "Do not disturb"),
-    (Presence::Offline, "offline", "Offline"),
+const PRESENCES: [(Presence, &str); 4] = [
+    (Presence::Online, "online"),
+    (Presence::Away, "away"),
+    (Presence::Dnd, "dnd"),
+    (Presence::Offline, "offline"),
 ];
 
-pub fn presence_label(presence: Presence) -> &'static str {
-    PRESENCES
-        .iter()
-        .find(|(candidate, _, _)| *candidate == presence)
-        .map_or("Online", |(_, _, label)| label)
+pub fn presence_label(presence: Presence) -> SharedString {
+    match presence {
+        Presence::Online => t!("presence-online"),
+        Presence::Away => t!("presence-away"),
+        Presence::Dnd => t!("presence-dnd"),
+        Presence::Offline => t!("presence-offline"),
+    }
 }
 
 /// The end Do not disturb has after the server reports `presence`: the
@@ -118,7 +121,7 @@ impl AccountView {
     pub fn new(account: Account, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let menu = cx.new(|cx| MenuState::new([], cx));
         let status_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("What are you up to?"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("status-placeholder")));
         let status_picker =
             cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let status_duration = cx.new(|cx| {
@@ -241,7 +244,7 @@ impl AccountView {
     }
 
     /// "Until 14:30" while Do not disturb has an end still ahead.
-    fn until(&self, cx: &App) -> Option<String> {
+    fn until(&self, cx: &App) -> Option<SharedString> {
         let end = self
             .account
             .dnd_end
@@ -391,10 +394,11 @@ impl AccountView {
             "account.who",
             format!("{} · @{}", account.display_name, account.username),
         )];
-        for (presence, name, label) in PRESENCES {
+        for (presence, name) in PRESENCES {
+            let label = presence_label(presence);
             let id = gpui_kit::ElementId::Name(format!("account.presence.{name}").into());
             if presence == Presence::Dnd {
-                items.push(self.dnd_submenu(id, label, cx));
+                items.push(self.dnd_submenu(id, &label, cx));
                 continue;
             }
             let view = view.clone();
@@ -413,8 +417,8 @@ impl AccountView {
             MenuItem::new(
                 "account.status",
                 match &account.status {
-                    Some(status) => format!("Status: {}", status.label()),
-                    None => "Set a status…".to_string(),
+                    Some(status) => t!("account-status-item", status = status.label()),
+                    None => t!("account-set-status-item"),
                 },
             )
             .on_click(move |_, window, cx| {
@@ -426,34 +430,40 @@ impl AccountView {
         items.push(MenuItem::separator());
         let profile_view = view.clone();
         items.push(
-            MenuItem::new("account.profile", "Edit profile…").on_click(move |_, _, cx| {
-                profile_view
-                    .update(cx, |_, cx| cx.emit(AccountEvent::EditProfile))
-                    .ok();
-            }),
+            MenuItem::new("account.profile", t!("account-edit-profile")).on_click(
+                move |_, _, cx| {
+                    profile_view
+                        .update(cx, |_, cx| cx.emit(AccountEvent::EditProfile))
+                        .ok();
+                },
+            ),
         );
         let emoji_view = view.clone();
         items.push(
-            MenuItem::new("account.emoji", "Custom emoji…").on_click(move |_, _, cx| {
+            MenuItem::new("account.emoji", t!("account-custom-emoji")).on_click(move |_, _, cx| {
                 emoji_view
                     .update(cx, |_, cx| cx.emit(AccountEvent::CustomEmoji))
                     .ok();
             }),
         );
         items.push(
-            MenuItem::new("account.preferences", "Preferences").on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(OpenPreferences), cx);
-            }),
+            MenuItem::new("account.preferences", t!("account-preferences")).on_click(
+                |_, window, cx| {
+                    window.dispatch_action(Box::new(OpenPreferences), cx);
+                },
+            ),
         );
         items.push(MenuItem::separator());
         items.push(
-            MenuItem::new("account.add-server", "Add a server…").on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(AddServer), cx);
-            }),
+            MenuItem::new("account.add-server", t!("account-add-server")).on_click(
+                |_, window, cx| {
+                    window.dispatch_action(Box::new(AddServer), cx);
+                },
+            ),
         );
         let sign_out = self.sign_out.clone();
         items.push(
-            MenuItem::new("account.sign-out", "Sign out…")
+            MenuItem::new("account.sign-out", t!("account-sign-out-item"))
                 .on_click(move |_, window, cx| sign_out.open(window, cx)),
         );
         self.menu.update(cx, |menu, cx| menu.set_items(items, cx));
@@ -469,11 +479,11 @@ impl AccountView {
         let view = cx.entity().downgrade();
         let mut durations: Vec<MenuItem> = DURATIONS
             .iter()
-            .map(|(duration, name, label)| {
+            .map(|(duration, name)| {
                 let (view, duration) = (view.clone(), *duration);
                 MenuItem::new(
                     gpui_kit::ElementId::Name(format!("account.dnd.{name}").into()),
-                    *label,
+                    duration.label(),
                 )
                 // Submenu items run while the menu is being updated, so the
                 // change that rebuilds its items waits until after.
@@ -486,15 +496,15 @@ impl AccountView {
             })
             .collect();
         durations.push(MenuItem::separator());
-        durations.push(MenuItem::new("account.dnd.custom", "Custom…").on_click(
-            move |_, window, cx| {
+        durations.push(
+            MenuItem::new("account.dnd.custom", t!("dnd-custom")).on_click(move |_, window, cx| {
                 let view = view.clone();
                 window.defer(cx, move |window, cx| {
                     view.update(cx, |this, cx| this.open_custom(window, cx))
                         .ok();
                 });
-            },
-        ));
+            }),
+        );
         let label = match self.until(cx) {
             Some(until) => format!("{label} · {until}"),
             None => label.to_string(),
@@ -505,56 +515,54 @@ impl AccountView {
     fn custom_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let end = self.custom_end(cx);
-        let popup = dialog_popup("account.dnd.custom.popup", "Do not disturb until", cx)
-            .child(dialog_title("account.dnd.custom.title", cx).child("Do not disturb until"))
-            .child(
-                dialog_description("account.dnd.custom.description", cx).child(
-                    "Notifications stay quiet until then. Your status goes back afterwards.",
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(theme.space(2.))
-                    .pt(theme.space(2.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Select::new(&self.custom_day).aria_label("Day")),
-                    )
-                    .child(
-                        div()
-                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                            .child(Select::new(&self.custom_time).aria_label("Time")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(theme.space(2.))
-                    .pt(theme.space(2.))
-                    .child(
-                        Button::new("account.dnd.custom.cancel")
-                            .variant(ButtonVariant::Outline)
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.custom.close(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("account.dnd.custom.save")
-                            .variant(ButtonVariant::Default)
-                            .label("Done")
-                            .disabled(end.is_none())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(end) = this.custom_end(cx) {
-                                    this.set_presence(Presence::Dnd, Some(end), cx);
+        let popup =
+            dialog_popup("account.dnd.custom.popup", t!("dnd-custom-title"), cx)
+                .child(dialog_title("account.dnd.custom.title", cx).child(t!("dnd-custom-title")))
+                .child(
+                    dialog_description("account.dnd.custom.description", cx)
+                        .child(t!("dnd-custom-hint")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(theme.space(2.))
+                        .pt(theme.space(2.))
+                        .child(
+                            div().flex_1().child(
+                                Select::new(&self.custom_day).aria_label(t!("dnd-custom-day")),
+                            ),
+                        )
+                        .child(div().w(scaled(&theme, metrics::FIELD_NARROW_WIDTH)).child(
+                            Select::new(&self.custom_time).aria_label(t!("dnd-custom-time")),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(theme.space(2.))
+                        .pt(theme.space(2.))
+                        .child(
+                            Button::new("account.dnd.custom.cancel")
+                                .variant(ButtonVariant::Outline)
+                                .label(t!("account-cancel"))
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     this.custom.close(window, cx);
-                                }
-                            })),
-                    ),
-            );
+                                })),
+                        )
+                        .child(
+                            Button::new("account.dnd.custom.save")
+                                .variant(ButtonVariant::Default)
+                                .label(t!("account-done"))
+                                .disabled(end.is_none())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some(end) = this.custom_end(cx) {
+                                        this.set_presence(Presence::Dnd, Some(end), cx);
+                                        this.custom.close(window, cx);
+                                    }
+                                })),
+                        ),
+                );
         dialog("account.dnd.custom", &self.custom, popup, window, cx)
     }
 
@@ -612,7 +620,7 @@ impl AccountView {
                 Button::new("account.status.emoji")
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Icon)
-                    .aria_label(format!("Emoji: {}", emoji_name.replace('_', " ")))
+                    .aria_label(t!("status-emoji", name = emoji_name.replace('_', " ")))
                     .child(custom_status::emoji(&emoji_name, emoji_size, cx))
                     .into_any_element()
             })
@@ -647,16 +655,20 @@ impl AccountView {
             .map(|status| (status.emoji.clone(), status.text.clone(), status.duration))
             .collect();
         let recent_count = offers.len();
-        for (emoji, text, duration) in custom_status::SUGGESTIONS {
-            if !offers.iter().any(|(_, shown, _)| shown == text) {
-                offers.push((emoji.into(), text.into(), duration));
+        for (emoji, text, duration) in custom_status::suggestions() {
+            if !offers.iter().any(|(_, shown, _)| *shown == text) {
+                offers.push((emoji.into(), text, duration));
             }
         }
         let offer = |index: usize,
                      (emoji, text, duration): (SharedString, SharedString, Duration),
                      cx: &mut Context<Self>| {
             let theme = UiTheme::read(cx).clone();
-            let label = format!("{text}, {}", duration.label().to_lowercase());
+            let label = t!(
+                "status-offer",
+                text = text.to_string(),
+                duration = duration.label().to_lowercase()
+            );
             let (fill_emoji, fill_text) = (emoji.clone(), text.clone());
             Button::new(gpui_kit::ElementId::NamedInteger(
                 "account.status.offer".into(),
@@ -682,7 +694,7 @@ impl AccountView {
                 cx.notify();
             }))
         };
-        let heading = |label: &'static str| {
+        let heading = |label: SharedString| {
             div()
                 .pt(theme.space(2.))
                 .px(theme.space(3.))
@@ -694,20 +706,17 @@ impl AccountView {
         if empty {
             for (index, item) in offers.into_iter().enumerate() {
                 if index == 0 && recent_count > 0 {
-                    suggestions = suggestions.child(heading("Recent"));
+                    suggestions = suggestions.child(heading(t!("status-recent")));
                 }
                 if index == recent_count {
-                    suggestions = suggestions.child(heading("Suggestions"));
+                    suggestions = suggestions.child(heading(t!("status-suggestions")));
                 }
                 suggestions = suggestions.child(offer(index, item, cx));
             }
         }
-        let popup = dialog_popup("account.status.popup", "Set a status", cx)
-            .child(dialog_title("account.status.title", cx).child("Set a status"))
-            .child(
-                dialog_description("account.status.description", cx)
-                    .child("Shown next to your name until it clears."),
-            )
+        let popup = dialog_popup("account.status.popup", t!("status-title"), cx)
+            .child(dialog_title("account.status.title", cx).child(t!("status-title")))
+            .child(dialog_description("account.status.description", cx).child(t!("status-hint")))
             .child(
                 div()
                     .pt(theme.space(2.))
@@ -715,9 +724,12 @@ impl AccountView {
                     .items_end()
                     .gap(theme.space(2.))
                     .child(emoji_popover)
-                    .child(div().flex_1().child(
-                        Field::new("account.status.input", &self.status_input).label("Status"),
-                    )),
+                    .child(
+                        div().flex_1().child(
+                            Field::new("account.status.input", &self.status_input)
+                                .label(t!("status-field")),
+                        ),
+                    ),
             )
             .child(suggestions)
             .child(
@@ -729,13 +741,11 @@ impl AccountView {
                     .child(
                         div()
                             .type_style(crate::style::UI, &theme)
-                            .child("Clear after"),
+                            .child(t!("status-clear-after")),
                     )
-                    .child(
-                        div()
-                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                            .child(Select::new(&self.status_duration).aria_label("Clear after")),
-                    ),
+                    .child(div().w(scaled(&theme, metrics::FIELD_NARROW_WIDTH)).child(
+                        Select::new(&self.status_duration).aria_label(t!("status-clear-after")),
+                    )),
             )
             .child(
                 div()
@@ -747,7 +757,7 @@ impl AccountView {
                         row.child(
                             Button::new("account.status.clear-button")
                                 .variant(ButtonVariant::Ghost)
-                                .label("Clear")
+                                .label(t!("status-clear"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.set_status(None, cx);
                                     this.status.close(window, cx);
@@ -757,7 +767,7 @@ impl AccountView {
                     .child(
                         Button::new("account.status.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("account-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.status.close(window, cx);
                             })),
@@ -765,7 +775,7 @@ impl AccountView {
                     .child(
                         Button::new("account.status.save")
                             .variant(ButtonVariant::Default)
-                            .label("Done")
+                            .label(t!("account-done"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_status(window, cx);
                             })),
@@ -782,13 +792,11 @@ impl AccountView {
 
     fn sign_out_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let popup = dialog_popup("account.sign-out.popup", "Sign out", cx)
+        let popup = dialog_popup("account.sign-out.popup", t!("account-sign-out"), cx)
             .child(dialog_title("account.sign-out.title", cx).child(sign_out_title(cx)))
             .child(
-                dialog_description("account.sign-out.description", cx).child(
-                    "This removes Matty's copy of your messages, files and drafts from \
-                     this computer. You'll sign in again next time.",
-                ),
+                dialog_description("account.sign-out.description", cx)
+                    .child(t!("account-sign-out-hint")),
             )
             .child(
                 div()
@@ -799,12 +807,12 @@ impl AccountView {
                     .child(
                         alert_dialog_cancel("account.sign-out.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("account-cancel")),
                     )
                     .child(
                         alert_dialog_action("account.sign-out.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Sign out"),
+                            .label(t!("account-sign-out")),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -827,24 +835,30 @@ impl AccountView {
 
 /// "Sign out of chat.example.com?", naming the signed-in server, or
 /// "Sign out of Matty?" when there is none on file.
-fn sign_out_title(cx: &App) -> String {
+fn sign_out_title(cx: &App) -> SharedString {
     let server = crate::settings::SettingsStore::try_global(cx)
         .and_then(|store| store.read(cx).get().account.clone())
         .map(|account| crate::live::url_host(&account.server).to_owned());
-    format!("Sign out of {}?", server.as_deref().unwrap_or("Matty"))
+    t!(
+        "account-sign-out-title",
+        server = server.unwrap_or_else(|| "Matty".to_owned()) // i18n-ignore
+    )
 }
 
 impl Render for AccountView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let mut label = format!(
-            "{}, {}",
-            self.account.display_name,
-            presence_label(self.account.presence).to_lowercase()
-        );
-        if let Some(until) = self.until(cx) {
-            label = format!("{label}, {}", until.to_lowercase());
-        }
+        let name = self.account.display_name.to_string();
+        let presence = presence_label(self.account.presence).to_lowercase();
+        let label = match self.until(cx) {
+            Some(until) => t!(
+                "account-trigger-until",
+                name = name,
+                presence = presence,
+                until = until.to_lowercase()
+            ),
+            None => t!("account-trigger", name = name, presence = presence),
+        };
         div()
             .flex()
             .items_center()

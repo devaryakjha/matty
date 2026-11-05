@@ -6,7 +6,10 @@ use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan as _, Zoned};
 
+use gpui_kit::SharedString;
+
 use crate::settings::ClockFormat;
+use crate::t;
 
 /// One choice under Do not disturb in the status menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,14 +22,28 @@ pub enum DndDuration {
     Tomorrow,
 }
 
-/// The menu's choices, with an id suffix and a label; "Custom…" follows.
-pub const DURATIONS: [(DndDuration, &str, &str); 5] = [
-    (DndDuration::Indefinite, "indefinite", "Don't clear"),
-    (DndDuration::Minutes(30), "30m", "30 minutes"),
-    (DndDuration::Minutes(60), "1h", "1 hour"),
-    (DndDuration::Minutes(120), "2h", "2 hours"),
-    (DndDuration::Tomorrow, "tomorrow", "Tomorrow"),
+/// The menu's choices, with an id suffix; "Custom…" follows.
+pub const DURATIONS: [(DndDuration, &str); 5] = [
+    (DndDuration::Indefinite, "indefinite"),
+    (DndDuration::Minutes(30), "30m"),
+    (DndDuration::Minutes(60), "1h"),
+    (DndDuration::Minutes(120), "2h"),
+    (DndDuration::Tomorrow, "tomorrow"),
 ];
+
+impl DndDuration {
+    /// The menu's label for one of [`DURATIONS`].
+    pub fn label(self) -> SharedString {
+        match self {
+            Self::Indefinite => t!("dnd-indefinite"),
+            Self::Minutes(30) => t!("dnd-30m"),
+            Self::Minutes(60) => t!("dnd-1h"),
+            Self::Minutes(120) => t!("dnd-2h"),
+            Self::Minutes(minutes) => SharedString::from(format!("{minutes}m")),
+            Self::Tomorrow => t!("dnd-tomorrow"),
+        }
+    }
+}
 
 /// Minutes between the custom picker's times.
 pub const STEP_MINUTES: u16 = 30;
@@ -53,15 +70,15 @@ pub fn local_end(date: Date, minutes: u16, zone: &TimeZone) -> Option<i64> {
 }
 
 /// The custom picker's days: today and the six after it.
-pub fn custom_days(now: &Zoned) -> Vec<(Date, String)> {
+pub fn custom_days(now: &Zoned) -> Vec<(Date, SharedString)> {
     let today = now.date();
     (0..7)
         .filter_map(|offset| {
             let date = today.checked_add(offset.days()).ok()?;
             let label = match offset {
-                0 => "Today".to_string(),
-                1 => "Tomorrow".to_string(),
-                _ => date.strftime("%A, %B %-d").to_string(),
+                0 => t!("day-today"),
+                1 => t!("day-tomorrow"),
+                _ => date.strftime("%A, %B %-d").to_string().into(),
             };
             Some((date, label))
         })
@@ -84,20 +101,37 @@ pub fn custom_times(date: Date, now: &Zoned) -> Vec<u16> {
         .collect()
 }
 
-/// How the end reads in the menu and the avatar's tooltip: "Until 14:30"
-/// today, "Until tomorrow 09:00", or "Until Friday, November 6 at 14:30".
-pub fn until_label(end: i64, now: &Zoned, clock: ClockFormat) -> Option<String> {
+/// Which day an end falls on, as the labels name it, and its clock time.
+enum EndDay {
+    Today,
+    Tomorrow,
+    Later(String),
+}
+
+fn end_day(end: i64, now: &Zoned, clock: ClockFormat) -> Option<(EndDay, String)> {
     let end = Timestamp::from_second(end)
         .ok()?
         .to_zoned(now.time_zone().clone());
     let time = clock.format(end.hour() as u16 * 60 + end.minute() as u16);
     let today = now.date();
-    Some(if end.date() == today {
-        format!("Until {time}")
+    let day = if end.date() == today {
+        EndDay::Today
     } else if Some(end.date()) == today.tomorrow().ok() {
-        format!("Until tomorrow {time}")
+        EndDay::Tomorrow
     } else {
-        format!("Until {} at {time}", end.strftime("%A, %B %-d"))
+        EndDay::Later(end.strftime("%A, %B %-d").to_string())
+    };
+    Some((day, time))
+}
+
+/// How the end reads in the menu and the avatar's tooltip: "Until 14:30"
+/// today, "Until tomorrow 09:00", or "Until Friday, November 6 at 14:30".
+pub fn until_label(end: i64, now: &Zoned, clock: ClockFormat) -> Option<SharedString> {
+    let (day, time) = end_day(end, now, clock)?;
+    Some(match day {
+        EndDay::Today => t!("until-today", time = time),
+        EndDay::Tomorrow => t!("until-tomorrow", time = time),
+        EndDay::Later(day) => t!("until-day", day = day, time = time),
     })
 }
 
@@ -110,16 +144,20 @@ pub fn is_on(dnd: bool, end: Option<i64>, now: &Zoned) -> bool {
 
 /// The line under Do not disturb in Preferences → Notifications (#158):
 /// whether notifications are paused, and until when.
-pub fn preferences_detail(dnd: bool, end: Option<i64>, now: &Zoned, clock: ClockFormat) -> String {
+pub fn preferences_detail(
+    dnd: bool,
+    end: Option<i64>,
+    now: &Zoned,
+    clock: ClockFormat,
+) -> SharedString {
     if !is_on(dnd, end, now) {
-        return "Pause desktop notifications. For a set time, use the status menu.".to_owned();
+        return t!("dnd-preferences-off");
     }
-    match end.and_then(|end| until_label(end, now, clock)) {
-        Some(until) => format!(
-            "Desktop notifications are paused {}.",
-            until.replacen("Until", "until", 1)
-        ),
-        None => "Desktop notifications are paused until you turn this off.".to_owned(),
+    match end.and_then(|end| end_day(end, now, clock)) {
+        Some((EndDay::Today, time)) => t!("dnd-preferences-today", time = time),
+        Some((EndDay::Tomorrow, time)) => t!("dnd-preferences-tomorrow", time = time),
+        Some((EndDay::Later(day), time)) => t!("dnd-preferences-day", day = day, time = time),
+        None => t!("dnd-preferences-indefinite"),
     }
 }
 

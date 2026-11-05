@@ -12,6 +12,7 @@ use gpui_kit::{
 };
 
 use crate::style::{self, TypeStyleExt as _, scaled};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
@@ -39,34 +40,34 @@ const MAX_NAME: usize = 64;
 
 /// Why `name` can't be a new emoji's name, or `None` when it can. `taken`
 /// says whether a custom emoji already has it.
-pub fn name_problem(name: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
+pub fn name_problem(name: &str, taken: impl Fn(&str) -> bool) -> Option<SharedString> {
     if name.is_empty() {
-        return Some("Others use it as :name: in messages and reactions.".into());
+        return Some(t!("emoji-manager-name-empty"));
     }
     if name.chars().count() > MAX_NAME {
-        return Some(format!("Use {MAX_NAME} characters or fewer."));
+        return Some(t!("emoji-manager-name-long", max = MAX_NAME));
     }
     let allowed = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_+".contains(c);
     if !name.chars().all(allowed) {
-        return Some("Use lowercase letters, numbers, -, + and _.".into());
+        return Some(t!("emoji-manager-name-characters"));
     }
     if crate::emoji::lookup(name).is_some() || taken(name) {
-        return Some(format!("There's already an emoji called :{name}:."));
+        return Some(t!("emoji-manager-name-taken", name = name));
     }
     None
 }
 
 /// Why `bytes` can't be an emoji image, or `None` when it can.
-pub fn image_problem(bytes: &[u8]) -> Option<&'static str> {
+pub fn image_problem(bytes: &[u8]) -> Option<SharedString> {
     use gpui_kit::ImageFormat;
     let format = crate::live::image_format(bytes, "");
     if !matches!(
         format,
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif)
     ) {
-        return Some("Choose a PNG, JPEG or GIF image.");
+        return Some(t!("emoji-manager-image-type"));
     }
-    (bytes.len() > MAX_BYTES).then_some("Choose an image of 512 KB or less.")
+    (bytes.len() > MAX_BYTES).then(|| t!("emoji-manager-image-size"))
 }
 
 /// One custom emoji in the list.
@@ -176,7 +177,7 @@ impl EmojiManager {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose image".into()),
+            prompt: Some(t!("emoji-manager-choose-prompt")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -201,7 +202,7 @@ impl EmojiManager {
                     .unwrap_or_default();
                 match bytes {
                     Ok(bytes) => this.chose(bytes, file_name, &stem, window, cx),
-                    Err(_) => this.image_error = Some("Couldn't read that file.".into()),
+                    Err(_) => this.image_error = Some(t!("emoji-manager-image-unreadable")),
                 }
                 cx.notify();
             })
@@ -221,7 +222,7 @@ impl EmojiManager {
         cx: &mut Context<Self>,
     ) {
         if let Some(problem) = image_problem(&bytes) {
-            self.image_error = Some(problem.into());
+            self.image_error = Some(problem);
             self.chosen = None;
             return;
         }
@@ -281,9 +282,8 @@ impl EmojiManager {
         let typed = self.typed(cx);
         let problem = name_problem(&typed, Self::taken(cx));
         let invalid = !typed.is_empty() && problem.is_some();
-        let hint: SharedString = problem
-            .unwrap_or_else(|| format!("Others use it as :{typed}: in messages and reactions."))
-            .into();
+        let hint: SharedString =
+            problem.unwrap_or_else(|| t!("emoji-manager-name-hint", name = typed.as_str()));
         let size = scaled(&theme, 40.);
         let preview = match &self.chosen {
             Some(chosen) => div()
@@ -297,7 +297,7 @@ impl EmojiManager {
                 .rounded(theme.radius.md)
                 .bg(theme.colors.muted),
         };
-        let field = Field::new("emoji.manage.name", &self.name).label("Name");
+        let field = Field::new("emoji.manage.name", &self.name).label(t!("emoji-manager-name"));
         let field = if invalid {
             field.error(hint)
         } else {
@@ -323,9 +323,9 @@ impl EmojiManager {
                                     .variant(ButtonVariant::Outline)
                                     .size(ButtonSize::Sm)
                                     .label(if self.chosen.is_some() {
-                                        "Choose another image…"
+                                        t!("emoji-manager-choose-another")
                                     } else {
-                                        "Choose image…"
+                                        t!("emoji-manager-choose")
                                     })
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.choose(window, cx)),
@@ -338,9 +338,11 @@ impl EmojiManager {
                                         Some(_) => theme.colors.destructive,
                                         None => theme.colors.muted_foreground,
                                     })
-                                    .child(self.image_error.clone().unwrap_or_else(|| {
-                                        "PNG, JPEG or GIF, up to 512 KB.".into()
-                                    })),
+                                    .child(
+                                        self.image_error
+                                            .clone()
+                                            .unwrap_or_else(|| t!("emoji-manager-image-hint")),
+                                    ),
                             ),
                     ),
             )
@@ -349,7 +351,7 @@ impl EmojiManager {
                 div().flex().justify_end().child(
                     Button::new("emoji.manage.add")
                         .variant(ButtonVariant::Default)
-                        .label("Add emoji")
+                        .label(t!("emoji-manager-add"))
                         .disabled(!self.ready(cx))
                         .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                 ),
@@ -363,7 +365,7 @@ impl EmojiManager {
         let heading = div()
             .type_style(style::META, &theme)
             .text_color(theme.colors.muted_foreground)
-            .child(format!("On this server ({})", listed.len()));
+            .child(t!("emoji-manager-listed", count = listed.len()));
         let rows = listed.into_iter().map(|emoji| {
             let confirming = self.confirming.as_deref() == Some(emoji.id.as_str());
             let image = match crate::emoji::custom_source(&emoji.name, cx) {
@@ -391,11 +393,11 @@ impl EmojiManager {
                     })
                     .size(ButtonSize::Sm)
                     .label(if confirming {
-                        "Delete for everyone"
+                        t!("emoji-manager-delete-confirm")
                     } else {
-                        "Delete"
+                        t!("emoji-manager-delete")
                     })
-                    .aria_label(format!("Delete :{}:", emoji.name))
+                    .aria_label(t!("emoji-manager-delete-label", name = emoji.name.as_str()))
                     .on_click(cx.listener(move |this, _, _, cx| this.delete(id.clone(), cx)))
                 }))
         });
@@ -419,11 +421,11 @@ impl Render for EmojiManager {
         let theme = UiTheme::read(cx).clone();
         let form = self.add_form(cx);
         let list = self.list(cx);
-        let popup = dialog_popup("emoji.manage.popup", "Custom emoji", cx)
-            .child(dialog_title("emoji.manage.title", cx).child("Custom emoji"))
+        let popup = dialog_popup("emoji.manage.popup", t!("emoji-manager-title"), cx)
+            .child(dialog_title("emoji.manage.title", cx).child(t!("emoji-manager-title")))
             .child(
                 dialog_description("emoji.manage.description", cx)
-                    .child("Add an image everyone on this server can use as an emoji."),
+                    .child(t!("emoji-manager-description")),
             )
             .child(
                 div()
@@ -438,7 +440,7 @@ impl Render for EmojiManager {
                 div().flex().justify_end().pt(theme.space(2.)).child(
                     Button::new("emoji.manage.done")
                         .variant(ButtonVariant::Outline)
-                        .label("Done")
+                        .label(t!("emoji-manager-done"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.dialog.close(window, cx);
                         })),
@@ -482,13 +484,13 @@ mod tests {
         let png = [0x89, b'P', b'N', b'G', 0, 0];
         assert_eq!(image_problem(&png), None);
         assert_eq!(
-            image_problem(b"<svg/>"),
+            image_problem(b"<svg/>").as_deref(),
             Some("Choose a PNG, JPEG or GIF image.")
         );
         let mut big = png.to_vec();
         big.resize(MAX_BYTES + 1, 0);
         assert_eq!(
-            image_problem(&big),
+            image_problem(&big).as_deref(),
             Some("Choose an image of 512 KB or less.")
         );
     }

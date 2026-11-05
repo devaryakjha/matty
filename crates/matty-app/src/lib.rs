@@ -29,6 +29,7 @@ pub mod emoji;
 pub mod emoji_manager;
 pub mod fd_limit;
 pub mod forward;
+pub mod i18n;
 pub mod instance;
 pub mod interactive;
 pub mod interactive_dialog;
@@ -197,6 +198,7 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     // Settings load after this, so their level applies just below.
     let logs = logging::init(logging::default_dir().as_deref(), Default::default());
     tracing::info!(version = VERSION, "matty starting");
+    i18n::init();
     // Every saved server runs its own engine, each with its own files.
     #[cfg(not(target_family = "wasm"))]
     fd_limit::raise();
