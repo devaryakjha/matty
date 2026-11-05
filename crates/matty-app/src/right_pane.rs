@@ -1361,9 +1361,12 @@ impl RightPaneView {
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
         let focus = model.query.is_empty() || model.searching;
-        // A new search starts on its messages.
+        // A new search starts on its messages, or on its files when only
+        // files matched.
         if model.searching {
             self.search_files_tab = false;
+        } else if model.results.is_empty() && !model.files.is_empty() {
+            self.search_files_tab = true;
         }
         self.search.update(cx, |input, cx| {
             if input.value() != model.query {
