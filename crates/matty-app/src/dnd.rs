@@ -4,7 +4,7 @@
 
 use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan as _, Zoned};
+use jiff::{Timestamp, Zoned};
 
 use gpui_kit::SharedString;
 
@@ -45,7 +45,7 @@ impl DndDuration {
     }
 }
 
-/// Minutes between the custom picker's times.
+/// Minutes between the times a custom picker starts on.
 pub const STEP_MINUTES: u16 = 30;
 
 /// When `duration` ends, in seconds since the epoch, or `None` for no end.
@@ -67,38 +67,6 @@ pub fn local_end(date: Date, minutes: u16, zone: &TimeZone) -> Option<i64> {
     let time = Time::new((minutes / 60) as i8, (minutes % 60) as i8, 0, 0).ok()?;
     let zoned = date.to_datetime(time).to_zoned(zone.clone()).ok()?;
     Some(zoned.timestamp().as_second())
-}
-
-/// The custom picker's days: today and the six after it.
-pub fn custom_days(now: &Zoned) -> Vec<(Date, SharedString)> {
-    let today = now.date();
-    (0..7)
-        .filter_map(|offset| {
-            let date = today.checked_add(offset.days()).ok()?;
-            let label = match offset {
-                0 => t!("day-today"),
-                1 => t!("day-tomorrow"),
-                _ => date.strftime("%A, %B %-d").to_string().into(),
-            };
-            Some((date, label))
-        })
-        .collect()
-}
-
-/// The custom picker's times on `date`, in minutes since midnight: every
-/// half hour, and only those still ahead when `date` is today.
-pub fn custom_times(date: Date, now: &Zoned) -> Vec<u16> {
-    let after = if date == now.date() {
-        now.hour() as u16 * 60 + now.minute() as u16
-    } else if date < now.date() {
-        return Vec::new();
-    } else {
-        0
-    };
-    (0..24 * 60)
-        .step_by(STEP_MINUTES as usize)
-        .filter(|minutes| date != now.date() || *minutes > after)
-        .collect()
 }
 
 /// Which day an end falls on, as the labels name it, and its clock time.
@@ -229,24 +197,6 @@ mod tests {
         // 02:30 does not exist that night; it reads as 03:30 EDT.
         let end = local_end(date, 2 * 60 + 30, &zone).unwrap();
         assert_eq!(utc(end), "2026-03-08T07:30:00Z");
-    }
-
-    #[test]
-    fn custom_days_start_today() {
-        let now = at("2026-11-04T08:00:00Z", "UTC");
-        let days = custom_days(&now);
-        assert_eq!(days.len(), 7);
-        assert_eq!(days[0].1, "Today");
-        assert_eq!(days[1].1, "Tomorrow");
-        assert_eq!(days[2].1, "Friday, November 6");
-    }
-
-    #[test]
-    fn custom_times_today_are_still_ahead() {
-        let now = at("2026-11-04T22:40:00Z", "UTC");
-        assert_eq!(custom_times(now.date(), &now), vec![23 * 60, 23 * 60 + 30]);
-        let tomorrow = now.date().tomorrow().unwrap();
-        assert_eq!(custom_times(tomorrow, &now).len(), 48);
     }
 
     #[test]
