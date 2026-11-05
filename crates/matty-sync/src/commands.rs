@@ -61,6 +61,15 @@ pub(crate) enum Write {
     Profile(matty_api::ProfilePatch),
     /// A new profile picture, or `None` to remove it.
     Picture(Option<(Vec<u8>, String)>),
+    /// A new custom emoji: its name, image bytes and file name (#209).
+    AddEmoji {
+        name: String,
+        image: (Vec<u8>, String),
+    },
+    /// Removes a custom emoji.
+    DeleteEmoji {
+        emoji_id: String,
+    },
     /// A direct message with one user, or a group message with several.
     OpenDirect {
         user_ids: Vec<String>,
@@ -214,6 +223,8 @@ impl Write {
             Self::Profile(_) => "save your profile",
             Self::Picture(Some(_)) => "change your picture",
             Self::Picture(None) => "remove your picture",
+            Self::AddEmoji { .. } => "add emoji",
+            Self::DeleteEmoji { .. } => "delete emoji",
             Self::OpenDirect { .. } => "open direct message",
             Self::Join { .. } => "join channel",
             Self::Leave { .. } => "leave channel",
@@ -276,6 +287,8 @@ impl Write {
             | Self::CustomStatus(_)
             | Self::Profile(_)
             | Self::Picture(_) => user_id.to_owned(),
+            Self::AddEmoji { name, .. } => name.clone(),
+            Self::DeleteEmoji { emoji_id } => emoji_id.clone(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -563,6 +576,24 @@ pub(crate) async fn run(
                 }
                 // The new `last_picture_update` refetches the picture.
                 Some(Loaded::Users(vec![client.me().await?]))
+            }
+            Write::AddEmoji {
+                name,
+                image: (bytes, file_name),
+            } => {
+                let emoji = client
+                    .create_emoji(&user_id, &name, bytes, file_name)
+                    .await?;
+                Some(Loaded::Emoji(vec![emoji]))
+            }
+            Write::DeleteEmoji { emoji_id } => {
+                client.delete_emoji(&emoji_id).await?;
+                // Stored as deleted, so it leaves the list.
+                Some(Loaded::Emoji(vec![matty_api::models::Emoji {
+                    id: emoji_id,
+                    delete_at: 1,
+                    ..Default::default()
+                }]))
             }
             Write::OpenDirect { user_ids } => {
                 let channel = match user_ids.as_slice() {
