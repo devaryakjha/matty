@@ -10,6 +10,7 @@ use gpui_kit::{
 use matty_api::ProfilePatch;
 
 use crate::style::TypeStyleExt as _;
+use crate::t;
 
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
@@ -72,20 +73,20 @@ pub const MAX_POSITION: usize = 128;
 /// Why `username` is not one the server takes, or `None` when it is: 3 to
 /// 22 characters, starting with a letter, then lowercase letters, digits,
 /// `.`, `-` or `_`.
-pub fn username_problem(username: &str) -> Option<&'static str> {
+pub fn username_problem(username: &str) -> Option<SharedString> {
     let name = username.trim();
     let count = name.chars().count();
     if !(3..=22).contains(&count) {
-        return Some("Use 3 to 22 characters.");
+        return Some(t!("profile-username-length"));
     }
     if !name.starts_with(|c: char| c.is_ascii_lowercase()) {
-        return Some("Start with a lowercase letter.");
+        return Some(t!("profile-username-start"));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
     {
-        return Some("Use lowercase letters, digits, '.', '-' or '_'.");
+        return Some(t!("profile-username-characters"));
     }
     None
 }
@@ -103,14 +104,13 @@ pub struct PictureChosen(pub Option<(Vec<u8>, String)>);
 const PICTURE_TYPES: [&str; 5] = ["jpg", "jpeg", "png", "gif", "bmp"];
 
 /// Why `path` can't be a profile picture, or `None` when it can.
-pub fn picture_problem(path: &std::path::Path) -> Option<&'static str> {
+pub fn picture_problem(path: &std::path::Path) -> Option<SharedString> {
     let extension = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    (!PICTURE_TYPES.contains(&extension.as_str()))
-        .then_some("Choose a JPEG, PNG, GIF or BMP image.")
+    (!PICTURE_TYPES.contains(&extension.as_str())).then(|| t!("profile-picture-type"))
 }
 
 struct Inputs {
@@ -196,7 +196,7 @@ impl ProfileEditor {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose picture".into()),
+            prompt: Some(t!("profile-picture-prompt")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -207,7 +207,7 @@ impl ProfileEditor {
             };
             if let Some(problem) = picture_problem(&path) {
                 this.update(cx, |this, cx| {
-                    this.picture_error = Some(problem.into());
+                    this.picture_error = Some(problem);
                     cx.notify();
                 })
                 .ok();
@@ -229,7 +229,7 @@ impl ProfileEditor {
                         this.before.custom_picture = true;
                         cx.emit(PictureChosen(Some((bytes, name))));
                     }
-                    Err(_) => this.picture_error = Some("Couldn't read that file.".into()),
+                    Err(_) => this.picture_error = Some(t!("profile-picture-unreadable")),
                 }
                 cx.notify();
             })
@@ -260,7 +260,7 @@ impl ProfileEditor {
             Avatar::new("profile.edit.avatar")
                 .size(AvatarSize::Lg)
                 .fallback(initial)
-                .aria_label("Your picture"),
+                .aria_label(t!("profile-picture")),
             &self.before.user_id,
             cx,
         );
@@ -282,7 +282,7 @@ impl ProfileEditor {
                                 Button::new("profile.edit.picture")
                                     .variant(ButtonVariant::Outline)
                                     .size(ButtonSize::Sm)
-                                    .label("Upload picture…")
+                                    .label(t!("profile-picture-upload"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.pick_picture(window, cx)
                                     })),
@@ -291,7 +291,7 @@ impl ProfileEditor {
                                 Button::new("profile.edit.picture.remove")
                                     .variant(ButtonVariant::Ghost)
                                     .size(ButtonSize::Sm)
-                                    .label("Remove")
+                                    .label(t!("profile-picture-remove"))
                                     .on_click(cx.listener(|this, _, _, cx| this.remove_picture(cx)))
                             })),
                     )
@@ -305,7 +305,7 @@ impl ProfileEditor {
                             .child(
                                 self.picture_error
                                     .clone()
-                                    .unwrap_or_else(|| "JPEG, PNG, GIF or BMP.".into()),
+                                    .unwrap_or_else(|| t!("profile-picture-hint")),
                             ),
                     ),
             )
@@ -353,7 +353,7 @@ impl ProfileEditor {
     fn field(
         id: &'static str,
         input: &Entity<InputState>,
-        label: &'static str,
+        label: SharedString,
         description: Option<SharedString>,
     ) -> Field {
         let field = Field::new(id, input).label(label);
@@ -368,16 +368,14 @@ impl Render for ProfileEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let username = self.inputs.username.read(cx).value().to_string();
-        let username_hint: SharedString = username_problem(&username)
-            .unwrap_or("Others mention you with @ and this name.")
-            .into();
+        let username_hint: SharedString =
+            username_problem(&username).unwrap_or_else(|| t!("profile-username-hint"));
         let usable = self.patch(cx).is_some();
         let picture = self.picture_row(cx);
-        let popup = dialog_popup("profile.edit.popup", "Edit profile", cx)
-            .child(dialog_title("profile.edit.title", cx).child("Edit profile"))
+        let popup = dialog_popup("profile.edit.popup", t!("profile-edit-title"), cx)
+            .child(dialog_title("profile.edit.title", cx).child(t!("profile-edit-title")))
             .child(
-                dialog_description("profile.edit.description", cx)
-                    .child("People see these on your messages and profile card."),
+                dialog_description("profile.edit.description", cx).child(t!("profile-edit-hint")),
             )
             .child(
                 div()
@@ -393,32 +391,32 @@ impl Render for ProfileEditor {
                             .child(div().flex_1().child(Self::field(
                                 "profile.edit.first",
                                 &self.inputs.first_name,
-                                "First name",
+                                t!("profile-first-name"),
                                 None,
                             )))
                             .child(div().flex_1().child(Self::field(
                                 "profile.edit.last",
                                 &self.inputs.last_name,
-                                "Last name",
+                                t!("profile-last-name"),
                                 None,
                             ))),
                     )
                     .child(Self::field(
                         "profile.edit.nickname",
                         &self.inputs.nickname,
-                        "Nickname",
+                        t!("profile-nickname"),
                         None,
                     ))
                     .child(Self::field(
                         "profile.edit.position",
                         &self.inputs.position,
-                        "Position",
-                        Some("Your job title, such as Product designer.".into()),
+                        t!("profile-position"),
+                        Some(t!("profile-position-hint")),
                     ))
                     .child(Self::field(
                         "profile.edit.username",
                         &self.inputs.username,
-                        "Username",
+                        t!("profile-username"),
                         Some(username_hint),
                     )),
             )
@@ -431,7 +429,7 @@ impl Render for ProfileEditor {
                     .child(
                         Button::new("profile.edit.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("profile-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.dialog.close(window, cx);
                             })),
@@ -439,7 +437,7 @@ impl Render for ProfileEditor {
                     .child(
                         Button::new("profile.edit.save")
                             .variant(ButtonVariant::Default)
-                            .label("Save")
+                            .label(t!("profile-save"))
                             .disabled(!usable)
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
