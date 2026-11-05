@@ -93,11 +93,7 @@ fn the_new_surfaces_have_no_unnamed_controls(cx: &mut gpui_kit::TestAppContext) 
 
     // The menus and pickers on those, and on a post.
     let menus = [
-        (
-            "Bookmark actions",
-            "Bookmark actions",
-            "Add a bookmark\u{2026}",
-        ),
+        ("Bookmark actions", "Bookmark actions", "Add a link\u{2026}"),
         (
             "Priority picker",
             "Message priority",
@@ -110,6 +106,27 @@ fn the_new_surfaces_have_no_unnamed_controls(cx: &mut gpui_kit::TestAppContext) 
         audit(&mut cx, surface, expected, &mut failures);
         close(&mut cx);
     }
+
+    // The composer's formatting row (#219), and its preview of a message
+    // with a link in it. The preview draws no controls of its own, so its
+    // audit covers the composer around it.
+    click(&mut cx, "Show formatting");
+    audit(&mut cx, "Formatting row", "Numbered list", &mut failures);
+    cx.dispatch_action(actions::FocusComposer);
+    cx.run_until_parked();
+    cx.simulate_input("See **the plan** at https://example.com/plan");
+    cx.run_until_parked();
+    click(&mut cx, "Preview");
+    audit(&mut cx, "Message preview", "Preview", &mut failures);
+    click(&mut cx, "Preview");
+    click(&mut cx, "Hide formatting");
+    cx.dispatch_action(actions::FocusComposer);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a backspace"
+    } else {
+        "ctrl-a backspace"
+    });
+    cx.run_until_parked();
 
     let surfaces: [(&str, &str, Box<dyn Action>); 10] = [
         (

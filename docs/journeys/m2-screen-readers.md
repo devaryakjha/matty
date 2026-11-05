@@ -44,11 +44,13 @@ Columns: **Step**, **Do**, **Expect**, **Heard**, **Date**, **Tester**,
 | Step | Do | Expect | Heard | Date | Tester | Result | Notes |
 |---|---|---|---|---|---|---|---|
 | S.1 | Move to the bookmarks bar in #general | Each bookmark reads its name and kind ("Team handbook, link", "Matty spec.pdf, file"), then "Add a bookmark" and "Bookmark actions" | | | | | |
-| S.2 | Open "Bookmark actions" | A menu is announced, and each item reads its name, starting with "Add a bookmark…" | | | | | |
+| S.2 | Open "Bookmark actions" | A menu is announced, and each item reads its name, starting with "Add a link…" and "Add a file…" | | | | | |
 | S.3 | Move to an urgent post that requests acknowledgement | The post reads its priority ("Urgent") with its text. The bar reads "Acknowledge", and then who already acknowledged | | | | | |
 | S.4 | Press "Acknowledge", then press it again | Each press is announced: "Acknowledged" first, then "Remove acknowledgement" while it can still be undone | | | | | |
 | S.5 | In the composer, open "Message priority" | A menu opens with the levels, plus "Request acknowledgement" and "Send persistent notifications" as toggles that read their state | | | | | |
 | S.6 | Pick Urgent and request acknowledgement | The composer reads "Urgent · Acknowledgement requested", and its remove button reads "Remove Urgent · Acknowledgement requested" | | | | | |
+| S.6a | Press "Show formatting" in the composer, then move through the row | Each button reads its name ("Strikethrough", "Link", "Heading", "Quote", "Bulleted list", "Numbered list"), and the toggle now reads "Hide formatting" | | | | | |
+| S.6b | Type a message, then press "Preview" (Cmd/Ctrl-Alt-P) | Turning the preview on is announced, and the preview's text can be read | | | | | |
 | S.7 | Open a post's "More actions" | A menu is announced, and each item reads its name ("Copy link", "Pin to channel") | | | | | |
 | S.8 | Open in split view (Cmd-\\ on macOS, Ctrl-\\ elsewhere) | Each pane reads its side, channel and focus ("Right pane, general, focused"), and so do "Swap panes", "Close pane" and "Resize split view" | | | | | |
 | S.9 | Press F6 between the panes | Focus moves, and the newly focused pane is announced | | | | | |
