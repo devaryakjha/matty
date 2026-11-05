@@ -1180,11 +1180,10 @@ impl MainWindow {
             interactive_dialog: cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new()),
         };
         cx.subscribe(&this.interactive_dialog, |this, _, event, _| {
-            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
             if let Some(live) = &this.live {
                 let channel = this.selected_channel.clone().unwrap_or_default();
                 let team = live.team().unwrap_or_default().to_owned();
-                live.send(submit.command(channel.to_string(), team));
+                live.send(event.command(channel.to_string(), team));
             }
         })
         .detach();

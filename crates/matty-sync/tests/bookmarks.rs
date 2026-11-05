@@ -412,3 +412,75 @@ async fn without_the_apps_plugin_nothing_shows_and_a_call_failure_is_told() {
         "{answered:?}"
     );
 }
+
+/// A dynamic select's options come from the App's lookup call, with the
+/// field and what the user typed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dynamic_select_looks_up_its_options() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/plugins/com.mattermost.apps/api/v1/call"))
+        .and(body_partial_json(json!({
+            "path": "/issues/lookup", "selected_field": "issue", "query": "crash",
+            "values": {"to": "ada"}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "type": "ok",
+            "data": {"items": [
+                {"label": "MM-1 Crash on start", "value": "MM-1"},
+                {"label": "MM-7 Crash on quit", "value": "MM-7"}
+            ]}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+    // A binding with its form given whole shows it without a call.
+    let binding: AppBinding = serde_json::from_value(json!({
+        "app_id": "hello", "location": "file", "label": "File an issue",
+        "form": {
+            "submit": {"path": "/submit"},
+            "fields": [
+                {"name": "to", "type": "text"},
+                {"name": "issue", "type": "dynamic_select", "lookup": {"path": "/issues/lookup"}}
+            ]
+        }
+    }))
+    .unwrap();
+    sync.send(Command::App(AppCommand::Run {
+        call_id: "9".into(),
+        binding: Box::new(binding),
+        context: Box::new(context()),
+    }));
+    let ChangeSet::OpenDialog(dialog) =
+        next(&changes, |c| matches!(c, ChangeSet::OpenDialog(_))).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        dialog.dialog.elements[1].data_source,
+        matty_sync::APP_LOOKUP_SOURCE
+    );
+    sync.send(Command::App(AppCommand::Lookup {
+        callback_id: dialog.dialog.callback_id.clone(),
+        state: dialog.dialog.state.clone(),
+        field: "issue".into(),
+        query: "crash".into(),
+        values: [("to".to_owned(), json!("ada"))].into(),
+    }));
+    let ChangeSet::AppLookup {
+        callback_id,
+        field,
+        query,
+        options,
+    } = next(&changes, |c| matches!(c, ChangeSet::AppLookup { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (callback_id.as_str(), field.as_str(), query.as_str()),
+        ("9", "issue", "crash")
+    );
+    let values: Vec<_> = options.iter().map(|o| o.value.as_str()).collect();
+    assert_eq!(values, ["MM-1", "MM-7"]);
+}

@@ -133,6 +133,10 @@ pub struct AppField {
     pub min_length: i64,
     /// See [`min_length`](Self::min_length).
     pub max_length: i64,
+    /// For `dynamic_select`: the call that finds its options as the user
+    /// types. Without it, the form's submit call answers at its path
+    /// plus `/lookup`.
+    pub lookup: Option<AppCall>,
 }
 
 /// An option of a select or radio field, and how a chosen option is sent.
@@ -189,6 +193,12 @@ pub struct AppCallRequest {
     /// A command's text as typed.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub raw_command: String,
+    /// For a lookup: the field whose options are wanted.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub selected_field: String,
+    /// For a lookup: what the user typed in it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub query: String,
 }
 
 impl AppCallRequest {
@@ -256,6 +266,15 @@ pub struct AppCallResponse {
 }
 
 impl AppCallResponse {
+    /// For a lookup's `ok`: the options in `data.items`.
+    pub fn lookup_items(&self) -> Vec<AppSelectOption> {
+        self.data
+            .get("items")
+            .cloned()
+            .and_then(|items| serde_json::from_value(items).ok())
+            .unwrap_or_default()
+    }
+
     /// For an `error`: problems by field name.
     pub fn field_errors(&self) -> HashMap<String, String> {
         self.data

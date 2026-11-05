@@ -566,11 +566,10 @@ impl PopOutView {
         let interactive_dialog =
             cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new());
         cx.subscribe(&interactive_dialog, |this: &mut Self, _, event, _| {
-            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
             if let Some(live) = &this.live {
                 let channel = this.target.channel().to_string();
                 let team = live.team().unwrap_or_default().to_owned();
-                live.send(submit.command(channel, team));
+                live.send(event.command(channel, team));
             }
         })
         .detach();
