@@ -1,0 +1,308 @@
+# Engineering process: audit and proposed framework
+
+Status: **proposal, waiting for Arya's decisions** (section 6). Nothing in the
+workflows changes until Arya picks. Once decided, this file becomes the
+process of record and `docs/CI.md` describes only the mechanics.
+
+Scope: every GitHub Actions workflow in `matty`, `gpuicn` and `gpui-icons`,
+how efficient they are, the release pipelines (automated and manual), and a
+single framework for all three repositories. Data comes from the workflow
+files at `a2f9007` (matty), `59c4d58` (gpuicn) and `fb9d0d1` (gpui-icons),
+and from the Actions runs of 2026-11-05.
+
+## 1. What runs today
+
+### matty
+
+| Workflow | Trigger | Jobs | Where |
+| --- | --- | --- | --- |
+| `ci.yml` | PR (opened, synchronize, reopened, ready_for_review, **labeled**), push to master, nightly 02:23 UTC | `changes`, `linux`, `web`, `deny`, `macos`, `macos universal bundle`, `windows`, `linux packages`, `windows installer`, `integration` ×2 or ×4, `ci` | OVH box (3 runners): linux, web, linux packages. Mac mini (1 runner): macos, universal. GitHub: changes, deny, integration, windows, ci |
+| `release.yml` | push of a `v*` tag (Arya only, tag ruleset) | `macos universal` (sign, notarize), `linux x86_64`, `windows x86_64`, `GitHub Release`, `Homebrew cask bump` (stable only) | Mac mini, OVH box, GitHub (Windows, publish, Homebrew) |
+| `record-fixtures.yml` | manual | records API fixtures per Mattermost version, pushes `fixtures/v<ver>` | GitHub |
+
+What each event runs in `ci.yml`:
+
+| Job | PR | master push | nightly |
+| --- | --- | --- | --- |
+| `linux` fmt, clippy, plain-Rust checks | yes (skipped for docs-only) | yes | no |
+| `linux` workspace tests | `tests` label | yes | no |
+| `deny` | when deps change | yes | no |
+| `web` (wasm release build) | `web` label | yes | no |
+| `macos` clippy + tests | `macos` label | yes, plus release build, dev bundle, artifact | no |
+| `macos universal bundle` (2-arch release build) | `macos` label | yes | no |
+| `linux packages` (release build, deb/rpm/AppImage) | `linux` label | yes | no |
+| `windows`, `windows installer` | `windows` label | when Windows paths (including `ci.yml` itself) change | yes |
+| `integration` (live Mattermost) | `integration` label: 12.0, 10.5 | 12.0, 11.7, 10.11, 10.5 | no |
+
+### gpuicn
+
+| Workflow | Trigger | What |
+| --- | --- | --- |
+| `ci.yml` | PR, and called by `release.yml` on every push to main | `rust` (macOS: fmt, clippy, **full tests**), `linux` (MSRV tests, registry and version checks, `cargo package`), `wasm` (wasm check, website build and lint) |
+| `release.yml` | push to main, manual | runs CI; if the version was bumped: `verify.yml`, tag, crates.io (Trusted Publishing), `release-build.yml`, GitHub release, `cloudflare.yml` deploy of ui.imajha.com |
+| `verify.yml` | release only, manual | registry install with both CLIs (macOS), new-app setup (Linux), wasm size and screenshot sheet |
+| `release-build.yml` | release only, manual | signed and notarized macOS showcase, Linux x86_64 and arm64 showcase |
+| `cloudflare.yml` | release only, manual | site deploy |
+
+Everything runs on GitHub's runners.
+
+### gpui-icons
+
+`ci.yml` (fmt, clippy, tests, MSRV check) on PRs and from `release.yml`,
+which on every push to main tags and publishes to crates.io when the version
+was bumped. GitHub's runners only.
+
+## 2. Measurements (2026-11-05)
+
+| Run | Wall clock | Critical path |
+| --- | --- | --- |
+| matty PR, lint only, warm OVH runner | 40 s to 3 min | `linux` clippy |
+| matty master push, warm self-hosted | about 8 min ([run 42018458358](https://github.com/devaryakjha/matty/actions/runs/42018458358)) | Mac mini: `macos` 3 min, then `macos universal bundle` 2.5 min, one after the other on its single runner |
+| matty master push touching a Windows path | about 9 min more on GitHub's Windows runner (`windows` 9 min) | `windows` |
+| matty `integration`, each of 4 versions | about 2.5 min on GitHub | seed 30 s, tests 30 s, build 40 s |
+| matty release (beta.4, beta.5) | 12 to 14 min | macOS sign and notarize |
+| gpuicn release (0.9.6) | 21 min | verify, macOS showcase |
+
+Master health over the last 39 finished master runs of the day: **23 green,
+6 red, 10 cancelled.**
+
+- Red: #644, #650, #651, #652 (the Mac mini bring-up, fixed by #654), #637
+  (macOS-only dead code that clippy flags only on macOS, which PRs no longer
+  run), #635.
+- Cancelled: the macOS jobs on master keep only the newest waiting run, so a
+  burst of merges drops the older ones. `ci` passes, but the run shows as
+  cancelled, and those commits never got a macOS check of their own.
+
+Releases: matty had 5 tags in 3 hours (beta.1 to beta.5); beta.1 and beta.2
+failed on release-script bugs that only a real tag could reveal. gpuicn
+shipped 10 releases in 2 days (0.7.0 to 0.9.7). 0.9.7 merged at 07:02 and
+published at 11:34, because its release run was cancelled and then re-run
+by hand.
+
+## 3. Efficiency findings
+
+Ordered by how much they cost.
+
+1. **Master runs everything on every merge.** Each merge builds the app in
+   release mode three times (macOS arm64, macOS universal with two more
+   slices, Linux packages), with `codegen-units = 1` and LTO, plus the wasm
+   release build and four Mattermost servers. Packaging breaks only when
+   packaging, dependencies or the toolchain change, yet it runs for a
+   translated string. The single Mac mini runs `macos` and the universal
+   bundle back to back, so it caps master at one verified commit about every
+   6 minutes, and that is why master macOS runs are dropped during bursts.
+2. **Master is fixed forward, and it was red about one run in six.** Branch
+   protection is off, nothing is required, and a break is found only after
+   merging. Parallel lanes then merge on top of a red master, and "merge
+   latest master and build before merging" is a manual rule that threads
+   forget.
+3. **macOS-only lint is not on PRs.** #637 broke master with code that only
+   macOS clippy sees. A warm clippy on the Mac mini takes about 10 seconds,
+   and it is lint, so it fits the "PRs only lint" rule.
+4. **The `labeled` trigger reruns the whole PR run for any label**, not just
+   the CI labels. The runs show the same commit checked twice in a row
+   (#655, #656, #653).
+5. **`ci.yml` is in the Windows path filter**, so every workflow edit costs
+   two Windows jobs (about 9 and 10 minutes) on master.
+6. **Screenshots live in the repository.** `docs/screenshots` holds 444
+   folders and 92 MB on master, and history keeps every PNG a lane added and
+   later removed: merge commits keep the intermediate commits, and history
+   shows 337 deleted images. Every clone, and every checkout on GitHub's
+   runners (changes, deny, four integration jobs), downloads them.
+7. **Configuration is copied, not shared.** The Rust version `1.99.1`
+   appears 18 times across the three repos' workflows (10 in matty) next
+   to `rust-toolchain.toml`. The web nightly appears in 4 workflow steps
+   and `scripts/web`. The apt
+   package list, the appimagetool download and the keychain import appear
+   in both `ci.yml` and `release.yml`. A pin bump that misses one copy
+   fails later and somewhere else.
+8. **`deny` runs on every master push**, but new advisories arrive by date,
+   not by commit. A nightly run catches them even on quiet days, and PRs
+   still check it when dependencies change.
+9. **CI artifacts are kept for the default 90 days.** Every master run
+   uploads a macOS binary, a universal zip, the Linux packages and the web
+   build, and nobody downloads them after a day.
+10. **The `ci` gate's cancel rule is too loose.** On master it accepts a
+    cancelled `linux` or `integration` job whenever any of the queued
+    platform jobs was cancelled.
+11. **Cost.** All three repositories are public, so GitHub's standard
+    runners are free. The $300 of hosted usage mentioned earlier must come
+    from something else (larger runners, the time the repos were private,
+    or another account item). It is worth one look at the billing page
+    before spending effort on minutes.
+
+What is already good and stays: PR runs cancel older runs, self-hosted
+runners keep `target/` warm (clippy 1 s, tests 2 min), fork PRs never reach
+the machines, the master failure issues, integration on GitHub's runners,
+and gpuicn's idempotent "re-run failed jobs is always safe" release.
+
+## 4. Release findings
+
+### matty: what Arya does by hand
+
+1. Decide a commit and push `git tag v0.1.0-beta.N <sha>`.
+2. Watch the run, and when it fails, wait for a fix on master and tag again.
+3. Deploy the web build from a Mac with `scripts/web deploy`, which signs in
+   to Cloudflare through a browser.
+4. One-time: the Developer ID certificate, the notary API key, the update
+   signing key and its public variable, the Homebrew tap token (not set yet,
+   so stable releases will not bump the cask), the runner variables, both
+   runner machines and their upkeep.
+
+### Problems
+
+- **A tag is not tied to a green commit.** The release builds and publishes
+  whatever the tag points at; nothing checks that master CI passed there,
+  and the release itself runs no tests.
+- **The pipeline cannot be tried without releasing.** There is no dry run,
+  so beta.1, beta.2 and the first beta.3 attempt were the test.
+- **Versioning is loose.** `Cargo.toml` says 0.1.0 for every beta; the tag
+  suffix carries the real version, the changelog is GitHub's generated list
+  of PR titles (merge trains make those misleading), and there is no
+  cadence, so betas went out minutes apart.
+- **The web deploy is manual and machine-bound,** while gpuicn already
+  deploys its site from CI with a Cloudflare token in a `release`
+  environment.
+- **gpuicn releases and Matty are coupled by hand.** Each gpuicn release
+  needs a Matty pin bump PR; 10 releases meant 10 bumps, and a stalled
+  release (0.9.7) blocked Matty for 4.5 hours.
+
+### Inconsistent across the three repositories
+
+| | matty | gpuicn | gpui-icons |
+| --- | --- | --- | --- |
+| Default branch | `master` | `main` | `main` |
+| Release trigger | Arya pushes a tag | merging a version bump | merging a version bump |
+| PR checks | lint only | full macOS tests + Linux + wasm | full tests |
+| Runners | self-hosted + GitHub | GitHub | GitHub |
+| Pre-release dry run | none | `verify.yml`, `release-build.yml` by hand | none |
+
+## 5. Proposed framework
+
+### 5.1 Principles
+
+1. Every check has exactly one home tier, chosen by what can break it and
+   how fast it is.
+2. Master is always releasable. A red master stops merging until it is
+   green.
+3. Nothing reaches master that has not passed the merge tier on the exact
+   tree that lands.
+4. Arya makes go/no-go decisions; Claude does everything else, including
+   merging green PRs.
+5. One framework for matty, gpuicn and gpui-icons, with the same tier names.
+6. Every setting lives in one place (toolchain file, composite action,
+   repository variable), never copied.
+
+### 5.2 Tiers: what runs when
+
+| Tier | When | Budget | matty | gpuicn / gpui-icons |
+| --- | --- | --- | --- | --- |
+| **T0 local** | before every push | 1 min | `scripts/check`: fmt, clippy on touched crates, touched tests | same script name |
+| **T1 PR** | every push to a PR | 3 min | fmt, Linux clippy, **macOS clippy**, plain-Rust checks, deny when deps change | fmt, clippy, registry/version checks; full tests move to T2 |
+| **T2 merge** | the tree about to land (merge queue or train), then master | 8 min | Linux tests, macOS tests, web build, integration on 12.0 | tests (macOS, MSRV), wasm check |
+| **T3 nightly** | 02:23 UTC, only if master moved | 45 min | universal bundle, Linux packages, Windows (both jobs), integration on all four versions, deny, dev bundle; artifacts kept 7 days | `verify.yml`, release builds |
+| **T4 release** | release approved by Arya | 30 min | T3 again on the release commit, then sign, notarize, publish, update manifest, Homebrew, web deploy | unchanged pipeline |
+
+Rules that carry over unchanged: the opt-in labels pull a T2 or T3 job into a
+PR, the narrowest label only, never `full-ci` to be safe. T2 and T3 failures
+open the "failing on master" issue. Packaging jobs also run in T2 when their
+own files change (`packaging/`, `scripts/*-package`, `scripts/release-*`,
+`Cargo.lock`, toolchain, workflows).
+
+Effect on matty master: the Mac mini does one 2–3 minute job per merge
+instead of about 6 minutes in two jobs, three release builds per merge
+become zero, and four integration servers become one.
+
+### 5.3 Branches and pull requests
+
+- `master` (matty) and `main` (gpuicn, gpui-icons) are protected: the `ci`
+  check is required, history is linear, and only squash merges are allowed.
+  One PR is one commit on master, so `git revert` undoes one change and the
+  screenshots a PR added and removed never reach history.
+- Branches are deleted on merge (repository setting).
+- Merging goes through a **merge queue** that runs T2 on the combined tree
+  and batches PRs. It replaces both the manual merge trains and the "merge
+  latest master and build" rule. GitHub offers merge queues only on
+  organization-owned repositories, so this needs decision D4; until then,
+  merge trains stay, and T2 runs on the train PR.
+- Stacked PRs stay as they are; a stack enters the queue together.
+- Every PR links its issue and follows the template. Screenshots go in the PR
+  body, hosted outside the repository (decision D6), never in `docs/`.
+
+### 5.4 Releases and versioning
+
+- **SemVer, with `Cargo.toml` as the single source of the version.** Betas
+  are `0.1.0-beta.N` in `Cargo.toml` too, so `matty --version` and the tag
+  always agree.
+- **A release is a release PR** in all three repositories: Claude opens it
+  with the version bump and a hand-written `CHANGELOG.md` entry; Arya
+  merging it is the go. The workflow then tags the commit, runs T4 and
+  publishes, exactly as gpuicn already does. Pushing a tag by hand stops
+  being a step. (The alternative is to keep Arya's tag push, plus a check
+  that the tagged commit's T2 passed: decision D5.)
+- **Dry run:** `release.yml` gets a manual run that builds, signs and
+  notarizes without publishing, and T3 runs it every week, so a broken
+  pipeline shows up before release day.
+- **Cadence:** one beta a week from green master (Claude opens the release
+  PR every Monday, say), plus a hotfix beta when a release-blocking bug is
+  fixed. Stable at milestone exits (PLAN §12).
+- **Channels:** beta and stable as PLAN §10 already says; the update manifest
+  is published for both.
+- **gpuicn coordination:** gpuicn releases when Matty needs something that
+  is merged, at most once a day, never in the middle of a Matty release.
+  The Matty pin bump PR is opened by Claude in the same session that ships
+  the gpuicn release.
+
+### 5.5 Who does what
+
+| Task | Arya | Claude |
+| --- | --- | --- |
+| Pick priorities, approve releases (merge the release PR) | ✓ | |
+| Secrets, certificates, repository settings, runner machines | ✓ | writes the exact steps |
+| Open, review, fix and merge PRs once `ci` is green | | ✓ |
+| Fix a red master before anything else | | ✓ |
+| Open the weekly release PR and changelog | | ✓ |
+| gpuicn releases | ✓ (merge the bump) | prepares the bump, then Matty's pin PR |
+
+### 5.6 Arya's manual steps after the change
+
+Per release: merge the release PR. Nothing else; the web deploy, Homebrew
+and the update manifest run in the pipeline.
+
+One time:
+
+1. Branch protection and merge settings on the three repos (require `ci`,
+   linear history, squash only, delete branches on merge).
+2. A `release` environment in matty with `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID`, so CI deploys matty.jha.sh.
+3. `HOMEBREW_TAP_TOKEN`, before the first stable release.
+4. Whatever D4 and D6 need (an organization, an assets repository).
+
+## 6. Decisions for Arya
+
+| # | Question | Recommendation |
+| --- | --- | --- |
+| D1 | Adopt the tiers in 5.2 (packaging, Windows, all integration versions and deny move to nightly; master keeps tests, web and one server)? | Yes |
+| D2 | Run macOS clippy on PRs (lint, about 10 s warm on the Mac mini)? | Yes |
+| D3 | Protect `master`/`main`: require `ci`, linear history, squash only, delete merged branches? | Yes |
+| D4 | Move matty, gpuicn and gpui-icons into a GitHub organization, for the merge queue and runners shared by all three repos? | Yes, but it is a bigger move; without it, keep merge trains |
+| D5 | Release by merging a release PR (as gpuicn does), or keep pushing tags, now checked against T2? | Release PR |
+| D6 | Where do PR screenshots live instead of `docs/screenshots`? | A separate `matty-assets` repository Arya creates, linked from PRs |
+| D7 | Release cadence: a weekly beta plus hotfixes? | Yes |
+| D8 | Deploy matty.jha.sh from the release pipeline instead of from a Mac? | Yes |
+| D9 | Rewrite history to drop the old screenshots? | No, not now: it breaks every clone and open branch; D3 and D6 stop the growth |
+
+## 7. Order of work once decided
+
+Each step is one small PR, smallest risk first:
+
+1. CI hygiene with no policy change: filter the `labeled` trigger to CI
+   labels, take `ci.yml` out of the Windows filter, tighten the `ci` gate,
+   7-day artifact retention, read the toolchain from `rust-toolchain.toml`,
+   composite actions for the shared setup.
+2. The tier split (D1, D2) in matty, then the same in gpuicn and gpui-icons.
+3. Release dry run and the weekly T3 dry run.
+4. Release PR model and versioning (D5, D7), then the web deploy (D8).
+5. Screenshot location (D6) and a check that rejects new images under
+   `docs/`.
+6. Settings Arya applies (D3, D4), with exact steps.
