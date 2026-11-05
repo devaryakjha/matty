@@ -9,7 +9,8 @@ use std::sync::Arc;
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, ElementId, ExternalPaths, Image, ImageFormat, ImageSource, InteractiveElement as _,
-    IntoElement as _, ParentElement as _, SharedString, Styled as _, Window, div,
+    IntoElement as _, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div,
 };
 
 use crate::style::{self, TypeStyleExt as _, scaled};
@@ -619,10 +620,23 @@ pub fn post_files(
                 images,
                 cx,
             )
+            .restrict_scroll_to_axis()
+            // The strip has scrolled by now; a sideways swipe stops here
+            // rather than also nudging the message list (#623).
+            .on_scroll(|event, window, cx| {
+                if horizontal_swipe(event.delta.pixel_delta(window.line_height())) {
+                    cx.stop_propagation();
+                }
+            })
         }))
         .children((!cards.is_empty()).then(|| {
             attachment_group(ElementId::Name(format!("{prefix}.cards").into()), cards, cx)
         }))
+}
+
+/// Whether a scroll goes mostly sideways, as a swipe along an image strip.
+fn horizontal_swipe(delta: gpui_kit::Point<gpui_kit::Pixels>) -> bool {
+    delta.x.abs() > delta.y.abs()
 }
 
 /// The tray above a composer: the chips, then one `meta` line saying why a
@@ -929,6 +943,14 @@ mod tests {
         };
         assert!(matches!(pdf.shown_as(), Shown::Card));
         assert!(matches!(file(None, 0, 0).shown_as(), Shown::Loading));
+    }
+
+    #[test]
+    fn only_a_mostly_sideways_scroll_stays_in_the_strip() {
+        use gpui_kit::{point, px};
+        assert!(horizontal_swipe(point(px(-12.), px(3.))));
+        assert!(!horizontal_swipe(point(px(2.), px(-9.))));
+        assert!(!horizontal_swipe(point(px(0.), px(0.))));
     }
 
     #[test]

@@ -474,6 +474,19 @@ pub fn notify_props(
     ])
 }
 
+/// The image a post's tile shows: the preview, or for a GIF the file
+/// itself, since the server's preview keeps only its first frame (#618).
+fn tile_size(name: &str) -> ImageSize {
+    let gif = std::path::Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gif"));
+    if gif {
+        ImageSize::Original
+    } else {
+        ImageSize::Preview
+    }
+}
+
 /// What an image's bytes are. The server's type is a fallback only: it
 /// labels every thumbnail `image/jpeg`, even one it kept as PNG.
 pub(crate) fn image_format(bytes: &[u8], content_type: &str) -> Option<gpui_kit::ImageFormat> {
@@ -984,8 +997,11 @@ impl Live {
     /// show them as tiles a few hundred points wide, so they get the
     /// preview: the server's thumbnail is about 120 pixels and blurs when
     /// drawn that big.
+    ///
+    /// The newest posts ask first: they are the ones on screen, and a long
+    /// page's older images would otherwise hold theirs up (#622).
     fn ask_thumbnails(&mut self, posts: &[Post]) {
-        for file in posts.iter().flat_map(|post| {
+        for file in posts.iter().rev().flat_map(|post| {
             post.files
                 .iter()
                 .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
@@ -995,7 +1011,7 @@ impl Live {
             {
                 self.sync.send(Command::LoadImage {
                     file_id: file.id.to_string(),
-                    size: ImageSize::Preview,
+                    size: tile_size(&file.name),
                 });
             }
         }
@@ -1706,6 +1722,20 @@ impl Live {
                 post.status = crate::channel::PostStatus::Failed;
             }
         }
+        // Attached images' tiles, as in the channel (#617).
+        for file in std::iter::once(&mut model.root)
+            .chain(model.replies.iter_mut())
+            .flat_map(|post| {
+                let crate::channel::Post { files, embeds, .. } = post;
+                files
+                    .iter_mut()
+                    .chain(embeds.iter_mut().flat_map(crate::embeds::Embed::files_mut))
+            })
+        {
+            if let Some(image) = self.thumbnails.get(file.id.as_ref()) {
+                file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+            }
+        }
         // The cards' images and controls, as in the channel (#211).
         for image in std::iter::once(&mut model.root)
             .chain(model.replies.iter_mut())
@@ -2113,7 +2143,7 @@ impl Live {
                     return update;
                 };
                 let image = Arc::new(gpui_kit::Image::from_bytes(format, bytes.to_vec()));
-                if *size == ImageSize::Preview {
+                if matches!(size, ImageSize::Preview | ImageSize::Original) {
                     self.full_images.insert(file_id.clone(), image.clone());
                     update.full_image = Some((file_id.as_str().into(), image.clone()));
                 } else if self.full_images.contains_key(file_id) {
@@ -2134,6 +2164,17 @@ impl Live {
                 if shown {
                     update.channel = self.channel_update();
                 }
+                // The thread pane shows the same tiles (#617).
+                update.thread = self.thread_model().filter(|thread| {
+                    std::iter::once(&thread.root)
+                        .chain(&thread.replies)
+                        .flat_map(|post| {
+                            post.files
+                                .iter()
+                                .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
+                        })
+                        .any(|file| file.id.as_ref() == file_id)
+                });
                 if self.search_files.iter().any(|file| &file.id == file_id) {
                     update.search = self.search_model();
                 }
@@ -4880,6 +4921,47 @@ mod tests {
             content_type: "image/png".into(),
         });
         assert!(update.channel.is_none());
+    }
+
+    #[test]
+    fn a_preview_fills_its_file_in_the_open_thread() {
+        let mut live = live();
+        let mut root = matty_api::models::Post {
+            id: "root".into(),
+            channel_id: "c1".into(),
+            user_id: "ada".into(),
+            ..Default::default()
+        };
+        root.metadata.files.push(matty_api::models::FileInfo {
+            id: "f1".into(),
+            name: "menu.png".into(),
+            ..Default::default()
+        });
+        live.open_thread("root");
+        let model = live
+            .apply(&ChangeSet::Thread {
+                root_id: "root".into(),
+                posts: Arc::from(vec![root]),
+                older: false,
+                failed: false,
+            })
+            .thread
+            .unwrap();
+        assert!(model.root.files[0].preview.is_none());
+        assert!(live.asked_thumbnails.contains("f1"), "the pane asks for it");
+        let image = |id: &str| ChangeSet::Image {
+            file_id: id.into(),
+            size: ImageSize::Preview,
+            bytes: Arc::from(&b"png"[..]),
+            content_type: "image/png".into(),
+        };
+        let model = live
+            .apply(&image("f1"))
+            .thread
+            .expect("the thread shows it");
+        assert!(model.root.files[0].preview.is_some());
+        // An image the thread does not show leaves it alone.
+        assert!(live.apply(&image("f2")).thread.is_none());
     }
 
     #[test]
