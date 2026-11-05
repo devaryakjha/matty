@@ -795,6 +795,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     actions: preview_actions(),
                 },
             )],
+            webhook: Some(crate::webhooks::Webhook::default()),
             ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
         },
         // Build Bot's answer to Approve, which only the viewer sees (#211).
@@ -1894,6 +1895,9 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
                             actions: thread_actions(),
                         },
                     )],
+                    // Posted through the deploy webhook: its glyph, not
+                    // its creator's picture.
+                    webhook: Some(crate::webhooks::Webhook::default()),
                     ..reply(
                         "r2",
                         "Build Bot",
