@@ -684,12 +684,12 @@ impl NotifyLevel {
             .unwrap_or_default()
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::Default => "Use my default",
-            Self::All => "All new messages",
-            Self::Mentions => "Mentions and direct messages",
-            Self::None => "Nothing",
+            Self::Default => crate::t!("notify-level-default"),
+            Self::All => crate::t!("notify-level-all"),
+            Self::Mentions => crate::t!("notify-level-mentions"),
+            Self::None => crate::t!("notify-level-none"),
         }
     }
 }
