@@ -1924,6 +1924,9 @@ impl MainWindow {
             {
                 self.open_channel(first.id.clone(), window, cx);
             }
+            self.channel
+                .update(cx, |view, cx| view.set_connected(true, cx));
+            self.open_first_channel(window, cx);
             self.open_pending_page(window, cx);
         }
         match update.channel {
