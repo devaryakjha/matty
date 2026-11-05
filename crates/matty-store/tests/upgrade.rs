@@ -69,6 +69,14 @@ fn every_fixture_migrates_to_the_latest_version() {
         // Tables added after this version start empty.
         let media = if version >= 2 { 1 } else { 0 };
         assert_eq!(count(&store, "media"), media, "media in fixture v{version}");
+        let bookmarks = if version >= 5 { 1 } else { 0 };
+        assert_eq!(
+            matty_store::bookmarks::for_channel(store.conn(), "town")
+                .unwrap()
+                .len(),
+            bookmarks,
+            "bookmarks in fixture v{version}"
+        );
 
         let conn = store.conn();
         // Files attached offline are kept from v4; older rows have none.
@@ -79,6 +87,12 @@ fn every_fixture_migrates_to_the_latest_version() {
             &[]
         };
         assert_eq!(queued.local_files, local, "fixture v{version}");
+        // A queued send's priority is kept from v6 (#220).
+        assert_eq!(
+            queued.priority.is_some_and(|priority| priority.is_urgent()),
+            version >= 6,
+            "fixture v{version}"
+        );
         let window = posts::posts_window(conn, "town", Window::Latest, 10, true).unwrap();
         let ids: Vec<&str> = window.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["p1", "p2", "p5"], "fixture v{version}");

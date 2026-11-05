@@ -1,0 +1,15 @@
+{
+  "broadcast": {
+    "channel_id": "",
+    "connection_id": "",
+    "omit_connection_id": "",
+    "omit_users": null,
+    "team_id": "",
+    "user_id": "rm9qb436airnmmjzxy7soiff9c"
+  },
+  "data": {
+    "scheduledPost": "{\"id\":\"sp1aaaaaaaaaaaaaaaaaaaaaaa\",\"create_at\":1793728922866,\"update_at\":1793728922866,\"user_id\":\"rm9qb436airnmmjzxy7soiff9c\",\"channel_id\":\"865owkf9afre7myntpn9oupyae\",\"root_id\":\"\",\"message\":\"scheduled text\",\"props\":{},\"file_ids\":null,\"metadata\":{\"priority\":{\"priority\":\"important\",\"requested_ack\":false}},\"scheduled_at\":1793790000000,\"processed_at\":0,\"error_code\":\"\"}"
+  },
+  "event": "scheduled_post_created",
+  "seq": 60
+}

@@ -748,7 +748,11 @@ async fn interactive_message_actions_and_dialogs() {
     assert_eq!(actions.len(), 4);
     assert!(actions[2].is_select());
     assert_eq!(actions[2].options[0].value, "eu");
-    assert!(!serde_json::to_string(&fetched.props).unwrap().contains(&hook));
+    assert!(
+        !serde_json::to_string(&fetched.props)
+            .unwrap()
+            .contains(&hook)
+    );
 
     let (connection, mut events) = WsConnection::connect(&client).await.unwrap();
     let told = client
@@ -773,7 +777,9 @@ async fn interactive_message_actions_and_dialogs() {
         .unwrap();
     let picks = received(&mock, "/action").await;
     assert!(
-        picks.iter().any(|b| b.contains(r#""selected_option":"eu""#)),
+        picks
+            .iter()
+            .any(|b| b.contains(r#""selected_option":"eu""#)),
         "{picks:?}"
     );
 
@@ -803,7 +809,12 @@ async fn interactive_message_actions_and_dialogs() {
     )
     .unwrap();
     let opened = reqwest::Client::new()
-        .post(client.base_url().join("api/v4/actions/dialogs/open").unwrap())
+        .post(
+            client
+                .base_url()
+                .join("api/v4/actions/dialogs/open")
+                .unwrap(),
+        )
         .json(&serde_json::json!({
             "trigger_id": request["trigger_id"],
             "url": format!("{hook}/dialog"),
@@ -986,7 +997,10 @@ async fn slash_commands_suggest_and_run() {
         .command_suggestions(&team_id, "/aw", &channel_id, "")
         .await
         .unwrap();
-    assert!(builtin.iter().any(|s| s.suggestion == "away"), "{builtin:?}");
+    assert!(
+        builtin.iter().any(|s| s.suggestion == "away"),
+        "{builtin:?}"
+    );
 
     let run = |line: String| ExecuteCommand {
         command: line,
@@ -1014,9 +1028,7 @@ async fn slash_commands_suggest_and_run() {
         .await
         .unwrap();
     let event = next_event(&mut events, "ephemeral_message", |e| {
-        e.data["post"]
-            .as_str()
-            .is_some_and(|p| p.contains("Press"))
+        e.data["post"].as_str().is_some_and(|p| p.contains("Press"))
     })
     .await;
     let WsEvent::EphemeralMessage(post) = WsEvent::decode(&event) else {
@@ -1031,10 +1043,7 @@ async fn slash_commands_suggest_and_run() {
     let pressed = received(&mock, "/action").await;
     assert!(pressed[0].contains(r#""from":"command""#), "{pressed:?}");
 
-    let away = client
-        .execute_command(&run("/away".into()))
-        .await
-        .unwrap();
+    let away = client.execute_command(&run("/away".into())).await.unwrap();
     assert!(away.is_ephemeral());
     assert!(!away.text.is_empty());
     client

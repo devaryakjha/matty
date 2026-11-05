@@ -99,10 +99,7 @@ pub fn channel_model(
         // them out, and any that slip through stay out too. An ephemeral
         // reply is the answer to what the user just did here, such as an
         // integration's to a button under the root, so it shows here too.
-        if viewer.collapsed_threads
-            && post.is_reply()
-            && !crate::interactive::is_ephemeral(post)
-        {
+        if viewer.collapsed_threads && post.is_reply() && !crate::interactive::is_ephemeral(post) {
             continue;
         }
         let stamp = when(post.create_at, viewer.zone, today);
@@ -347,6 +344,12 @@ fn display_post(
                 embed
             })
             .collect(),
+        priority: crate::priority::Shown::of(&post.metadata, viewer.user_id, |id| {
+            users.get(id).map_or_else(
+                || "Someone".into(),
+                |user| display_name_as(user, viewer.names),
+            )
+        }),
     }
 }
 
@@ -390,6 +393,7 @@ fn system_post(
         reply_to: None,
         files: Vec::new(),
         embeds: Vec::new(),
+        priority: None,
     }
 }
 

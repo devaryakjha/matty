@@ -310,6 +310,18 @@ pub(crate) fn apply(
                 draft: None,
             });
         }
+        WsEvent::PostAcknowledgementAdded(ack) => {
+            crate::priority::acknowledge_locally(conn, &ack, true, dirty)?;
+        }
+        WsEvent::PostAcknowledgementRemoved(ack) => {
+            crate::priority::acknowledge_locally(conn, &ack, false, dirty)?;
+        }
+        WsEvent::ScheduledPostCreated(post) | WsEvent::ScheduledPostUpdated(post) => dirty
+            .scheduled
+            .push(crate::priority::ScheduledChange::Upsert(Box::new(post))),
+        WsEvent::ScheduledPostDeleted(post) => dirty
+            .scheduled
+            .push(crate::priority::ScheduledChange::Remove(post.id)),
         WsEvent::Typing {
             user_id,
             channel_id,
@@ -319,20 +331,22 @@ pub(crate) fn apply(
             channel_id,
             parent_id,
         }),
+        event @ (WsEvent::ChannelBookmarkCreated { .. }
+        | WsEvent::ChannelBookmarkUpdated { .. }
+        | WsEvent::ChannelBookmarkDeleted { .. }
+        | WsEvent::ChannelBookmarkSorted { .. }) => crate::bookmarks::event(conn, event, dirty)?,
         WsEvent::Undecodable { raw, error } => {
             // Something changed that the cache cannot follow; #37 resyncs.
             tracing::warn!(event = %raw.event, %error, "could not decode an event");
             dirty.resync = true;
         }
         // Not cached, or nothing to do yet: the hello is the WebSocket
-        // client's, roles and new accounts load lazily, scheme changes and
-        // acknowledgements come with their features.
+        // client's, roles and new accounts load lazily, and scheme changes
+        // come with their feature.
         WsEvent::Hello(_)
         | WsEvent::NewUser { .. }
         | WsEvent::UserRoleUpdated { .. }
         | WsEvent::ChannelSchemeUpdated { .. }
-        | WsEvent::PostAcknowledgementAdded(_)
-        | WsEvent::PostAcknowledgementRemoved(_)
         | WsEvent::Unknown(_) => {}
     }
     Ok(())
@@ -368,7 +382,12 @@ fn new_post(
                 is_root,
                 by_me: post.user_id == me,
                 mentions_me,
-                urgent: false,
+                urgent: mentions_me
+                    && post
+                        .metadata
+                        .priority
+                        .as_ref()
+                        .is_some_and(matty_api::models::PostPriority::is_urgent),
             },
         )?;
         if !counted {

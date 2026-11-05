@@ -260,6 +260,12 @@ pub enum RightPaneEvent {
         root: SharedString,
         following: bool,
     },
+    /// The user acknowledged a post that asked for it, or took it back
+    /// (#220).
+    Acknowledge {
+        post: SharedString,
+        acknowledged: bool,
+    },
     ToggleReaction {
         post: SharedString,
         emoji: SharedString,
@@ -762,6 +768,7 @@ impl RightPaneView {
             reply_to: None,
             files,
             embeds: vec![],
+            priority: None,
         };
         thread.replies.push(reply);
         let content = self.content.clone();
@@ -2289,9 +2296,27 @@ impl RightPaneView {
             // Queued: a clock marks "Will send when back online" (#195).
             row = row.header_child(queued_marker(&theme));
         }
+        if let Some(label) = crate::priority::label(post.priority.as_ref(), cx) {
+            row = row.header_child(label);
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
+        let (ack_view, ack_post) = (view.clone(), id.clone());
+        row = row.children(crate::priority::ack_bar(
+            &format!("thread.{id}"),
+            post.priority.as_ref(),
+            post.status == PostStatus::Sent,
+            std::rc::Rc::new(move |acknowledged, _, cx| {
+                let post = ack_post.clone();
+                ack_view
+                    .update(cx, |_, cx| {
+                        cx.emit(RightPaneEvent::Acknowledge { post, acknowledged })
+                    })
+                    .ok();
+            }),
+            cx,
+        ));
         // Right-click selects the row and opens its menu (design-42).
         let items = Self::thread_items_for(view, post, away, !root);
         let menu_view = view.clone();
@@ -3534,6 +3559,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            priority: None,
         }
     }
 

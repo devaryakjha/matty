@@ -446,6 +446,33 @@ pub fn add_reaction(conn: &Connection, reaction: &Reaction) -> Result<()> {
     Ok(())
 }
 
+/// Adds or removes an acknowledgement in the post's stored metadata
+/// (`post_acknowledgement_added/removed`, #220), so who acknowledged shows
+/// offline too. `false` when the post is not cached.
+pub fn set_acknowledgement(
+    conn: &Connection,
+    ack: &matty_api::models::PostAcknowledgement,
+    acknowledged: bool,
+) -> Result<bool> {
+    let Some(text) = conn
+        .prepare_cached("SELECT metadata FROM posts WHERE id = ?1")?
+        .query_row([&ack.post_id], |row| row.get::<_, String>(0))
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let mut metadata: PostMetadata = from_json(&text);
+    metadata
+        .acknowledgements
+        .retain(|kept| kept.user_id != ack.user_id);
+    if acknowledged {
+        metadata.acknowledgements.push(ack.clone());
+    }
+    conn.prepare_cached("UPDATE posts SET metadata = ?2 WHERE id = ?1")?
+        .execute(params![ack.post_id, json(&metadata)])?;
+    Ok(true)
+}
+
 /// Removes a reaction (`reaction_removed`).
 pub fn remove_reaction(conn: &Connection, reaction: &Reaction) -> Result<()> {
     conn.prepare_cached(

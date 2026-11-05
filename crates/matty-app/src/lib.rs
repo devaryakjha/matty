@@ -8,9 +8,11 @@
 
 pub mod account;
 pub mod actions;
+pub mod apps;
 pub mod attachments;
 pub mod avatars;
 pub mod badge;
+pub mod bookmarks;
 pub mod categories;
 pub mod channel;
 pub mod channel_settings;
@@ -39,11 +41,13 @@ pub mod offline;
 pub mod perf;
 pub mod popout;
 pub mod preview;
+pub mod priority;
 pub mod profile;
 pub mod profile_editor;
 pub mod rail;
 pub mod remote_images;
 pub mod right_pane;
+pub mod scheduled;
 pub mod secrets;
 pub mod server_links;
 pub mod servers;

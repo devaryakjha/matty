@@ -6,6 +6,7 @@ use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
@@ -47,13 +48,50 @@ pub enum DraftsEvent {
 
 pub struct DraftsView {
     model: DraftsModel,
+    /// The Scheduled tab's list, where the server allows scheduling
+    /// (#220).
+    scheduled: Option<gpui_kit::Entity<crate::scheduled::ScheduledView>>,
+    /// The Scheduled tab is on screen.
+    scheduled_tab: bool,
 }
 
 impl EventEmitter<DraftsEvent> for DraftsView {}
 
 impl DraftsView {
     pub fn new(model: DraftsModel) -> Self {
-        Self { model }
+        Self {
+            model,
+            scheduled: None,
+            scheduled_tab: false,
+        }
+    }
+
+    /// Adds the Scheduled tab with this list (#220).
+    pub fn set_scheduled(
+        &mut self,
+        scheduled: gpui_kit::Entity<crate::scheduled::ScheduledView>,
+        cx: &mut Context<Self>,
+    ) {
+        self.scheduled = Some(scheduled);
+        cx.notify();
+    }
+
+    /// The Scheduled tab's list, once added.
+    pub fn scheduled(&self) -> Option<&gpui_kit::Entity<crate::scheduled::ScheduledView>> {
+        self.scheduled.as_ref()
+    }
+
+    /// Shows the Drafts or the Scheduled tab.
+    pub fn show_scheduled(&mut self, scheduled: bool, cx: &mut Context<Self>) {
+        self.scheduled_tab = scheduled;
+        cx.notify();
+    }
+
+    /// The Scheduled tab, while the server allows scheduling.
+    fn scheduled_tab(&self, cx: &App) -> Option<gpui_kit::Entity<crate::scheduled::ScheduledView>> {
+        self.scheduled
+            .clone()
+            .filter(|_| crate::priority::Features::read(cx).scheduled)
     }
 
     pub fn model(&self) -> &DraftsModel {
@@ -70,9 +108,41 @@ impl DraftsView {
         cx.notify();
     }
 
-    fn header(&self, cx: &App) -> impl IntoElement + use<> {
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let count = self.model.drafts.len();
+        let tabs = self.scheduled_tab(cx).map(|scheduled| {
+            let scheduled = scheduled.read(cx).rows().len();
+            let view = cx.entity().downgrade();
+            crate::ui::tabs::Tabs::new("drafts.tabs")
+                .aria_label("Drafts and scheduled messages")
+                .selected(if self.scheduled_tab {
+                    "scheduled"
+                } else {
+                    "drafts"
+                })
+                .item(crate::ui::tabs::Tab::new(
+                    "drafts.tabs.drafts",
+                    "drafts",
+                    match count {
+                        0 => "Drafts".to_string(),
+                        n => format!("Drafts ({n})"),
+                    },
+                ))
+                .item(crate::ui::tabs::Tab::new(
+                    "drafts.tabs.scheduled",
+                    "scheduled",
+                    match scheduled {
+                        0 => "Scheduled".to_string(),
+                        n => format!("Scheduled ({n})"),
+                    },
+                ))
+                .on_change(move |value, _, cx| {
+                    view.update(cx, |this, cx| this.show_scheduled(value == "scheduled", cx))
+                        .ok();
+                })
+        });
+        let tabbed = tabs.is_some();
         div()
             .flex_shrink_0()
             .h(scaled(&theme, metrics::HEADER_HEIGHT))
@@ -88,16 +158,19 @@ impl DraftsView {
                     .text_color(theme.colors.foreground)
                     .child("Drafts"),
             )
-            .child(
-                div()
-                    .type_style(style::META, &theme)
-                    .text_color(theme.colors.muted_foreground)
-                    .child(match count {
-                        0 => String::new(),
-                        1 => "1 unsent message".to_string(),
-                        n => format!("{n} unsent messages"),
-                    }),
-            )
+            .when(!tabbed, |header| {
+                header.child(
+                    div()
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child(match count {
+                            0 => String::new(),
+                            1 => "1 unsent message".to_string(),
+                            n => format!("{n} unsent messages"),
+                        }),
+                )
+            })
+            .children(tabs.map(|tabs| div().ml(theme.space(2.)).child(tabs)))
     }
 
     /// A card per draft: where it goes, the text as it will read, then
@@ -251,6 +324,11 @@ impl Render for DraftsView {
             .flex_col()
             .bg(theme.colors.background)
             .child(self.header(cx));
+        if self.scheduled_tab
+            && let Some(scheduled) = self.scheduled_tab(cx)
+        {
+            return root.child(scheduled);
+        }
         if drafts.is_empty() {
             return root.child(Self::empty(cx));
         }

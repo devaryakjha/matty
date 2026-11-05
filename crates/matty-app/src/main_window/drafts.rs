@@ -142,6 +142,7 @@ impl MainWindow {
                 file_ids,
                 local_files,
                 props: crate::embeds::send_props(true),
+                priority: None,
             });
         }
         self.drop_draft(draft, window, cx);

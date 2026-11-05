@@ -89,6 +89,9 @@ pub enum ChangeSet {
     },
     /// A command could not be carried out.
     Failed(CommandError),
+    /// The user's scheduled messages in every team, soonest first (#220),
+    /// whenever they change. Only on servers that allow scheduling.
+    Scheduled(Arc<[matty_api::models::ScheduledPost]>),
     /// A post only this user sees, such as a slash command's reply. It is
     /// never stored; the view shows it until the channel is left. The
     /// server changes one with `post_edited` and removes one with
@@ -352,6 +355,30 @@ pub enum ChangeSet {
         query: LinkQuery,
         /// The channel (for a post, the post's channel) or the user.
         answer: Option<LinkAnswer>,
+    },
+    /// A channel's bookmarks changed, or were read from the cache when it
+    /// opened (#226): the whole list, in bar order.
+    Bookmarks {
+        /// The channel.
+        channel_id: String,
+        /// Its bookmarks.
+        bookmarks: Arc<[matty_api::models::ChannelBookmark]>,
+    },
+    /// What installed Apps add in a channel: the answer to
+    /// [`AppCommand::Bindings`](crate::AppCommand::Bindings) (#226).
+    AppBindings {
+        /// The channel.
+        channel_id: String,
+        /// The top-level bindings: post menu, channel header, commands.
+        bindings: Arc<[matty_api::models::AppBinding]>,
+    },
+    /// How an App's call ended: the answer to
+    /// [`AppCommand::Run`](crate::AppCommand::Run) (#226).
+    AppAnswered {
+        /// The caller's id for the call.
+        call_id: String,
+        /// What happened.
+        answer: crate::AppAnswer,
     },
 }
 
