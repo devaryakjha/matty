@@ -4020,7 +4020,7 @@ impl MainWindow {
     fn shortcut_sheet(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let platform = Platform::current();
-        let sheet_row = |label: &'static str, keys: Kbd| {
+        let sheet_row = |label: SharedString, keys: Kbd| {
             div()
                 .flex()
                 .items_center()
@@ -4035,15 +4035,18 @@ impl MainWindow {
             // Cmd/Ctrl+1…9 stay out of the keymap's rows; one line lists them.
             let servers = (row.label == "Forward").then(|| {
                 let first = actions::format_keys("cmd-1", "ctrl-1");
-                sheet_row("Switch to server 1–9", Kbd::new(format!("{first}–9")))
+                sheet_row(
+                    crate::t!("shortcuts-servers"),
+                    Kbd::new(format!("{first}–9")),
+                )
             });
-            std::iter::once(sheet_row(row.label, Kbd::shortcut(row.keys(platform)))).chain(servers)
+            std::iter::once(sheet_row(row.name(), Kbd::shortcut(row.keys(platform)))).chain(servers)
         });
-        let popup = dialog_popup("shortcuts.popup", "Keyboard shortcuts", cx)
-            .child(dialog_title("shortcuts.title", cx).child("Keyboard shortcuts"))
+        let popup = dialog_popup("shortcuts.popup", crate::t!("shortcuts-title"), cx)
+            .child(dialog_title("shortcuts.title", cx).child(crate::t!("shortcuts-title")))
             .child(
                 dialog_description("shortcuts.description", cx)
-                    .child("Every shortcut works anywhere in the window unless it names a view."),
+                    .child(crate::t!("shortcuts-description")),
             )
             .child(div().flex().flex_col().children(rows))
             .child(
@@ -4052,16 +4055,17 @@ impl MainWindow {
                     .pb(theme.space(1.))
                     .type_style(style::META, &theme)
                     .text_color(theme.colors.muted_foreground)
-                    .child("On a selected message (Shift+Tab from the composer, then Up and Down)"),
+                    .child(crate::t!("shortcuts-message-keys")),
             )
             .child(
-                div().flex().flex_col().children(
-                    actions::MESSAGE_KEYS
-                        .into_iter()
-                        .map(|(key, label)| sheet_row(label, Kbd::new(key))),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(actions::MESSAGE_KEYS.into_iter().map(|(key, label)| {
+                        sheet_row(actions::message_key_name(label), Kbd::new(key))
+                    })),
             )
-            .child(dialog_close("shortcuts.close", cx).label("Close"));
+            .child(dialog_close("shortcuts.close", cx).label(crate::t!("shortcuts-close")));
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
     }
 
