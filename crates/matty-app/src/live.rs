@@ -72,6 +72,9 @@ pub struct Live {
     threads_on: Option<bool>,
     /// Whether link previews show (#187); until sync says, they do.
     link_previews: bool,
+    /// How many direct and group messages the sidebar shows (#619), from
+    /// the user's `sidebar_settings/limit_visible_dms_gms`.
+    dm_limit: usize,
     /// How people's names read (#156), from settings.
     names: crate::settings::NameFormat,
     /// Not connected: an open channel with no posts may just not be saved
@@ -635,6 +638,7 @@ impl Live {
                 threads_choice: None,
                 threads_on: None,
                 link_previews: true,
+                dm_limit: DM_LIMIT,
                 names: crate::settings::NameFormat::default(),
                 offline: crate::offline(),
                 zone: jiff::tz::TimeZone::system(),
@@ -2671,6 +2675,11 @@ impl Live {
             }
             ChangeSet::AccountPreferences(preferences) => {
                 update.account_preferences = Some(preferences.clone());
+                let limit = dm_limit(preferences);
+                if limit != self.dm_limit {
+                    self.dm_limit = limit;
+                    update.categories = self.shown_categories();
+                }
             }
             ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
                 self.link_previews = *on;
@@ -2768,12 +2777,20 @@ impl Live {
     }
 
     fn categories(&self, sections: &[SidebarSection]) -> Vec<Category> {
+        let open = self.open.as_ref().map(|row| row.id.as_ref());
         sections
             .iter()
             .map(|section| {
+                let shown = if section.kind == "direct_messages" {
+                    shown_conversations(&section.channels, self.dm_limit, open)
+                } else {
+                    vec![true; section.channels.len()]
+                };
                 let rows = section
                     .channels
                     .iter()
+                    .zip(shown)
+                    .filter_map(|(channel, shown)| shown.then_some(channel))
                     .map(|channel| {
                         let kind = match channel.kind.as_str() {
                             "P" => ChannelKind::Private,
@@ -2830,6 +2847,42 @@ impl Live {
             })
             .collect()
     }
+}
+
+/// How many direct and group messages the sidebar shows when the user has
+/// not chosen, as in the web app.
+const DM_LIMIT: usize = 20;
+
+/// The user's "Number of direct messages to show": a number, with the web
+/// app's "All" stored as a large one.
+fn dm_limit(preferences: &[matty_api::models::Preference]) -> usize {
+    preferences
+        .iter()
+        .find(|p| p.category == "sidebar_settings" && p.name == "limit_visible_dms_gms")
+        .and_then(|p| p.value.trim().parse().ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(DM_LIMIT)
+}
+
+/// Which of a Direct messages category's conversations show (#619), in
+/// its order: the `limit` most recent, and any older one that is unread or
+/// open, as the web app does.
+fn shown_conversations(channels: &[SidebarChannel], limit: usize, open: Option<&str>) -> Vec<bool> {
+    let mut recent: Vec<usize> = (0..channels.len()).collect();
+    recent.sort_by_key(|&index| std::cmp::Reverse(channels[index].last_post_at));
+    let mut shown = vec![false; channels.len()];
+    for index in recent.into_iter().take(limit) {
+        shown[index] = true;
+    }
+    for (index, channel) in channels.iter().enumerate() {
+        if channel.unreads.messages > 0
+            || channel.unreads.mentions > 0
+            || open == Some(channel.id.as_str())
+        {
+            shown[index] = true;
+        }
+    }
+    shown
 }
 
 pub fn presence(status: &str) -> Presence {
@@ -3154,6 +3207,48 @@ mod tests {
             muted: false,
             channels,
         }
+    }
+
+    #[test]
+    fn direct_messages_show_the_most_recent_plus_unread_and_open() {
+        let dms: Vec<SidebarChannel> = (0..30)
+            .map(|at| SidebarChannel {
+                last_post_at: at,
+                ..channel(&format!("d{at}"), "D", 0, 0)
+            })
+            .collect();
+        let shown = |dms: &[SidebarChannel], limit, open| {
+            dms.iter()
+                .zip(shown_conversations(dms, limit, open))
+                .filter(|(_, shown)| *shown)
+                .map(|(dm, _)| dm.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // The 20 newest, in the category's own order.
+        let newest: Vec<String> = (10..30).map(|at| format!("d{at}")).collect();
+        assert_eq!(shown(&dms, 20, None), newest);
+        // An old unread one and the open one show as well.
+        let mut with_unread = dms.clone();
+        with_unread[2].unreads.messages = 1;
+        let mut expected = vec!["d2".to_owned(), "d5".to_owned()];
+        expected.extend(newest.iter().cloned());
+        assert_eq!(shown(&with_unread, 20, Some("d5")), expected);
+        assert_eq!(shown(&dms, 10_000, None).len(), 30);
+    }
+
+    #[test]
+    fn the_dm_limit_comes_from_sidebar_settings() {
+        let pref = |value: &str| matty_api::models::Preference {
+            category: "sidebar_settings".into(),
+            name: "limit_visible_dms_gms".into(),
+            value: value.into(),
+            ..Default::default()
+        };
+        assert_eq!(dm_limit(&[]), 20);
+        assert_eq!(dm_limit(&[pref("40")]), 40);
+        assert_eq!(dm_limit(&[pref("10000")]), 10_000);
+        assert_eq!(dm_limit(&[pref("lots")]), 20);
+        assert_eq!(dm_limit(&[pref("0")]), 20);
     }
 
     pub(super) fn team(id: &str) -> TeamWithUnreads {

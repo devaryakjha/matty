@@ -194,6 +194,10 @@ pub mod metrics {
     pub const ROW_HEIGHT: f32 = 28.;
     /// Horizontal padding inside the channel view.
     pub const GUTTER: f32 = 20.;
+    /// The title bar, taller than gpuicn's 34 px so its controls breathe
+    /// (#625). [`super::title_bar_window_options`] centres the macOS
+    /// traffic lights in it.
+    pub const TITLE_BAR_HEIGHT: f32 = 40.;
     /// The quick switcher pill's widest size in the title bar.
     pub const SWITCHER_MAX_WIDTH: f32 = 560.;
     /// Chrome icons.
@@ -356,6 +360,24 @@ pub fn avatar_status(
         label: crate::account::presence_label(presence)
             .to_lowercase()
             .into(),
+    }
+}
+
+/// Window options for a window that draws Matty's [`metrics::TITLE_BAR_HEIGHT`]
+/// title bar: gpuicn's, with the macOS traffic lights moved down to its
+/// middle.
+pub fn title_bar_window_options() -> gpui_kit::WindowOptions {
+    let options = crate::ui::title_bar::title_bar_window_options();
+    // The lights are 16 px tall; gpuicn puts them 9 px down a 34 px bar.
+    let top = (metrics::TITLE_BAR_HEIGHT - 16.) / 2.;
+    gpui_kit::WindowOptions {
+        titlebar: options.titlebar.map(|titlebar| gpui_kit::TitlebarOptions {
+            traffic_light_position: titlebar
+                .traffic_light_position
+                .map(|at| gpui_kit::point(at.x, px(top))),
+            ..titlebar
+        }),
+        ..options
     }
 }
 
