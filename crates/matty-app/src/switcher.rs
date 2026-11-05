@@ -328,18 +328,14 @@ impl Switcher {
                                 ))
                                 .size(AvatarSize::Sm)
                                 .fallback(initial)
-                                .aria_label(style::presence_name(name, *presence))
+                                .aria_label(name.clone())
+                                .status(style::avatar_status(*presence, &style::Palette::read(cx)))
+                                .status_size(style::scaled(theme, 8.))
+                                .ring_color(theme.colors.popover)
                                 .w(slot)
                                 .h(slot)
                                 .text_size(theme.text(9.)),
                             )
-                            .child(style::presence_dot(
-                                *presence,
-                                style::scaled(theme, 8.),
-                                theme.colors.popover,
-                                theme,
-                                &style::Palette::read(cx),
-                            ))
                             .into_any_element(),
                     )
                 },
