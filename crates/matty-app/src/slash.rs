@@ -38,61 +38,48 @@ pub struct Builtin {
     pub trigger: &'static str,
     /// Its arguments, such as `[message]`.
     pub hint: &'static str,
-    pub description: &'static str,
 }
 
-const fn builtin(trigger: &'static str, hint: &'static str, description: &'static str) -> Builtin {
-    Builtin {
-        trigger,
-        hint,
-        description,
+impl Builtin {
+    /// What it does, from `slash-<trigger>` in `slash.ftl`.
+    pub fn description(&self) -> SharedString {
+        crate::i18n::text(&format!("slash-{}", self.trigger), &[])
     }
 }
 
-/// Mattermost's own commands, in its words.
+const fn builtin(trigger: &'static str, hint: &'static str) -> Builtin {
+    Builtin { trigger, hint }
+}
+
+/// Mattermost's own commands; their descriptions are in `slash.ftl`, in
+/// Mattermost's words.
 pub const BUILTINS: &[Builtin] = &[
-    builtin("away", "", "Set your status to away"),
-    builtin("code", "[text]", "Display text as a code block"),
-    builtin("collapse", "", "Collapse link previews"),
-    builtin(
-        "dnd",
-        "",
-        "Do not disturb: no desktop or push notifications",
-    ),
-    builtin(
-        "echo",
-        "[message] [delay]",
-        "Echo back text from your account",
-    ),
-    builtin("expand", "", "Expand link previews"),
-    builtin("groupmsg", "@[usernames] [message]", "Send a group message"),
-    builtin("header", "[text]", "Edit the channel header"),
-    builtin("help", "", "Open the Mattermost help page"),
-    builtin(
-        "invite",
-        "@[username] ~[channel]",
-        "Invite a user to a channel",
-    ),
-    builtin("join", "~[channel]", "Join a channel"),
-    builtin("kick", "@[username]", "Remove a member from the channel"),
-    builtin("leave", "", "Leave the current channel"),
-    builtin("logout", "", "Sign out of this server"),
-    builtin("me", "[message]", "Do an action"),
-    builtin("msg", "@[username] [message]", "Send a direct message"),
-    builtin(
-        "mute",
-        "~[channel]",
-        "Mute the current channel or the one named",
-    ),
-    builtin("offline", "", "Set your status to offline"),
-    builtin("online", "", "Set your status to online"),
-    builtin("purpose", "[text]", "Edit the channel purpose"),
-    builtin("remove", "@[username]", "Remove a member from the channel"),
-    builtin("rename", "[text]", "Rename the channel"),
-    builtin("search", "[text]", "Search messages"),
-    builtin("settings", "", "Open preferences"),
-    builtin("shortcuts", "", "Show keyboard shortcuts"),
-    builtin("shrug", "[message]", "Add ¯\\_(ツ)_/¯ to your message"),
+    builtin("away", ""),
+    builtin("code", "[text]"),
+    builtin("collapse", ""),
+    builtin("dnd", ""),
+    builtin("echo", "[message] [delay]"),
+    builtin("expand", ""),
+    builtin("groupmsg", "@[usernames] [message]"),
+    builtin("header", "[text]"),
+    builtin("help", ""),
+    builtin("invite", "@[username] ~[channel]"),
+    builtin("join", "~[channel]"),
+    builtin("kick", "@[username]"),
+    builtin("leave", ""),
+    builtin("logout", ""),
+    builtin("me", "[message]"),
+    builtin("msg", "@[username] [message]"),
+    builtin("mute", "~[channel]"),
+    builtin("offline", ""),
+    builtin("online", ""),
+    builtin("purpose", "[text]"),
+    builtin("remove", "@[username]"),
+    builtin("rename", "[text]"),
+    builtin("search", "[text]"),
+    builtin("settings", ""),
+    builtin("shortcuts", ""),
+    builtin("shrug", "[message]"),
 ];
 
 /// Where a command was typed.
@@ -425,7 +412,7 @@ impl Slash {
                 (
                     command.trigger.to_owned(),
                     command.hint.to_owned(),
-                    command.description.to_owned(),
+                    command.description().to_string(),
                 )
             })
             .collect();
@@ -711,6 +698,24 @@ mod tests {
 
     fn values(rows: &[ComposerSuggestion]) -> Vec<&str> {
         rows.iter().map(|row| row.value.as_ref()).collect()
+    }
+
+    /// Every built-in command has its description in `slash.ftl`; a
+    /// missing one would show its id.
+    #[test]
+    fn every_builtin_has_a_description() {
+        for command in BUILTINS {
+            let description = command.description();
+            assert!(
+                !description.starts_with("slash-"),
+                "/{} has no description",
+                command.trigger
+            );
+        }
+        assert_eq!(
+            BUILTINS[0].description().as_ref(),
+            "Set your status to away"
+        );
     }
 
     #[test]
