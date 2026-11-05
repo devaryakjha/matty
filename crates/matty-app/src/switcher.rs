@@ -11,6 +11,7 @@ use gpui_kit::{
 
 use crate::sidebar::{ChannelKind, Presence, SidebarModel};
 use crate::style::{self, TypeStyleExt as _};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::Badge,
@@ -58,7 +59,6 @@ pub enum SwitcherEvent {
 const SEARCH_PREFIX: &str = "~search:";
 /// The value of the open-link row; the link follows it.
 const LINK_PREFIX: &str = "~link:";
-const PLACEHOLDER: &str = "Jump to a channel, person or team\u{2026}";
 
 /// Keeps the rows of public and private channels: people join channels,
 /// not conversations (#212).
@@ -106,7 +106,7 @@ impl Switcher {
             let mut state = CommandState::new(Vec::new(), window, cx);
             // The switcher matches and ranks the rows itself.
             state.set_filter(false, cx);
-            state.set_placeholder(PLACEHOLDER, window, cx);
+            state.set_placeholder(t!("switcher-placeholder"), window, cx);
             state
         });
         let close = handle.clone();
@@ -206,8 +206,8 @@ impl Switcher {
         if self.forwarding.is_none() && crate::links::looks_like_link(&query) {
             items.insert(
                 0,
-                CommandItem::new(format!("{LINK_PREFIX}{query}"), "Open link")
-                    .group("Link")
+                CommandItem::new(format!("{LINK_PREFIX}{query}"), t!("switcher-open-link"))
+                    .group(t!("switcher-group-link"))
                     .icon(LucideIcon::Link)
                     .keywords([query.clone()]),
             );
@@ -216,9 +216,9 @@ impl Switcher {
             items.push(
                 CommandItem::new(
                     format!("{SEARCH_PREFIX}{query}"),
-                    format!("Search messages for \u{201c}{query}\u{201d}"),
+                    t!("switcher-search-messages", query = query.to_string()),
                 )
-                .group("Messages")
+                .group(t!("switcher-group-messages"))
                 .icon(LucideIcon::Search)
                 .keywords([query]),
             );
@@ -260,7 +260,7 @@ impl Switcher {
         self.forwarding = Some(Pick::Forward(post));
         self.refresh(cx);
         self.command.update(cx, |state, cx| {
-            state.set_placeholder("Forward to a channel or person\u{2026}", window, cx)
+            state.set_placeholder(t!("switcher-forward-placeholder"), window, cx)
         });
         self.open(window, cx);
     }
@@ -286,7 +286,7 @@ impl Switcher {
         self.all_servers = false;
         self.command.update(cx, |state, cx| {
             state.set_query("", window, cx);
-            state.set_placeholder(PLACEHOLDER, window, cx);
+            state.set_placeholder(t!("switcher-placeholder"), window, cx);
         });
     }
 

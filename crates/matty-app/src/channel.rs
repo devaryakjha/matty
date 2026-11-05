@@ -171,6 +171,17 @@ pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
         .text_color(theme.colors.muted_foreground)
 }
 
+/// What a message copies before its text when a selection spans several
+/// messages (#108): "Ada [12:24]: ", so each message reads as one line.
+/// The clock time, even while the post is still sending.
+pub(crate) fn copy_prefix(post: &Post, cx: &App) -> String {
+    copy_line(&post.author, &ClockFormat::current(cx).format(post.time))
+}
+
+fn copy_line(author: &str, time: &str) -> String {
+    format!("{author} [{time}]: ")
+}
+
 /// A post's header time, or where it is on its way to the server.
 pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
     match post.status {
@@ -550,6 +561,49 @@ pub struct ReplySummary {
     pub unread_mentions: usize,
 }
 
+/// What the user may do to a channel, from the permissions their channel,
+/// team and system roles grant (#208). Each is true until the roles are
+/// known; the server has the last word either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelRights {
+    /// Make people channel admins or not: `manage_channel_roles`.
+    pub roles: bool,
+    /// Add and remove people: `manage_public_channel_members` or
+    /// `manage_private_channel_members`.
+    pub members: bool,
+    /// Rename it and edit its header and purpose:
+    /// `manage_public_channel_properties` or
+    /// `manage_private_channel_properties`.
+    pub edit: bool,
+    /// Archive it: `delete_public_channel` or `delete_private_channel`.
+    pub archive: bool,
+    /// Make a public channel private: `convert_public_channel_to_private`.
+    pub convert: bool,
+}
+
+impl ChannelRights {
+    /// None of them, as for a conversation with people.
+    pub const NONE: Self = Self {
+        roles: false,
+        members: false,
+        edit: false,
+        archive: false,
+        convert: false,
+    };
+}
+
+impl Default for ChannelRights {
+    fn default() -> Self {
+        Self {
+            roles: true,
+            members: true,
+            edit: true,
+            archive: true,
+            convert: true,
+        }
+    }
+}
+
 /// A channel with the posts loaded for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelModel {
@@ -577,14 +631,8 @@ pub struct ChannelModel {
     pub first_unread: Option<usize>,
     /// The server's `MaxPostSize`; the composer counts down to it.
     pub max_post_size: usize,
-    /// The user may archive the channel or make it private: a channel or
-    /// system admin (#208). The server has the last word.
-    pub can_manage: bool,
-    /// The user may add people to the channel and remove them: their
-    /// roles grant `manage_public_channel_members` or
-    /// `manage_private_channel_members` (#208). True until the roles are
-    /// known; the server has the last word.
-    pub manage_members: bool,
+    /// What the user may do to the channel, as their roles say (#208).
+    pub rights: ChannelRights,
     /// The user may delete other people's posts: a system admin, as
     /// Mattermost's default `delete_others_posts` allows (#106). Team
     /// admins may too, but their role is not kept. The server has the
@@ -2062,10 +2110,8 @@ impl ChannelView {
             model.purpose = details.purpose;
             model.members = details.members;
             model.pinned = details.pinned;
-            let menu_changed = model.can_manage != details.can_manage
-                || model.manage_members != details.manage_members;
-            model.can_manage = details.can_manage;
-            model.manage_members = details.manage_members;
+            let menu_changed = model.rights != details.rights;
+            model.rights = details.rights;
             model.delete_others = details.delete_others;
             crate::apps::remember(cx.entity_id(), &details.apps, cx);
             let view = cx.entity().downgrade();
@@ -3423,6 +3469,7 @@ impl ChannelView {
         };
         let is_channel =
             model.is_some_and(|m| matches!(m.kind, ChannelKind::Public | ChannelKind::Private));
+        let rights = model.map(|m| m.rights).unwrap_or_default();
         let notify_view = view.clone();
         let mut items = vec![
             MenuItem::new("channel.menu.notifications", "Notification preferences…").on_click(
@@ -3433,21 +3480,30 @@ impl ChannelView {
                 },
             ),
             MenuItem::separator(),
-            edit("channel.menu.header", "Edit header…", ChannelField::Header),
         ];
+        // Anyone in a conversation may set its header.
+        if !is_channel || rights.edit {
+            items.push(edit(
+                "channel.menu.header",
+                "Edit header…",
+                ChannelField::Header,
+            ));
+        }
         if is_channel {
-            items.push(edit(
-                "channel.menu.purpose",
-                "Edit purpose…",
-                ChannelField::Purpose,
-            ));
-            items.push(edit(
-                "channel.menu.rename",
-                "Rename channel…",
-                ChannelField::Name,
-            ));
-            items.push(MenuItem::separator());
-            if model.is_none_or(|m| m.manage_members) {
+            if rights.edit {
+                items.push(edit(
+                    "channel.menu.purpose",
+                    "Edit purpose…",
+                    ChannelField::Purpose,
+                ));
+                items.push(edit(
+                    "channel.menu.rename",
+                    "Rename channel…",
+                    ChannelField::Name,
+                ));
+                items.push(MenuItem::separator());
+            }
+            if rights.members {
                 let members_view = view.clone();
                 items.push(
                     MenuItem::new("channel.menu.add-members", "Add members…").on_click(
@@ -3464,15 +3520,18 @@ impl ChannelView {
                 MenuItem::new("channel.menu.leave", "Leave channel…")
                     .on_click(move |_, window, cx| leave.open(window, cx)),
             );
-            if model.is_some_and(|m| m.can_manage) {
+            let convert = rights.convert && model.is_some_and(|m| m.kind == ChannelKind::Public);
+            if convert || rights.archive {
                 items.push(MenuItem::separator());
-                if model.is_some_and(|m| m.kind == ChannelKind::Public) {
-                    let convert = self.convert.clone();
-                    items.push(
-                        MenuItem::new("channel.menu.convert", "Convert to private channel…")
-                            .on_click(move |_, window, cx| convert.open(window, cx)),
-                    );
-                }
+            }
+            if convert {
+                let convert = self.convert.clone();
+                items.push(
+                    MenuItem::new("channel.menu.convert", "Convert to private channel…")
+                        .on_click(move |_, window, cx| convert.open(window, cx)),
+                );
+            }
+            if rights.archive {
                 let archive = self.archive.clone();
                 items.push(
                     MenuItem::new("channel.menu.archive", "Archive channel…")
@@ -3488,6 +3547,11 @@ impl ChannelView {
         let Some(model) = self.model.as_ref() else {
             return;
         };
+        // Conversations' headers are anyone's; a channel's need the right.
+        let is_channel = matches!(model.kind, ChannelKind::Public | ChannelKind::Private);
+        if is_channel && !model.rights.edit {
+            return;
+        }
         let current = match field {
             ChannelField::Name => model.name.to_string(),
             ChannelField::Header => model.header.clone().unwrap_or_default().to_string(),
@@ -4203,6 +4267,7 @@ impl ChannelView {
             .when_some(author_name, |row, name| row.author_element(name))
             .timestamp(time.clone())
             .gutter_time(time.clone())
+            .copy_prefix(copy_prefix(post, cx))
             .when(
                 matches!(post.status, PostStatus::Sent | PostStatus::Ephemeral)
                     && !post.date.is_empty(),
@@ -5182,7 +5247,7 @@ impl ChannelView {
             LucideIcon::Hash
         };
         let mut empty = style::empty_state(glyph, title, description, cx);
-        if !direct && channel.manage_members {
+        if !direct && channel.rights.members {
             empty = empty.content(
                 EmptyContent::new().child(
                     Button::new("channel.empty.add-members")
@@ -5597,6 +5662,12 @@ fn people_suggestions<'a>(
 mod tests {
     use super::*;
 
+    /// A copy across messages reads one line per message (#108).
+    #[test]
+    fn a_copied_message_starts_with_its_sender_and_time() {
+        assert_eq!(copy_line("Ada", "12:24"), "Ada [12:24]: ");
+    }
+
     /// Connected with nothing open, the view no longer says Matty is not
     /// connected; it asks for a channel.
     #[gpui_kit::test]
@@ -5911,8 +5982,10 @@ mod tests {
             muted: false,
             posts: vec![],
             first_unread: None,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
         };
@@ -5982,8 +6055,10 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6092,8 +6167,10 @@ mod tests {
             muted: false,
             posts: vec![mine],
             first_unread: None,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6162,8 +6239,10 @@ mod tests {
             person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],
@@ -6207,8 +6286,10 @@ mod tests {
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],
@@ -6271,8 +6352,10 @@ mod tests {
             muted: false,
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6317,8 +6400,10 @@ mod tests {
             person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
-            can_manage: false,
-            manage_members: true,
+            rights: crate::channel::ChannelRights {
+                roles: false,
+                ..Default::default()
+            },
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],

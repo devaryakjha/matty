@@ -524,7 +524,7 @@ pub fn post_embeds(
                     card.into_any_element()
                 }
                 Embed::Attachment(attachment) => {
-                    let actions = crate::interactive::actions_row(
+                    let actions = crate::interactive::actions(
                         &element_id,
                         id,
                         &attachment.actions,
@@ -532,17 +532,9 @@ pub fn post_embeds(
                         &on_action,
                         cx,
                     );
-                    let card = attachment_element(element_id, id, index, attachment, density, cx);
-                    match actions {
-                        Some(actions) => div()
-                            .flex()
-                            .flex_col()
-                            .gap(theme.space(1.5))
-                            .child(card)
-                            .child(actions)
-                            .into_any_element(),
-                        None => card,
-                    }
+                    attachment_element(element_id, id, index, attachment, density, cx)
+                        .actions(actions)
+                        .into_any_element()
                 }
                 Embed::Permalink(quoted) => {
                     quoted_element(element_id, id, index, quoted, on_jump.clone(), cx)
@@ -715,7 +707,7 @@ fn attachment_element(
     attachment: &AttachmentCard,
     density: crate::ui::embed::MessageDensity,
     cx: &App,
-) -> gpui_kit::AnyElement {
+) -> MessageEmbed {
     let text_id =
         |part: &str| gpui_kit::ElementId::Name(format!("post.{id}.embed.{index}.{part}").into());
     let mut card = MessageEmbed::new(element_id).density(density);
@@ -772,7 +764,7 @@ fn attachment_element(
     if !attachment.footer.is_empty() {
         card = card.footer(attachment.footer.clone());
     }
-    card.into_any_element()
+    card
 }
 
 #[cfg(test)]
