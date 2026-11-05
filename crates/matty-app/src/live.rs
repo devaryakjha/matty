@@ -2328,6 +2328,18 @@ impl Live {
             ChangeSet::Failed(matty_sync::CommandError::Offline { action }) => {
                 update.offline_refused = Some(action);
             }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "save your profile",
+                error,
+                ..
+            }) => {
+                // The server's words without its id and status, such as
+                // a wrong password for a new email (#212).
+                let said = error
+                    .rsplit_once(" (")
+                    .map_or(error.as_str(), |(said, _)| said);
+                update.refused = Some(crate::t!("profile-save-failed", error = said));
+            }
             ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 if let Some(member) = member {
@@ -3582,6 +3594,21 @@ mod tests {
             assert!(!update.expired);
             assert!(!update.signed_out);
         }
+    }
+
+    /// #212: a profile the server refused, such as a new email with the
+    /// wrong password, says why in a toast.
+    #[test]
+    fn a_refused_profile_save_says_why() {
+        let mut live = live();
+        let update = live.apply(&ChangeSet::Failed(matty_sync::CommandError::Server {
+            action: "save your profile",
+            target: "me".into(),
+            error: "Login failed because of invalid password. (api.user.check_user_password.invalid.app_error, HTTP 401)".into(),
+        }));
+        let said = update.refused.expect("a toast");
+        assert!(said.contains("invalid password."), "{said}");
+        assert!(!said.contains("HTTP 401"), "{said}");
     }
 
     /// #163: an action that could not reach the server reaches the window
