@@ -2,6 +2,7 @@
 //! view draws a [`ChannelModel`] that sync will fill; until then it shows
 //! the empty state, or the preview fixtures with `MATTY_PREVIEW=1`.
 
+mod outgoing;
 mod slash;
 
 use gpui_icons::{LucideIcon, lucide};
@@ -450,6 +451,8 @@ pub struct Post {
     pub files: Vec<PostFile>,
     /// Link previews and message attachments under the body (#187).
     pub embeds: Vec<crate::embeds::Embed>,
+    /// Its priority label and acknowledgements (#220).
+    pub priority: Option<crate::priority::Shown>,
 }
 
 /// When "Remind me" brings a post back, as the webapp offers it.
@@ -925,7 +928,19 @@ pub enum ChannelEvent {
         /// False when the user removed the link's preview while composing,
         /// so the post shows none either (#188).
         unfurl: bool,
+        /// The priority the user picked, as the server allows it (#220).
+        priority: Option<matty_api::models::PostPriority>,
     },
+    /// The user scheduled the composer's text and these uploads for `at`
+    /// (ms since the epoch) (#220); the composer is already clear.
+    Schedule {
+        text: SharedString,
+        files: Vec<SharedString>,
+        at: i64,
+        priority: Option<matty_api::models::PostPriority>,
+    },
+    /// "See all" on the composer's scheduled line: the Scheduled tab.
+    OpenScheduled,
     /// The user picked, dropped or pasted a file; sync uploads it and
     /// reports back through `set_upload_status`.
     Upload {
@@ -1031,6 +1046,12 @@ pub enum ChannelEvent {
     PostAction(crate::interactive::ActionChoice),
     /// A slash command needs the server or the window (#210).
     Slash(crate::slash::Request),
+    /// The user acknowledged a post that asked for it, or took it back
+    /// (#220); sync shows it at once.
+    Acknowledge {
+        post: SharedString,
+        acknowledged: bool,
+    },
     /// The user dismissed an ephemeral message (#211); the row is gone.
     DismissEphemeral(SharedString),
     /// The user asked to be reminded of `post` (#213).
@@ -1188,6 +1209,10 @@ pub struct ChannelView {
     action_menus: crate::interactive::Menus,
     /// Slash commands typed in the composer (#210).
     slash: crate::slash::Slash,
+    /// The priority the next post goes with (#220).
+    priority: crate::priority::Choice,
+    /// Picks a custom time for "Schedule message" (#220).
+    schedule_dialog: Entity<crate::scheduled::ScheduleDialog>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1354,7 +1379,9 @@ impl ChannelView {
         let notifications = cx.new(|_| NotificationsView::new());
         let add_members = cx.new(|cx| AddMembersView::new(window, cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
+        let (schedule_dialog, scheduling) = outgoing::schedule_dialog(window, cx);
         let subscriptions = vec![
+            scheduling,
             cx.subscribe(&edit, |this, _, event: &ChannelEditEvent, cx| {
                 let ChannelEditEvent::Save { field, value } = event;
                 this.apply_edit(*field, value.clone(), cx);
@@ -1480,6 +1507,8 @@ impl ChannelView {
             split_controls: false,
             action_menus: Default::default(),
             slash: Default::default(),
+            priority: crate::preview::composer_priority(),
+            schedule_dialog,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -2491,6 +2520,7 @@ impl ChannelView {
         let Some(mut model) = self.model.clone() else {
             return;
         };
+        let priority = self.take_priority(cx);
         self.pending_seq += 1;
         let last = model.posts.last();
         let post = Post {
@@ -2516,6 +2546,7 @@ impl ChannelView {
             reply_to: None,
             files,
             embeds: Vec::new(),
+            priority: Self::shown_priority(priority.as_ref()),
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
@@ -2532,6 +2563,7 @@ impl ChannelView {
             text: body,
             files: file_ids,
             unfurl,
+            priority,
         });
     }
 
@@ -4045,9 +4077,26 @@ impl ChannelView {
             // Queued: a clock marks "Will send when back online" (#195).
             row = row.header_child(queued_marker(&theme));
         }
+        if let Some(label) = crate::priority::label(post.priority.as_ref(), cx) {
+            row = row.header_child(label);
+        }
         for marker in post_markers(post, &theme) {
             row = row.header_child(marker);
         }
+        let ack_view = cx.entity().downgrade();
+        let ack_post = id.clone();
+        row = row.children(crate::priority::ack_bar(
+            &id,
+            post.priority.as_ref(),
+            post.status == PostStatus::Sent,
+            std::rc::Rc::new(move |acknowledged, _, cx| {
+                let post = ack_post.clone();
+                ack_view
+                    .update(cx, |this, cx| this.acknowledge(post, acknowledged, cx))
+                    .ok();
+            }),
+            cx,
+        ));
         if !post.reactions.is_empty() {
             // The chip row gets an add button; posts without reactions use
             // the hover toolbar, so the transcript stays quiet.
@@ -4690,6 +4739,8 @@ impl ChannelView {
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
             .pb(theme.space(4.))
+            .children(self.scheduled_hint(cx))
+            .children(self.priority_tag(cx))
             .children(link_preview)
             .children(tray)
             .children(crate::slash::error_line(
@@ -4742,8 +4793,10 @@ impl ChannelView {
                             }),
                         ),
                     ))
+                    .children(self.priority_button(cx))
                     .child(div().flex_1())
                     .children(counter)
+                    .children(self.schedule_button(cx))
                     .child(style::tipped(
                         "composer.send.tip",
                         actions::send_tooltip("Send", send_on),
@@ -5027,6 +5080,7 @@ impl Render for ChannelView {
             .child(self.archive_dialog(window, cx))
             .child(self.convert_dialog(window, cx))
             .child(self.lightbox(window, cx))
+            .child(self.schedule_dialog.clone())
     }
 }
 
@@ -5440,6 +5494,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            priority: None,
         }
     }
 

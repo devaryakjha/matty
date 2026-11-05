@@ -181,6 +181,7 @@ mod drafts;
 mod other_servers;
 mod popouts;
 mod preferences;
+mod priority;
 mod quick_switch;
 mod servers;
 mod slash;
@@ -293,6 +294,10 @@ pub struct MainWindow {
     /// Views the open channel a moment after a post arrives in it, if the
     /// user can see it then (#145).
     _view_task: Option<gpui_kit::Task<()>>,
+    /// Urgent posts whose notification repeats until read or
+    /// acknowledged (#220).
+    persistent: matty_notify::Persistent,
+    _persistent_task: Option<gpui_kit::Task<()>>,
     /// The open channel the user marked unread: it is not viewed again
     /// until they switch away and back (#146).
     kept_unread: Option<gpui_kit::SharedString>,
@@ -409,6 +414,8 @@ impl MainWindow {
             pane
         });
         if crate::preview::enabled() {
+            cx.set_global(crate::priority::Features::all());
+            cx.set_global(crate::scheduled::Scheduled(crate::preview::scheduled()));
             cx.set_global(crate::preview::avatars());
             crate::preview::share_pictures(cx);
             cx.set_global(crate::preview::downloads());
@@ -509,6 +516,7 @@ impl MainWindow {
             DraftsModel::default()
         };
         let drafts = cx.new(|_| DraftsView::new(drafts_model));
+        Self::add_scheduled_tab(&drafts, window, cx);
         cx.subscribe_in(
             &drafts,
             window,
@@ -595,10 +603,28 @@ impl MainWindow {
                 ChannelEvent::ViewProfile(profile) => {
                     this.show_listing(RightPaneContent::Profile(profile.clone()), cx)
                 }
+                ChannelEvent::Schedule {
+                    text,
+                    files,
+                    at,
+                    priority,
+                } => {
+                    if let Some(channel) = this.selected_channel.clone() {
+                        this.schedule_message(
+                            channel.to_string(),
+                            String::new(),
+                            (text, files, *at),
+                            priority.clone(),
+                            cx,
+                        );
+                    }
+                }
+                ChannelEvent::OpenScheduled => this.show_scheduled(cx),
                 ChannelEvent::Send {
                     text,
                     files,
                     unfurl,
+                    priority,
                 } => {
                     if let (Some(live), Some(channel)) = (&mut this.live, &this.selected_channel) {
                         let (file_ids, local_files) = live.take_files(files);
@@ -610,9 +636,12 @@ impl MainWindow {
                             file_ids,
                             local_files,
                             props: crate::embeds::send_props(*unfurl),
-                            priority: None,
+                            priority: priority.clone(),
                         });
                     }
+                }
+                ChannelEvent::Acknowledge { post, acknowledged } => {
+                    this.acknowledge(post, *acknowledged, cx)
                 }
                 ChannelEvent::ToggleReaction { post, emoji } => {
                     if let Some(live) = &this.live {
@@ -1123,6 +1152,8 @@ impl MainWindow {
             forget: None,
             _typing_task: None,
             _view_task: None,
+            persistent: matty_notify::Persistent::default(),
+            _persistent_task: None,
             kept_unread: None,
             link_asked: None,
             link_join: DialogHandle::new(false),
@@ -2035,6 +2066,12 @@ impl MainWindow {
             self.channel
                 .update(cx, |view, cx| view.set_link_preview(&url, card, cx));
         }
+        if let Some(features) = update.features {
+            crate::priority::Features::set(features, cx);
+        }
+        if let Some(scheduled) = update.scheduled.take() {
+            self.scheduled_changed(scheduled, cx);
+        }
         if let Some(arrival) = update.arrived {
             self.notify(&arrival, window, cx);
             if self.selected_channel.as_deref() == Some(arrival.event.channel_id.as_str()) {
@@ -2328,6 +2365,7 @@ impl MainWindow {
     /// Shows the unsent messages in place of the channel.
     fn show_drafts(&mut self, cx: &mut Context<Self>) {
         self.drafts_open = true;
+        self.refresh_scheduled(cx);
         if std::mem::take(&mut self.threads_open) {
             self.leave_thread();
         }
@@ -2885,6 +2923,9 @@ impl MainWindow {
                 }
             }
             RightPaneEvent::MarkUnread(post) => self.mark_unread(post, cx),
+            RightPaneEvent::Acknowledge { post, acknowledged } => {
+                self.acknowledge(post, *acknowledged, cx)
+            }
             RightPaneEvent::SuggestPeople(term) => {
                 if let Some(live) = &self.live {
                     live.send(matty_sync::Command::SuggestPeople {
@@ -3866,7 +3907,12 @@ impl MainWindow {
 
     /// Shows a notification for a post that just arrived, unless the
     /// policy says the user already sees it or does not want it.
-    fn notify(&self, arrival: &crate::live::Arrival, window: &Window, cx: &Context<Self>) {
+    fn notify(
+        &mut self,
+        arrival: &crate::live::Arrival,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let visible_thread = self
             .right_pane_open
             .then(|| match self.right_pane.read(cx).content() {
@@ -3893,6 +3939,7 @@ impl MainWindow {
         let app = crate::popout::seen_by_focused(app, cx);
         if let Some(notification) = arrival.decide(app) {
             self.notifier.show(&notification);
+            self.repeat_if_persistent(arrival, notification, window, cx);
         }
     }
 

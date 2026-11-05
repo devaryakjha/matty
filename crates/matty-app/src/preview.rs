@@ -33,6 +33,71 @@ pub fn enabled() -> bool {
     value().is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+/// `MATTY_PREVIEW=priority` adds an urgent post asking for
+/// acknowledgements and an important one to #general, picks Urgent in its
+/// composer, and schedules two messages there (#220).
+pub fn priority() -> bool {
+    value().as_deref() == Some("priority")
+}
+
+/// The composer's priority under `MATTY_PREVIEW=priority`.
+pub fn composer_priority() -> crate::priority::Choice {
+    if priority() {
+        crate::priority::Choice {
+            level: crate::priority::Level::Urgent,
+            ack: true,
+            persistent: false,
+        }
+    } else {
+        crate::priority::Choice::default()
+    }
+}
+
+/// The scheduled messages under `MATTY_PREVIEW=priority`: two in #general,
+/// tomorrow and Monday morning.
+pub fn scheduled() -> std::sync::Arc<[matty_api::models::ScheduledPost]> {
+    if !priority() {
+        return std::sync::Arc::from([]);
+    }
+    let now = jiff::Zoned::now();
+    let presets = crate::scheduled::presets(&now, crate::settings::ClockFormat::TwentyFourHour);
+    let at = |index: usize| presets.get(index).or(presets.first()).map_or(0, |p| p.at);
+    std::sync::Arc::from([
+        matty_api::models::ScheduledPost {
+            id: "s1".into(),
+            channel_id: "general".into(),
+            message: "Standup notes: the Windows fix is in, release goes out after QA.".into(),
+            scheduled_at: at(0),
+            metadata: matty_api::models::ScheduledMetadata {
+                priority: Some(matty_api::models::PostPriority {
+                    priority: matty_api::models::PostPriority::IMPORTANT.into(),
+                    requested_ack: true,
+                    persistent_notifications: false,
+                }),
+            },
+            ..Default::default()
+        },
+        matty_api::models::ScheduledPost {
+            id: "s2".into(),
+            channel_id: "general".into(),
+            message: "Weekly reminder: update your tickets before planning.".into(),
+            scheduled_at: at(1),
+            ..Default::default()
+        },
+    ])
+}
+
+/// The Scheduled tab's rows for [`scheduled`].
+pub fn scheduled_rows() -> Vec<crate::scheduled::Row> {
+    scheduled()
+        .iter()
+        .map(|post| crate::scheduled::Row {
+            post: post.clone(),
+            place: "#general".into(),
+        })
+        .collect()
+}
+
 /// A sidebar with every row state DESIGN.md §4 describes.
 /// `MATTY_PREVIEW=login` shows the sign-in card at its methods step over the
 /// fixtures, and `MATTY_PREVIEW=login-error` the same with a failed sign-in.
@@ -572,6 +637,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        priority: None,
     };
     let reaction = |emoji: &str, count: usize, mine: bool, users: &[&str]| PostReaction {
         emoji: emoji.into(),
@@ -839,6 +905,42 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "08:38",
                 "Today",
                 "Pushing the title bar fix now.",
+            )
+        });
+    }
+    if priority() {
+        let ack = |name: &str| crate::priority::Ack {
+            user_id: person(name),
+            name: name.into(),
+        };
+        posts.push(Post {
+            mentions_me: true,
+            priority: Some(crate::priority::Shown {
+                level: crate::priority::Level::Urgent,
+                requested_ack: true,
+                persistent: true,
+                acks: vec![ack("Sam Okafor"), ack("Lena Fischer")],
+                mine: None,
+            }),
+            ..post(
+                "p8d",
+                "Priya Nair",
+                "08:36",
+                "Today",
+                "@arya the release build is failing on Windows. Can you confirm you've seen this before standup?",
+            )
+        });
+        posts.push(Post {
+            priority: Some(crate::priority::Shown {
+                level: crate::priority::Level::Important,
+                ..Default::default()
+            }),
+            ..post(
+                "p8e",
+                "Jonas Weber",
+                "08:37",
+                "Today",
+                "Reminder: the code freeze starts at 17:00 today.",
             )
         });
     }
@@ -1189,6 +1291,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        priority: None,
     };
     vec![
         post("p10", "Jonas Weber", "08:41", "Found it, thanks!"),
@@ -1674,6 +1777,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        priority: None,
     };
     // Build Bot's thread carries the deploy conversation (#211): a reply
     // with its own buttons and an answer only the viewer sees.

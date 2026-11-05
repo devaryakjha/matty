@@ -1349,10 +1349,29 @@ impl PopOutView {
         }
         let channel_id = channel.to_string();
         let command = match event {
+            ChannelEvent::Schedule {
+                text,
+                files,
+                at,
+                priority,
+            } => {
+                let (file_ids, _) = live.take_files(files);
+                matty_sync::Command::Schedule(Box::new(matty_api::models::ScheduledPost {
+                    channel_id,
+                    message: text.to_string(),
+                    file_ids,
+                    scheduled_at: *at,
+                    metadata: matty_api::models::ScheduledMetadata {
+                        priority: priority.clone(),
+                    },
+                    ..Default::default()
+                }))
+            }
             ChannelEvent::Send {
                 text,
                 files,
                 unfurl,
+                priority,
             } => {
                 let (file_ids, local_files) = live.take_files(files);
                 matty_sync::Command::SendPost {
@@ -1363,7 +1382,7 @@ impl PopOutView {
                     file_ids,
                     local_files,
                     props: crate::embeds::send_props(*unfurl),
-                    priority: None,
+                    priority: priority.clone(),
                 }
             }
             ChannelEvent::Typing { root } => matty_sync::Command::Typing {
@@ -1393,6 +1412,10 @@ impl PopOutView {
                 }
                 return;
             }
+            ChannelEvent::Acknowledge { post, acknowledged } => matty_sync::Command::Acknowledge {
+                post_id: post.to_string(),
+                acknowledged: *acknowledged,
+            },
             ChannelEvent::ToggleReaction { post, emoji } => matty_sync::Command::ToggleReaction {
                 post_id: post.to_string(),
                 emoji_name: crate::transcript::emoji_name(emoji),
@@ -1590,6 +1613,12 @@ impl PopOutView {
             RightPaneEvent::DismissEphemeral(post) => {
                 let update = live.dismiss_ephemeral(post);
                 return self.apply_update(update, window, cx);
+            }
+            RightPaneEvent::Acknowledge { post, acknowledged } => {
+                matty_sync::Command::Acknowledge {
+                    post_id: post.to_string(),
+                    acknowledged: *acknowledged,
+                }
             }
             RightPaneEvent::ToggleReaction { post, emoji } => matty_sync::Command::ToggleReaction {
                 post_id: post.to_string(),

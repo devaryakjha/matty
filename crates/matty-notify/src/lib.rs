@@ -5,11 +5,13 @@ pub mod backend;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod mention;
+pub mod persistent;
 pub mod policy;
 pub mod sound;
 
 pub use backend::{Badge, Clicked, Notifier};
 pub use mention::{KeywordList, MentionKeys};
+pub use persistent::Persistent;
 pub use policy::{
     AppState, ChannelKind, ChannelPrefs, Event, Level, Notification, UserPrefs, decide, dnd_active,
 };
