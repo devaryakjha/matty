@@ -654,6 +654,25 @@ async fn priority_goes_under_metadata_and_only_when_set() {
     assert_eq!(post.metadata.acknowledgements[0].user_id, "u2");
 }
 
+#[test]
+fn a_label_only_priority_reads_its_null_requests_as_off() {
+    // What a server without the acknowledgement license sends back for
+    // an urgent post.
+    let post: Post = serde_json::from_value(json!({
+        "id": "p1", "channel_id": "c1", "message": "deploy now",
+        "metadata": {"priority": {
+            "priority": "urgent",
+            "requested_ack": null,
+            "persistent_notifications": null,
+            "PostId": "p1",
+        }},
+    }))
+    .unwrap();
+    let priority = post.metadata.priority.unwrap();
+    assert!(priority.is_urgent());
+    assert!(!priority.requested_ack && !priority.persistent_notifications);
+}
+
 #[tokio::test]
 async fn acknowledgements_post_and_delete_for_the_user() {
     let server = MockServer::start().await;
