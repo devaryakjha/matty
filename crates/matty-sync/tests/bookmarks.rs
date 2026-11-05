@@ -139,7 +139,7 @@ async fn bookmarks_load_change_and_undo_a_refusal() {
 /// bookmark at it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_bookmark_uploads_its_file_first() {
-    let server = server().await;
+    let server = server_licensed(json!({})).await;
     Mock::given(method("GET"))
         .and(path("/api/v4/channels/c1/bookmarks"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
