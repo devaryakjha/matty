@@ -1363,6 +1363,7 @@ impl PopOutView {
                     file_ids,
                     local_files,
                     props: crate::embeds::send_props(*unfurl),
+                    priority: None,
                 }
             }
             ChannelEvent::Typing { root } => matty_sync::Command::Typing {
@@ -1550,6 +1551,7 @@ impl PopOutView {
                     file_ids,
                     local_files,
                     props: crate::embeds::send_props(*unfurl),
+                    priority: None,
                 }
             }
             RightPaneEvent::SuggestPeople(term) => matty_sync::Command::SuggestPeople {

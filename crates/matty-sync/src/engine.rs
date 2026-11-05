@@ -182,6 +182,9 @@ pub enum Command {
         /// Post properties, such as `remove_link_preview` when the user
         /// removed the link preview while composing (#188).
         props: std::collections::HashMap<String, serde_json::Value>,
+        /// Message priority, for a root post on a server that has it
+        /// (#220); `None` for a standard post.
+        priority: Option<matty_api::models::PostPriority>,
     },
     /// Sends a failed post again.
     Retry {
@@ -648,6 +651,30 @@ pub enum Command {
         /// Pin it, or unpin it.
         pinned: bool,
     },
+    /// Acknowledges a post that asked for it, or takes the
+    /// acknowledgement back (#220). Shown at once; undone if the server
+    /// refuses, as it does past its window for taking one back.
+    Acknowledge {
+        /// The post.
+        post_id: String,
+        /// Acknowledge it, or take it back.
+        acknowledged: bool,
+    },
+    /// Schedules a message, or changes a scheduled one when it has an id
+    /// (#220); [`ChangeSet::Scheduled`](crate::ChangeSet::Scheduled)
+    /// follows the server's answer.
+    Schedule(Box<matty_api::models::ScheduledPost>),
+    /// Sends a scheduled message now: it goes through the outbox like any
+    /// post and leaves the scheduled list.
+    SendScheduledNow {
+        /// The scheduled message.
+        id: String,
+    },
+    /// Deletes a scheduled message.
+    DeleteScheduled {
+        /// The scheduled message.
+        id: String,
+    },
     /// Creates a channel the user is then in;
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
     CreateChannel {
@@ -1013,6 +1040,26 @@ impl std::fmt::Debug for Command {
                 .debug_struct("FindPeople")
                 .field("team_id", team_id)
                 .finish(),
+            Self::Acknowledge {
+                post_id,
+                acknowledged,
+            } => f
+                .debug_struct("Acknowledge")
+                .field("post_id", post_id)
+                .field("acknowledged", acknowledged)
+                .finish(),
+            // The message is the user's own words.
+            Self::Schedule(post) => f
+                .debug_struct("Schedule")
+                .field("id", &post.id)
+                .field("channel_id", &post.channel_id)
+                .finish_non_exhaustive(),
+            Self::SendScheduledNow { id } => {
+                f.debug_struct("SendScheduledNow").field("id", id).finish()
+            }
+            Self::DeleteScheduled { id } => {
+                f.debug_struct("DeleteScheduled").field("id", id).finish()
+            }
             Self::CreateChannel { team_id, name, .. } => f
                 .debug_struct("CreateChannel")
                 .field("team_id", team_id)
@@ -1061,6 +1108,8 @@ pub(crate) struct Dirty {
     pub(crate) resync: bool,
     /// Change sets that carry their own data.
     pub(crate) direct: Vec<ChangeSet>,
+    /// Changes to the scheduled messages (#220).
+    pub(crate) scheduled: Vec<crate::priority::ScheduledChange>,
 }
 
 /// The signed-in session the engine loads with.
@@ -1132,6 +1181,8 @@ pub(crate) struct Engine {
     thread_pages: std::collections::HashMap<String, ThreadPages>,
     /// How far each team's Threads list is loaded (#122).
     thread_list_pages: std::collections::HashMap<String, ListPages>,
+    /// The user's scheduled messages (#220).
+    scheduled: crate::priority::Scheduled,
 }
 
 impl Engine {
@@ -1163,6 +1214,7 @@ impl Engine {
             floors: std::collections::HashMap::new(),
             thread_pages: std::collections::HashMap::new(),
             thread_list_pages: std::collections::HashMap::new(),
+            scheduled: crate::priority::Scheduled::default(),
         }
     }
 
@@ -1231,6 +1283,11 @@ impl Engine {
                     // The new subscriber has seen no one yet.
                     self.sent_users.clear();
                     self.sent_channels.clear();
+                    if !self.scheduled.is_empty() {
+                        dirty
+                            .direct
+                            .push(ChangeSet::Scheduled(self.scheduled.snapshot()));
+                    }
                 }
                 Message::Command(Command::Connect { client }) => {
                     if let Some(old) = self.session.take() {
@@ -1430,6 +1487,7 @@ impl Engine {
                     file_ids,
                     local_files,
                     props,
+                    priority,
                 }) => {
                     let Some(me) = self.me.clone() else {
                         dirty
@@ -1455,6 +1513,7 @@ impl Engine {
                             .collect(),
                         props,
                         created_at: now,
+                        priority,
                         ..Outgoing::default()
                     };
                     outbox::queue(&tx, &outgoing, &me, dirty)?;
@@ -1997,6 +2056,61 @@ impl Engine {
                 }
                 Message::Command(Command::SetPinned { post_id, pinned }) => {
                     writes.push(Write::Pin { post_id, pinned });
+                }
+                Message::Command(Command::Acknowledge {
+                    post_id,
+                    acknowledged,
+                }) => {
+                    let me = self.me.clone().unwrap_or_default();
+                    // Offline it would show here and never reach the server.
+                    if me.is_empty() || !connected(self.session.as_ref()) {
+                        dirty.direct.push(ChangeSet::Failed(CommandError::Offline {
+                            action: crate::priority::ack_action(acknowledged),
+                        }));
+                        continue;
+                    }
+                    let ack = matty_api::models::PostAcknowledgement {
+                        user_id: me,
+                        post_id: post_id.clone(),
+                        acknowledged_at: posts::now_ms(),
+                    };
+                    crate::priority::acknowledge_locally(&tx, &ack, acknowledged, dirty)?;
+                    writes.push(Write::Acknowledge {
+                        post_id,
+                        acknowledged,
+                    });
+                }
+                Message::Command(Command::Schedule(post)) => writes.push(Write::Schedule(post)),
+                Message::Command(Command::DeleteScheduled { id }) => {
+                    dirty
+                        .scheduled
+                        .push(crate::priority::ScheduledChange::Remove(id.clone()));
+                    writes.push(Write::DeleteScheduled { id });
+                }
+                Message::Command(Command::SendScheduledNow { id }) => {
+                    let (Some(me), Some(post)) =
+                        (self.me.clone(), self.scheduled.get(&id).cloned())
+                    else {
+                        continue;
+                    };
+                    let now = posts::now_ms();
+                    let outgoing = Outgoing {
+                        pending_post_id: format!("{me}:{now}"),
+                        channel_id: post.channel_id,
+                        root_id: post.root_id,
+                        message: post.message,
+                        file_ids: post.file_ids,
+                        props: post.props,
+                        created_at: now,
+                        priority: post.metadata.priority,
+                        ..Outgoing::default()
+                    };
+                    outbox::queue(&tx, &outgoing, &me, dirty)?;
+                    sends.push(outgoing.channel_id);
+                    dirty
+                        .scheduled
+                        .push(crate::priority::ScheduledChange::Remove(id.clone()));
+                    writes.push(Write::DeleteScheduled { id });
                 }
                 Message::Command(Command::CreateChannel {
                     team_id,
@@ -3521,6 +3635,32 @@ impl Engine {
                     },
                 }));
             }
+            Loaded::Scheduled(change) => dirty.scheduled.push(change),
+            Loaded::Acknowledged { ack, acknowledged } => {
+                crate::priority::acknowledge_locally(self.store.conn(), &ack, acknowledged, dirty)?;
+            }
+            Loaded::AckFailed {
+                ack,
+                acknowledged,
+                error,
+            } => {
+                // Undo what the store showed.
+                crate::priority::acknowledge_locally(
+                    self.store.conn(),
+                    &ack,
+                    !acknowledged,
+                    dirty,
+                )?;
+                let action = crate::priority::ack_action(acknowledged);
+                dirty.direct.push(ChangeSet::Failed(match error {
+                    None => CommandError::Offline { action },
+                    Some(error) => CommandError::Server {
+                        action,
+                        target: ack.post_id,
+                        error,
+                    },
+                }));
+            }
             Loaded::ListingOffline(listing) => {
                 let change = cached_listing(self.store.conn(), listing)?;
                 dirty.direct.push(change);
@@ -3567,6 +3707,11 @@ impl Engine {
         }
         if dirty.resync {
             self.resync();
+        }
+        if self.scheduled.apply(std::mem::take(&mut dirty.scheduled)) {
+            dirty
+                .direct
+                .push(ChangeSet::Scheduled(self.scheduled.snapshot()));
         }
         let mut changes = dirty.direct;
         let conn = self.store.conn();

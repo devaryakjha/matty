@@ -610,6 +610,7 @@ impl MainWindow {
                             file_ids,
                             local_files,
                             props: crate::embeds::send_props(*unfurl),
+                            priority: None,
                         });
                     }
                 }
@@ -1521,6 +1522,7 @@ impl MainWindow {
             file_ids: Vec::new(),
             local_files: Vec::new(),
             props: crate::embeds::send_props(true),
+            priority: None,
         });
         let name = self.channel_name(to, cx);
         self.toasts.update(cx, |toasts, cx| {
@@ -2994,6 +2996,7 @@ impl MainWindow {
                         file_ids,
                         local_files,
                         props: crate::embeds::send_props(*unfurl),
+                        priority: None,
                     });
                 }
             }

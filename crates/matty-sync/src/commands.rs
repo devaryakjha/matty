@@ -169,6 +169,18 @@ pub(crate) enum Write {
     },
     /// Finds what a link names, which the cache did not know.
     Resolve(crate::LinkQuery),
+    /// Acknowledges a post, or takes it back (#220); the store already
+    /// shows it, so a failure undoes it.
+    Acknowledge {
+        post_id: String,
+        acknowledged: bool,
+    },
+    /// Creates a scheduled message, or changes one that has an id.
+    Schedule(Box<matty_api::models::ScheduledPost>),
+    /// Deletes a scheduled message: cancelled, or sent now.
+    DeleteScheduled {
+        id: String,
+    },
     /// Finds who matches a typed `@name`.
     Suggest {
         term: String,
@@ -229,6 +241,10 @@ impl Write {
             Self::Follow { follow: false, .. } => "unfollow thread",
             Self::Resolve(_) => "open link",
             Self::Suggest { .. } => "suggest people",
+            Self::Acknowledge { acknowledged, .. } => crate::priority::ack_action(*acknowledged),
+            Self::Schedule(post) if post.id.is_empty() => "schedule message",
+            Self::Schedule(_) => "change scheduled message",
+            Self::DeleteScheduled { .. } => "delete scheduled message",
         }
     }
 
@@ -275,6 +291,9 @@ impl Write {
             }
             Self::Create(channel) => channel.name.clone(),
             Self::Suggest { term, .. } => term.clone(),
+            Self::Acknowledge { post_id, .. } => post_id.clone(),
+            Self::Schedule(post) => post.channel_id.clone(),
+            Self::DeleteScheduled { id } => id.clone(),
             Self::SubmitDialog(submit) => submit.callback_id.clone(),
             Self::SuggestCommands { channel_id, .. } => channel_id.clone(),
             Self::ExecuteCommand(command) => command.channel_id.clone(),
@@ -393,6 +412,52 @@ pub(crate) async fn run(
                         .await?;
                 }
                 None
+            }
+            Write::Acknowledge {
+                post_id,
+                acknowledged,
+            } => {
+                let result = if acknowledged {
+                    client.acknowledge_post(&user_id, &post_id).await
+                } else {
+                    client
+                        .unacknowledge_post(&user_id, &post_id)
+                        .await
+                        .map(|()| matty_api::models::PostAcknowledgement {
+                            user_id: user_id.clone(),
+                            post_id: post_id.clone(),
+                            acknowledged_at: 0,
+                        })
+                };
+                Some(match result {
+                    Ok(ack) => Loaded::Acknowledged { ack, acknowledged },
+                    Err(error) => Loaded::AckFailed {
+                        ack: matty_api::models::PostAcknowledgement {
+                            user_id: user_id.clone(),
+                            post_id,
+                            acknowledged_at: 0,
+                        },
+                        acknowledged,
+                        error: told(&error),
+                    },
+                })
+            }
+            Write::Schedule(mut post) => {
+                post.user_id.clone_from(&user_id);
+                let saved = if post.id.is_empty() {
+                    client.schedule_post(&post).await?
+                } else {
+                    client.update_scheduled_post(&post).await?
+                };
+                Some(Loaded::Scheduled(crate::priority::ScheduledChange::Upsert(
+                    saved,
+                )))
+            }
+            Write::DeleteScheduled { id } => {
+                client.delete_scheduled_post(&id).await?;
+                Some(Loaded::Scheduled(crate::priority::ScheduledChange::Remove(
+                    id,
+                )))
             }
             Write::Delete { post_id } => {
                 client.delete_post(&post_id).await?;

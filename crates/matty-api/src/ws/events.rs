@@ -546,15 +546,9 @@ fn decode_known(raw: &RawEvent) -> Result<Option<WsEvent>, String> {
         "draft_created" => WsEvent::DraftCreated(required(data, "draft")?),
         "draft_updated" => WsEvent::DraftUpdated(required(data, "draft")?),
         "draft_deleted" => WsEvent::DraftDeleted(required(data, "draft")?),
-        "scheduled_post_created" => {
-            WsEvent::ScheduledPostCreated(required(data, "scheduledPost")?)
-        }
-        "scheduled_post_updated" => {
-            WsEvent::ScheduledPostUpdated(required(data, "scheduledPost")?)
-        }
-        "scheduled_post_deleted" => {
-            WsEvent::ScheduledPostDeleted(required(data, "scheduledPost")?)
-        }
+        "scheduled_post_created" => WsEvent::ScheduledPostCreated(required(data, "scheduledPost")?),
+        "scheduled_post_updated" => WsEvent::ScheduledPostUpdated(required(data, "scheduledPost")?),
+        "scheduled_post_deleted" => WsEvent::ScheduledPostDeleted(required(data, "scheduledPost")?),
         _ => return Ok(None),
     };
     Ok(Some(event))

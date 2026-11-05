@@ -508,3 +508,62 @@ fn clearing_the_outbox_drops_queued_sends_and_their_rows_only() {
     assert!(posts::post(conn, "sent").unwrap().is_some());
     assert_eq!(outbox::clear(conn).unwrap(), 0);
 }
+
+#[test]
+fn a_queued_send_keeps_its_priority() {
+    use matty_api::models::PostPriority;
+    use matty_store::outbox::{self, Outgoing};
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    let urgent = PostPriority {
+        priority: PostPriority::URGENT.into(),
+        requested_ack: true,
+        persistent_notifications: false,
+    };
+    for (id, priority) in [("me:1", Some(urgent.clone())), ("me:2", None)] {
+        outbox::push(
+            conn,
+            &Outgoing {
+                pending_post_id: id.into(),
+                channel_id: "c".into(),
+                priority,
+                ..Outgoing::default()
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        outbox::get(conn, "me:1").unwrap().unwrap().priority,
+        Some(urgent)
+    );
+    assert_eq!(outbox::get(conn, "me:2").unwrap().unwrap().priority, None);
+}
+
+#[test]
+fn acknowledgements_are_kept_in_the_posts_metadata() {
+    use matty_api::models::PostAcknowledgement;
+    let store = Store::open_in_memory().unwrap();
+    let conn = store.conn();
+    posts::insert_posts(conn, &[post("p", "c", 10)]).unwrap();
+    let ack = |user: &str, at| PostAcknowledgement {
+        user_id: user.into(),
+        post_id: "p".into(),
+        acknowledged_at: at,
+    };
+    assert!(posts::set_acknowledgement(conn, &ack("u2", 20), true).unwrap());
+    assert!(posts::set_acknowledgement(conn, &ack("u3", 30), true).unwrap());
+    // Again for the same person replaces theirs.
+    assert!(posts::set_acknowledgement(conn, &ack("u2", 40), true).unwrap());
+    let stored = posts::post(conn, "p").unwrap().unwrap();
+    assert_eq!(
+        stored.metadata.acknowledgements,
+        vec![ack("u3", 30), ack("u2", 40)]
+    );
+    assert!(posts::set_acknowledgement(conn, &ack("u2", 0), false).unwrap());
+    let stored = posts::post(conn, "p").unwrap().unwrap();
+    assert_eq!(stored.metadata.acknowledgements, vec![ack("u3", 30)]);
+    // A post the cache does not hold is left alone.
+    let mut elsewhere = ack("u2", 50);
+    elsewhere.post_id = "missing".into();
+    assert!(!posts::set_acknowledgement(conn, &elsewhere, true).unwrap());
+}

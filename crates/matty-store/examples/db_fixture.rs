@@ -193,6 +193,13 @@ fn fill(conn: &rusqlite::Connection, version: i64) -> Result<(), Box<dyn std::er
             [],
         )?;
     }
+    if version >= 5 {
+        conn.execute(
+            "UPDATE outbox SET priority = '{\"priority\":\"urgent\",\"requested_ack\":true,\"persistent_notifications\":false}'
+             WHERE pending_post_id = 'pending1'",
+            [],
+        )?;
+    }
     if version >= 2 {
         conn.execute(
             "INSERT INTO media (key, path, size, content_type, accessed_at)

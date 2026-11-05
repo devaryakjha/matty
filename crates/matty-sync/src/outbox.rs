@@ -33,6 +33,10 @@ pub(crate) fn queue(
         file_ids: outgoing.file_ids.clone(),
         props: outgoing.props.clone(),
         create_at,
+        metadata: matty_api::models::PostMetadata {
+            priority: outgoing.priority.clone(),
+            ..Default::default()
+        },
         ..Post::default()
     };
     // Only if absent: a retry must not undo a confirmation.
@@ -155,6 +159,9 @@ pub(crate) async fn send(client: Client, mut outgoing: Outgoing, results: Unboun
         file_ids: outgoing.file_ids,
         props: outgoing.props,
         pending_post_id: outgoing.pending_post_id.clone(),
+        priority: outgoing
+            .priority
+            .filter(matty_api::models::PostPriority::is_set),
     };
     let result: Result<Post, ApiError> = client.create_post(&request).await;
     let _ = results.send(match result {

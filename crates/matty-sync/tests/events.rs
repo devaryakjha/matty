@@ -741,3 +741,81 @@ mod fetches {
         server.verify().await;
     }
 }
+
+#[tokio::test]
+async fn acknowledgement_events_keep_the_post_current() {
+    use matty_api::models::PostAcknowledgement;
+    let ack = |user: &str| PostAcknowledgement {
+        user_id: user.into(),
+        post_id: "r1".into(),
+        acknowledged_at: 50,
+    };
+    let (seen, store, _dir) = run(vec![
+        open("c1"),
+        event(WsEvent::PostAcknowledgementAdded(ack("u2"))),
+        event(WsEvent::PostAcknowledgementAdded(ack(ME))),
+        event(WsEvent::PostAcknowledgementRemoved(ack("u2"))),
+    ])
+    .await;
+    let stored = posts::post(store.conn(), "r1").unwrap().unwrap();
+    assert_eq!(stored.metadata.acknowledgements, vec![ack(ME)]);
+    let shown = seen.iter().rev().find_map(|c| match c {
+        ChangeSet::Posts { posts, .. } => posts.iter().find(|p| p.id == "r1").cloned(),
+        _ => None,
+    });
+    assert_eq!(shown.unwrap().metadata.acknowledgements, vec![ack(ME)]);
+}
+
+#[tokio::test]
+async fn an_urgent_mention_counts_as_urgent() {
+    use matty_api::models::PostPriority;
+    let mut urgent = post("p2", "c1", "", "u2", 20);
+    urgent.metadata.priority = Some(PostPriority {
+        priority: PostPriority::URGENT.into(),
+        ..PostPriority::default()
+    });
+    let mut unmentioned = post("p3", "c1", "", "u2", 30);
+    unmentioned.metadata.priority = urgent.metadata.priority.clone();
+    let (_, store, _dir) = run(vec![posted(urgent, &[ME]), posted(unmentioned, &[])]).await;
+    let sections = sidebar::sidebar_snapshot(store.conn(), "t1", ME, UnreadMode::AllPosts).unwrap();
+    let row = sections[0].channels.iter().find(|c| c.id == "c1").unwrap();
+    assert_eq!(row.unreads.urgent_mentions, 1);
+}
+
+#[tokio::test]
+async fn scheduled_post_events_publish_the_list() {
+    use matty_api::models::ScheduledPost;
+    let scheduled = |id: &str, at: i64, message: &str| ScheduledPost {
+        id: id.into(),
+        channel_id: "c1".into(),
+        message: message.into(),
+        scheduled_at: at,
+        ..ScheduledPost::default()
+    };
+    let (seen, _, _dir) = run(vec![
+        event(WsEvent::ScheduledPostCreated(scheduled("s1", 200, "later"))),
+        event(WsEvent::ScheduledPostCreated(scheduled(
+            "s2", 100, "sooner",
+        ))),
+        event(WsEvent::ScheduledPostUpdated(scheduled(
+            "s1",
+            300,
+            "much later",
+        ))),
+        event(WsEvent::ScheduledPostDeleted(scheduled("s2", 100, ""))),
+    ])
+    .await;
+    let last = seen
+        .iter()
+        .rev()
+        .find_map(|c| match c {
+            ChangeSet::Scheduled(posts) => Some(posts.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(last.len(), 1);
+    assert_eq!(
+        (last[0].id.as_str(), last[0].message.as_str()),
+        ("s1", "much later")
+    );
+}

@@ -10,7 +10,8 @@ use crate::{
     ApiError, Client,
     models::{
         ChannelUnreadAt, ChannelViewed, Draft, Post, PostAcknowledgement, PostActionResponse,
-        PostList, Reaction, ScheduledPost, SubmitDialogRequest, SubmitDialogResponse, UserThread, UserThreads,
+        PostList, Reaction, ScheduledPost, SubmitDialogRequest, SubmitDialogResponse, UserThread,
+        UserThreads,
     },
 };
 

@@ -185,3 +185,61 @@ async fn a_saved_draft_and_its_files_come_back_after_a_relaunch() {
     };
     assert!(draft.is_none());
 }
+
+/// A Professional license, laid over the unlicensed fixture.
+async fn licensed(server: &wiremock::MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/v4/license/client"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "IsLicensed": "true", "SkuShortName": "professional"
+        })))
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scheduled_messages_are_not_listed_when_the_server_has_them_off() {
+    // Licensed but off, and on but unlicensed: neither lists them.
+    for (config, license) in [("false", true), ("true", false)] {
+        let server = server_with_config(json!({"ScheduledPosts": config})).await;
+        if license {
+            licensed(&server).await;
+        }
+        let (_sync, _changes) = connected(&server).await;
+        let paths = requested(&server).await;
+        assert!(
+            !paths.iter().any(|p| p.contains("scheduled")),
+            "called {paths:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scheduled_messages_load_on_connect_when_the_server_has_them() {
+    let server = server_with_config(json!({"ScheduledPosts": "true"})).await;
+    licensed(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/posts/scheduled/team/t1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "t1": [{"id": "s1", "channel_id": "c1", "message": "later",
+                    "scheduled_at": 1_800_000_000_000_i64}],
+            "directChannels": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let sync = matty_sync::spawn(matty_store::Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: matty_api::Client::new(server.uri())
+            .unwrap()
+            .with_token("token"),
+    });
+    let ChangeSet::Scheduled(posts) =
+        next(&changes, |c| matches!(c, ChangeSet::Scheduled(_))).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(posts[0].message, "later");
+}

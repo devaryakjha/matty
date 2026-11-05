@@ -221,8 +221,7 @@ impl ServerCapabilities {
         // Acknowledgements and persistent notifications need Professional
         // or above; the server only sends their settings then.
         let paid = licensed && sku.as_deref() != Some("starter");
-        let post_acknowledgements =
-            post_priority && (flag(config, "PostAcknowledgements") || paid);
+        let post_acknowledgements = post_priority && (flag(config, "PostAcknowledgements") || paid);
         Ok(Self {
             version,
             build_number: text(config, "BuildNumber").map(str::to_string),
@@ -433,10 +432,16 @@ mod tests {
         assert_eq!(on.persistent_notification_max_count, 3);
 
         // Each gate off hides its feature, and only what depends on it.
-        let off = caps(&[("PostPriority", "false"), all[1], all[2]], &licensed("enterprise"));
+        let off = caps(
+            &[("PostPriority", "false"), all[1], all[2]],
+            &licensed("enterprise"),
+        );
         assert!(!off.post_priority && !off.post_acknowledgements);
         assert!(!off.persistent_notifications && off.scheduled_posts);
-        let off = caps(&[all[0], ("AllowPersistentNotifications", "false")], &licensed("enterprise"));
+        let off = caps(
+            &[all[0], ("AllowPersistentNotifications", "false")],
+            &licensed("enterprise"),
+        );
         assert!(off.post_acknowledgements && !off.persistent_notifications);
         assert!(!off.scheduled_posts, "ScheduledPosts missing is off");
 
