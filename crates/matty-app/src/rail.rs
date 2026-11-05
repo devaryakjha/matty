@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     badge::Badge,
@@ -176,9 +177,12 @@ impl Team {
     pub fn label(&self) -> SharedString {
         match (self.mentions, self.unread) {
             (0, false) => self.name.clone(),
-            (0, true) => format!("{}, unread messages", self.name).into(),
-            (1, _) => format!("{}, 1 mention", self.name).into(),
-            (n, _) => format!("{}, {n} mentions", self.name).into(),
+            (0, true) => t!("rail-team-unread", team = self.name.to_string()),
+            (n, _) => t!(
+                "rail-team-mentions",
+                team = self.name.to_string(),
+                count = n
+            ),
         }
     }
 }
@@ -324,14 +328,16 @@ impl RailView {
     ) {
         let view = cx.entity().downgrade();
         let items = [
-            MenuItem::new("rail.server.remove", "Remove server…").on_click(move |_, window, cx| {
-                view.update(cx, |this, cx| {
-                    this.removing = Some(index);
-                    this.remove.open(window, cx);
-                    cx.notify();
-                })
-                .ok();
-            }),
+            MenuItem::new("rail.server.remove", t!("rail-remove-server-item")).on_click(
+                move |_, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.removing = Some(index);
+                        this.remove.open(window, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                },
+            ),
         ];
         self.server_menu.update(cx, |menu, cx| {
             menu.set_items(items, cx);
@@ -450,10 +456,10 @@ impl RailView {
             })
             .collect::<Vec<_>>();
         let moved = view.downgrade();
-        Sortable::new("rail.servers", "Servers")
+        Sortable::new("rail.servers", t!("rail-servers"))
             .w_full()
             .group(
-                SortableGroup::new("rail.servers.group", "Servers")
+                SortableGroup::new("rail.servers.group", t!("rail-servers"))
                     .header(|_, _| div())
                     .rows(rows),
             )
@@ -487,19 +493,19 @@ impl RailView {
     /// for it go.
     fn remove_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let name = self
+        let title = self
             .removing
             .and_then(|index| self.servers.get(index))
             .map_or_else(
-                || SharedString::from("this server"),
-                |server| server.name.clone(),
+                || t!("rail-remove-title-unknown"),
+                |server| t!("rail-remove-title", server = server.name.to_string()),
             );
-        let popup = dialog_popup("rail.remove.popup", "Remove server", cx)
-            .child(dialog_title("rail.remove.title", cx).child(format!("Remove {name}?")))
-            .child(dialog_description("rail.remove.description", cx).child(
-                "This signs you out of the server and removes Matty's copy of its \
-                     messages, files and drafts from this computer.",
-            ))
+        let popup = dialog_popup("rail.remove.popup", t!("rail-remove-server"), cx)
+            .child(dialog_title("rail.remove.title", cx).child(title))
+            .child(
+                dialog_description("rail.remove.description", cx)
+                    .child(t!("rail-remove-description")),
+            )
             .child(
                 div()
                     .flex()
@@ -509,12 +515,12 @@ impl RailView {
                     .child(
                         alert_dialog_cancel("rail.remove.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("rail-cancel")),
                     )
                     .child(
                         alert_dialog_action("rail.remove.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Remove"),
+                            .label(t!("rail-remove")),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -638,12 +644,12 @@ impl Render for RailView {
                 rail.child(
                     div()
                         .id("rail.add-server.tip")
-                        .tooltip(move |_, cx| text_tooltip("Add a server".into(), cx))
+                        .tooltip(move |_, cx| text_tooltip(t!("rail-add-server"), cx))
                         .child(
                             Button::new("rail.add-server")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Icon)
-                                .aria_label("Add a server")
+                                .aria_label(t!("rail-add-server"))
                                 .rounded_full()
                                 .border_1()
                                 .border_dashed()
@@ -669,12 +675,12 @@ impl Render for RailView {
                 rail.child(
                     div()
                         .id("rail.add.tip")
-                        .tooltip(move |_, cx| text_tooltip("Join another team".into(), cx))
+                        .tooltip(move |_, cx| text_tooltip(t!("rail-join-team"), cx))
                         .child(
                             Button::new("rail.add")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Icon)
-                                .aria_label("Join another team")
+                                .aria_label(t!("rail-join-team"))
                                 .rounded(theme.radius.lg)
                                 .border_1()
                                 .border_dashed()
@@ -689,7 +695,7 @@ impl Render for RailView {
                 )
             })
             .child(
-                Menu::new(&self.server_menu, "Server options")
+                Menu::new(&self.server_menu, t!("rail-server-options"))
                     .context_area(div())
                     .disabled(true),
             )
