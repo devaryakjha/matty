@@ -244,6 +244,8 @@ pub(crate) fn edit_composer(
         state
     });
     crate::updater::watch_composer(&composer, cx);
+    #[cfg(not(target_family = "wasm"))]
+    crate::spelling::check(&composer, cx);
     let focus = composer.clone();
     window.on_next_frame(move |window, cx| {
         focus.update(cx, |composer, cx| {
@@ -1439,6 +1441,8 @@ impl ChannelView {
             state
         });
         crate::updater::watch_composer(&composer, cx);
+        #[cfg(not(target_family = "wasm"))]
+        crate::spelling::check(&composer, cx);
         let menu = cx.new(|cx| MenuState::new([], cx));
         let header_menu = cx.new(|cx| MenuState::new([], cx));
         let edit = cx.new(|cx| ChannelEditView::new(window, cx));
