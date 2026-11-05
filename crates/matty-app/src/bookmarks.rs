@@ -439,7 +439,11 @@ impl Render for BookmarkEditor {
         };
         let emoji_field = Field::new("bookmark.edit.emoji", &self.emoji)
             .label("Emoji")
-            .description("Shown instead of the link's icon. Optional.");
+            .description(if self.is_file() {
+                "Shown instead of the file's icon. Optional."
+            } else {
+                "Shown instead of the link's icon. Optional."
+            });
         div()
             .flex()
             .flex_col()
