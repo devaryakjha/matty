@@ -1075,6 +1075,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         can_manage: true,
         delete_others: true,
+        admins: vec!["u-priya".into()],
         profiles: profiles(),
         notifications: Default::default(),
         typing: match id {
@@ -1496,6 +1497,7 @@ pub fn empty_channel(
         max_post_size: DEFAULT_MAX_POST_SIZE,
         can_manage: true,
         delete_others: true,
+        admins: Vec::new(),
         profiles: profiles(),
         notifications: Default::default(),
         typing: vec![],

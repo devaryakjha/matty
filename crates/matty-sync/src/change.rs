@@ -295,6 +295,17 @@ pub enum ChangeSet {
         /// Its people.
         users: Arc<[User]>,
     },
+    /// A channel's people, admins first, and which of them are its admins:
+    /// the answer to [`Command::ChannelMembers`](crate::Command::ChannelMembers)
+    /// and [`Command::SetChannelAdmin`](crate::Command::SetChannelAdmin).
+    ChannelMembers {
+        /// The channel.
+        channel_id: String,
+        /// Its people.
+        users: Arc<[User]>,
+        /// The ids of its admins.
+        admins: Arc<[String]>,
+    },
     /// The signed-in user as the server sent them at sign-in, with their
     /// own `notify_props`; later changes come as [`ChangeSet::Users`].
     Me(Arc<User>),

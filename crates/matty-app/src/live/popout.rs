@@ -111,6 +111,7 @@ impl Live {
             channel: None,
             member: None,
             stats: None,
+            members: None,
             extras: super::extras::Extras::fresh(),
             typing: Vec::new(),
             thread_typing: Vec::new(),

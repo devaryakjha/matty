@@ -180,6 +180,12 @@ pub(crate) enum Loaded {
     },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
+    /// A channel's people, and the ids of its admins.
+    ChannelMembers {
+        channel_id: String,
+        users: Vec<User>,
+        admins: Vec<String>,
+    },
     /// An opened channel's posts could not load.
     PostsFailed { channel_id: String, error: String },
     /// A channel an event named, with the user's membership when they have one.

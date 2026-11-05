@@ -578,6 +578,24 @@ pub enum Command {
         /// The person.
         user_id: String,
     },
+    /// Loads a channel's people and its admins (#208);
+    /// [`ChangeSet::ChannelMembers`](crate::ChangeSet::ChannelMembers)
+    /// answers.
+    ChannelMembers {
+        /// The channel.
+        channel_id: String,
+    },
+    /// Makes a member a channel admin, or a plain member again (#208); the
+    /// channel's people come back in
+    /// [`ChangeSet::ChannelMembers`](crate::ChangeSet::ChannelMembers).
+    SetChannelAdmin {
+        /// The channel.
+        channel_id: String,
+        /// The member.
+        user_id: String,
+        /// Whether they become an admin.
+        admin: bool,
+    },
     /// Searches the team's messages;
     /// [`ChangeSet::Search`](crate::ChangeSet::Search) answers.
     Search {
@@ -1025,6 +1043,20 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RemoveMember")
                 .field("channel_id", channel_id)
                 .field("user_id", user_id)
+                .finish(),
+            Self::ChannelMembers { channel_id } => f
+                .debug_struct("ChannelMembers")
+                .field("channel_id", channel_id)
+                .finish(),
+            Self::SetChannelAdmin {
+                channel_id,
+                user_id,
+                admin,
+            } => f
+                .debug_struct("SetChannelAdmin")
+                .field("channel_id", channel_id)
+                .field("user_id", user_id)
+                .field("admin", admin)
                 .finish(),
             Self::Search { team_id, .. } => f
                 .debug_struct("Search")
@@ -2004,6 +2036,18 @@ impl Engine {
                 }) => writes.push(Write::RemoveMember {
                     channel_id,
                     user_id,
+                }),
+                Message::Command(Command::ChannelMembers { channel_id }) => {
+                    writes.push(Write::ChannelMembers { channel_id });
+                }
+                Message::Command(Command::SetChannelAdmin {
+                    channel_id,
+                    user_id,
+                    admin,
+                }) => writes.push(Write::ChannelAdmin {
+                    channel_id,
+                    user_id,
+                    admin,
                 }),
                 Message::Command(Command::Search {
                     team_id,
@@ -3408,6 +3452,18 @@ impl Engine {
                 dirty.direct.push(ChangeSet::People {
                     team_id,
                     users: Arc::from(users),
+                });
+            }
+            Loaded::ChannelMembers {
+                channel_id,
+                users,
+                admins,
+            } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                dirty.direct.push(ChangeSet::ChannelMembers {
+                    channel_id,
+                    users: Arc::from(users),
+                    admins: Arc::from(admins),
                 });
             }
             Loaded::Ready { channel, member } => {

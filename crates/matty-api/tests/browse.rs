@@ -316,3 +316,49 @@ async fn channel_settings_use_the_expected_requests() {
         .await
         .unwrap();
 }
+
+/// #208: a channel's members with their roles, and making one an admin.
+#[tokio::test]
+async fn channel_members_and_admins_use_the_expected_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .and(query_param("in_channel", "c1"))
+        .and(query_param("active", "true"))
+        .and(query_param("sort", "admin"))
+        .and(query_param("page", "0"))
+        .and(query_param("per_page", "200"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([{"id": "u2", "username": "ada"}])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/members"))
+        .and(query_param("page", "0"))
+        .and(query_param("per_page", "200"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"channel_id": "c1", "user_id": "u2", "roles": "channel_user", "scheme_admin": true}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/channels/c1/members/u2/schemeRoles"))
+        .and(body_json(
+            json!({ "scheme_admin": false, "scheme_user": true }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "OK" })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    assert_eq!(
+        client.channel_users("c1", 0, 200).await.unwrap()[0].username,
+        "ada"
+    );
+    let members: Vec<ChannelMember> = client.channel_members("c1", 0, 200).await.unwrap();
+    assert!(members[0].scheme_admin);
+    client.set_channel_admin("c1", "u2", false).await.unwrap();
+}
