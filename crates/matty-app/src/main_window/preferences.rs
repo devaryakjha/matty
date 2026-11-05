@@ -573,14 +573,18 @@ impl MainWindow {
             .child(group(
                 "Window",
                 stack(&theme)
-                    .child(self.switch_row(
-                        "preferences.close-to-tray",
-                        "Keep running when closed",
-                        "Closing the window leaves Matty in the tray.",
-                        settings.close_to_tray,
-                        |s, v| s.close_to_tray = v,
-                        cx,
-                    ))
+                    // macOS keeps Matty in the dock when its window closes,
+                    // so only Linux and Windows have a tray to keep it in.
+                    .when(!cfg!(target_os = "macos"), |stack| {
+                        stack.child(self.switch_row(
+                            "preferences.close-to-tray",
+                            "Keep running when closed",
+                            "Closing the window leaves Matty in the tray.",
+                            settings.close_to_tray,
+                            |s, v| s.close_to_tray = v,
+                            cx,
+                        ))
+                    })
                     .child(self.switch_row(
                         "preferences.launch-at-login",
                         "Open at login",
