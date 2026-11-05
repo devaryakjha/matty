@@ -75,9 +75,22 @@ pub struct ListedPost {
     pub post: Post,
 }
 
+/// A file a search found (#207), with where and when it was posted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoundFile {
+    pub file: crate::attachments::PostFile,
+    pub channel_id: SharedString,
+    pub channel_name: SharedString,
+    pub post_id: SharedString,
+    pub author: SharedString,
+    pub day: SharedString,
+}
+
 /// A message search and what came back (PLAN §3 M1 "Search").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchModel {
+    /// The files that matched, from the first page (#207).
+    pub files: Vec<FoundFile>,
     pub query: SharedString,
     pub results: Vec<ListedPost>,
     /// True while sync runs the query.
@@ -427,6 +440,8 @@ pub struct RightPaneView {
     loading: bool,
     /// What `from:` and `in:` can suggest, and what they suggest now.
     hints: SearchHints,
+    /// The search shows its Files tab, not its Messages one (#207).
+    search_files_tab: bool,
     suggestions: Vec<Suggestion>,
     /// The suggestion the arrow keys point at, which Enter picks.
     suggestion_at: Option<usize>,
@@ -652,6 +667,7 @@ impl RightPaneView {
             search,
             loading: false,
             hints: SearchHints::default(),
+            search_files_tab: false,
             suggestions: Vec::new(),
             suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
@@ -695,9 +711,21 @@ impl RightPaneView {
             ClockFormat::current(cx).format(post.time)
         )
         .into();
+        self.open_images(&post.files, caption, index, window, cx);
+    }
+
+    /// Opens `files`' images in the lightbox at the `index`th, each under
+    /// `caption`.
+    fn open_images(
+        &mut self,
+        files: &[crate::attachments::PostFile],
+        caption: SharedString,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut ids = Vec::new();
-        let images: Vec<LightboxImage> = post
-            .files
+        let images: Vec<LightboxImage> = files
             .iter()
             .filter_map(|file| {
                 let image = file.image()?;
@@ -1393,6 +1421,13 @@ impl RightPaneView {
     /// results. Sync calls this again when results arrive.
     pub fn set_search(&mut self, model: SearchModel, window: &mut Window, cx: &mut Context<Self>) {
         let focus = model.query.is_empty() || model.searching;
+        // A new search starts on its messages, or on its files when only
+        // files matched.
+        if model.searching {
+            self.search_files_tab = false;
+        } else if model.results.is_empty() && !model.files.is_empty() {
+            self.search_files_tab = true;
+        }
         self.search.update(cx, |input, cx| {
             if input.value() != model.query {
                 input.set_value(model.query.clone(), window, cx);
@@ -2716,6 +2751,158 @@ impl RightPaneView {
         )
     }
 
+    /// The search's message results: a count, then the listing.
+    fn search_messages(
+        &self,
+        body: gpui_kit::Div,
+        model: &SearchModel,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        let theme = UiTheme::read(cx).clone();
+        body.when(
+            !model.results.is_empty() && model.files.is_empty(),
+            |body| {
+                body.child(
+                    div()
+                        .px(theme.space(4.))
+                        .pt(theme.space(2.))
+                        .type_style(style::META, &theme)
+                        .text_color(theme.colors.muted_foreground)
+                        .child(match model.results.len() {
+                            1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
+                            n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
+                        }),
+                )
+            },
+        )
+        .child(self.listing(
+            "right-pane.search",
+            &model.results,
+            (
+                LucideIcon::SearchX,
+                "Nothing matched",
+                "Try fewer words, or narrow with from: and in:.",
+            ),
+            model.more.then_some(model.loading_more),
+            cx,
+        ))
+    }
+
+    /// Messages and Files, with their counts, once a search found files
+    /// (#207).
+    fn search_tabs(&self, model: &SearchModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let view = cx.entity().downgrade();
+        let more = if model.more { "+" } else { "" };
+        div().px(theme.space(4.)).pt(theme.space(2.)).child(
+            crate::ui::tabs::Tabs::new("right-pane.search.tabs")
+                .aria_label("Search results")
+                .selected(if self.search_files_tab {
+                    "files"
+                } else {
+                    "messages"
+                })
+                .item(crate::ui::tabs::Tab::new(
+                    "right-pane.search.tabs.messages",
+                    "messages",
+                    format!("Messages ({}{more})", model.results.len()),
+                ))
+                .item(crate::ui::tabs::Tab::new(
+                    "right-pane.search.tabs.files",
+                    "files",
+                    format!("Files ({})", model.files.len()),
+                ))
+                .on_change(move |value, _, cx| {
+                    view.update(cx, |this, cx| {
+                        this.search_files_tab = value == "files";
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+        )
+    }
+
+    /// The files a search found (#207): each under its channel, who posted
+    /// it and when, with Jump to its message. An image opens the lightbox
+    /// and any other file downloads, as in the transcript.
+    fn found_files(&self, files: &[FoundFile], cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = UiTheme::read(cx).clone();
+        let view = cx.entity().downgrade();
+        div()
+            .id("right-pane.search.files")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .py(theme.space(2.))
+            .children(files.iter().map(|found| {
+                let channel = match found.channel_name.as_ref() {
+                    name if name.contains(' ') => name.to_string(),
+                    name => format!("#{name}"),
+                };
+                let (jump_channel, jump_post) = (found.channel_id.clone(), found.post_id.clone());
+                let (jump_view, image_view, file_view) = (view.clone(), view.clone(), view.clone());
+                let shown = vec![found.file.clone()];
+                let image_files = shown.clone();
+                let caption: SharedString = format!("{} · {}", found.author, found.day).into();
+                div()
+                    .pb(theme.space(2.))
+                    .mb(theme.space(2.))
+                    .border_b(style::hairline())
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .px(theme.space(4.))
+                            .pb(theme.space(1.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(theme.space(2.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .type_style(style::META, &theme)
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(format!("{channel} · {} · {}", found.author, found.day)),
+                            )
+                            .child(
+                                Button::new(gpui_kit::ElementId::Name(
+                                    format!("right-pane.search.files.{}.jump", found.file.id)
+                                        .into(),
+                                ))
+                                .variant(ButtonVariant::Link)
+                                .size(ButtonSize::Xs)
+                                .label("Jump")
+                                .on_click(move |_, _, cx| {
+                                    let event = RightPaneEvent::Jump {
+                                        channel: jump_channel.clone(),
+                                        post: jump_post.clone(),
+                                    };
+                                    jump_view.update(cx, |_, cx| cx.emit(event)).ok();
+                                }),
+                            ),
+                    )
+                    .child(div().px(theme.space(4.)).child(post_files(
+                        "right-pane.search.files",
+                        &shown,
+                        move |_, window, cx| {
+                            let (files, caption) = (image_files.clone(), caption.clone());
+                            image_view
+                                .update(cx, |this, cx| {
+                                    this.open_images(&files, caption, 0, window, cx)
+                                })
+                                .ok();
+                        },
+                        move |file, _, cx| {
+                            file_view
+                                .update(cx, |_, cx| cx.emit(RightPaneEvent::OpenFile(file)))
+                                .ok();
+                        },
+                        cx,
+                    )))
+            }))
+    }
+
     /// Saved, pinned and mention listings: each post under a caption with
     /// its channel and a Jump link, separated by hairlines.
     fn listing(
@@ -2867,30 +3054,15 @@ impl RightPaneView {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .when(!model.results.is_empty(), |body| {
-                    body.child(
-                        div()
-                            .px(theme.space(4.))
-                            .pt(theme.space(2.))
-                            .type_style(style::META, &theme)
-                            .text_color(muted)
-                            .child(match model.results.len() {
-                                1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
-                                n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
-                            }),
-                    )
+                .when(!model.files.is_empty(), |body| {
+                    body.child(self.search_tabs(model, cx))
                 })
-                .child(self.listing(
-                    "right-pane.search",
-                    &model.results,
-                    (
-                        LucideIcon::SearchX,
-                        "Nothing matched",
-                        "Try fewer words, or narrow with from: and in:.",
-                    ),
-                    model.more.then_some(model.loading_more),
-                    cx,
-                ))
+                .when(self.search_files_tab && !model.files.is_empty(), |body| {
+                    body.child(self.found_files(&model.files, cx))
+                })
+                .when(!self.search_files_tab || model.files.is_empty(), |body| {
+                    self.search_messages(body, model, cx)
+                })
                 .into_any_element()
         };
         div()

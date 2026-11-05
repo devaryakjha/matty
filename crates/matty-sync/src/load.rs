@@ -171,6 +171,7 @@ pub(crate) enum Loaded {
         page: u32,
         posts: Vec<matty_api::models::Post>,
         more: bool,
+        files: Vec<matty_api::models::FileInfo>,
     },
     /// A listing's posts, newest first.
     Listing {

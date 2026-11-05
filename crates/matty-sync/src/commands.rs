@@ -668,11 +668,29 @@ pub(crate) async fn run(
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
                 let posts: Vec<_> = results.list.ordered().cloned().collect();
+                // The first page also finds files (#207); a server that
+                // cannot search them still answers with its posts.
+                let files = if query.page == 0 {
+                    match client.search_files(&team_id, &query).await {
+                        Ok(found) => found
+                            .ordered()
+                            .filter(|file| file.delete_at == 0)
+                            .cloned()
+                            .collect(),
+                        Err(error) => {
+                            tracing::warn!(%error, "file search failed");
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
                 Some(Loaded::Search {
                     more: posts.len() >= query.per_page as usize,
                     posts,
                     terms: query.terms,
                     page: query.page,
+                    files,
                 })
             }
             Write::CreateCategory { team_id, category } => {

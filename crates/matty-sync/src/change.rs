@@ -273,6 +273,8 @@ pub enum ChangeSet {
         posts: Arc<[Post]>,
         /// A full page came back, so another may follow.
         more: bool,
+        /// The files that matched, on the first page only (#207).
+        files: Arc<[matty_api::models::FileInfo]>,
     },
     /// A listing of posts outside their channel: the answer to
     /// [`Command::LoadListing`](crate::Command::LoadListing). Their authors

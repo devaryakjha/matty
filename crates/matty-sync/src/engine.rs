@@ -3361,11 +3361,13 @@ impl Engine {
                 page,
                 posts,
                 more,
+                files,
             } => dirty.direct.push(ChangeSet::Search {
                 terms,
                 page,
                 posts: Arc::from(posts),
                 more,
+                files: Arc::from(files),
             }),
             Loaded::Listing { listing, posts } => dirty.direct.push(ChangeSet::Listing {
                 listing,
@@ -3948,11 +3950,16 @@ impl Engine {
                 ChangeSet::Posts { posts, .. }
                 | ChangeSet::ReplyRoots { roots: posts, .. }
                 | ChangeSet::Thread { posts, .. }
-                | ChangeSet::Search { posts, .. }
                 | ChangeSet::Listing { posts, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
                     // Forwards quote another post, named by its author.
                     ids.extend(posts.iter().flat_map(quoted_authors));
+                }
+                // Found files name who posted them.
+                ChangeSet::Search { posts, files, .. } => {
+                    ids.extend(posts.iter().map(|post| post.user_id.clone()));
+                    ids.extend(posts.iter().flat_map(quoted_authors));
+                    ids.extend(files.iter().map(|file| file.user_id.clone()));
                 }
                 // The Threads view names each root's author and who replied.
                 ChangeSet::ThreadList { threads, roots, .. } => {
