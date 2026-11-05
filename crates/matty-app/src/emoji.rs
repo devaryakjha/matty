@@ -13,6 +13,7 @@ use gpui_kit::{App, Context, Global, Image, ImageSource, SharedString};
 
 use crate::avatars::EmojiImages;
 use crate::settings::SettingsStore;
+use crate::t;
 use crate::ui::emoji_picker::{Emoji, EmojiCategory, EmojiPickerState};
 use crate::ui::message::Reaction;
 
@@ -25,21 +26,41 @@ pub fn categories() -> Vec<EmojiCategory> {
     let groups = [
         (
             Group::SmileysAndEmotion,
-            "Smileys & Emotion",
+            t!("emoji-group-smileys"),
             LucideIcon::FaceSlightlySmiling,
         ),
-        (Group::PeopleAndBody, "People & Body", LucideIcon::Hand),
+        (
+            Group::PeopleAndBody,
+            t!("emoji-group-people"),
+            LucideIcon::Hand,
+        ),
         (
             Group::AnimalsAndNature,
-            "Animals & Nature",
+            t!("emoji-group-animals"),
             LucideIcon::Leaf,
         ),
-        (Group::FoodAndDrink, "Food & Drink", LucideIcon::Coffee),
-        (Group::TravelAndPlaces, "Travel & Places", LucideIcon::Plane),
-        (Group::Activities, "Activities", LucideIcon::Trophy),
-        (Group::Objects, "Objects", LucideIcon::Lightbulb),
-        (Group::Symbols, "Symbols", LucideIcon::Heart),
-        (Group::Flags, "Flags", LucideIcon::Flag),
+        (
+            Group::FoodAndDrink,
+            t!("emoji-group-food"),
+            LucideIcon::Coffee,
+        ),
+        (
+            Group::TravelAndPlaces,
+            t!("emoji-group-travel"),
+            LucideIcon::Plane,
+        ),
+        (
+            Group::Activities,
+            t!("emoji-group-activities"),
+            LucideIcon::Trophy,
+        ),
+        (
+            Group::Objects,
+            t!("emoji-group-objects"),
+            LucideIcon::Lightbulb,
+        ),
+        (Group::Symbols, t!("emoji-group-symbols"), LucideIcon::Heart),
+        (Group::Flags, t!("emoji-group-flags"), LucideIcon::Flag),
     ];
     groups
         .into_iter()

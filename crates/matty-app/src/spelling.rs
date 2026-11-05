@@ -11,6 +11,7 @@ use std::{cell::RefCell, rc::Rc, time::Duration};
 use gpui_kit::{App, Entity, SharedString, Task, WeakEntity};
 use matty_spell::Speller;
 
+use crate::t;
 use crate::ui::composer::ComposerState;
 use crate::ui::input::InputEvent;
 
@@ -74,7 +75,7 @@ pub(crate) fn check(composer: &Entity<ComposerState>, cx: &mut App) {
                     menu.suggestion(suggestion);
                 }
                 menu.separator();
-                menu.item("Ignore Spelling", Box::new(IgnoreSpelling { word }));
+                menu.item(t!("spelling-ignore"), Box::new(IgnoreSpelling { word }));
             },
             cx,
         );
