@@ -6,9 +6,10 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonVariant},
-    dialog::{DialogHandle, dialog_close, dialog_description, dialog_title},
+    dialog::{DialogHandle, dialog_description, dialog_title},
     input::{Input, InputEvent, InputState},
     theme::UiTheme,
 };
@@ -42,7 +43,7 @@ impl EventEmitter<ForwardEvent> for ForwardView {}
 impl ForwardView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let comment =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Add a comment (optional)"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("forward-comment-placeholder")));
         let subscription = cx.subscribe_in(
             &comment,
             window,
@@ -114,20 +115,17 @@ impl Render for ForwardView {
             let focus = self.comment.read(cx).focus_handle(cx);
             window.on_next_frame(move |window, cx| window.focus(&focus, cx));
         }
-        let name = self
-            .target
-            .as_ref()
-            .map_or_else(|| SharedString::from("the channel"), |t| t.name.clone());
+        let title = self.target.as_ref().map_or_else(
+            || t!("forward-title-unknown"),
+            |target| t!("forward-title", name = target.name.to_string()),
+        );
         div()
             .flex()
             .flex_col()
             .gap(theme.space(2.))
-            .child(dialog_title("forward.title", cx).child(format!("Forward to {name}")))
-            .child(
-                dialog_description("forward.description", cx)
-                    .child("The message shows there as a quoted card, under your comment."),
-            )
-            .child(Input::new(&self.comment).aria_label("Comment"))
+            .child(dialog_title("forward.title", cx).child(title))
+            .child(dialog_description("forward.description", cx).child(t!("forward-description")))
+            .child(Input::new(&self.comment).aria_label(t!("forward-comment")))
             .child(
                 div()
                     .flex()
@@ -135,13 +133,18 @@ impl Render for ForwardView {
                     .gap(theme.space(2.))
                     .pt(theme.space(2.))
                     .child(
-                        dialog_close("forward.cancel", cx)
+                        // A plain button: `dialog_close` is the corner X,
+                        // which drew nothing here, so there was no Cancel.
+                        Button::new("forward.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("forward-cancel"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.handle.close(window, cx)),
+                            ),
                     )
                     .child(
                         Button::new("forward.send")
-                            .label("Forward")
+                            .label(t!("forward-send"))
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
                     ),
             )
