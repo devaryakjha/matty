@@ -1,13 +1,13 @@
 //! Localization (#225): the UI's words come from Fluent files under
-//! `locales/<tag>/matty.ftl`, looked up by id with [`t!`](crate::t).
+//! `locales/<tag>/`, one per area, looked up by id with [`t!`](crate::t).
 //! English (`locales/en`) is the source; another language may leave ids
 //! out and English stands in for them.
 //!
 //! The locale is the `MATTY_LOCALE` environment variable when set, else the
 //! system's. `en-XA` is a pseudo-locale: English with every letter accented
 //! and each string bracketed, so text that skipped [`t!`](crate::t) stands
-//! out on screen. A test also fails on hard-coded strings in the files
-//! listed in [`LOCALIZED`].
+//! out on screen. A test also fails on hard-coded strings in any file that
+//! uses [`t!`](crate::t): once a file is localized, it stays so.
 
 use std::cell::RefCell;
 
@@ -15,28 +15,11 @@ use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use gpui_kit::SharedString;
 use unic_langid::LanguageIdentifier;
 
-/// The English source, built in.
-const ENGLISH: &str = include_str!("../locales/en/matty.ftl");
+/// The English source, built in: `build.rs` joins `locales/en/*.ftl`.
+const ENGLISH: &str = include_str!(concat!(env!("OUT_DIR"), "/locales/en.ftl"));
 
 /// The pseudo-locale's tag.
 pub const PSEUDO: &str = "en-XA";
-
-/// Files whose UI strings all go through [`t!`](crate::t). An area joins
-/// the list once its strings are extracted; the test below keeps it so.
-pub const LOCALIZED: &[&str] = &[
-    "account.rs",
-    "bookmarks.rs",
-    "custom_status.rs",
-    "dnd.rs",
-    "drafts.rs",
-    "emoji_manager.rs",
-    "format_bar.rs",
-    "login.rs",
-    "profile.rs",
-    "profile_editor.rs",
-    "switcher.rs",
-    "places.rs",
-];
 
 struct Strings {
     english: FluentBundle<FluentResource>,
@@ -214,7 +197,7 @@ mod tests {
     #[test]
     fn every_id_has_english() {
         let resource = FluentResource::try_new(ENGLISH.to_owned())
-            .unwrap_or_else(|(_, errors)| panic!("matty.ftl: {errors:?}"));
+            .unwrap_or_else(|(_, errors)| panic!("locales/en: {errors:?}"));
         let mut english = FluentBundle::new(vec![LanguageIdentifier::default()]);
         english.add_resource(resource).expect("no repeated ids");
         let id = regex::Regex::new(r#"(?:^|[^\w])t!\(\s*"([a-z0-9-]+)""#).unwrap();
@@ -229,16 +212,17 @@ mod tests {
         }
     }
 
-    /// The files in [`LOCALIZED`] have no UI text outside `t!`: a string
-    /// literal with a word in it, outside tests, logs and element ids.
+    /// A file that uses `t!` has no UI text outside it: a string literal
+    /// with a word in it, outside tests, logs and element ids.
     #[test]
     fn localized_files_have_no_hard_coded_strings() {
         let literal = regex::Regex::new(r#""((?:[^"\\]|\\.)*)""#).unwrap();
         let lookup = regex::Regex::new(r"(?:^|[^\w])t!\(").unwrap();
         let wordy = regex::Regex::new(r"[A-Za-z]{2,}[ ,!?…]|^[A-Z][a-z]").unwrap();
+        let uses_t = regex::Regex::new(r"(?m)^use crate::t;").unwrap();
         let mut found = Vec::new();
         for (file, source) in sources() {
-            if !LOCALIZED.contains(&file.as_str()) {
+            if !uses_t.is_match(&source) {
                 continue;
             }
             let code = source.split("#[cfg(test)]").next().unwrap_or_default();
