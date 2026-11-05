@@ -70,6 +70,8 @@ gpui_kit::actions!(
         InsertLink,
         /// Wrap the composer selection in strikethrough. (Slack)
         FormatStrike,
+        /// Show the message as it will post, above the composer. (MM)
+        TogglePreview,
         /// Wrap the composer selection in inline code. (Slack)
         FormatCode,
         /// Focus the composer. (MM)
@@ -463,6 +465,13 @@ pub fn bindings() -> Vec<Binding> {
         ),
         row!("Upload files", UploadFiles, main, "cmd-u", "ctrl-u"),
         row!("Bold", FormatBold, Some(COMPOSER), "cmd-b", "ctrl-b"),
+        row!(
+            "Preview message",
+            TogglePreview,
+            Some(COMPOSER),
+            "cmd-alt-p",
+            "ctrl-alt-p"
+        ),
         row!("Italic", FormatItalic, Some(COMPOSER), "cmd-i", "ctrl-i"),
         row!(
             "Link",
@@ -694,6 +703,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 46);
+        assert_eq!(count, 47);
     }
 }
