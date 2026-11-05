@@ -69,6 +69,14 @@ fn every_fixture_migrates_to_the_latest_version() {
         // Tables added after this version start empty.
         let media = if version >= 2 { 1 } else { 0 };
         assert_eq!(count(&store, "media"), media, "media in fixture v{version}");
+        let bookmarks = if version >= 5 { 1 } else { 0 };
+        assert_eq!(
+            matty_store::bookmarks::for_channel(store.conn(), "town")
+                .unwrap()
+                .len(),
+            bookmarks,
+            "bookmarks in fixture v{version}"
+        );
 
         let conn = store.conn();
         // Files attached offline are kept from v4; older rows have none.
