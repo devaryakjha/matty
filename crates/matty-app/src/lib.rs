@@ -414,14 +414,7 @@ fn follow_close_to_tray(settings: &Entity<SettingsStore>, cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Ok(event) = picked.recv().await {
             cx.update(|cx| match event {
-                tray::TrayEvent::Open => {
-                    if cx.windows().is_empty() {
-                        open_main_window(cx);
-                    } else if let Some(window) = cx.windows().first() {
-                        let _ = window.update(cx, |_, window, _| window.activate_window());
-                    }
-                    cx.activate(true);
-                }
+                tray::TrayEvent::Open => show_main_window(cx, |_, _, _| {}),
                 tray::TrayEvent::Quit => cx.quit(),
             });
         }
