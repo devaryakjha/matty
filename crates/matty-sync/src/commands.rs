@@ -117,6 +117,9 @@ pub(crate) enum Write {
         team_id: String,
         channel_id: String,
     },
+    Roles {
+        names: Vec<String>,
+    },
     Search {
         team_id: String,
         query: Box<SearchQuery>,
@@ -254,6 +257,7 @@ impl Write {
             Self::ChannelMembers { .. } => "load channel members",
             Self::ChannelFiles { .. } => "load channel files",
             Self::NonMembers { .. } => "find people to add",
+            Self::Roles { .. } => "load roles",
             Self::ChannelAdmin { admin: true, .. } => "make channel admin",
             Self::ChannelAdmin { admin: false, .. } => "remove channel admin",
             Self::Search { .. } => "search",
@@ -313,6 +317,7 @@ impl Write {
             Self::AddEmoji { name, .. } => name.clone(),
             Self::DeleteEmoji { emoji_id } => emoji_id.clone(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
+            Self::Roles { names } => names.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
             | Self::Archive { channel_id }
@@ -742,6 +747,7 @@ pub(crate) async fn run(
                 files.sort_by_key(|file| std::cmp::Reverse(file.create_at));
                 Some(Loaded::ChannelFiles { channel_id, files })
             }
+            Write::Roles { names } => Some(Loaded::Roles(client.roles(&names).await?)),
             Write::NonMembers {
                 team_id,
                 channel_id,

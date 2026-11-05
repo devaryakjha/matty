@@ -885,6 +885,39 @@ async fn interactive_message_actions_and_dialogs() {
     connection.close();
 }
 
+/// Signs in as a new user in the tester's first team, for a test that
+/// changes what the seeded users have.
+async fn fresh_user(prefix: &str) -> (Client, matty_api::models::User) {
+    let (url, _, password) = server().unwrap();
+    let (tester, _) = sign_in_tester().await.unwrap();
+    let team = tester.my_teams().await.unwrap().remove(0);
+    let username = format!("live-{prefix}-{}", web_time_millis());
+    let user = as_admin(
+        reqwest::Method::POST,
+        "users",
+        Some(serde_json::json!({
+            "username": username,
+            "email": format!("{username}@example.com"),
+            "password": password,
+        })),
+    )
+    .await;
+    let user_id = user["id"].as_str().unwrap();
+    as_admin(
+        reqwest::Method::POST,
+        &format!("teams/{}/members", team.id),
+        Some(serde_json::json!({ "team_id": team.id, "user_id": user_id })),
+    )
+    .await;
+    let credentials = Credentials {
+        login_id: username,
+        password,
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    (signed_in.client, signed_in.user)
+}
+
 /// Calls the REST API as the seed's admin, for setup the client has no
 /// method for (Matty never manages integrations).
 async fn as_admin(
@@ -1187,4 +1220,160 @@ async fn custom_emoji_upload_and_delete() {
             .iter()
             .any(|e| e.id == emoji.id)
     );
+}
+
+/// Channel management against the server (#208): a private channel's
+/// roles, Add members' candidates, admins, Channel files and removal.
+#[tokio::test]
+async fn channel_members_admins_and_files_round_trip() {
+    let Some((_, tester, _)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    // A user of its own rather than the tester, whose channel lists the
+    // other tests count while this one creates and leaves channels.
+    let (client, me) = fresh_user("members").await;
+    let team = client.my_teams().await.unwrap().remove(0);
+    let name = format!("live-members-{}", web_time_millis());
+    let channel = client
+        .create_channel(&matty_api::NewChannel {
+            team_id: team.id.clone(),
+            name: name.clone(),
+            display_name: name.clone(),
+            purpose: String::new(),
+            kind: "P".into(),
+        })
+        .await
+        .unwrap();
+
+    // The roles that gate Add members on a private channel.
+    let roles = client
+        .roles(&["channel_user".into(), "channel_admin".into()])
+        .await
+        .unwrap();
+    let user = roles.iter().find(|r| r.name == "channel_user").unwrap();
+    assert!(
+        user.permissions
+            .iter()
+            .any(|p| p == "manage_private_channel_members"),
+        "{:?}",
+        user.permissions
+    );
+
+    // Add members offers the team's people who are not in it.
+    let candidates = client
+        .users_not_in_channel(&team.id, &channel.id, 0, 200)
+        .await
+        .unwrap();
+    assert!(candidates.iter().all(|u| u.id != me.id));
+    let other = candidates
+        .iter()
+        .find(|u| !u.is_bot && u.delete_at == 0 && u.username != tester)
+        .expect("someone else on the team");
+    client
+        .add_channel_member(&channel.id, &other.id)
+        .await
+        .unwrap();
+    let still_out = client
+        .users_not_in_channel(&team.id, &channel.id, 0, 200)
+        .await
+        .unwrap();
+    assert!(still_out.iter().all(|u| u.id != other.id));
+
+    // The full list, and who is an admin: the creator, then the other.
+    let users = client.channel_users(&channel.id, 0, 200).await.unwrap();
+    assert!(users.iter().any(|u| u.id == other.id));
+    let admin = |members: &[matty_api::models::ChannelMember], id: &str| {
+        members
+            .iter()
+            .find(|m| m.user_id == id)
+            .is_some_and(|m| m.scheme_admin)
+    };
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(admin(&members, &me.id) && !admin(&members, &other.id));
+    client
+        .set_channel_admin(&channel.id, &other.id, true)
+        .await
+        .unwrap();
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(admin(&members, &other.id));
+    client
+        .set_channel_admin(&channel.id, &other.id, false)
+        .await
+        .unwrap();
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(!admin(&members, &other.id));
+
+    // Channel files finds a file posted there.
+    let Fetched::Fresh { bytes: png, .. } = client.avatar(&me.id, None).await.unwrap() else {
+        panic!("no avatar")
+    };
+    let uploaded = client
+        .upload_file(
+            Upload {
+                channel_id: channel.id.clone(),
+                client_id: "live-channel-file".into(),
+                file_name: "channel-file.png".into(),
+                bytes: png,
+            },
+            Arc::new(|_, _| {}),
+        )
+        .await
+        .unwrap();
+    client
+        .create_post(&NewPost {
+            channel_id: channel.id.clone(),
+            message: "a file for Channel files".into(),
+            file_ids: vec![uploaded.file_infos[0].id.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut query = SearchQuery::new(format!("channel:{}", channel.id));
+    query.include_deleted_channels = true;
+    let found = client.search_files(&team.id, &query).await.unwrap();
+    let names: Vec<_> = found.ordered().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["channel-file.png"]);
+
+    client
+        .remove_channel_member(&channel.id, &other.id)
+        .await
+        .unwrap();
+    let users = client.channel_users(&channel.id, 0, 200).await.unwrap();
+    assert!(users.iter().all(|u| u.id != other.id));
+    client.archive_channel(&channel.id).await.unwrap();
+}
+
+/// Changing the email needs the current password (#212); the test puts the
+/// address back afterwards. Runs as a user of its own.
+#[tokio::test]
+async fn changing_the_email_checks_the_password() {
+    let Some((_, _, password)) = server() else {
+        return;
+    };
+    let (client, me) = fresh_user("email").await;
+    let patch = |email: &str, password: &str| matty_api::ProfilePatch {
+        email: Some(email.into()),
+        password: Some(password.into()),
+        ..Default::default()
+    };
+
+    let wrong = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", "not-the-password"))
+        .await;
+    assert!(wrong.is_err(), "a wrong password changed the email");
+    assert_eq!(client.me().await.unwrap().email, me.email);
+
+    let changed = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", &password))
+        .await
+        .unwrap();
+    assert_eq!(changed.email, "alan@allen.dev");
+    assert_eq!(client.me().await.unwrap().email, "alan@allen.dev");
+
+    client
+        .patch_profile(&me.id, &patch(&me.email, &password))
+        .await
+        .unwrap();
+    assert_eq!(client.me().await.unwrap().email, me.email);
 }

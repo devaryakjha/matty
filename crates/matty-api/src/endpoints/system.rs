@@ -22,6 +22,12 @@ fn old() -> [(&'static str, String); 1] {
 }
 
 impl Client {
+    /// `POST roles/names`: the roles named, with their permissions, for
+    /// gating actions the way the server will (#208).
+    pub async fn roles(&self, names: &[String]) -> Result<Vec<crate::models::Role>, ApiError> {
+        self.post("roles/names", names).await
+    }
+
     /// `GET system/ping`: whether a Mattermost server answers at this URL.
     pub async fn ping(&self) -> Result<Ping, ApiError> {
         self.get("system/ping").await
