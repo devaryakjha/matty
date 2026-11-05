@@ -690,6 +690,8 @@ pub enum AddMembersEvent {
 pub struct AddMembersView {
     channel: SharedString,
     profiles: Vec<UserProfile>,
+    /// The people to offer are on their way from the server.
+    loading: bool,
     selected: Vec<SharedString>,
     search: Entity<InputState>,
     handle: DialogHandle,
@@ -706,6 +708,7 @@ impl AddMembersView {
         Self {
             channel: SharedString::default(),
             profiles: Vec::new(),
+            loading: false,
             selected: Vec::new(),
             search,
             handle: DialogHandle::new(false),
@@ -718,22 +721,30 @@ impl AddMembersView {
         &self.handle
     }
 
-    /// Opens the dialog for `channel` with `profiles` to choose from (people
-    /// not yet in it, as far as the caller knows).
+    /// Opens the dialog for `channel` with `profiles` to choose from:
+    /// people not yet in it, or `None` while the server finds them.
     pub fn open(
         &mut self,
         channel: SharedString,
-        profiles: Vec<UserProfile>,
+        profiles: Option<Vec<UserProfile>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.channel = channel;
-        self.profiles = profiles;
+        self.loading = profiles.is_none();
+        self.profiles = profiles.unwrap_or_default();
         self.selected.clear();
         self.search
             .update(cx, |search, cx| search.set_value("", window, cx));
         self.handle.open(window, cx);
         self.focus_search = true;
+        cx.notify();
+    }
+
+    /// The people the server found to add (#208).
+    pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
+        self.profiles = profiles;
+        self.loading = false;
         cx.notify();
     }
 
@@ -880,7 +891,13 @@ impl Render for AddMembersView {
                                 .justify_center()
                                 .type_style(style::UI, &theme)
                                 .text_color(theme.colors.muted_foreground)
-                                .child(format!("Nobody matches “{query}”")),
+                                .child(if self.loading {
+                                    "Loading\u{2026}".to_string()
+                                } else if query.is_empty() {
+                                    "Everyone on the team is already here".to_string()
+                                } else {
+                                    format!("Nobody matches “{query}”")
+                                }),
                         )
                     })
                     .children(rows),

@@ -250,3 +250,37 @@ async fn channel_files_search_the_channel_newest_first() {
     let names: Vec<_> = files.iter().map(|file| file.name.as_str()).collect();
     assert_eq!(names, ["new.pdf", "old.png"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_members_offers_the_team_people_not_in_the_channel() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .and(query_param("in_team", "t1"))
+        .and(query_param("not_in_channel", "c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "bo", "username": "bo", "first_name": "Bo"}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    next(&changes, |c| matches!(c, ChangeSet::Sidebar { .. })).await;
+
+    sync.send(Command::NonMembers {
+        team_id: "t1".into(),
+        channel_id: "c1".into(),
+    });
+    let ChangeSet::NonMembers { channel_id, users } =
+        next(&changes, |c| matches!(c, ChangeSet::NonMembers { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(channel_id, "c1");
+    assert_eq!(users[0].first_name, "Bo");
+}

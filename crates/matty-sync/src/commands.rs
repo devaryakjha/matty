@@ -113,6 +113,10 @@ pub(crate) enum Write {
         team_id: String,
         channel_id: String,
     },
+    NonMembers {
+        team_id: String,
+        channel_id: String,
+    },
     Search {
         team_id: String,
         query: Box<SearchQuery>,
@@ -249,6 +253,7 @@ impl Write {
             Self::People { .. } => "find people",
             Self::ChannelMembers { .. } => "load channel members",
             Self::ChannelFiles { .. } => "load channel files",
+            Self::NonMembers { .. } => "find people to add",
             Self::ChannelAdmin { admin: true, .. } => "make channel admin",
             Self::ChannelAdmin { admin: false, .. } => "remove channel admin",
             Self::Search { .. } => "search",
@@ -315,6 +320,7 @@ impl Write {
             | Self::ChannelAdmin { channel_id, .. }
             | Self::ChannelMembers { channel_id }
             | Self::ChannelFiles { channel_id, .. }
+            | Self::NonMembers { channel_id, .. }
             | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
@@ -735,6 +741,23 @@ pub(crate) async fn run(
                     .collect();
                 files.sort_by_key(|file| std::cmp::Reverse(file.create_at));
                 Some(Loaded::ChannelFiles { channel_id, files })
+            }
+            Write::NonMembers {
+                team_id,
+                channel_id,
+            } => {
+                let mut users = Vec::new();
+                for page in 0..PEOPLE_PAGES {
+                    let batch = client
+                        .users_not_in_channel(&team_id, &channel_id, page, PAGE)
+                        .await?;
+                    let last = batch.len() < PAGE as usize;
+                    users.extend(batch);
+                    if last {
+                        break;
+                    }
+                }
+                Some(Loaded::NonMembers { channel_id, users })
             }
             Write::ChannelMembers { channel_id } => {
                 Some(channel_members(&client, channel_id).await?)

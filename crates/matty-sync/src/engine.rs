@@ -578,6 +578,15 @@ pub enum Command {
         /// The person.
         user_id: String,
     },
+    /// Finds the team's people who are not in a channel, for Add members
+    /// (#208); [`ChangeSet::NonMembers`](crate::ChangeSet::NonMembers)
+    /// answers.
+    NonMembers {
+        /// The channel's team.
+        team_id: String,
+        /// The channel.
+        channel_id: String,
+    },
     /// Loads a channel's files for Channel files (#208);
     /// [`ChangeSet::ChannelFiles`](crate::ChangeSet::ChannelFiles) answers.
     ChannelFiles {
@@ -1051,6 +1060,14 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RemoveMember")
                 .field("channel_id", channel_id)
                 .field("user_id", user_id)
+                .finish(),
+            Self::NonMembers {
+                team_id,
+                channel_id,
+            } => f
+                .debug_struct("NonMembers")
+                .field("team_id", team_id)
+                .field("channel_id", channel_id)
                 .finish(),
             Self::ChannelFiles {
                 team_id,
@@ -2052,6 +2069,13 @@ impl Engine {
                 }) => writes.push(Write::RemoveMember {
                     channel_id,
                     user_id,
+                }),
+                Message::Command(Command::NonMembers {
+                    team_id,
+                    channel_id,
+                }) => writes.push(Write::NonMembers {
+                    team_id,
+                    channel_id,
                 }),
                 Message::Command(Command::ChannelFiles {
                     team_id,
@@ -3474,6 +3498,13 @@ impl Engine {
                 sidebar::upsert_users(self.store.conn(), &users)?;
                 dirty.direct.push(ChangeSet::People {
                     team_id,
+                    users: Arc::from(users),
+                });
+            }
+            Loaded::NonMembers { channel_id, users } => {
+                sidebar::upsert_users(self.store.conn(), &users)?;
+                dirty.direct.push(ChangeSet::NonMembers {
+                    channel_id,
                     users: Arc::from(users),
                 });
             }

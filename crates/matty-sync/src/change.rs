@@ -295,6 +295,14 @@ pub enum ChangeSet {
         /// Its people.
         users: Arc<[User]>,
     },
+    /// The team's people who are not in a channel, for Add members: the
+    /// answer to [`Command::NonMembers`](crate::Command::NonMembers).
+    NonMembers {
+        /// The channel.
+        channel_id: String,
+        /// The people.
+        users: Arc<[User]>,
+    },
     /// A channel's files, newest first: the answer to
     /// [`Command::ChannelFiles`](crate::Command::ChannelFiles).
     ChannelFiles {

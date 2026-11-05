@@ -264,6 +264,8 @@ pub struct Update {
     pub profiles: Option<Vec<UserProfile>>,
     /// The ids of the open channel's admins, when its members loaded.
     pub admins: Option<Vec<SharedString>>,
+    /// The people Add members offers for the open channel (#208).
+    pub addable: Option<Vec<UserProfile>>,
     /// The files Channel files lists, when they came or changed (#208).
     pub channel_files: Option<Vec<crate::right_pane::FoundFile>>,
     /// The shown team's public channels, for Browse channels.
@@ -1697,6 +1699,17 @@ impl Live {
         self.channel_files = Some((channel_id, None));
     }
 
+    /// Asks who on the team is not in the open channel yet, for Add
+    /// members; they come as [`Update::addable`].
+    pub fn find_non_members(&self) {
+        if let (Some(row), Some(team_id)) = (self.open.as_ref(), self.team.clone()) {
+            self.send(Command::NonMembers {
+                team_id,
+                channel_id: row.id.to_string(),
+            });
+        }
+    }
+
     /// Channel files closed.
     pub fn close_channel_files(&mut self) {
         self.channel_files = None;
@@ -2271,6 +2284,25 @@ impl Live {
             ChangeSet::Stats(stats) if self.is_open(&stats.channel_id) => {
                 self.stats = Some(stats.clone());
                 update.details = self.shown_details();
+                // Someone joined or left: a loaded member list follows.
+                if self.members.as_ref().is_some_and(|members| {
+                    i64::try_from(members.user_ids.len()).ok() != Some(stats.member_count)
+                }) {
+                    self.load_members();
+                }
+            }
+            ChangeSet::NonMembers { channel_id, users } if self.is_open(channel_id) => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                    self.users.insert(user.id.clone(), user.clone());
+                }
+                let mut people: Vec<_> = users
+                    .iter()
+                    .filter(|user| user.id != self.me.0 && user.delete_at == 0 && !user.is_bot)
+                    .map(|user| self.profile(user))
+                    .collect();
+                people.sort_by_key(|person| person.display_name.to_lowercase());
+                update.addable = Some(people);
             }
             ChangeSet::Typing {
                 user_id,
@@ -3846,6 +3878,39 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn add_members_offers_people_not_in_the_open_channel() {
+        let mut live = live();
+        opened(&mut live);
+        let person = |id: &str, is_bot: bool| User {
+            id: id.into(),
+            username: id.into(),
+            is_bot,
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::NonMembers {
+            channel_id: "c2".into(),
+            users: Arc::from(vec![person("zed", false)]),
+        });
+        assert!(update.addable.is_none());
+        let update = live.apply(&ChangeSet::NonMembers {
+            channel_id: "c1".into(),
+            users: Arc::from(vec![
+                person("zed", false),
+                person("me", false),
+                person("bot", true),
+                person("bo", false),
+            ]),
+        });
+        let names: Vec<_> = update
+            .addable
+            .unwrap()
+            .iter()
+            .map(|p| p.username.to_string())
+            .collect();
+        assert_eq!(names, ["bo", "zed"]);
     }
 
     #[test]

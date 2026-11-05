@@ -180,6 +180,11 @@ pub(crate) enum Loaded {
     },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
+    /// A team's people who are not in a channel.
+    NonMembers {
+        channel_id: String,
+        users: Vec<User>,
+    },
     /// A channel's files, newest first.
     ChannelFiles {
         channel_id: String,
