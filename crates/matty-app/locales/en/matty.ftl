@@ -242,3 +242,13 @@ drafts-open = Open
 drafts-send = Send
 drafts-empty = No drafts
 drafts-empty-hint = Anything you type and leave unsent waits here.
+
+## Formatting row and preview (channel/format_bar.rs)
+
+format-strikethrough = Strikethrough
+format-link = Link
+format-heading = Heading
+format-quote = Quote
+format-bullets = Bulleted list
+format-numbers = Numbered list
+format-preview = Preview

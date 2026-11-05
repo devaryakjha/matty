@@ -15,6 +15,7 @@ use gpui_kit::{
 use super::{ChannelView, unwrap_selection};
 use crate::settings::SettingsStore;
 use crate::style::{self, metrics, scaled};
+use crate::t;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::composer::ComposerState;
 use crate::ui::theme::UiTheme;
@@ -134,7 +135,7 @@ impl ChannelView {
     /// A toolbar button: an inline format or a line format on `composer`.
     fn format_button<F>(
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         glyph: LucideIcon,
         composer: &Entity<ComposerState>,
         run: F,
@@ -146,7 +147,7 @@ impl ChannelView {
         let composer = composer.clone();
         style::tipped(
             SharedString::from(format!("{id}.tip")),
-            label,
+            label.clone(),
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
@@ -191,7 +192,7 @@ impl ChannelView {
                 .pb(theme.space(1.))
                 .child(Self::format_button(
                     "composer.format.strike",
-                    "Strikethrough",
+                    t!("format-strikethrough"),
                     LucideIcon::Strikethrough,
                     composer,
                     inline("~~", "~~"),
@@ -199,7 +200,7 @@ impl ChannelView {
                 ))
                 .child(Self::format_button(
                     "composer.format.link",
-                    "Link",
+                    t!("format-link"),
                     LucideIcon::Link,
                     composer,
                     inline("[", "](url)"),
@@ -207,7 +208,7 @@ impl ChannelView {
                 ))
                 .child(Self::format_button(
                     "composer.format.heading",
-                    "Heading",
+                    t!("format-heading"),
                     LucideIcon::Heading,
                     composer,
                     lines(LineFormat::Heading),
@@ -215,7 +216,7 @@ impl ChannelView {
                 ))
                 .child(Self::format_button(
                     "composer.format.quote",
-                    "Quote",
+                    t!("format-quote"),
                     LucideIcon::TextQuote,
                     composer,
                     lines(LineFormat::Quote),
@@ -223,7 +224,7 @@ impl ChannelView {
                 ))
                 .child(Self::format_button(
                     "composer.format.bullets",
-                    "Bulleted list",
+                    t!("format-bullets"),
                     LucideIcon::List,
                     composer,
                     lines(LineFormat::Bullets),
@@ -231,7 +232,7 @@ impl ChannelView {
                 ))
                 .child(Self::format_button(
                     "composer.format.numbers",
-                    "Numbered list",
+                    t!("format-numbers"),
                     LucideIcon::ListOrdered,
                     composer,
                     lines(LineFormat::Numbers),
@@ -267,7 +268,7 @@ impl ChannelView {
                     div()
                         .pb(theme.space(1.))
                         .text_color(theme.colors.muted_foreground)
-                        .child("Preview"),
+                        .child(t!("format-preview")),
                 )
                 .child(crate::links::message_body(
                     "composer.preview.body",
