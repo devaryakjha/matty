@@ -25,10 +25,13 @@ pub const PSEUDO: &str = "en-XA";
 /// the list once its strings are extracted; the test below keeps it so.
 pub const LOCALIZED: &[&str] = &[
     "account.rs",
+    "bookmarks.rs",
     "custom_status.rs",
     "dnd.rs",
     "emoji_manager.rs",
     "login.rs",
+    "profile.rs",
+    "profile_editor.rs",
 ];
 
 struct Strings {

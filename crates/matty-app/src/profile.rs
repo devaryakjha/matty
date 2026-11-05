@@ -11,6 +11,7 @@ use gpui_kit::{
 
 use crate::sidebar::Presence;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
@@ -61,13 +62,8 @@ pub fn time_zone(props: &std::collections::HashMap<String, String>) -> Option<Sh
 }
 
 impl UserProfile {
-    pub fn presence_label(&self) -> &'static str {
-        match self.presence {
-            Presence::Online => "Online",
-            Presence::Away => "Away",
-            Presence::Dnd => "Do not disturb",
-            Presence::Offline => "Offline",
-        }
+    pub fn presence_label(&self) -> SharedString {
+        crate::account::presence_label(self.presence)
     }
 }
 
@@ -94,13 +90,13 @@ fn add_to_channel(id: &SharedString, on_add: ProfileAction, cx: &App) -> Button 
     ))
     .variant(ButtonVariant::Ghost)
     .size(ButtonSize::Sm)
-    .aria_label("Add to channel")
+    .aria_label(t!("profile-add-to-channel"))
     .child(
         lucide(LucideIcon::UserPlus)
             .size(scaled(&theme, metrics::ICON))
             .text_color(theme.colors.foreground),
     )
-    .child("Add to channel")
+    .child(t!("profile-add-to-channel"))
     .on_click(move |_, window, cx| on_add(window, cx))
 }
 
@@ -277,7 +273,7 @@ fn details(profile: &UserProfile, cx: &App) -> gpui_kit::Div {
                             .size(scaled(&theme, metrics::ICON_SMALL))
                             .text_color(theme.colors.muted_foreground)
                             .into_any_element(),
-                        format!("{time} local time"),
+                        t!("profile-local-time", time = time).to_string(),
                     )
                 }),
         )
@@ -301,14 +297,14 @@ fn buttons(
             ))
             .variant(ButtonVariant::Default)
             .size(ButtonSize::Sm)
-            .aria_label("Message")
+            .aria_label(t!("profile-message"))
             .flex_1()
             .child(
                 lucide(LucideIcon::MessageSquare)
                     .size(scaled(&theme, metrics::ICON))
                     .text_color(theme.colors.primary_foreground),
             )
-            .child("Message")
+            .child(t!("profile-message"))
             .on_click(move |_, window, cx| on_message(window, cx)),
         )
         .child(
@@ -317,14 +313,14 @@ fn buttons(
             ))
             .variant(ButtonVariant::Outline)
             .size(ButtonSize::Sm)
-            .aria_label("Mention")
+            .aria_label(t!("profile-mention"))
             .flex_1()
             .child(
                 lucide(LucideIcon::AtSign)
                     .size(scaled(&theme, metrics::ICON))
                     .text_color(theme.colors.foreground),
             )
-            .child("Mention")
+            .child(t!("profile-mention"))
             .on_click(move |_, window, cx| on_mention(window, cx)),
         )
 }
@@ -345,7 +341,10 @@ pub fn profile_card(
     } = actions;
     popover_popup(
         gpui_kit::ElementId::Name(format!("profile.{id}").into()),
-        format!("{}'s profile", profile.display_name),
+        t!(
+            "profile-card-label",
+            name = profile.display_name.to_string()
+        ),
         cx,
     )
     .p(theme.space(4.))
@@ -370,8 +369,8 @@ pub fn profile_card(
                     ))
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Sm)
-                    .aria_label("View profile")
-                    .child("View profile")
+                    .aria_label(t!("profile-view"))
+                    .child(t!("profile-view"))
                     .on_click(move |_, window, cx| on_view(window, cx))
                 }))
                 .children(on_add_to_channel.map(|on_add| add_to_channel(id, on_add, cx))),
@@ -390,7 +389,7 @@ pub fn profile_pane(
 ) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx).clone();
     let id: SharedString = format!("pane.{}", profile.user_id).into();
-    let field = |label: &'static str, value: SharedString| {
+    let field = |label: SharedString, value: SharedString| {
         div()
             .flex()
             .flex_col()
@@ -440,13 +439,13 @@ pub fn profile_pane(
                     profile
                         .position
                         .clone()
-                        .map(|position| field("Position", position)),
+                        .map(|position| field(t!("profile-position"), position)),
                 )
                 .children(
                     profile
                         .time_zone
                         .clone()
-                        .map(|zone| field("Time zone", zone.replace('_', " ").into())),
+                        .map(|zone| field(t!("profile-time-zone"), zone.replace('_', " ").into())),
                 ),
         )
 }
