@@ -1005,6 +1005,8 @@ pub enum ChannelEvent {
     ToggleFavorite(bool),
     /// The user chose View profile on someone's profile card (#212).
     ViewProfile(UserProfile),
+    /// "Add to channel" on someone's profile card (#212).
+    AddToChannel(UserProfile),
     /// The user chose Message on someone's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -4000,10 +4002,17 @@ impl ChannelView {
         )
         .trigger(trigger)
         .content(move |_, cx| {
-            let (message_view, mention_view, view_view) =
-                (view.clone(), view.clone(), view.clone());
-            let (message_profile, mention_profile, view_profile) =
-                (profile.clone(), profile.clone(), profile.clone());
+            let (message_view, mention_view, view_view, add_view) =
+                (view.clone(), view.clone(), view.clone(), view.clone());
+            let (message_profile, mention_profile, view_profile, add_profile) = (
+                profile.clone(),
+                profile.clone(),
+                profile.clone(),
+                profile.clone(),
+            );
+            let own = add_view
+                .upgrade()
+                .is_some_and(|this| this.read(cx).me == profile.display_name);
             // Each action closes the card by giving it a fresh id.
             let close = |this: &mut Self, cx: &mut Context<Self>| {
                 this.profile_cards += 1;
@@ -4047,6 +4056,17 @@ impl ChannelView {
                             })
                             .ok();
                     })),
+                    on_add_to_channel: (!own).then(|| -> crate::profile::ProfileAction {
+                        Box::new(move |_, cx| {
+                            let event = ChannelEvent::AddToChannel(add_profile.clone());
+                            add_view
+                                .update(cx, |this, cx| {
+                                    close(this, cx);
+                                    cx.emit(event);
+                                })
+                                .ok();
+                        })
+                    }),
                 },
                 cx,
             )
