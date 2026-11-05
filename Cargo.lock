@@ -4789,6 +4789,7 @@ name = "matty-app"
 version = "0.0.1"
 dependencies = [
  "async-channel",
+ "block2 0.6.2",
  "dirs 6.0.0",
  "emojis",
  "fluent-bundle",
@@ -4804,6 +4805,9 @@ dependencies = [
  "matty-notify",
  "matty-sync",
  "matty-update",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "regex",
  "rustix",
  "serde",
