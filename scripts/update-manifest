@@ -52,7 +52,10 @@ if [[ -z "$key" ]]; then
 	exit 0
 fi
 public="$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | base64)"
-if [[ -n "${MATTY_UPDATE_PUBLIC_KEY:-}" && "$public" != "$MATTY_UPDATE_PUBLIC_KEY" ]]; then
+# A repository variable pasted with a trailing newline still names the same
+# key, and the app trims it too, so compare without whitespace.
+expected="$(printf '%s' "${MATTY_UPDATE_PUBLIC_KEY:-}" | tr -d '[:space:]')"
+if [[ -n "$expected" && "$public" != "$expected" ]]; then
 	echo "the signing key's public half ($public) is not MATTY_UPDATE_PUBLIC_KEY" >&2
 	exit 1
 fi
