@@ -437,6 +437,9 @@ impl Render for BookmarkEditor {
     }
 }
 
+/// What a menu item does to the bar.
+type BarAction = Box<dyn Fn(&mut BookmarksBar, &mut Window, &mut Context<BookmarksBar>)>;
+
 /// The bookmarks bar: one entity per channel view.
 pub struct BookmarksBar {
     model: Option<BookmarksModel>,
@@ -617,15 +620,12 @@ impl BookmarksBar {
         let id = |name: &str| {
             gpui_kit::ElementId::Name(format!("{prefix}.{}.{name}", bookmark.id).into())
         };
-        let item =
-            |name: &str,
-             label: &'static str,
-             run: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
-                let view = view.clone();
-                MenuItem::new(id(name), label).on_click(move |_, window, cx| {
-                    view.update(cx, |this, cx| run(this, window, cx)).ok();
-                })
-            };
+        let item = |name: &str, label: &'static str, run: BarAction| {
+            let view = view.clone();
+            MenuItem::new(id(name), label).on_click(move |_, window, cx| {
+                view.update(cx, |this, cx| run(this, window, cx)).ok();
+            })
+        };
         let mut items = Vec::new();
         let open = bookmark.clone();
         items.push(item(

@@ -102,11 +102,11 @@ pub(crate) enum BookmarksLoaded {
         bookmarks: Vec<ChannelBookmark>,
     },
     /// A new or changed bookmark.
-    Saved(ChannelBookmark),
+    Saved(Box<ChannelBookmark>),
     /// An edit, which may have replaced the bookmark.
-    Updated(BookmarkUpdate),
+    Updated(Box<BookmarkUpdate>),
     /// A deleted bookmark.
-    Deleted(ChannelBookmark),
+    Deleted(Box<ChannelBookmark>),
     /// Bookmarks whose place changed.
     Sorted {
         channel_id: String,
@@ -219,7 +219,7 @@ async fn run(client: Client, command: BookmarkCommand, results: UnboundedSender<
                 display_name,
                 link_url,
                 emoji,
-            } => BookmarksLoaded::Saved(
+            } => BookmarksLoaded::Saved(Box::new(
                 client
                     .create_bookmark(&NewBookmark {
                         channel_id,
@@ -230,7 +230,7 @@ async fn run(client: Client, command: BookmarkCommand, results: UnboundedSender<
                         emoji,
                     })
                     .await?,
-            ),
+            )),
             BookmarkCommand::Edit {
                 channel_id,
                 bookmark_id,
@@ -243,16 +243,18 @@ async fn run(client: Client, command: BookmarkCommand, results: UnboundedSender<
                     link_url: (!link_url.is_empty()).then_some(link_url),
                     emoji: Some(emoji),
                 };
-                BookmarksLoaded::Updated(
+                BookmarksLoaded::Updated(Box::new(
                     client
                         .patch_bookmark(&channel_id, &bookmark_id, &patch)
                         .await?,
-                )
+                ))
             }
             BookmarkCommand::Delete {
                 channel_id,
                 bookmark_id,
-            } => BookmarksLoaded::Deleted(client.delete_bookmark(&channel_id, &bookmark_id).await?),
+            } => BookmarksLoaded::Deleted(Box::new(
+                client.delete_bookmark(&channel_id, &bookmark_id).await?,
+            )),
             BookmarkCommand::Move {
                 channel_id,
                 bookmark_id,
@@ -318,6 +320,7 @@ pub(crate) fn write(
         }
         BookmarksLoaded::Updated(update) => {
             bookmarks::apply_update(conn, &update)?;
+            let update = *update;
             let Some(channel_id) = update
                 .updated
                 .or(update.deleted)
@@ -364,12 +367,12 @@ pub(crate) fn event(
 ) -> Result<(), StoreError> {
     use matty_api::ws::WsEvent;
     let loaded = match event {
-        WsEvent::ChannelBookmarkCreated { bookmark, .. } => BookmarksLoaded::Saved(*bookmark),
+        WsEvent::ChannelBookmarkCreated { bookmark, .. } => BookmarksLoaded::Saved(bookmark),
         WsEvent::ChannelBookmarkUpdated { channel_id, update } => {
             bookmarks::apply_update(conn, &update)?;
             return publish(conn, &channel_id, dirty);
         }
-        WsEvent::ChannelBookmarkDeleted { bookmark, .. } => BookmarksLoaded::Deleted(*bookmark),
+        WsEvent::ChannelBookmarkDeleted { bookmark, .. } => BookmarksLoaded::Deleted(bookmark),
         WsEvent::ChannelBookmarkSorted {
             channel_id,
             bookmarks,
