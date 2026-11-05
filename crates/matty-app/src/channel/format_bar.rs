@@ -2,12 +2,14 @@
 //! headings in a row above the composer, shown with the toolbar's
 //! "Formatting" toggle and kept as a setting. Every button runs the same
 //! code as its shortcut, so a second press takes the format off again.
+//! Preview (Cmd/Ctrl+Alt+P) shows the message as it will post.
 
 use std::ops::Range;
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    App, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
+    App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 
 use super::{ChannelView, unwrap_selection};
@@ -234,6 +236,44 @@ impl ChannelView {
                     composer,
                     lines(LineFormat::Numbers),
                     &theme,
+                )),
+        )
+    }
+}
+
+impl ChannelView {
+    /// The message as it will post (#219), above the composer while the
+    /// preview is on and the composer holds something: the same Markdown
+    /// pipeline the transcript draws a sent post with.
+    pub(super) fn preview_box(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        if !self.previewing || self.draft_len == 0 {
+            return None;
+        }
+        let theme = UiTheme::read(cx).clone();
+        let text = self.composer.read(cx).value(cx);
+        Some(
+            div()
+                .id("composer.preview")
+                .mb(theme.space(2.))
+                .px(theme.space(3.))
+                .py(theme.space(2.))
+                .max_h(scaled(&theme, 240.))
+                .overflow_y_scroll()
+                .rounded(theme.radius.lg)
+                .border_1()
+                .border_color(theme.colors.border)
+                .bg(theme.colors.muted)
+                .child(
+                    div()
+                        .pb(theme.space(1.))
+                        .text_color(theme.colors.muted_foreground)
+                        .child("Preview"),
+                )
+                .child(crate::links::message_body(
+                    "composer.preview.body",
+                    &text,
+                    |url, _, cx| cx.open_url(url),
+                    cx,
                 )),
         )
     }

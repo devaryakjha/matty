@@ -1178,6 +1178,8 @@ pub struct ChannelView {
     me: SharedString,
     /// Characters in the composer, for the Send button and the counter.
     draft_len: usize,
+    /// The message shows as it will post, above the composer (#219).
+    previewing: bool,
     /// Which channel's draft the composer holds, and what was saved of it.
     draft: crate::composer_draft::ComposerDraft,
     _draft_task: Option<gpui_kit::Task<()>>,
@@ -1508,6 +1510,7 @@ impl ChannelView {
             deleting: None,
             me: me.into(),
             draft_len: 0,
+            previewing: false,
             draft: Default::default(),
             _draft_task: None,
             pending_seq: 0,
@@ -4827,6 +4830,10 @@ impl ChannelView {
             .on_action(
                 cx.listener(|this, _: &UploadFiles, window, cx| this.choose_files(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &actions::TogglePreview, _, cx| {
+                this.previewing = !this.previewing;
+                cx.notify();
+            }))
             .flex_shrink_0()
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
@@ -4836,6 +4843,7 @@ impl ChannelView {
             .children(link_preview)
             .children(tray)
             .children(self.format_bar(cx))
+            .children(self.preview_box(cx))
             .children(crate::slash::error_line(
                 "composer.command-error",
                 self.slash.error(),
@@ -4895,6 +4903,19 @@ impl ChannelView {
                             ButtonVariant::Ghost
                         })
                         .on_click(|_, _, cx| format_bar::toggle_format_bar(cx)),
+                    ))
+                    .child(style::tipped(
+                        "composer.preview.tip",
+                        actions::tooltip_text("Preview", "Preview message"),
+                        tool("composer.preview", "Preview", LucideIcon::Eye)
+                            .variant(if self.previewing {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(actions::TogglePreview), cx)
+                            }),
                     ))
                     .child(emoji_popover)
                     .child(style::tipped(
