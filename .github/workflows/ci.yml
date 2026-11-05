@@ -1,10 +1,11 @@
 name: CI
 
-# Pull requests run fast Linux checks only. macOS runners are scarce (a few
-# at a time per account), so the full macOS job runs on master, on pull
-# requests that touch macOS code, and on pull requests labelled `macos`.
-# Windows runs only when Windows code changes, with the `windows` label, and
-# once a night on master. Linux and macOS jobs run on self-hosted runners
+# Pull requests only lint: fmt, clippy and the plain-Rust checks on Linux,
+# plus cargo-deny when the dependencies change. Tests, the web build, macOS,
+# packages and the live integration tests run on every master push; a
+# label (`tests`, `web`, `macos`, `linux`, `windows`, `integration`, or
+# `full-ci` for all of them) runs them on a pull request. Windows runs on
+# master only when Windows code changes, and once a night. Linux and macOS jobs run on self-hosted runners
 # when the repository variables MATTY_LINUX_RUNNER and MATTY_MACOS_RUNNER
 # name them. See docs/CI.md and docs/self-hosted-runners.md.
 on:
@@ -37,10 +38,8 @@ jobs:
       linux-runner: ${{ steps.runners.outputs.linux }}
       macos-runner: ${{ steps.runners.outputs.macos }}
       code: ${{ steps.code.outputs.code }}
-      macos: ${{ steps.filter.outputs.macos }}
-      bundle: ${{ steps.filter.outputs.bundle }}
+      deps: ${{ steps.filter.outputs.deps }}
       windows: ${{ steps.filter.outputs.windows }}
-      linux-package: ${{ steps.filter.outputs.linux-package }}
       windows-package: ${{ steps.filter.outputs.windows-package }}
     steps:
       # MATTY_LINUX_RUNNER and MATTY_MACOS_RUNNER are repository variables
@@ -86,18 +85,10 @@ jobs:
         id: filter
         with:
           filters: |
-            macos:
-              - 'crates/matty-notify/**'
-              - 'crates/matty-app/src/logging.rs'
-              - 'crates/matty-app/src/actions.rs'
-              - 'crates/matty-app/src/menu.rs'
-              - 'crates/matty-app/Cargo.toml'
-              - 'crates/matty/**'
-              - 'packaging/**'
-              - 'scripts/dev-bundle'
-              - 'scripts/macos-bundle'
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
+            deps:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
             windows:
               - 'crates/matty-notify/**'
               - 'crates/matty-app/src/logging.rs'
@@ -109,19 +100,12 @@ jobs:
               - 'Cargo.toml'
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
-            bundle:
-              - 'packaging/macos/**'
-              - 'scripts/macos-bundle'
-              - 'scripts/release-bundle'
-            linux-package:
-              - 'packaging/linux/**'
-              - 'scripts/linux-package'
             windows-package:
               - 'packaging/windows/**'
               - 'scripts/windows-package'
 
-  # fmt, clippy and the unit tests of the whole workspace on Linux. This is
-  # the check every pull request waits for.
+  # fmt, clippy and the plain-Rust checks on Linux, the check every pull
+  # request waits for; master also runs the workspace tests.
   linux:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -163,7 +147,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      # Pull requests lint only; master runs the tests (docs/CI.md).
+      - if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'tests') || contains(github.event.pull_request.labels.*.name, 'full-ci')
+        run: cargo test --workspace --locked
       - name: Plain-Rust crates do not depend on GPUI
         run: scripts/check-no-gpui.sh
       - name: The app never opens the database itself
@@ -173,7 +159,11 @@ jobs:
   # 25 MiB file limit, and the result is kept for a manual deploy.
   web:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: >-
+      needs.changes.outputs.code == 'true' && (
+        github.event_name != 'pull_request' ||
+        contains(github.event.pull_request.labels.*.name, 'web') ||
+        contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
     timeout-minutes: 45
     steps:
@@ -214,7 +204,12 @@ jobs:
 
   deny:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # Pull requests check it only when the dependencies change.
+    if: >-
+      needs.changes.outputs.code == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.deps == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'full-ci'))
     # Stays on GitHub's runners: it takes about a minute, and the action
     # runs in a root container that would leave root-owned files in a
     # self-hosted runner's reused checkout.
@@ -231,7 +226,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'macos') ||
-      needs.changes.outputs.macos == 'true'
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ fromJSON(needs.changes.outputs.macos-runner) }}
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
@@ -301,7 +296,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'macos') ||
-      needs.changes.outputs.bundle == 'true'
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ fromJSON(needs.changes.outputs.macos-runner) }}
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
@@ -362,7 +357,8 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       contains(github.event.pull_request.labels.*.name, 'windows') ||
-      needs.changes.outputs.windows == 'true'
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'push' && needs.changes.outputs.windows == 'true')
     runs-on: windows-latest
     concurrency:
       group: ${{ github.event_name == 'push' && 'windows-master' || format('windows-{0}', github.run_id) }}
@@ -404,7 +400,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'linux') ||
-      needs.changes.outputs.linux-package == 'true'
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
     concurrency:
       group: ${{ github.event_name == 'push' && 'linux-package-master' || format('linux-package-{0}', github.run_id) }}
@@ -470,7 +466,8 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       contains(github.event.pull_request.labels.*.name, 'windows') ||
-      needs.changes.outputs.windows-package == 'true'
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (github.event_name == 'push' && needs.changes.outputs.windows-package == 'true')
     runs-on: windows-latest
     concurrency:
       group: ${{ github.event_name == 'push' && 'windows-package-master' || format('windows-package-{0}', github.run_id) }}
@@ -523,7 +520,8 @@ jobs:
     needs: changes
     if: >-
       github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'integration')
+      contains(github.event.pull_request.labels.*.name, 'integration') ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
     # Stays on GitHub's runners. On the self-hosted box the server could
     # not reach the tests' stand-in integrations on the host, and four
     # servers next to the builds made the timing-sensitive tests fail.
