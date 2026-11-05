@@ -333,7 +333,12 @@ pub fn ack_bar(
         } else {
             LucideIcon::Check
         })
-        .size(scaled(&theme, metrics::ICON_SMALL)),
+        .size(scaled(&theme, metrics::ICON_SMALL))
+        .text_color(if acked {
+            theme.colors.primary
+        } else {
+            theme.colors.foreground
+        }),
     )
     .label(label)
     .disabled(!sent || (acked && !undo))
