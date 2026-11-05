@@ -772,6 +772,11 @@ impl MainWindow {
                     }
                     this.refresh_channel_info(cx);
                 }
+                ChannelEvent::FindNonMembers => {
+                    if let Some(live) = &this.live {
+                        live.find_non_members();
+                    }
+                }
                 ChannelEvent::AddMembers(people) => {
                     if let (Some(live), Some(id)) = (&this.live, &this.selected_channel) {
                         live.send(matty_sync::Command::AddMembers {
@@ -1899,6 +1904,10 @@ impl MainWindow {
             });
             self.right_pane
                 .update(cx, |pane, cx| pane.set_suggested(term, people, cx));
+        }
+        if let Some(people) = update.addable {
+            self.channel
+                .update(cx, |view, cx| view.set_addable(people, cx));
         }
         if let Some(people) = update.people {
             self.new_message
@@ -3040,6 +3049,9 @@ impl MainWindow {
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::OpenChannelFiles => self.show_channel_files(cx),
+            RightPaneEvent::AddMembers => self
+                .channel
+                .update(cx, |view, cx| view.open_add_members(window, cx)),
             RightPaneEvent::RemoveMember { user_id } => {
                 if let Some((profiles, admins)) = self
                     .live

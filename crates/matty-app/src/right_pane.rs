@@ -363,6 +363,8 @@ pub enum RightPaneEvent {
     OpenPinned,
     /// "Files" in the channel info (#208).
     OpenChannelFiles,
+    /// "Add members" in the channel info (#208).
+    AddMembers,
     /// The user clicked a link or an entity chip in a message (#103).
     /// A slash command in the reply composer needs the server or the
     /// window (#210).
@@ -3441,6 +3443,7 @@ impl RightPaneView {
                         .on_click(move |_, window, cx| leave.open(window, cx)),
                 )
             });
+        let is_channel = kind_icon.is_some();
         let view = cx.entity().downgrade();
         let me = self.me.clone();
         let can_manage = channel.can_manage;
@@ -3448,7 +3451,37 @@ impl RightPaneView {
             .flex()
             .flex_col()
             .gap(theme.space(1.))
-            .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pb(theme.space(1.))
+                    .child(label(format!("Members · {}", channel.members)))
+                    .when(is_channel, |row| {
+                        row.child(
+                            Button::new("info.members.add")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Xs)
+                                .aria_label("Add members")
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(theme.space(1.))
+                                        .child(
+                                            lucide(LucideIcon::UserPlus)
+                                                .size(scaled(&theme, metrics::ICON_SMALL))
+                                                .text_color(theme.colors.foreground),
+                                        )
+                                        .child("Add"),
+                                )
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::AddMembers)),
+                                ),
+                        )
+                    }),
+            )
             .children(channel.profiles.iter().map(|profile| {
                 let manageable = can_manage && profile.display_name != me;
                 let admin = channel.admins.contains(&profile.user_id);

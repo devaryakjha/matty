@@ -279,6 +279,28 @@ impl Client {
         .await
     }
 
+    /// `GET users?in_team=&not_in_channel=`: one page of a team's active
+    /// people who are not in a channel, for Add members (#208).
+    pub async fn users_not_in_channel(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<User>, ApiError> {
+        self.get_query(
+            "users",
+            &[
+                ("in_team", team_id.to_owned()),
+                ("not_in_channel", channel_id.to_owned()),
+                ("active", "true".to_owned()),
+                ("page", page.to_string()),
+                ("per_page", per_page.to_string()),
+            ],
+        )
+        .await
+    }
+
     /// `POST teams/{team_id}/channels/search`: public channels whose name
     /// matches `term`.
     pub async fn search_channels(

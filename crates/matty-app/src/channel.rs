@@ -1074,6 +1074,9 @@ pub enum ChannelEvent {
     /// The user added these people from the Add members dialog; the view
     /// already counts them.
     AddMembers(Vec<UserProfile>),
+    /// Add members opened: the window asks the server who is not in the
+    /// channel yet, and answers with [`ChannelView::set_addable`] (#208).
+    FindNonMembers,
     /// "Swap panes" in a split view header (#222).
     SwapPanes,
     /// "Close pane" in a split view header (#222).
@@ -3481,21 +3484,34 @@ impl ChannelView {
             .update(cx, |edit, cx| edit.open(field, &current, window, cx));
     }
 
-    /// Opens Add members with the team's profiles minus the user.
-    fn open_add_members(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens Add members. Connected, it lists who the server says is not
+    /// in the channel yet; the preview offers its people.
+    pub fn open_add_members(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(model) = self.model.as_ref() else {
             return;
         };
         let me = self.me.clone();
-        let people: Vec<UserProfile> = model
-            .profiles
-            .iter()
-            .filter(|profile| profile.display_name != me)
-            .cloned()
-            .collect();
+        let people = crate::preview::enabled().then(|| {
+            model
+                .profiles
+                .iter()
+                .filter(|profile| profile.display_name != me)
+                .cloned()
+                .collect()
+        });
         let name = model.name.clone();
+        let asks = people.is_none();
         self.add_members
             .update(cx, |view, cx| view.open(name, people, window, cx));
+        if asks {
+            cx.emit(ChannelEvent::FindNonMembers);
+        }
+    }
+
+    /// Who Add members offers, as the server found them (#208).
+    pub fn set_addable(&mut self, people: Vec<UserProfile>, cx: &mut Context<Self>) {
+        self.add_members
+            .update(cx, |view, cx| view.set_profiles(people, cx));
     }
 
     fn add_members_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

@@ -362,3 +362,27 @@ async fn channel_members_and_admins_use_the_expected_requests() {
     assert!(members[0].scheme_admin);
     client.set_channel_admin("c1", "u2", false).await.unwrap();
 }
+
+#[tokio::test]
+async fn people_not_in_a_channel_are_asked_of_the_team() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .and(query_param("in_team", "t1"))
+        .and(query_param("not_in_channel", "c1"))
+        .and(query_param("active", "true"))
+        .and(query_param("page", "0"))
+        .and(query_param("per_page", "100"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([{"id": "u3", "username": "bo"}])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let users = client
+        .users_not_in_channel("t1", "c1", 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(users[0].username, "bo");
+}
