@@ -92,8 +92,10 @@ jobs:
           rm -f "$cert"
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain" >/dev/null
-          # Prepend to the search list so codesign finds the identity.
-          read -r -a existing < <(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          # Prepend to the search list so codesign finds the identity. The
+          # list has no trailing newline once joined, so read reports end of
+          # input and fails under bash -e; the array is filled all the same.
+          read -r -a existing < <(security list-keychains -d user | tr -d '"' | tr '\n' ' ') || true
           security list-keychains -d user -s "$keychain" "${existing[@]}"
           identity="$(security find-identity -v -p codesigning "$keychain" \
             | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
