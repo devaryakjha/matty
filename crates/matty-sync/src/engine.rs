@@ -2559,6 +2559,7 @@ impl Engine {
             let fetched = match size {
                 ImageSize::Thumbnail => client.file_thumbnail(&file_id, None).await,
                 ImageSize::Preview => client.file_preview(&file_id, None).await,
+                ImageSize::Original => client.file(&file_id, None).await,
             };
             let image = match fetched {
                 Ok(matty_api::Fetched::Fresh {
@@ -4495,6 +4496,7 @@ fn image_key(file_id: &str, size: ImageSize) -> String {
         match size {
             ImageSize::Thumbnail => FileVariant::Thumb,
             ImageSize::Preview => FileVariant::Preview,
+            ImageSize::Original => FileVariant::Full,
         },
     )
 }

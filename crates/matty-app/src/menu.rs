@@ -54,6 +54,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window, _| window.minimize_window()));
     cx.on_action(|_: &ZoomWindow, cx| with_active_window(cx, |window, _| window.zoom_window()));
+    cx.on_action(|_: &crate::actions::CloseWindow, cx| {
+        with_active_window(cx, |window, _| window.remove_window())
+    });
     cx.on_action(|_: &OpenLogs, cx| {
         if let Some(dir) = crate::logging::default_dir() {
             let _ = std::fs::create_dir_all(&dir);
