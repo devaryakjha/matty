@@ -10,6 +10,8 @@ pub mod mention;
 pub mod persistent;
 pub mod policy;
 pub mod sound;
+#[cfg(target_os = "windows")]
+mod winrt;
 
 pub use backend::{Badge, Clicked, Notifier};
 pub use mention::{KeywordList, MentionKeys};
