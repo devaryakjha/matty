@@ -1,0 +1,23 @@
+[
+  {
+    "Complete": "recorder",
+    "Suggestion": "recorder",
+    "Hint": "[dialog|goto|shout|text]",
+    "Description": "Answers the fixture recorder",
+    "IconData": ""
+  },
+  {
+    "Complete": "remove",
+    "Suggestion": "remove",
+    "Hint": "@[username]",
+    "Description": "Remove a member from the channel",
+    "IconData": ""
+  },
+  {
+    "Complete": "rename",
+    "Suggestion": "rename",
+    "Hint": "[text]",
+    "Description": "Rename the channel",
+    "IconData": ""
+  }
+]

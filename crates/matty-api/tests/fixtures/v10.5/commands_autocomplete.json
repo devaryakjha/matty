@@ -1,0 +1,1264 @@
+[
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "playbook",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Available commands: run, finish, update, check, list, owner, info, todo, settings",
+    "auto_complete_hint": "[command]",
+    "display_name": "Playbook",
+    "description": "",
+    "url": "",
+    "plugin_id": "",
+    "autocomplete_data": {
+      "Trigger": "playbook",
+      "Hint": "[command]",
+      "HelpText": "Available commands: run, finish, update, check, checkadd, checkremove, list, owner, info, timeline, todo, settings",
+      "RoleID": "system_user",
+      "Arguments": null,
+      "SubCommands": [
+        {
+          "Trigger": "run",
+          "Hint": "",
+          "HelpText": "Starts a new playbook run",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "finish",
+          "Hint": "",
+          "HelpText": "Finishes a playbook run associated with the current channel",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of channel runs is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/runs-autocomplete"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "update",
+          "Hint": "",
+          "HelpText": "Provide a status update.",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of channel runs is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/runs-autocomplete"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "check",
+          "Hint": "[checklist item]",
+          "HelpText": "Checks or unchecks a checklist item.",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of checklist items is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/checklist-autocomplete-item"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "checkadd",
+          "Hint": "[checklist]",
+          "HelpText": "Add a checklist item",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of checklist items is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/checklist-autocomplete"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "checkremove",
+          "Hint": "[checklist item]",
+          "HelpText": "Remove a checklist item",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of checklist items is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/checklist-autocomplete-item"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "owner",
+          "Hint": "[@username]",
+          "HelpText": "Show or change the current owner",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of channel runs is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/runs-autocomplete"
+              }
+            },
+            {
+              "Name": "",
+              "HelpText": "The desired new owner.",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "[@username]",
+                "Pattern": ""
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "info",
+          "Hint": "",
+          "HelpText": "Shows a summary of the current playbook run",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of channel runs is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/runs-autocomplete"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "timeline",
+          "Hint": "",
+          "HelpText": "Shows the timeline for the current playbook run",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "List of channel runs is loading",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "/plugins/playbooks/api/v0/runs/runs-autocomplete"
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "todo",
+          "Hint": "",
+          "HelpText": "Get a list of your assigned tasks",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "settings",
+          "Hint": "",
+          "HelpText": "Change personal playbook settings",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": [
+            {
+              "Trigger": " ",
+              "Hint": "Display current settings",
+              "HelpText": "",
+              "RoleID": "system_user",
+              "Arguments": null,
+              "SubCommands": null
+            },
+            {
+              "Trigger": "weekly-digest",
+              "Hint": "[on/off]",
+              "HelpText": "Turn weekly digest on/off",
+              "RoleID": "system_user",
+              "Arguments": [
+                {
+                  "Name": "",
+                  "HelpText": "",
+                  "Type": "StaticList",
+                  "Required": true,
+                  "Data": {
+                    "PossibleArguments": [
+                      {
+                        "Item": "on",
+                        "Hint": "",
+                        "HelpText": "Turn weekly digest on"
+                      },
+                      {
+                        "Item": "off",
+                        "Hint": "",
+                        "HelpText": "Turn weekly digest off"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "SubCommands": null
+            },
+            {
+              "Trigger": "digest",
+              "Hint": "[on/off]",
+              "HelpText": "Turn digest on/off",
+              "RoleID": "system_user",
+              "Arguments": [
+                {
+                  "Name": "",
+                  "HelpText": "",
+                  "Type": "StaticList",
+                  "Required": true,
+                  "Data": {
+                    "PossibleArguments": [
+                      {
+                        "Item": "on",
+                        "Hint": "",
+                        "HelpText": "Turn daily digest on"
+                      },
+                      {
+                        "Item": "off",
+                        "Hint": "",
+                        "HelpText": "Turn daily digest off"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "SubCommands": null
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "call",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Available commands: start, join, leave, link, end, stats, recording, logs",
+    "auto_complete_hint": "[command]",
+    "display_name": "Call",
+    "description": "",
+    "url": "",
+    "plugin_id": "",
+    "autocomplete_data": {
+      "Trigger": "call",
+      "Hint": "[command]",
+      "HelpText": "Available commands: start,join,leave,link,end,stats,recording,logs",
+      "RoleID": "system_user",
+      "Arguments": null,
+      "SubCommands": [
+        {
+          "Trigger": "start",
+          "Hint": "",
+          "HelpText": "Starts a call in the current channel",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "[message]",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "Root message for the call",
+                "Pattern": ""
+              }
+            }
+          ],
+          "SubCommands": null
+        },
+        {
+          "Trigger": "join",
+          "Hint": "",
+          "HelpText": "Joins a call in the current channel",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "leave",
+          "Hint": "",
+          "HelpText": "Leave a call in the current channel.",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "link",
+          "Hint": "",
+          "HelpText": "Generate a link to join a call in the current channel.",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "stats",
+          "Hint": "",
+          "HelpText": "Show client-generated statistics about the call.",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "end",
+          "Hint": "",
+          "HelpText": "End the call for everyone. All the participants will drop immediately.",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "logs",
+          "Hint": "",
+          "HelpText": "Show client logs.",
+          "RoleID": "system_user",
+          "Arguments": null,
+          "SubCommands": null
+        },
+        {
+          "Trigger": "recording",
+          "Hint": "",
+          "HelpText": "Manage calls recordings",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "",
+              "HelpText": "Available options: start, stop",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "",
+                "Pattern": "start|stop"
+              }
+            }
+          ],
+          "SubCommands": null
+        }
+      ]
+    }
+  },
+  {
+    "id": "kr5x99rx1b83mnwigiyeb15rte",
+    "token": "",
+    "create_at": 1793839289562,
+    "update_at": 1793839393139,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "cro9w66oi3r5jqf8egsnkn1gmy",
+    "trigger": "matty",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Runs the live integration",
+    "auto_complete_hint": "[dialog|inchannel|goto|buttons|text]",
+    "display_name": "Matty live",
+    "description": "Live test command",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "sieqpg7hntym5rybgxfa3enyre",
+    "token": "",
+    "create_at": 1793839444122,
+    "update_at": 1793839444122,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "cro9w66oi3r5jqf8egsnkn1gmy",
+    "trigger": "recorder",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Answers the fixture recorder",
+    "auto_complete_hint": "[dialog|goto|shout|text]",
+    "display_name": "Recorder",
+    "description": "Answers the fixture recorder",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "shortcuts",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Displays a list of keyboard shortcuts",
+    "auto_complete_hint": "",
+    "display_name": "shortcuts",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "away",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Set your status away",
+    "auto_complete_hint": "",
+    "display_name": "away",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "status",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Set or clear your status",
+    "auto_complete_hint": "[:emoji_name:] [status_message] or clear",
+    "display_name": "status",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "collapse",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Turn on auto-collapsing of image previews",
+    "auto_complete_hint": "",
+    "display_name": "collapse",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "online",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Set your status online",
+    "auto_complete_hint": "",
+    "display_name": "online",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "share-channel",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Shares the current channel with an external Mattermost instance.",
+    "auto_complete_hint": "[action]",
+    "display_name": "share-channel",
+    "description": "",
+    "url": "",
+    "plugin_id": "",
+    "autocomplete_data": {
+      "Trigger": "share-channel",
+      "Hint": "[action]",
+      "HelpText": "Available actions: invite, uninvite, unshare, status",
+      "RoleID": "system_user",
+      "Arguments": [],
+      "SubCommands": [
+        {
+          "Trigger": "invite",
+          "Hint": "",
+          "HelpText": "Invites an external Mattermost instance to the current shared channel",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "connectionID",
+              "HelpText": "ID of an existing secure connection. See `secure-connection` command to add a secure connection.",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "builtin:share-channel"
+              }
+            },
+            {
+              "Name": "readonly",
+              "HelpText": "Channel will be shared in read-only mode",
+              "Type": "TextInput",
+              "Required": false,
+              "Data": {
+                "Hint": "[readonly] - 'Y' or 'N'.  Defaults to 'N'",
+                "Pattern": "Y|N|y|n"
+              }
+            }
+          ],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "uninvite",
+          "Hint": "",
+          "HelpText": "Uninvites a secure connection from this shared channel",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "connectionID",
+              "HelpText": "ID of secure connection to uninvite.",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "builtin:share-channel"
+              }
+            }
+          ],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "unshare",
+          "Hint": "",
+          "HelpText": "Unshares the current channel",
+          "RoleID": "system_user",
+          "Arguments": [],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "status",
+          "Hint": "",
+          "HelpText": "Displays status for this shared channel",
+          "RoleID": "system_user",
+          "Arguments": [],
+          "SubCommands": []
+        }
+      ]
+    }
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "purpose",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Edit the channel purpose",
+    "auto_complete_hint": "[text]",
+    "display_name": "purpose",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "groupmsg",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Sends a Group Message to the specified users",
+    "auto_complete_hint": "@[username1],@[username2] 'message'",
+    "display_name": "message",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "secure-connection",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Invite secure connections for communication across Mattermost instances.",
+    "auto_complete_hint": "[action]",
+    "display_name": "secure-connection",
+    "description": "",
+    "url": "",
+    "plugin_id": "",
+    "autocomplete_data": {
+      "Trigger": "secure-connection",
+      "Hint": "[action]",
+      "HelpText": "Add/remove secure connections. Available actions: create, accept, remove, status",
+      "RoleID": "system_user",
+      "Arguments": [],
+      "SubCommands": [
+        {
+          "Trigger": "create",
+          "Hint": "",
+          "HelpText": "Invite a secure connection",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "name",
+              "HelpText": "Secure connection name",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "A unique name for the secure connection",
+                "Pattern": ""
+              }
+            },
+            {
+              "Name": "displayname",
+              "HelpText": "Secure connection display name",
+              "Type": "TextInput",
+              "Required": false,
+              "Data": {
+                "Hint": "A display name for the secure connection",
+                "Pattern": ""
+              }
+            },
+            {
+              "Name": "password",
+              "HelpText": "Invitation password",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "Password to be used to encrypt the invitation",
+                "Pattern": ""
+              }
+            }
+          ],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "accept",
+          "Hint": "",
+          "HelpText": "Accept an invitation from an external Mattermost instance",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "name",
+              "HelpText": "Secure connection name",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "A unique name for the secure connection",
+                "Pattern": ""
+              }
+            },
+            {
+              "Name": "displayname",
+              "HelpText": "Secure connection display name",
+              "Type": "TextInput",
+              "Required": false,
+              "Data": {
+                "Hint": "A display name for the secure connection",
+                "Pattern": ""
+              }
+            },
+            {
+              "Name": "password",
+              "HelpText": "Invitation password",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "Password to be used to encrypt the invitation",
+                "Pattern": ""
+              }
+            },
+            {
+              "Name": "invite",
+              "HelpText": "Invitation from secure connection",
+              "Type": "TextInput",
+              "Required": true,
+              "Data": {
+                "Hint": "The encrypted invitation from a secure connection",
+                "Pattern": ""
+              }
+            }
+          ],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "remove",
+          "Hint": "",
+          "HelpText": "Removes a secure connection",
+          "RoleID": "system_user",
+          "Arguments": [
+            {
+              "Name": "connectionID",
+              "HelpText": "ID of secure connection to remove.",
+              "Type": "DynamicList",
+              "Required": true,
+              "Data": {
+                "FetchURL": "builtin:secure-connection"
+              }
+            }
+          ],
+          "SubCommands": []
+        },
+        {
+          "Trigger": "status",
+          "Hint": "",
+          "HelpText": "Displays status for all secure connections",
+          "RoleID": "system_user",
+          "Arguments": [],
+          "SubCommands": []
+        }
+      ]
+    }
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "help",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Show Mattermost help message",
+    "auto_complete_hint": "",
+    "display_name": "help",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "join",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Join the open channel",
+    "auto_complete_hint": "~[channel]",
+    "display_name": "join",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "shrug",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Adds ¯\\_(ツ)_/¯ to your message",
+    "auto_complete_hint": "[message]",
+    "display_name": "shrug",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "dnd",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Do not disturb disables desktop and mobile push notifications.",
+    "auto_complete_hint": "",
+    "display_name": "dnd",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "expand",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Turn off auto-collapsing of image previews",
+    "auto_complete_hint": "",
+    "display_name": "expand",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "logout",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Logout of Mattermost",
+    "auto_complete_hint": "",
+    "display_name": "logout",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "search",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Search text in messages",
+    "auto_complete_hint": "[text]",
+    "display_name": "search",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "settings",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Open the Settings dialog",
+    "auto_complete_hint": "",
+    "display_name": "settings",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "rename",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Rename the channel",
+    "auto_complete_hint": "[text]",
+    "display_name": "rename",
+    "description": "",
+    "url": "",
+    "plugin_id": "",
+    "autocomplete_data": {
+      "Trigger": "rename",
+      "Hint": "[text]",
+      "HelpText": "Rename the channel",
+      "RoleID": "system_user",
+      "Arguments": [
+        {
+          "Name": "",
+          "HelpText": "[text]",
+          "Type": "TextInput",
+          "Required": true,
+          "Data": {
+            "Hint": "[text]",
+            "Pattern": ""
+          }
+        }
+      ],
+      "SubCommands": []
+    }
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "invite",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Invite a user to a channel",
+    "auto_complete_hint": "@[username]... ~[channel]...",
+    "display_name": "invite",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "me",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Do an action",
+    "auto_complete_hint": "[message]",
+    "display_name": "me",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "code",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Display text as a code block",
+    "auto_complete_hint": "[text]",
+    "display_name": "code",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "echo",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Echo back text from your account",
+    "auto_complete_hint": "'message' [delay in seconds]",
+    "display_name": "echo",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "remove",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Remove a member from the channel",
+    "auto_complete_hint": "@[username]",
+    "display_name": "remove",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "kick",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Remove a member from the channel",
+    "auto_complete_hint": "@[username]",
+    "display_name": "kick",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "offline",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Set your status offline",
+    "auto_complete_hint": "",
+    "display_name": "offline",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "open",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Join the open channel",
+    "auto_complete_hint": "~[channel]",
+    "display_name": "open",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "header",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Edit the channel header",
+    "auto_complete_hint": "[text]",
+    "display_name": "header",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "leave",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Leave the current channel",
+    "auto_complete_hint": "",
+    "display_name": "leave",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "marketplace",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Open the Marketplace",
+    "auto_complete_hint": "",
+    "display_name": "marketplace",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "msg",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Send Direct Message to a user",
+    "auto_complete_hint": "@[username] 'message'",
+    "display_name": "message",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  },
+  {
+    "id": "",
+    "token": "",
+    "create_at": 0,
+    "update_at": 0,
+    "delete_at": 0,
+    "creator_id": "",
+    "team_id": "",
+    "trigger": "mute",
+    "method": "",
+    "username": "",
+    "icon_url": "",
+    "auto_complete": true,
+    "auto_complete_desc": "Turns off desktop, email and push notifications for the current channel or the [channel] specified.",
+    "auto_complete_hint": "~[channel]",
+    "display_name": "mute",
+    "description": "",
+    "url": "",
+    "plugin_id": ""
+  }
+]
