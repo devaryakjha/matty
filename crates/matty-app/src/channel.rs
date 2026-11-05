@@ -171,6 +171,17 @@ pub(crate) fn queued_marker(theme: &UiTheme) -> impl IntoElement + use<> {
         .text_color(theme.colors.muted_foreground)
 }
 
+/// What a message copies before its text when a selection spans several
+/// messages (#108): "Ada [12:24]: ", so each message reads as one line.
+/// The clock time, even while the post is still sending.
+pub(crate) fn copy_prefix(post: &Post, cx: &App) -> String {
+    copy_line(&post.author, &ClockFormat::current(cx).format(post.time))
+}
+
+fn copy_line(author: &str, time: &str) -> String {
+    format!("{author} [{time}]: ")
+}
+
 /// A post's header time, or where it is on its way to the server.
 pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
     match post.status {
@@ -4252,6 +4263,7 @@ impl ChannelView {
             .when_some(author_name, |row, name| row.author_element(name))
             .timestamp(time.clone())
             .gutter_time(time.clone())
+            .copy_prefix(copy_prefix(post, cx))
             .when(
                 matches!(post.status, PostStatus::Sent | PostStatus::Ephemeral)
                     && !post.date.is_empty(),
@@ -5645,6 +5657,12 @@ fn people_suggestions<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copy across messages reads one line per message (#108).
+    #[test]
+    fn a_copied_message_starts_with_its_sender_and_time() {
+        assert_eq!(copy_line("Ada", "12:24"), "Ada [12:24]: ");
+    }
 
     /// Connected with nothing open, the view no longer says Matty is not
     /// connected; it asks for a channel.
