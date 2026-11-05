@@ -586,6 +586,9 @@ pub struct ChannelModel {
     /// Profiles of the people who posted, for the avatar card and `@`
     /// autocomplete.
     pub profiles: Vec<UserProfile>,
+    /// The ids of the channel's admins among `profiles`, once the full
+    /// member list loaded (#208).
+    pub admins: Vec<SharedString>,
     /// Display names of the people typing right now, for the line under
     /// the transcript.
     pub typing: Vec<SharedString>,
@@ -2099,6 +2102,16 @@ impl ChannelView {
             && model.profiles != profiles
         {
             model.profiles = profiles;
+            cx.notify();
+        }
+    }
+
+    /// The channel's admins, once its full member list loaded (#208).
+    pub fn set_admins(&mut self, admins: Vec<SharedString>, cx: &mut Context<Self>) {
+        if let Some(model) = self.model.as_mut()
+            && model.admins != admins
+        {
+            model.admins = admins;
             cx.notify();
         }
     }
@@ -5848,6 +5861,7 @@ mod tests {
             first_unread: None,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -5917,6 +5931,7 @@ mod tests {
             first_unread: None,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -6025,6 +6040,7 @@ mod tests {
             first_unread: None,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
         };
         let window = cx.add_window(|window, cx| ChannelView::new(Some(model), "me", window, cx));
         let view = window.root(cx).unwrap();
@@ -6093,6 +6109,7 @@ mod tests {
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -6136,6 +6153,7 @@ mod tests {
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),
@@ -6198,6 +6216,7 @@ mod tests {
             first_unread: None,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
         };
         assert_eq!(
             channel.rows(),
@@ -6242,6 +6261,7 @@ mod tests {
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
             delete_others: false,
+            admins: Vec::new(),
             profiles: vec![],
             typing: vec![],
             notifications: ChannelNotifications::default(),

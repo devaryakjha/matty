@@ -191,6 +191,7 @@ pub fn channel_model(
         max_post_size: max_post_size.unwrap_or(DEFAULT_MAX_POST_SIZE),
         can_manage: false,
         delete_others: false,
+        admins: Vec::new(),
         profiles: Vec::new(),
         notifications: Default::default(),
         typing: Vec::new(),

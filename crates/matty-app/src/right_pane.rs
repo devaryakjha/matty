@@ -32,6 +32,7 @@ use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     attachment::Attachment,
     avatar::{Avatar, AvatarSize},
+    badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
@@ -248,6 +249,11 @@ pub enum RightPaneEvent {
     /// "Remove from channel" on a member in the channel info (#208).
     RemoveMember {
         user_id: SharedString,
+    },
+    /// "Make channel admin" or "Remove channel admin" on a member (#208).
+    SetChannelAdmin {
+        user_id: SharedString,
+        admin: bool,
     },
     /// The user submitted a message search; sync runs it and calls
     /// `set_search` with the results.
@@ -2221,9 +2227,15 @@ impl RightPaneView {
 
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
         if self.profiles != profiles {
-            self.profiles = profiles;
+            self.profiles = profiles.clone();
             cx.notify();
         }
+        self.mutate_info(|channel| channel.profiles = profiles, cx);
+    }
+
+    /// The open channel's admins, once its full member list loaded (#208).
+    pub fn set_admins(&mut self, admins: Vec<SharedString>, cx: &mut Context<Self>) {
+        self.mutate_info(|channel| channel.admins = admins, cx);
     }
 
     /// A post's avatar, with the author's presence dot when the author is
@@ -3384,8 +3396,9 @@ impl RightPaneView {
             .gap(theme.space(1.))
             .child(label(format!("Members · {}", channel.members)).pb(theme.space(1.)))
             .children(channel.profiles.iter().map(|profile| {
-                let removable = can_manage && profile.display_name != me;
-                Self::member_row(profile, removable, &view, cx)
+                let manageable = can_manage && profile.display_name != me;
+                let admin = channel.admins.contains(&profile.user_id);
+                Self::member_row(profile, admin, manageable, &view, cx)
             }))
             .when(channel.profiles.len() < channel.members, |members| {
                 members.child(
@@ -3414,10 +3427,28 @@ impl RightPaneView {
 
     /// One member: avatar with presence, name and handle, opening the
     /// profile card.
-    /// The right-click menu of a member the user may remove.
-    fn member_items(view: &gpui_kit::WeakEntity<Self>, profile: &UserProfile) -> Vec<MenuItem> {
+    /// The right-click menu of a member the user manages: their admin role
+    /// and removing them (#208).
+    fn member_items(
+        view: &gpui_kit::WeakEntity<Self>,
+        profile: &UserProfile,
+        admin: bool,
+    ) -> Vec<MenuItem> {
+        let (role_view, role_user) = (view.clone(), profile.user_id.clone());
         let (view, user_id) = (view.clone(), profile.user_id.clone());
+        let role = if admin {
+            "Remove channel admin"
+        } else {
+            "Make channel admin"
+        };
         vec![
+            MenuItem::new("info.member.admin", role).on_click(move |_, _, cx| {
+                let event = RightPaneEvent::SetChannelAdmin {
+                    user_id: role_user.clone(),
+                    admin: !admin,
+                };
+                role_view.update(cx, |_, cx| cx.emit(event)).ok();
+            }),
             MenuItem::new("info.member.remove", "Remove from channel").on_click(move |_, _, cx| {
                 let event = RightPaneEvent::RemoveMember {
                     user_id: user_id.clone(),
@@ -3427,10 +3458,12 @@ impl RightPaneView {
         ]
     }
 
-    /// One member; `removable` adds a right-click "Remove from channel".
+    /// One member, with an Admin badge for a channel admin; `manageable`
+    /// adds the right-click menu of [`Self::member_items`].
     fn member_row(
         profile: &UserProfile,
-        removable: bool,
+        admin: bool,
+        manageable: bool,
         view: &gpui_kit::WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
@@ -3452,11 +3485,11 @@ impl RightPaneView {
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
                 ))
-                .when(removable, |row| {
+                .when(manageable, |row| {
                     row.on_mouse_down(
                         gpui_kit::MouseButton::Right,
                         move |event: &gpui_kit::MouseDownEvent, window, cx| {
-                            let items = Self::member_items(&menu_view, &menu_profile);
+                            let items = Self::member_items(&menu_view, &menu_profile, admin);
                             let at = event.position;
                             menu_view
                                 .update(cx, |this, cx| this.open_menu(items, at, window, cx))
@@ -3506,6 +3539,16 @@ impl RightPaneView {
                         .text_color(theme.colors.muted_foreground)
                         .child(format!("@{}", row_profile.username)),
                 )
+                .when(admin, |row| {
+                    row.child(
+                        Badge::new("Admin")
+                            .variant(BadgeVariant::Secondary)
+                            .flex_shrink_0()
+                            .h(theme.space(4.5))
+                            .px(theme.space(1.5))
+                            .text_size(theme.text(10.)),
+                    )
+                })
                 .into_any_element()
         })
         .content(move |_, _, cx| {

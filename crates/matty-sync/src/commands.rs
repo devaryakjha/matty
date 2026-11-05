@@ -91,6 +91,11 @@ pub(crate) enum Write {
         channel_id: String,
         private: bool,
     },
+    ChannelAdmin {
+        channel_id: String,
+        user_id: String,
+        admin: bool,
+    },
     /// Reads, not writes, but likewise asked for by a view and answered
     /// once.
     Browse {
@@ -98,6 +103,9 @@ pub(crate) enum Write {
     },
     People {
         team_id: String,
+    },
+    ChannelMembers {
+        channel_id: String,
     },
     Search {
         team_id: String,
@@ -233,6 +241,9 @@ impl Write {
             Self::Privacy { .. } => "change channel privacy",
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
+            Self::ChannelMembers { .. } => "load channel members",
+            Self::ChannelAdmin { admin: true, .. } => "make channel admin",
+            Self::ChannelAdmin { admin: false, .. } => "remove channel admin",
             Self::Search { .. } => "search",
             Self::Listing(crate::Listing::Saved) => "load saved messages",
             Self::Listing(crate::Listing::Pinned { .. }) => "load pinned messages",
@@ -294,6 +305,8 @@ impl Write {
             | Self::Leave { channel_id }
             | Self::Archive { channel_id }
             | Self::RemoveMember { channel_id, .. }
+            | Self::ChannelAdmin { channel_id, .. }
+            | Self::ChannelMembers { channel_id }
             | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
@@ -696,6 +709,19 @@ pub(crate) async fn run(
                 }
                 Some(Loaded::People { team_id, users })
             }
+            Write::ChannelMembers { channel_id } => {
+                Some(channel_members(&client, channel_id).await?)
+            }
+            Write::ChannelAdmin {
+                channel_id,
+                user_id,
+                admin,
+            } => {
+                client
+                    .set_channel_admin(&channel_id, &user_id, admin)
+                    .await?;
+                Some(channel_members(&client, channel_id).await?)
+            }
             Write::Search { team_id, query } => {
                 let results = client.search_posts(&team_id, &query).await?;
                 let posts: Vec<_> = results.list.ordered().cloned().collect();
@@ -1003,6 +1029,48 @@ pub(crate) fn on_server(base: &str, location: &str) -> String {
     }
     let root = base.trim_end_matches('/');
     format!("{root}{location}")
+}
+
+/// A channel's people and which of them are its admins (#208), up to
+/// [`PEOPLE_PAGES`] pages of each.
+async fn channel_members(client: &Client, channel_id: String) -> Result<Loaded, ApiError> {
+    let mut users = Vec::new();
+    for page in 0..PEOPLE_PAGES {
+        let batch = client.channel_users(&channel_id, page, PAGE).await?;
+        let last = batch.len() < PAGE as usize;
+        users.extend(batch);
+        if last {
+            break;
+        }
+    }
+    let mut admins = Vec::new();
+    for page in 0..PEOPLE_PAGES {
+        let batch = client.channel_members(&channel_id, page, PAGE).await?;
+        let last = batch.len() < PAGE as usize;
+        admins.extend(
+            batch
+                .into_iter()
+                .filter(is_channel_admin)
+                .map(|member| member.user_id),
+        );
+        if last {
+            break;
+        }
+    }
+    Ok(Loaded::ChannelMembers {
+        channel_id,
+        users,
+        admins,
+    })
+}
+
+/// Whether a membership makes its member a channel admin.
+fn is_channel_admin(member: &matty_api::models::ChannelMember) -> bool {
+    member.scheme_admin
+        || member
+            .roles
+            .split_whitespace()
+            .any(|role| role == "channel_admin")
 }
 
 /// A team's categories after a change to them, so the sidebar shows the

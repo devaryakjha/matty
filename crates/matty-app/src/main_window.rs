@@ -2021,6 +2021,12 @@ impl MainWindow {
             self.channel
                 .update(cx, |view, cx| view.set_profiles(profiles, cx));
         }
+        if let Some(admins) = update.admins {
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_admins(admins.clone(), cx));
+            self.channel
+                .update(cx, |view, cx| view.set_admins(admins, cx));
+        }
         if let Some((id, image)) = update.full_image {
             self.right_pane
                 .update(cx, |pane, cx| pane.set_full_image(&id, image.clone(), cx));
@@ -3017,11 +3023,22 @@ impl MainWindow {
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
             RightPaneEvent::RemoveMember { user_id } => {
-                if let (Some(live), Some(channel_id)) = (&self.live, &self.selected_channel) {
-                    live.send(matty_sync::Command::RemoveMember {
-                        channel_id: channel_id.to_string(),
-                        user_id: user_id.to_string(),
-                    });
+                if let Some((profiles, admins)) = self
+                    .live
+                    .as_mut()
+                    .and_then(|live| live.remove_member(user_id))
+                {
+                    self.set_members(profiles, admins, cx);
+                }
+            }
+            RightPaneEvent::SetChannelAdmin { user_id, admin } => {
+                if let Some(live) = &self.live {
+                    live.set_channel_admin(user_id, *admin);
+                }
+            }
+            RightPaneEvent::LoadMembers(_) => {
+                if let Some(live) = &self.live {
+                    live.load_members();
                 }
             }
             RightPaneEvent::OpenDirect { display_name, .. } => {
@@ -3320,6 +3337,23 @@ impl MainWindow {
             self.right_pane
                 .update(cx, |pane, cx| pane.set_loading(true, cx));
         }
+    }
+
+    /// Shows a channel's members and admins after a change to them.
+    fn set_members(
+        &mut self,
+        profiles: Vec<crate::profile::UserProfile>,
+        admins: Vec<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.right_pane.update(cx, |pane, cx| {
+            pane.set_profiles(profiles.clone(), cx);
+            pane.set_admins(admins.clone(), cx);
+        });
+        self.channel.update(cx, |view, cx| {
+            view.set_profiles(profiles, cx);
+            view.set_admins(admins, cx);
+        });
     }
 
     /// Keeps an open info pane in step with the channel header's star.

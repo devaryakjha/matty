@@ -332,6 +332,61 @@ impl Client {
             .map(|_| ())
     }
 
+    /// `GET users?in_channel=`: one page of a channel's active members,
+    /// its admins first (#208).
+    pub async fn channel_users(
+        &self,
+        channel_id: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<User>, ApiError> {
+        self.get_query(
+            "users",
+            &[
+                ("in_channel", channel_id.to_owned()),
+                ("active", "true".to_owned()),
+                ("sort", "admin".to_owned()),
+                ("page", page.to_string()),
+                ("per_page", per_page.to_string()),
+            ],
+        )
+        .await
+    }
+
+    /// `GET channels/{channel_id}/members`: one page of a channel's
+    /// memberships, which carry each member's roles (#208).
+    pub async fn channel_members(
+        &self,
+        channel_id: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<ChannelMember>, ApiError> {
+        self.get_query(
+            &format!("channels/{channel_id}/members"),
+            &[
+                ("page", page.to_string()),
+                ("per_page", per_page.to_string()),
+            ],
+        )
+        .await
+    }
+
+    /// `PUT channels/{channel_id}/members/{user_id}/schemeRoles`: makes a
+    /// member a channel admin, or a plain member again (#208).
+    pub async fn set_channel_admin(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+        admin: bool,
+    ) -> Result<(), ApiError> {
+        self.put::<_, Value>(
+            &format!("channels/{channel_id}/members/{user_id}/schemeRoles"),
+            &json!({ "scheme_admin": admin, "scheme_user": true }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// `POST channels/direct`: the direct message channel between two users,
     /// created if needed. Pass the same id twice for a self-DM.
     pub async fn direct_channel(&self, user_id: &str, other_id: &str) -> Result<Channel, ApiError> {

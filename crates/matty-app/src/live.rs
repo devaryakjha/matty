@@ -92,6 +92,9 @@ pub struct Live {
     channel: Option<Arc<Channel>>,
     member: Option<Arc<ChannelMember>>,
     stats: Option<Arc<ChannelStats>>,
+    /// The open channel's full member list once Channel info asked for it
+    /// (#208): its people's ids, admins first, and which are admins.
+    members: Option<Members>,
     /// Who is typing in the open channel, and since when.
     typing: Vec<(String, Instant)>,
     /// Who is typing a reply in the open thread, and since when (#137).
@@ -166,6 +169,15 @@ impl UploadJob {
 
 /// How long a typing notice lasts without another.
 pub const TYPING_FOR: Duration = Duration::from_secs(5);
+
+/// A channel's full member list (#208).
+#[derive(Debug)]
+struct Members {
+    /// Its people, in the server's order: admins first.
+    user_ids: Vec<String>,
+    /// The ids of its admins.
+    admins: std::collections::HashSet<String>,
+}
 
 /// The channel header's text and counts.
 #[derive(Debug, PartialEq)]
@@ -244,8 +256,11 @@ pub struct Update {
     /// Someone else's post that just arrived, for the window to notify
     /// about if the policy says so (#141).
     pub arrived: Option<Arrival>,
-    /// The people in the open channel's posts.
+    /// The people in the open channel's posts, or its members once they
+    /// loaded.
     pub profiles: Option<Vec<UserProfile>>,
+    /// The ids of the open channel's admins, when its members loaded.
+    pub admins: Option<Vec<SharedString>>,
     /// The shown team's public channels, for Browse channels.
     pub directory: Option<Vec<crate::directory::DirectoryChannel>>,
     /// The shown team's people, for a new direct message.
@@ -602,6 +617,7 @@ impl Live {
                 channel: None,
                 member: None,
                 stats: None,
+                members: None,
                 typing: Vec::new(),
                 thread_typing: Vec::new(),
                 ready: None,
@@ -739,6 +755,7 @@ impl Live {
         self.channel = None;
         self.member = None;
         self.stats = None;
+        self.members = None;
         self.typing.clear();
         self.ask_bindings(&row.id);
         self.open = Some(row);
@@ -847,6 +864,7 @@ impl Live {
             (model.muted, model.notifications) = notifications(member);
         }
         model.profiles = self.profiles();
+        model.admins = self.admins();
         model.offline = self.offline;
         for post in &mut model.posts {
             if self.failed.contains(post.id.as_ref()) {
@@ -1025,9 +1043,18 @@ impl Live {
             .collect()
     }
 
-    /// Everyone with a post in the open channel's snapshot, first poster
-    /// first.
+    /// The open channel's members once their full list loaded, admins
+    /// first; until then everyone with a post in its snapshot, first
+    /// poster first.
     fn profiles(&self) -> Vec<UserProfile> {
+        if let Some(members) = &self.members {
+            return members
+                .user_ids
+                .iter()
+                .filter_map(|id| self.users.get(id))
+                .map(|user| self.profile(user))
+                .collect();
+        }
         let mut seen = std::collections::HashSet::new();
         self.posts
             .iter()
@@ -1036,6 +1063,58 @@ impl Live {
             .filter_map(|post| self.users.get(&post.user_id))
             .map(|user| self.profile(user))
             .collect()
+    }
+
+    /// The ids of the open channel's admins, once its members loaded.
+    fn admins(&self) -> Vec<SharedString> {
+        self.members.as_ref().map_or_else(Vec::new, |members| {
+            members
+                .user_ids
+                .iter()
+                .filter(|id| members.admins.contains(id.as_str()))
+                .map(|id| SharedString::from(id.clone()))
+                .collect()
+        })
+    }
+
+    /// Loads the open channel's full member list for Channel info (#208);
+    /// it comes as [`Update::profiles`] and [`Update::admins`].
+    pub fn load_members(&self) {
+        if let Some(row) = &self.open {
+            self.send(Command::ChannelMembers {
+                channel_id: row.id.to_string(),
+            });
+        }
+    }
+
+    /// Makes a member of the open channel its admin, or a plain member
+    /// again; the server's list follows.
+    pub fn set_channel_admin(&self, user_id: &str, admin: bool) {
+        if let Some(row) = &self.open {
+            self.send(Command::SetChannelAdmin {
+                channel_id: row.id.to_string(),
+                user_id: user_id.to_owned(),
+                admin,
+            });
+        }
+    }
+
+    /// Removes someone from the open channel, dropping them from a loaded
+    /// member list at once; the new counts follow. The members and admins
+    /// left, when the list was loaded.
+    pub fn remove_member(
+        &mut self,
+        user_id: &str,
+    ) -> Option<(Vec<UserProfile>, Vec<SharedString>)> {
+        let row = self.open.as_ref()?;
+        self.send(Command::RemoveMember {
+            channel_id: row.id.to_string(),
+            user_id: user_id.to_owned(),
+        });
+        let members = self.members.as_mut()?;
+        members.user_ids.retain(|id| id != user_id);
+        members.admins.remove(user_id);
+        Some((self.profiles(), self.admins()))
     }
 
     /// Drops typing notices older than [`TYPING_FOR`]; the names left in
@@ -1792,6 +1871,26 @@ impl Live {
                     .collect();
                 rows.sort_by_key(|row| row.name.to_lowercase());
                 update.directory = Some(rows);
+            }
+            ChangeSet::ChannelMembers {
+                channel_id,
+                users,
+                admins,
+            } if self.is_open(channel_id) => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                    self.users.insert(user.id.clone(), user.clone());
+                }
+                self.members = Some(Members {
+                    user_ids: users
+                        .iter()
+                        .filter(|user| user.delete_at == 0)
+                        .map(|user| user.id.clone())
+                        .collect(),
+                    admins: admins.iter().cloned().collect(),
+                });
+                update.profiles = Some(self.profiles());
+                update.admins = Some(self.admins());
             }
             ChangeSet::People { team_id, users } if self.team.as_ref() == Some(team_id) => {
                 for user in users.iter() {
@@ -3662,6 +3761,43 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn the_full_member_list_replaces_the_posters_with_admins_marked() {
+        let mut live = live();
+        opened(&mut live);
+        let person = |id: &str| User {
+            id: id.into(),
+            username: id.into(),
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::ChannelMembers {
+            channel_id: "c1".into(),
+            users: Arc::from(vec![person("bob"), person("ada"), person("cy")]),
+            admins: Arc::from(vec!["bob".to_owned()]),
+        });
+        let names = |profiles: &[UserProfile]| -> Vec<String> {
+            profiles.iter().map(|p| p.username.to_string()).collect()
+        };
+        assert_eq!(names(&update.profiles.unwrap()), ["bob", "ada", "cy"]);
+        assert_eq!(update.admins.unwrap(), [SharedString::from("bob")]);
+
+        let (profiles, admins) = live.remove_member("bob").unwrap();
+        assert_eq!(names(&profiles), ["ada", "cy"]);
+        assert!(admins.is_empty());
+
+        // Another channel's list is not this one's.
+        let update = live.apply(&ChangeSet::ChannelMembers {
+            channel_id: "c2".into(),
+            users: Arc::from(vec![person("dee")]),
+            admins: Arc::from(vec![]),
+        });
+        assert!(update.profiles.is_none());
+
+        // Opening another channel shows its posters again until asked.
+        live.open(ChannelRow::new("c2", "design", ChannelKind::Public));
+        assert!(live.channel_model().unwrap().admins.is_empty());
     }
 
     #[test]

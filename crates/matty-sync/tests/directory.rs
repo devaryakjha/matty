@@ -153,3 +153,61 @@ async fn a_search_answers_with_its_posts_and_their_authors_first() {
     };
     assert_eq!(users[0].id, "ada");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_lists_its_members_and_admins_and_changes_an_admin() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .and(query_param("in_channel", "c1"))
+        .and(query_param("sort", "admin"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "ada", "username": "ada", "first_name": "Ada"},
+            {"id": "bob", "username": "bob", "first_name": "Bob"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/members"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"channel_id": "c1", "user_id": "ada", "roles": "channel_user channel_admin"},
+            {"channel_id": "c1", "user_id": "bob", "roles": "channel_user", "scheme_admin": false},
+            {"channel_id": "c1", "user_id": "cy", "roles": "channel_user", "scheme_admin": true}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/channels/c1/members/bob/schemeRoles"))
+        .and(body_json(
+            json!({"scheme_admin": true, "scheme_user": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    next(&changes, |c| matches!(c, ChangeSet::Sidebar { .. })).await;
+
+    sync.send(Command::ChannelMembers {
+        channel_id: "c1".into(),
+    });
+    let ChangeSet::ChannelMembers { users, admins, .. } =
+        next(&changes, |c| matches!(c, ChangeSet::ChannelMembers { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(users.len(), 2);
+    assert_eq!(&*admins, ["ada".to_owned(), "cy".to_owned()]);
+
+    sync.send(Command::SetChannelAdmin {
+        channel_id: "c1".into(),
+        user_id: "bob".into(),
+        admin: true,
+    });
+    next(&changes, |c| matches!(c, ChangeSet::ChannelMembers { .. })).await;
+}
