@@ -43,7 +43,7 @@ pub struct ChannelPatch {
 
 /// The fields of the user's own profile to change, as `PUT users/{id}/patch`
 /// takes them; `None` leaves a field alone.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ProfilePatch {
     /// Given name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +60,28 @@ pub struct ProfilePatch {
     /// Without `@`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Email address; the server wants `password` with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// The user's current password, which the server checks before it
+    /// changes the email address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+// By hand, so the password never reaches a log.
+impl std::fmt::Debug for ProfilePatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProfilePatch")
+            .field("first_name", &self.first_name)
+            .field("last_name", &self.last_name)
+            .field("nickname", &self.nickname)
+            .field("position", &self.position)
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &self.password.as_ref().map(|_| "…"))
+            .finish()
+    }
 }
 
 impl ProfilePatch {

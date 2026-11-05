@@ -183,6 +183,16 @@ pub struct Channel {
     pub update_at: i64,
 }
 
+/// A role and the permissions it grants (`POST roles/names`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Role {
+    /// The role's name, such as `channel_user`.
+    pub name: String,
+    /// Permission names, such as `manage_private_channel_members`.
+    pub permissions: Vec<String>,
+}
+
 /// The user's membership in a channel, with unread state.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]

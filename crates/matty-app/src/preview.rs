@@ -1073,7 +1073,10 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         } else {
             DEFAULT_MAX_POST_SIZE
         },
-        can_manage: true,
+        // The private release channel is one the user only belongs to:
+        // its roles grant neither admin nor member management (#208).
+        can_manage: id != "release-2026-11",
+        manage_members: id != "release-2026-11",
         delete_others: true,
         admins: vec!["u-priya".into()],
         profiles: profiles(),
@@ -1515,6 +1518,7 @@ pub fn empty_channel(
         first_unread: None,
         max_post_size: DEFAULT_MAX_POST_SIZE,
         can_manage: true,
+        manage_members: true,
         delete_others: true,
         admins: Vec::new(),
         profiles: profiles(),
