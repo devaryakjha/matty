@@ -10,6 +10,8 @@
 //! executor, so the UI never touches the runtime, the database, or a lock the
 //! sync thread holds.
 
+mod apps;
+mod bookmarks;
 mod bridge;
 mod change;
 mod commands;
@@ -29,6 +31,8 @@ mod wake;
 #[cfg(target_family = "wasm")]
 mod web;
 
+pub use apps::{AppAnswer, AppCommand, DIALOG_URL as APP_DIALOG_URL};
+pub use bookmarks::{BookmarkCommand, MAX_BOOKMARKS};
 pub use bridge::{SyncHandle, spawn, spawn_at, spawn_demo};
 pub use change::{
     Arrived, ChangeSet, CommandError, Connection, DownloadState, ImageSize, LinkAnswer, LinkQuery,

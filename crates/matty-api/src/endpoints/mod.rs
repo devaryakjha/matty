@@ -1,5 +1,7 @@
 //! Typed endpoint wrappers, grouped by area.
 
+pub(crate) mod apps;
+mod bookmarks;
 pub(crate) mod browse;
 mod commands;
 pub(crate) mod files;

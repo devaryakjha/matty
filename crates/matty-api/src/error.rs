@@ -96,6 +96,17 @@ impl ApiError {
         }
     }
 
+    /// Whether the server answered 404: the thing, or the plugin serving
+    /// it, is not there.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, ApiError::Server { status: 404, .. })
+    }
+
+    /// Whether the server answered 403: the user may not do that.
+    pub fn is_forbidden(&self) -> bool {
+        matches!(self, ApiError::Server { status: 403, .. })
+    }
+
     /// Maps a transport error, pulling out certificate problems.
     pub(crate) fn from_transport(error: reqwest::Error) -> Self {
         if error.is_timeout() {

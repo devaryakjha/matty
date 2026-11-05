@@ -22,6 +22,7 @@ const TABLES: &[&str] = &[
     "preferences",
     "emoji",
     "sync_cursors",
+    "channel_bookmarks",
     "schema_version",
 ];
 
@@ -121,6 +122,11 @@ fn the_planned_indexes_exist() {
         ),
         ("posts_root", "posts", vec!["root_id"]),
         ("channel_members_user", "channel_members", vec!["user_id"]),
+        (
+            "channel_bookmarks_channel",
+            "channel_bookmarks",
+            vec!["channel_id", "sort_order"],
+        ),
     ];
     for (index, table, columns) in expected {
         let (found_table, found_columns) = index_columns(&store, index);

@@ -54,6 +54,12 @@ pub enum Command {
     /// Publishes what the cache has without touching the network, as
     /// `matty --offline` and the launch before a session is restored do.
     ShowCache,
+    /// Adds, edits, deletes or moves a channel bookmark (#226);
+    /// [`ChangeSet::Bookmarks`](crate::ChangeSet::Bookmarks) follows, or a
+    /// [`ChangeSet::Failed`](crate::ChangeSet::Failed).
+    Bookmark(crate::BookmarkCommand),
+    /// Asks installed Apps for a channel's bindings, or runs one (#226).
+    App(crate::AppCommand),
     /// Signs out: the session ends here at once, then on the server.
     /// [`Connection::SignedOut`](crate::Connection::SignedOut) follows.
     SignOut,
@@ -696,6 +702,8 @@ impl std::fmt::Debug for Command {
         match self {
             Self::Connect { .. } => f.write_str("Connect"),
             Self::ShowCache => f.write_str("ShowCache"),
+            Self::Bookmark(command) => f.debug_tuple("Bookmark").field(command).finish(),
+            Self::App(command) => f.debug_tuple("App").field(command).finish(),
             Self::SignOut => f.write_str("SignOut"),
             Self::Event(event) => f.debug_tuple("Event").field(event).finish(),
             Self::SetCollapsedThreads { on } => f
@@ -1362,8 +1370,24 @@ impl Engine {
                             .push(ChangeSet::Connection(Connection::SignedOut)),
                     }
                 }
+                Message::Command(Command::Bookmark(command)) => {
+                    let client = self
+                        .session
+                        .as_ref()
+                        .filter(|session| !session.user_id.is_empty())
+                        .map(|session| session.client.clone());
+                    crate::bookmarks::command(&tx, client, &self.loaded, command, dirty)?;
+                }
+                Message::Command(Command::App(command)) => {
+                    if let Some(session) = &self.session {
+                        let client = session.client.clone();
+                        crate::apps::command(client, command, self.loaded.clone(), dirty);
+                    }
+                }
                 Message::Command(Command::OpenChannel { channel_id }) => {
                     self.open_channels.insert(channel_id.clone());
+                    let bookmarks = self.capabilities.as_ref().map(|c| c.channel_bookmarks);
+                    crate::bookmarks::opened(&tx, &channel_id, bookmarks, dirty)?;
                     to_fetch.push(channel_id.clone());
                     // Which of its rows failed to send, even from an
                     // earlier run.
@@ -2740,6 +2764,17 @@ impl Engine {
             channel_id.to_owned(),
             self.loaded.clone(),
         ));
+        if self
+            .capabilities
+            .as_ref()
+            .is_some_and(|c| c.channel_bookmarks)
+        {
+            matty_api::rt::spawn(crate::bookmarks::fetch(
+                session.client.clone(),
+                channel_id.to_owned(),
+                self.loaded.clone(),
+            ));
+        }
     }
 
     /// Writes loaded results in order. Runs of WebSocket events share one
@@ -3272,6 +3307,12 @@ impl Engine {
             Loaded::Resolved { query, answer } => {
                 dirty.direct.push(ChangeSet::LinkResolved { query, answer })
             }
+            Loaded::Bookmarks(loaded) => {
+                let tx = self.store.conn_mut().transaction()?;
+                crate::bookmarks::write(&tx, loaded, dirty)?;
+                tx.commit()?;
+            }
+            Loaded::Changes(changes) => dirty.direct.extend(changes),
             Loaded::CommandSuggestions {
                 channel_id,
                 root_id,

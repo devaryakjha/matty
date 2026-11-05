@@ -778,6 +778,16 @@ impl MainWindow {
                 }
                 ChannelEvent::CopyLink(post) => this.copy_link(post, cx),
                 ChannelEvent::OpenLink(url) => this.open_message_link(url.clone(), window, cx),
+                ChannelEvent::Bookmark(ask) => {
+                    if let Some(live) = &this.live {
+                        live.bookmark(ask);
+                    }
+                }
+                ChannelEvent::App(ask) => {
+                    if let Some(live) = &this.live {
+                        live.run_app(ask);
+                    }
+                }
                 ChannelEvent::OpenInBrowser(post) => this.open_in_browser(post, cx),
                 ChannelEvent::MarkUnread(post) => this.mark_unread(post, cx),
                 ChannelEvent::Leave => {
@@ -2091,6 +2101,12 @@ impl MainWindow {
         }
         if let Some(error) = update.action_refused {
             self.push_error(format!("The integration couldn't take that: {error}"), cx);
+        }
+        if let Some(text) = update.refused.take() {
+            self.push_error(text, cx);
+        }
+        if let Some(url) = update.navigate.take() {
+            self.open_message_link(url, window, cx);
         }
         if let Some(id) = update.ready {
             self.open_channel(id, window, cx);

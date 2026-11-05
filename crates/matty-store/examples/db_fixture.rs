@@ -193,6 +193,13 @@ fn fill(conn: &rusqlite::Connection, version: i64) -> Result<(), Box<dyn std::er
             [],
         )?;
     }
+    if version >= 5 {
+        conn.execute(
+            "INSERT INTO channel_bookmarks (id, channel_id, sort_order, create_at, data)
+             VALUES ('bm1', 'town', 0, 80, '{\"id\":\"bm1\",\"channel_id\":\"town\",\"display_name\":\"Docs\",\"type\":\"link\",\"link_url\":\"https://example.com\"}')",
+            [],
+        )?;
+    }
     if version >= 6 {
         conn.execute(
             "UPDATE outbox SET priority = '{\"priority\":\"urgent\",\"requested_ack\":true,\"persistent_notifications\":false}'

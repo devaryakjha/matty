@@ -600,6 +600,73 @@ pub fn menu_sources() -> crate::interactive_dialog::MenuSources {
     }
 }
 
+/// The bookmarks bar and App bindings a preview channel shows (#226):
+/// links with an emoji and with an icon, and a file, in `general` and
+/// `design`; nothing elsewhere.
+pub fn bookmarks(
+    channel_id: &str,
+) -> Option<(crate::bookmarks::BookmarksModel, crate::apps::ChannelApps)> {
+    use crate::bookmarks::{Bookmark, BookmarksModel, Target};
+    if !enabled() || !matches!(channel_id, "general" | "design") {
+        return None;
+    }
+    let link = |id: &str, name: &str, url: &str, emoji: Option<&str>| Bookmark {
+        id: id.to_owned().into(),
+        name: name.to_owned().into(),
+        target: Target::Link(url.to_owned().into()),
+        emoji: emoji.map(|emoji| emoji.to_owned().into()),
+        icon_url: None,
+    };
+    let bookmarks = vec![
+        link(
+            "bm-handbook",
+            "Team handbook",
+            "https://example.com/handbook",
+            Some("book"),
+        ),
+        link(
+            "bm-roadmap",
+            "Q4 roadmap",
+            "https://example.com/roadmap",
+            Some("world_map"),
+        ),
+        link(
+            "bm-board",
+            "Release board",
+            "https://example.com/board",
+            None,
+        ),
+        Bookmark {
+            id: "bm-spec".into(),
+            name: "Matty spec.pdf".into(),
+            target: Target::File {
+                file_id: "file-spec".into(),
+                extension: "pdf".into(),
+            },
+            emoji: None,
+            icon_url: None,
+        },
+    ];
+    let item = |label: &str, location: &str| crate::apps::AppItem {
+        app_id: "standup".into(),
+        label: label.to_owned().into(),
+        location: location.to_owned().into(),
+        ..Default::default()
+    };
+    Some((
+        BookmarksModel {
+            channel_id: channel_id.to_owned().into(),
+            bookmarks,
+            can_edit: true,
+        },
+        crate::apps::ChannelApps {
+            channel_id: channel_id.to_owned().into(),
+            post_menu: vec![item("Create follow-up", "/post_menu/follow-up")],
+            channel_header: vec![item("Start standup", "/channel_header/standup")],
+        },
+    ))
+}
+
 pub fn channel(id: &str) -> Option<ChannelModel> {
     // Another preview server's channel opens empty.
     if let Some(row) = other_servers()

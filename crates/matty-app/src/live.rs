@@ -25,6 +25,7 @@ use crate::profile::UserProfile;
 use crate::settings::SavedAccount;
 use crate::sidebar::{Category, ChannelKind, ChannelRow, Presence};
 
+mod extras;
 mod popout;
 mod teams;
 
@@ -128,6 +129,9 @@ pub struct Live {
     custom_emoji: crate::emoji::CustomEmoji,
     /// Which windows hold each channel and thread open (#222).
     views: popout::OpenViews,
+    /// The open channel's bookmarks and App bindings, and this view's App
+    /// calls (#226).
+    extras: extras::Extras,
 }
 
 /// One tray file on its way to the server.
@@ -172,6 +176,10 @@ pub struct Details {
     pub can_manage: bool,
     /// See [`crate::channel::ChannelModel::delete_others`].
     pub delete_others: bool,
+    /// The bookmarks bar, where the server has bookmarks (#226).
+    pub bookmarks: Option<crate::bookmarks::BookmarksModel>,
+    /// What installed Apps add to the channel (#226).
+    pub apps: crate::apps::ChannelApps,
 }
 
 /// What a change set means for the window.
@@ -189,6 +197,10 @@ pub struct Update {
     pub channel: Option<ChannelUpdate>,
     /// The open channel's header and counts.
     pub details: Option<Details>,
+    /// Something the server or an App refused, for a toast (#226).
+    pub refused: Option<SharedString>,
+    /// A link an App answered with, for Matty's link routing (#226).
+    pub navigate: Option<SharedString>,
     /// Who is typing in the open channel now; the window checks again
     /// after [`TYPING_FOR`].
     pub typing: Option<Vec<SharedString>>,
@@ -599,6 +611,7 @@ impl Live {
                 team_icons,
                 custom_emoji: crate::emoji::CustomEmoji::default(),
                 views: popout::OpenViews::default(),
+                extras: extras::Extras::default(),
             },
             changes,
         )
@@ -718,6 +731,7 @@ impl Live {
         self.member = None;
         self.stats = None;
         self.typing.clear();
+        self.ask_bindings(&row.id);
         self.open = Some(row);
         self.channel_model().expect("a channel is open")
     }
@@ -915,6 +929,8 @@ impl Live {
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
             can_manage: self.can_manage(),
             delete_others: self.is_system_admin(),
+            bookmarks: self.bookmarks_model(),
+            apps: self.channel_apps(),
         }
     }
 
@@ -1617,6 +1633,9 @@ impl Live {
     /// Folds in one change set.
     pub fn apply(&mut self, change: &ChangeSet) -> Update {
         let mut update = Update::default();
+        if self.apply_extra(change, &mut update) {
+            return update;
+        }
         match change {
             ChangeSet::Sidebar { team_id, sections } => {
                 // Unreads, which comes in the same batch, picks the team.
@@ -3592,6 +3611,11 @@ mod tests {
                 pinned: 1,
                 can_manage: false,
                 delete_others: false,
+                bookmarks: None,
+                apps: crate::apps::ChannelApps {
+                    channel_id: "c1".into(),
+                    ..Default::default()
+                },
             })
         );
         let update = live.apply(&ChangeSet::Stats(Arc::new(ChannelStats {

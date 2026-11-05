@@ -8,9 +8,11 @@
 
 pub mod account;
 pub mod actions;
+pub mod apps;
 pub mod attachments;
 pub mod avatars;
 pub mod badge;
+pub mod bookmarks;
 pub mod categories;
 pub mod channel;
 pub mod channel_settings;

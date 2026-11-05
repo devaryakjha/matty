@@ -331,6 +331,10 @@ pub(crate) fn apply(
             channel_id,
             parent_id,
         }),
+        event @ (WsEvent::ChannelBookmarkCreated { .. }
+        | WsEvent::ChannelBookmarkUpdated { .. }
+        | WsEvent::ChannelBookmarkDeleted { .. }
+        | WsEvent::ChannelBookmarkSorted { .. }) => crate::bookmarks::event(conn, event, dirty)?,
         WsEvent::Undecodable { raw, error } => {
             // Something changed that the cache cannot follow; #37 resyncs.
             tracing::warn!(event = %raw.event, %error, "could not decode an event");

@@ -20,6 +20,10 @@ pub(crate) const OPEN_LIMIT: u32 = 60;
 /// A result of the load, for the engine to write.
 #[derive(Debug)]
 pub(crate) enum Loaded {
+    /// A server answer about a channel's bookmarks (#226).
+    Bookmarks(crate::bookmarks::BookmarksLoaded),
+    /// Change sets to publish as they are, such as an App's answer (#226).
+    Changes(Vec<crate::change::ChangeSet>),
     /// Profiles fetched for authors the cache did not have.
     Users(Vec<User>),
     /// The server has ended the session, or could not be told.

@@ -11,8 +11,9 @@ use super::{Broadcast, Hello, RawEvent};
 use crate::{
     capabilities::OldFormat,
     models::{
-        Channel, ChannelMember, Draft, Emoji, Post, PostAcknowledgement, Preference, Reaction,
-        ScheduledPost, SidebarCategory, Team, User, UserThread,
+        BookmarkUpdate, Channel, ChannelBookmark, ChannelMember, Draft, Emoji, Post,
+        PostAcknowledgement, Preference, Reaction, ScheduledPost, SidebarCategory, Team, User,
+        UserThread,
     },
 };
 
@@ -323,6 +324,35 @@ pub enum WsEvent {
     ScheduledPostUpdated(ScheduledPost),
     /// `scheduled_post_deleted`.
     ScheduledPostDeleted(ScheduledPost),
+    /// `channel_bookmark_created` (#226).
+    ChannelBookmarkCreated {
+        /// The channel.
+        channel_id: String,
+        /// The new bookmark.
+        bookmark: Box<ChannelBookmark>,
+    },
+    /// `channel_bookmark_updated`: the bookmark as it now stands, and the
+    /// one it replaced when the edit gave it a new id.
+    ChannelBookmarkUpdated {
+        /// The channel.
+        channel_id: String,
+        /// What changed.
+        update: Box<BookmarkUpdate>,
+    },
+    /// `channel_bookmark_deleted`.
+    ChannelBookmarkDeleted {
+        /// The channel.
+        channel_id: String,
+        /// The bookmark, as deleted.
+        bookmark: Box<ChannelBookmark>,
+    },
+    /// `channel_bookmark_sorted`: the bookmarks whose place changed.
+    ChannelBookmarkSorted {
+        /// The channel.
+        channel_id: String,
+        /// The moved bookmarks with their new `sort_order`.
+        bookmarks: Vec<ChannelBookmark>,
+    },
     /// An event Matty does not know. Not an error: servers add events.
     Unknown(RawEvent),
     /// A known event whose data did not decode. The sync engine treats it
@@ -394,6 +424,11 @@ fn or_broadcast(data: &Value, key: &str, broadcast: &str) -> String {
     } else {
         value
     }
+}
+
+/// `own` unless it is empty, then `fallback`.
+fn or_text(own: &str, fallback: &str) -> String {
+    if own.is_empty() { fallback } else { own }.to_owned()
 }
 
 fn whole<T: for<'de> Deserialize<'de>>(data: &Value) -> Result<T, String> {
@@ -549,6 +584,43 @@ fn decode_known(raw: &RawEvent) -> Result<Option<WsEvent>, String> {
         "scheduled_post_created" => WsEvent::ScheduledPostCreated(required(data, "scheduledPost")?),
         "scheduled_post_updated" => WsEvent::ScheduledPostUpdated(required(data, "scheduledPost")?),
         "scheduled_post_deleted" => WsEvent::ScheduledPostDeleted(required(data, "scheduledPost")?),
+        "channel_bookmark_created" => {
+            let bookmark: Box<ChannelBookmark> = required(data, "bookmark")?;
+            WsEvent::ChannelBookmarkCreated {
+                channel_id: or_text(&bookmark.channel_id, &b.channel_id),
+                bookmark,
+            }
+        }
+        "channel_bookmark_updated" => {
+            let update: Box<BookmarkUpdate> = required(data, "bookmarks")?;
+            let own = update
+                .updated
+                .as_ref()
+                .map(|bookmark| bookmark.channel_id.as_str())
+                .unwrap_or_default();
+            WsEvent::ChannelBookmarkUpdated {
+                channel_id: or_text(own, &b.channel_id),
+                update,
+            }
+        }
+        "channel_bookmark_deleted" => {
+            let bookmark: Box<ChannelBookmark> = required(data, "bookmark")?;
+            WsEvent::ChannelBookmarkDeleted {
+                channel_id: or_text(&bookmark.channel_id, &b.channel_id),
+                bookmark,
+            }
+        }
+        "channel_bookmark_sorted" => {
+            let bookmarks: Vec<ChannelBookmark> = required(data, "bookmarks")?;
+            let own = bookmarks
+                .first()
+                .map(|bookmark| bookmark.channel_id.as_str())
+                .unwrap_or_default();
+            WsEvent::ChannelBookmarkSorted {
+                channel_id: or_text(own, &b.channel_id),
+                bookmarks,
+            }
+        }
         _ => return Ok(None),
     };
     Ok(Some(event))
