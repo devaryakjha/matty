@@ -23,6 +23,7 @@ use crate::dnd;
 use crate::priority::{Choice, Features};
 use crate::settings::ClockFormat;
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
@@ -67,7 +68,7 @@ impl Scheduled {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub id: &'static str,
-    pub label: String,
+    pub label: SharedString,
     /// When, in ms since the epoch.
     pub at: i64,
 }
@@ -84,7 +85,7 @@ pub fn presets(now: &Zoned, clock: ClockFormat) -> Vec<Preset> {
     {
         presets.push(Preset {
             id: "tomorrow",
-            label: format!("Tomorrow at {nine}"),
+            label: t!("schedule-preset-tomorrow", time = nine.clone()),
             at: at * 1000,
         });
     }
@@ -98,29 +99,43 @@ pub fn presets(now: &Zoned, clock: ClockFormat) -> Vec<Preset> {
     {
         presets.push(Preset {
             id: "monday",
-            label: format!("Monday at {nine}"),
+            label: t!("schedule-preset-monday", time = nine.clone()),
             at: at * 1000,
         });
     }
     presets
 }
 
-/// How a scheduled time reads: "Today at 14:30", "Tomorrow at 09:00" or
-/// "Friday, November 6 at 14:30".
-pub fn when_label(at_ms: i64, now: &Zoned, clock: ClockFormat) -> String {
-    let Ok(at) = jiff::Timestamp::from_millisecond(at_ms) else {
-        return String::new();
-    };
+/// A scheduled time's parts for the strings that show it: `today`,
+/// `tomorrow` or `other` (with the date), and the time of day.
+fn when(at_ms: i64, now: &Zoned, clock: ClockFormat) -> Option<(&'static str, String, String)> {
+    let at = jiff::Timestamp::from_millisecond(at_ms).ok()?;
     let at = at.to_zoned(now.time_zone().clone());
     let time = clock.format(at.hour() as u16 * 60 + at.minute() as u16);
     let today = now.date();
-    if at.date() == today {
-        format!("Today at {time}")
+    let (day, date) = if at.date() == today {
+        ("today", String::new())
     } else if Some(at.date()) == today.tomorrow().ok() {
-        format!("Tomorrow at {time}")
+        ("tomorrow", String::new())
     } else {
-        format!("{} at {time}", at.strftime("%A, %B %-d"))
-    }
+        ("other", at.strftime("%A, %B %-d").to_string())
+    };
+    Some((day, date, time))
+}
+
+/// How a scheduled time reads: "Today at 14:30", "Tomorrow at 09:00" or
+/// "Friday, November 6 at 14:30".
+pub fn when_label(at_ms: i64, now: &Zoned, clock: ClockFormat) -> SharedString {
+    when(at_ms, now, clock)
+        .map(|(day, date, time)| t!("schedule-when", day = day, date = date, time = time))
+        .unwrap_or_default()
+}
+
+/// A scheduled card's tag: "Send tomorrow at 09:00".
+fn send_label(at_ms: i64, now: &Zoned, clock: ClockFormat) -> SharedString {
+    when(at_ms, now, clock)
+        .map(|(day, date, time)| t!("scheduled-send-at", day = day, date = date, time = time))
+        .unwrap_or_default()
 }
 
 /// What the composer's send menu offers: the presets, then "Custom time".
@@ -130,7 +145,7 @@ pub fn menu_items(
     cx: &App,
 ) -> Vec<MenuItem> {
     let now = Zoned::now();
-    let mut items = vec![MenuItem::label("schedule.heading", "Schedule message")];
+    let mut items = vec![MenuItem::label("schedule.heading", t!("schedule-message"))];
     for preset in presets(&now, ClockFormat::current(cx)) {
         let (pick, at) = (pick.clone(), preset.at);
         items.push(
@@ -142,7 +157,7 @@ pub fn menu_items(
         );
     }
     items.push(
-        MenuItem::new("schedule.custom", "Custom time…")
+        MenuItem::new("schedule.custom", t!("schedule-custom-time"))
             .on_click(move |_, window, cx| pick(None, window, cx)),
     );
     items
@@ -163,11 +178,11 @@ pub fn composer_button(
     Some(
         style::tipped(
             gpui_kit::ElementId::Name(format!("{id}.tip").into()),
-            "Schedule message",
+            t!("schedule-message"),
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
-                .aria_label("Schedule message")
+                .aria_label(t!("schedule-message"))
                 .disabled(!enabled)
                 .child(
                     lucide(LucideIcon::CalendarClock)
@@ -198,10 +213,7 @@ pub fn composer_hint(
         return None;
     }
     let theme = UiTheme::read(cx);
-    let text = match count {
-        1 => "1 scheduled message in this channel".to_string(),
-        n => format!("{n} scheduled messages in this channel"),
-    };
+    let text = t!("scheduled-in-channel", count = count);
     Some(
         div()
             .pb(theme.space(1.5))
@@ -222,7 +234,7 @@ pub fn composer_hint(
                     .text_color(theme.colors.primary)
                     .cursor_pointer()
                     .hover(|link| link.underline())
-                    .child("See all")
+                    .child(t!("scheduled-see-all"))
                     .on_click(move |_, window, cx| on_see_all(window, cx)),
             )
             .into_any_element(),
@@ -363,15 +375,13 @@ impl Render for ScheduleDialog {
         let picked = self.picked(cx);
         let editing = self.message.is_some();
         let title = if editing {
-            "Edit scheduled message"
+            t!("schedule-edit-title")
         } else {
-            "Schedule message"
+            t!("schedule-message")
         };
-        let popup = dialog_popup("schedule.popup", title, cx)
+        let popup = dialog_popup("schedule.popup", title.clone(), cx)
             .child(dialog_title("schedule.title", cx).child(title))
-            .child(dialog_description("schedule.description", cx).child(
-                "It posts at the time you pick, in your time zone, even while Matty is closed.",
-            ))
+            .child(dialog_description("schedule.description", cx).child(t!("schedule-description")))
             .children(self.message.as_ref().map(|state| {
                 div().pt(theme.space(2.)).child(
                     Textarea::new(state).bg(theme.colors.popover.blend(theme.control().background)),
@@ -385,12 +395,12 @@ impl Render for ScheduleDialog {
                     .child(
                         div()
                             .flex_1()
-                            .child(Select::new(&self.day).aria_label("Day")),
+                            .child(Select::new(&self.day).aria_label(t!("schedule-day"))),
                     )
                     .child(
                         div()
                             .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                            .child(Select::new(&self.time).aria_label("Time")),
+                            .child(Select::new(&self.time).aria_label(t!("schedule-time"))),
                     ),
             )
             .when(picked.is_none(), |popup| {
@@ -398,7 +408,7 @@ impl Render for ScheduleDialog {
                     div()
                         .type_style(style::META, &theme)
                         .text_color(theme.colors.destructive)
-                        .child("Pick a time that is still ahead."),
+                        .child(t!("schedule-time-passed")),
                 )
             })
             .child(
@@ -410,7 +420,7 @@ impl Render for ScheduleDialog {
                     .child(
                         Button::new("schedule.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("schedule-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -418,7 +428,11 @@ impl Render for ScheduleDialog {
                     .child(
                         Button::new("schedule.save")
                             .variant(ButtonVariant::Default)
-                            .label(if editing { "Save" } else { "Schedule" })
+                            .label(if editing {
+                                t!("schedule-save")
+                            } else {
+                                t!("schedule-confirm")
+                            })
                             .disabled(picked.is_none())
                             .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                     ),
@@ -517,10 +531,10 @@ impl ScheduledView {
     fn card(&self, index: usize, row: &Row, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let now = Zoned::now();
-        let when = when_label(row.post.scheduled_at, &now, ClockFormat::current(cx));
+        let when = send_label(row.post.scheduled_at, &now, ClockFormat::current(cx));
         let choice = Choice::from_api(row.post.metadata.priority.as_ref());
         let failed = !row.post.error_code.is_empty();
-        let action = |id: String, label: &'static str, variant: ButtonVariant| {
+        let action = |id: String, label: SharedString, variant: ButtonVariant| {
             Button::new(gpui_kit::ElementId::Name(id.into()))
                 .variant(variant)
                 .size(ButtonSize::Sm)
@@ -582,11 +596,7 @@ impl ScheduledView {
                     .child(
                         Tag::new(
                             gpui_kit::ElementId::Name(format!("scheduled.{index}.when").into()),
-                            if failed {
-                                "Could not send".to_string()
-                            } else {
-                                format!("Send {}", lowercase_first(&when))
-                            },
+                            if failed { t!("scheduled-failed") } else { when },
                         )
                         .icon(if failed {
                             LucideIcon::CircleAlert
@@ -633,7 +643,7 @@ impl ScheduledView {
                     .child(
                         action(
                             format!("scheduled.{index}.delete"),
-                            "Delete",
+                            t!("scheduled-delete"),
                             ButtonVariant::Ghost,
                         )
                         .text_color(theme.colors.destructive)
@@ -647,7 +657,7 @@ impl ScheduledView {
                             .child(
                                 action(
                                     format!("scheduled.{index}.open"),
-                                    "Open",
+                                    t!("scheduled-open"),
                                     ButtonVariant::Ghost,
                                 )
                                 .on_click(cx.listener(
@@ -657,7 +667,7 @@ impl ScheduledView {
                             .child(
                                 action(
                                     format!("scheduled.{index}.edit"),
-                                    "Edit",
+                                    t!("scheduled-edit"),
                                     ButtonVariant::Outline,
                                 )
                                 .on_click(cx.listener(
@@ -667,7 +677,7 @@ impl ScheduledView {
                             .child(
                                 action(
                                     format!("scheduled.{index}.send"),
-                                    "Send now",
+                                    t!("scheduled-send-now"),
                                     ButtonVariant::Default,
                                 )
                                 .on_click(cx.listener(
@@ -679,16 +689,6 @@ impl ScheduledView {
                             ),
                     ),
             )
-    }
-}
-
-fn lowercase_first(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) if text.starts_with("Today") || text.starts_with("Tomorrow") => {
-            first.to_lowercase().chain(chars).collect()
-        }
-        _ => format!("on {text}"),
     }
 }
 
@@ -705,8 +705,8 @@ impl Render for ScheduledView {
         if rows.is_empty() {
             return root.child(style::centered_empty(
                 LucideIcon::CalendarClock,
-                "No scheduled messages",
-                "Schedule a message from the arrow beside Send, and it waits here until it posts.",
+                t!("scheduled-empty-title"),
+                t!("scheduled-empty-body"),
                 cx,
             ));
         }
@@ -743,7 +743,7 @@ mod tests {
         // A Wednesday.
         let now = zoned("2026-11-04T15:00:00+00:00[UTC]");
         let offered = presets(&now, ClockFormat::TwentyFourHour);
-        let labels: Vec<&str> = offered.iter().map(|p| p.label.as_str()).collect();
+        let labels: Vec<&str> = offered.iter().map(|p| p.label.as_ref()).collect();
         assert_eq!(labels, ["Tomorrow at 09:00", "Monday at 09:00"]);
         assert_eq!(
             offered[0].at,
@@ -779,10 +779,13 @@ mod tests {
             when_label(at("2026-11-09T09:00:00+00:00[UTC]"), &now, clock),
             "Monday, November 9 at 09:00"
         );
-        assert_eq!(lowercase_first("Tomorrow at 09:00"), "tomorrow at 09:00");
         assert_eq!(
-            lowercase_first("Monday, November 9 at 09:00"),
-            "on Monday, November 9 at 09:00"
+            send_label(at("2026-11-05T09:00:00+00:00[UTC]"), &now, clock),
+            "Send tomorrow at 09:00"
+        );
+        assert_eq!(
+            send_label(at("2026-11-09T09:00:00+00:00[UTC]"), &now, clock),
+            "Send on Monday, November 9 at 09:00"
         );
     }
 }
