@@ -380,6 +380,19 @@ pub enum ChangeSet {
         /// What happened.
         answer: crate::AppAnswer,
     },
+    /// A dynamic select's options: the answer to
+    /// [`AppCommand::Lookup`](crate::AppCommand::Lookup) (#226). Empty when
+    /// the App found none or the lookup failed.
+    AppLookup {
+        /// The form's dialog, by its callback id.
+        callback_id: String,
+        /// The field.
+        field: String,
+        /// What the user had typed.
+        query: String,
+        /// The options, in the App's order.
+        options: Vec<matty_api::models::AppSelectOption>,
+    },
 }
 
 /// Something a link names that the app cannot find on its own (#85, #103).

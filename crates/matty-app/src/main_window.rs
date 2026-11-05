@@ -313,6 +313,8 @@ pub struct MainWindow {
     split: split::Split,
     /// The link sync is finding, with the permalink's post (#85, #103).
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
+    /// A link to a server being added, opened once signed in (#206).
+    pending_page: Option<crate::server_links::PendingPage>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
     /// "Forward to …" with an optional comment, once the switcher picked
@@ -500,7 +502,13 @@ impl MainWindow {
                     }
                 }
                 // Custom status text has no sync command yet (#136).
-                AccountEvent::SetStatus(_) => {}
+                AccountEvent::SetStatus(status) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::SetCustomStatus {
+                            status: status.clone(),
+                        });
+                    }
+                }
                 AccountEvent::EditProfile => this.edit_profile(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
@@ -1177,6 +1185,7 @@ impl MainWindow {
             kept_unread: None,
             triaging: None,
             link_asked: None,
+            pending_page: None,
             link_join: DialogHandle::new(false),
             forward,
             link_join_offer: None,
@@ -1188,11 +1197,10 @@ impl MainWindow {
             interactive_dialog: cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new()),
         };
         cx.subscribe(&this.interactive_dialog, |this, _, event, _| {
-            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
             if let Some(live) = &this.live {
                 let channel = this.selected_channel.clone().unwrap_or_default();
                 let team = live.team().unwrap_or_default().to_owned();
-                live.send(submit.command(channel.to_string(), team));
+                live.send(event.command(channel.to_string(), team));
             }
         })
         .detach();
@@ -1318,7 +1326,7 @@ impl MainWindow {
                     } else {
                         crate::sidebar::Presence::Online
                     },
-                    status_text: None,
+                    status: None,
                     dnd_end: None,
                 },
                 cx,
@@ -1933,6 +1941,10 @@ impl MainWindow {
             {
                 self.open_channel(first.id.clone(), window, cx);
             }
+            self.channel
+                .update(cx, |view, cx| view.set_connected(true, cx));
+            self.open_first_channel(window, cx);
+            self.open_pending_page(window, cx);
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
@@ -2098,6 +2110,10 @@ impl MainWindow {
             if self.selected_channel.as_deref() == Some(arrival.event.channel_id.as_str()) {
                 self.view_later(window, cx);
             }
+        }
+        if let Some((status, recent)) = update.own_status.take() {
+            self.account
+                .update(cx, |view, cx| view.set_server_status(status, recent, cx));
         }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {
@@ -3068,6 +3084,19 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::Schedule {
+                channel,
+                root,
+                text,
+                files,
+                at,
+            } => self.schedule_message(
+                channel.to_string(),
+                root.to_string(),
+                (text, files, *at),
+                None,
+                cx,
+            ),
             RightPaneEvent::Upload { id, name, source } => {
                 if let Some(channel) = self.live.as_ref().and_then(|live| live.thread_channel()) {
                     let job =

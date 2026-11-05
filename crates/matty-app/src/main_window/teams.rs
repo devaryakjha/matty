@@ -184,23 +184,35 @@ impl MainWindow {
             .iter()
             .flat_map(|category| category.rows.iter().cloned())
             .collect();
-        match place {
-            Some(place) if place.as_ref() == THREADS_ID => self.show_threads(cx),
-            Some(place) if place.as_ref() == DRAFTS_ID => self.show_drafts(cx),
-            Some(place) if rows.iter().any(|row| row.id == place) => {
-                self.open_channel(place, window, cx)
+        match arrival(place, &rows) {
+            Arrival::Threads => self.show_threads(cx),
+            Arrival::Drafts => self.show_drafts(cx),
+            Arrival::Channel(id) => self.open_channel(id, window, cx),
+            Arrival::Nothing => {
+                self.threads_open = false;
+                self.drafts_open = false;
+                self.selected_channel = None;
+                self.channel
+                    .update(cx, |view, cx| view.set_model(None, window, cx));
             }
-            _ => match default_channel(&rows) {
-                Some(id) => self.open_channel(id, window, cx),
-                None => {
-                    self.threads_open = false;
-                    self.drafts_open = false;
-                    self.selected_channel = None;
-                    self.channel
-                        .update(cx, |view, cx| view.set_model(None, window, cx));
-                }
-            },
         }
+    }
+
+    /// The first sidebar from a server came with nothing open, as after
+    /// signing in: the team opens where the user last was in it this
+    /// session, else at its town square or first channel, so the window
+    /// does not sit empty while connected.
+    pub(super) fn open_first_channel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let somewhere = self.selected_channel.is_some() || self.threads_open || self.drafts_open;
+        if somewhere || self.live.is_none() {
+            return;
+        }
+        let place = self
+            .rail
+            .read(cx)
+            .current()
+            .and_then(|team| self.team_places.get(team).cloned());
+        self.arrive_in_team(place, window, cx);
     }
 
     /// Sync's teams changed: the rail follows. When the team on screen is
@@ -263,6 +275,26 @@ impl MainWindow {
     }
 }
 
+/// Where arriving in a team lands.
+#[derive(Debug, PartialEq, Eq)]
+enum Arrival {
+    Threads,
+    Drafts,
+    Channel(SharedString),
+    Nothing,
+}
+
+/// Where arriving in a team with `rows` lands: `place`, where the user
+/// last was in it, while it is still there; else its default channel.
+fn arrival(place: Option<SharedString>, rows: &[crate::sidebar::ChannelRow]) -> Arrival {
+    match place {
+        Some(place) if place.as_ref() == THREADS_ID => Arrival::Threads,
+        Some(place) if place.as_ref() == DRAFTS_ID => Arrival::Drafts,
+        Some(place) if rows.iter().any(|row| row.id == place) => Arrival::Channel(place),
+        _ => default_channel(rows).map_or(Arrival::Nothing, Arrival::Channel),
+    }
+}
+
 /// The channel a team opens on the first time: its town square, as in
 /// Mattermost, else its first channel, else its first conversation.
 fn default_channel(rows: &[crate::sidebar::ChannelRow]) -> Option<SharedString> {
@@ -287,8 +319,33 @@ fn default_channel(rows: &[crate::sidebar::ChannelRow]) -> Option<SharedString> 
 
 #[cfg(test)]
 mod tests {
-    use super::default_channel;
+    use super::{Arrival, arrival, default_channel};
     use crate::sidebar::{ChannelKind, ChannelRow, Presence};
+
+    /// After sign-in the team opens where the user last was in it, while
+    /// that channel is still there, else at its default channel; a team
+    /// with nothing leaves the view empty.
+    #[test]
+    fn arriving_opens_the_last_place_or_the_default_channel() {
+        let design = ChannelRow::new("c1", "Design", ChannelKind::Public);
+        let mut town = ChannelRow::new("c2", "Town Square", ChannelKind::Public);
+        town.handle = Some("town-square".into());
+        let rows = vec![design, town];
+        assert_eq!(arrival(None, &rows), Arrival::Channel("c2".into()));
+        assert_eq!(
+            arrival(Some("c1".into()), &rows),
+            Arrival::Channel("c1".into())
+        );
+        assert_eq!(
+            arrival(Some("gone".into()), &rows),
+            Arrival::Channel("c2".into())
+        );
+        assert_eq!(
+            arrival(Some(super::THREADS_ID.into()), &rows),
+            Arrival::Threads
+        );
+        assert_eq!(arrival(None, &[]), Arrival::Nothing);
+    }
 
     #[test]
     fn a_team_opens_first_at_its_town_square() {

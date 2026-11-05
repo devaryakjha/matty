@@ -212,6 +212,12 @@ pub struct Update {
     /// The user's own presence from the server, with when Do not disturb
     /// ends if the server said (#190).
     pub own_presence: Option<(Presence, Option<i64>)>,
+    /// The user's own custom status and their recent ones, newest first,
+    /// when the server sent the user (#221).
+    pub own_status: Option<(
+        Option<crate::custom_status::StatusLine>,
+        Vec<crate::custom_status::StatusLine>,
+    )>,
     /// The open thread, for the right pane.
     pub thread: Option<crate::right_pane::ThreadModel>,
     /// The shown team's followed threads, for the Threads view (#124).
@@ -765,6 +771,23 @@ impl Live {
         if user.id == self.me.0 {
             self.me.1 = user.username.clone();
             update.me = Some((crate::transcript::display_name(user), user.username.clone()));
+            let now = jiff::Timestamp::now();
+            let recent = user
+                .recent_custom_statuses()
+                .iter()
+                // Recents offer the status again, so an old end does not
+                // hide them.
+                .filter_map(|status| {
+                    crate::custom_status::StatusLine::from_server(
+                        &matty_api::models::CustomStatus {
+                            expires_at: String::new(),
+                            ..status.clone()
+                        },
+                        now,
+                    )
+                })
+                .collect();
+            update.own_status = Some((crate::custom_status::StatusLine::of(user), recent));
         }
         self.take_notify_props(user, update);
     }
@@ -807,6 +830,11 @@ impl Live {
             &self.reply_roots,
         );
         let details = self.details(model.pinned);
+        model.person = row
+            .person
+            .as_ref()
+            .and_then(|id| self.users.get(id.as_ref()))
+            .map(|user| Box::new(self.profile(user)));
         model.header = details.header;
         model.purpose = details.purpose;
         model.members = details.members;
@@ -1073,7 +1101,11 @@ impl Live {
             })
             .collect();
         people.sort();
-        crate::right_pane::SearchHints { channels, people }
+        crate::right_pane::SearchHints {
+            channels,
+            people,
+            today: Some(jiff::Timestamp::now().to_zoned(self.zone.clone()).date()),
+        }
     }
 
     /// Loads the user's saved posts; they come as [`Update::listing`].
@@ -1581,7 +1613,7 @@ impl Live {
                 .get(&user.id)
                 .copied()
                 .unwrap_or(Presence::Offline),
-            status_text: None,
+            status: crate::custom_status::StatusLine::of(user),
             time_zone: crate::profile::time_zone(&user.timezone),
         }
     }
@@ -2313,6 +2345,14 @@ impl Live {
                             && let Some(user_id) = &channel.dm_user_id
                         {
                             row = row.person(user_id.clone());
+                            // The freshest copy of the person: a status
+                            // change arrives as a user update.
+                            let person = self.users.get(user_id).or(channel.dm_user.as_ref());
+                            if let Some(status) =
+                                person.and_then(crate::custom_status::StatusLine::of)
+                            {
+                                row = row.status_emoji(status.emoji);
+                            }
                         }
                         if let Some(person) = &channel.dm_user {
                             row = row.handle(person.username.clone());
@@ -2985,6 +3025,67 @@ mod tests {
     }
 
     #[test]
+    fn custom_statuses_reach_the_account_and_profiles() {
+        let mut live = live();
+        let status = |emoji: &str, text: &str, expires_at: &str| {
+            serde_json::to_string(&matty_api::models::CustomStatus {
+                emoji: emoji.into(),
+                text: text.into(),
+                duration: "one_hour".into(),
+                expires_at: expires_at.into(),
+            })
+            .unwrap()
+        };
+        let me = User {
+            id: live.me.0.clone(),
+            username: "me".into(),
+            props: [
+                (
+                    "customStatus".to_string(),
+                    status("calendar", "In a meeting", ""),
+                ),
+                (
+                    "recentCustomStatuses".to_string(),
+                    format!(
+                        "[{}]",
+                        status("palm_tree", "On a vacation", "2020-01-01T00:00:00Z")
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..User::default()
+        };
+        let update = live.apply(&ChangeSet::Me(Arc::new(me)));
+        let (own, recent) = update.own_status.unwrap();
+        assert_eq!(own.unwrap().text, "In a meeting");
+        // A recent status is offered again even though its end has passed.
+        assert_eq!(recent[0].text, "On a vacation");
+
+        // Someone else's expired status shows nowhere.
+        let other = |expires_at: &str| User {
+            id: "u2".into(),
+            username: "ana".into(),
+            props: [(
+                "customStatus".to_string(),
+                status("coffee", "Break", expires_at),
+            )]
+            .into_iter()
+            .collect(),
+            ..User::default()
+        };
+        live.apply(&ChangeSet::Users(Arc::from(vec![other(
+            "2020-01-01T00:00:00Z",
+        )])));
+        assert_eq!(live.known_user("ana").unwrap().status, None);
+        live.apply(&ChangeSet::Users(Arc::from(vec![other(
+            "2999-01-01T00:00:00Z",
+        )])));
+        let profile = live.known_user("ana").unwrap();
+        assert_eq!(profile.status.unwrap().emoji, "coffee");
+    }
+
+    #[test]
     fn the_users_notify_props_set_the_mention_keys() {
         let mut live = live();
         let me = User {
@@ -3242,6 +3343,7 @@ mod tests {
 
     fn shown(id: &str, body: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),

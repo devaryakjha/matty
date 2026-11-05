@@ -39,6 +39,20 @@ pub enum BookmarkCommand {
         /// An emoji name without colons, or empty.
         emoji: String,
     },
+    /// Uploads a file for the channel and adds it as a file bookmark at
+    /// the end of the bar.
+    AddFile {
+        /// The channel.
+        channel_id: String,
+        /// The name shown.
+        display_name: String,
+        /// An emoji name without colons, or empty.
+        emoji: String,
+        /// The file's name on the server.
+        file_name: String,
+        /// The file's contents.
+        bytes: Vec<u8>,
+    },
     /// Changes a bookmark's name, address (for a link) or emoji.
     Edit {
         /// The channel.
@@ -75,7 +89,7 @@ impl BookmarkCommand {
     /// What the user asked, for [`CommandError`].
     pub fn action(&self) -> &'static str {
         match self {
-            Self::AddLink { .. } => "add bookmark",
+            Self::AddLink { .. } | Self::AddFile { .. } => "add bookmark",
             Self::Edit { .. } => "edit bookmark",
             Self::Delete { .. } => "delete bookmark",
             Self::Move { .. } => "move bookmark",
@@ -86,6 +100,7 @@ impl BookmarkCommand {
     pub fn channel_id(&self) -> &str {
         match self {
             Self::AddLink { channel_id, .. }
+            | Self::AddFile { channel_id, .. }
             | Self::Edit { channel_id, .. }
             | Self::Delete { channel_id, .. }
             | Self::Move { channel_id, .. } => channel_id,
@@ -202,7 +217,9 @@ pub(crate) fn command(
                 publish(conn, channel_id, dirty)?;
             }
         }
-        BookmarkCommand::AddLink { .. } | BookmarkCommand::Edit { .. } => {}
+        BookmarkCommand::AddLink { .. }
+        | BookmarkCommand::AddFile { .. }
+        | BookmarkCommand::Edit { .. } => {}
     }
     matty_api::rt::spawn(run(client, command, results.clone()));
     Ok(())
@@ -231,6 +248,35 @@ async fn run(client: Client, command: BookmarkCommand, results: UnboundedSender<
                     })
                     .await?,
             )),
+            BookmarkCommand::AddFile {
+                channel_id,
+                display_name,
+                emoji,
+                file_name,
+                bytes,
+            } => {
+                let upload = matty_api::Upload {
+                    channel_id: channel_id.clone(),
+                    client_id: "bookmark".into(),
+                    file_name,
+                    bytes,
+                };
+                let file = client
+                    .upload_bookmark_file(upload, Arc::new(|_, _| {}))
+                    .await?;
+                BookmarksLoaded::Saved(Box::new(
+                    client
+                        .create_bookmark(&NewBookmark {
+                            channel_id,
+                            display_name,
+                            kind: BookmarkKind::File,
+                            link_url: String::new(),
+                            file_id: file.id,
+                            emoji,
+                        })
+                        .await?,
+                ))
+            }
             BookmarkCommand::Edit {
                 channel_id,
                 bookmark_id,

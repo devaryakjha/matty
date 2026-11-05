@@ -4,7 +4,7 @@
 //! A link opens through Matty's link routing, so a Mattermost link stays
 //! in Matty; a file opens through the download path. Right-click a
 //! bookmark, or use the bar's More menu, to edit, move or delete it; Add
-//! a bookmark asks for a link. The bar only shows on servers with
+//! a bookmark asks for a link, or a file it uploads for the bookmark. The bar only shows on servers with
 //! bookmarks, and sync keeps it in the store so it shows offline. What the
 //! user changes leaves as [`BookmarkAsk`], which the window hands to
 //! [`crate::live::Live::bookmark`]; the server's refusal comes back as a
@@ -18,9 +18,11 @@ use gpui_kit::{
 };
 use matty_api::models::{BookmarkKind, ChannelBookmark};
 
+use crate::attachments::{Upload, UploadSource};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
+    attachment::{Attachment, AttachmentStatus},
     button::{Button, ButtonSize, ButtonVariant, style_button},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     field::Field,
@@ -117,6 +119,15 @@ pub enum BookmarkAsk {
         url: SharedString,
         emoji: SharedString,
     },
+    /// A file bookmark: the file uploads for the bookmark, then the
+    /// bookmark points at it.
+    AddFile {
+        channel_id: SharedString,
+        name: SharedString,
+        emoji: SharedString,
+        file_name: SharedString,
+        bytes: std::sync::Arc<[u8]>,
+    },
     Edit {
         channel_id: SharedString,
         bookmark_id: SharedString,
@@ -150,6 +161,19 @@ impl BookmarkAsk {
                 display_name: name.to_string(),
                 link_url: url.to_string(),
                 emoji: emoji.to_string(),
+            },
+            Self::AddFile {
+                channel_id,
+                name,
+                emoji,
+                file_name,
+                bytes,
+            } => BookmarkCommand::AddFile {
+                channel_id: channel_id.to_string(),
+                display_name: name.to_string(),
+                emoji: emoji.to_string(),
+                file_name: file_name.to_string(),
+                bytes: bytes.to_vec(),
             },
             Self::Edit {
                 channel_id,
@@ -213,6 +237,8 @@ pub fn normalize_link(text: &str) -> Option<String> {
 pub struct BookmarkEditor {
     /// The bookmark being edited, or `None` when adding.
     editing: Option<Bookmark>,
+    /// The file picked for a new file bookmark.
+    file: Option<Upload>,
     name: Entity<InputState>,
     link: Entity<InputState>,
     emoji: Entity<InputState>,
@@ -230,6 +256,8 @@ pub struct EditorSave {
     pub name: SharedString,
     pub url: SharedString,
     pub emoji: SharedString,
+    /// The file to upload for a new file bookmark.
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl EventEmitter<EditorSave> for BookmarkEditor {}
@@ -256,6 +284,7 @@ impl BookmarkEditor {
             .collect();
         Self {
             editing: None,
+            file: None,
             name,
             link,
             emoji,
@@ -273,9 +302,21 @@ impl BookmarkEditor {
     pub fn title(&self) -> &'static str {
         if self.editing.is_some() {
             "Edit bookmark"
+        } else if self.file.is_some() {
+            "Add a file"
         } else {
             "Add a bookmark"
         }
+    }
+
+    /// Opens the dialog to add `file`, picked from disk, as a bookmark
+    /// named after it.
+    pub fn open_file(&mut self, file: Upload, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(None, window, cx);
+        self.name
+            .update(cx, |input, cx| input.set_value(&file.name, window, cx));
+        self.file = Some(file);
+        cx.notify();
     }
 
     /// Opens the dialog to add a link, or to edit `bookmark`.
@@ -304,6 +345,7 @@ impl BookmarkEditor {
         self.emoji
             .update(cx, |input, cx| input.set_value(&emoji, window, cx));
         self.editing = bookmark;
+        self.file = None;
         self.tried = false;
         self.focus = true;
         self.handle.open(window, cx);
@@ -311,9 +353,11 @@ impl BookmarkEditor {
     }
 
     fn is_file(&self) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|bookmark| bookmark.link().is_none())
+        self.file.is_some()
+            || self
+                .editing
+                .as_ref()
+                .is_some_and(|bookmark| bookmark.link().is_none())
     }
 
     fn values(&self, cx: &App) -> (String, Option<String>, String) {
@@ -350,11 +394,16 @@ impl BookmarkEditor {
             name
         };
         self.handle.close(window, cx);
+        let file = self.file.take().and_then(|file| match file.source {
+            UploadSource::Path(path) => Some(path),
+            UploadSource::Image(_) => None,
+        });
         cx.emit(EditorSave {
             bookmark_id: self.editing.as_ref().map(|bookmark| bookmark.id.clone()),
             name: name.into(),
             url: url.into(),
             emoji: emoji.into(),
+            file,
         });
     }
 }
@@ -381,6 +430,8 @@ impl Render for BookmarkEditor {
         let mut name_field = Field::new("bookmark.edit.name", &self.name).label("Name");
         name_field = if name.chars().count() > MAX_NAME {
             name_field.error(format!("At most {MAX_NAME} characters."))
+        } else if self.file.is_some() {
+            name_field.description("Shown in the bar instead of the file's name.")
         } else if self.is_file() {
             name_field.description("The file keeps its own name on the server.")
         } else {
@@ -388,7 +439,11 @@ impl Render for BookmarkEditor {
         };
         let emoji_field = Field::new("bookmark.edit.emoji", &self.emoji)
             .label("Emoji")
-            .description("Shown instead of the link's icon. Optional.");
+            .description(if self.is_file() {
+                "Shown instead of the file's icon. Optional."
+            } else {
+                "Shown instead of the link's icon. Optional."
+            });
         div()
             .flex()
             .flex_col()
@@ -399,12 +454,26 @@ impl Render for BookmarkEditor {
                     .flex_col()
                     .gap(theme.space(1.))
                     .child(dialog_title("bookmark.edit.title", cx).child(self.title()))
-                    .child(
-                        dialog_description("bookmark.edit.description", cx)
-                            .child("Everyone in the channel sees it in the bar under the header."),
-                    ),
+                    .child(dialog_description("bookmark.edit.description", cx).child(
+                        if self.file.is_some() {
+                            "The file uploads to the channel, and everyone in it sees the \
+                                 bookmark in the bar under the header."
+                        } else {
+                            "Everyone in the channel sees it in the bar under the header."
+                        },
+                    )),
             )
             .when(!self.is_file(), |this| this.child(link_field))
+            .children(self.file.as_ref().map(|file| {
+                let mut chip = Attachment::new("bookmark.edit.file", file.name.clone())
+                    .meta(file.meta())
+                    .icon(file.icon())
+                    .status(AttachmentStatus::Ready);
+                if let Some(image) = file.image() {
+                    chip = chip.image(image);
+                }
+                chip
+            }))
             .child(name_field)
             .child(emoji_field)
             .child(
@@ -447,6 +516,8 @@ pub struct BookmarksBar {
     menu: Entity<MenuState>,
     /// The bar's More menu: every bookmark's actions, for the keyboard.
     more: Entity<MenuState>,
+    /// The Add button's menu: a link or a file.
+    add_menu: Entity<MenuState>,
     editor: Entity<BookmarkEditor>,
     delete: DialogHandle,
     deleting: Option<Bookmark>,
@@ -461,10 +532,14 @@ impl BookmarksBar {
         let subscription = cx.subscribe(&editor, |this, _, save: &EditorSave, cx| {
             this.saved(save.clone(), cx);
         });
+        let add_menu = cx.new(|cx| MenuState::new([], cx));
+        let items = Self::add_items("bookmarks.add", cx);
+        add_menu.update(cx, |menu, cx| menu.set_items(items, cx));
         Self {
             model: None,
             menu: cx.new(|cx| MenuState::new([], cx)),
             more: cx.new(|cx| MenuState::new([], cx)),
+            add_menu,
             editor,
             delete: DialogHandle::new(false),
             deleting: None,
@@ -506,6 +581,53 @@ impl BookmarksBar {
             .update(cx, |editor, cx| editor.open(None, window, cx));
     }
 
+    /// Asks for a file, then opens the dialog to name its bookmark.
+    pub fn add_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::preview::enabled() {
+            let file = crate::preview::bookmark_file();
+            self.editor
+                .update(cx, |editor, cx| editor.open_file(file, window, cx));
+            return;
+        }
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                let file = Upload::from_path("bookmark-file", path);
+                let size = file.size;
+                let file = file.ready(size);
+                this.editor
+                    .update(cx, |editor, cx| editor.open_file(file, window, cx));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// "Add a link…" and "Add a file…", for the Add button and More menu.
+    fn add_items(prefix: &str, cx: &mut Context<Self>) -> Vec<MenuItem> {
+        let id = |name: &str| gpui_kit::ElementId::Name(format!("{prefix}.{name}").into());
+        let (link, file) = (cx.entity().downgrade(), cx.entity().downgrade());
+        vec![
+            MenuItem::new(id("link"), "Add a link\u{2026}").on_click(move |_, window, cx| {
+                link.update(cx, |this, cx| this.add(window, cx)).ok();
+            }),
+            MenuItem::new(id("file"), "Add a file\u{2026}").on_click(move |_, window, cx| {
+                file.update(cx, |this, cx| this.add_file(window, cx)).ok();
+            }),
+        ]
+    }
+
     fn edit(&mut self, bookmark: Bookmark, window: &mut Window, cx: &mut Context<Self>) {
         self.editor
             .update(cx, |editor, cx| editor.open(Some(bookmark), window, cx));
@@ -533,16 +655,59 @@ impl BookmarksBar {
                     emoji: save.emoji,
                 }
             }
-            None => BookmarkAsk::Add {
-                channel_id,
-                name: save.name,
-                url: save.url,
-                emoji: save.emoji,
+            None => match save.file {
+                Some(path) => return self.upload_file(channel_id, save.name, save.emoji, path, cx),
+                None => BookmarkAsk::Add {
+                    channel_id,
+                    name: save.name,
+                    url: save.url,
+                    emoji: save.emoji,
+                },
             },
         };
         self.refresh_more(cx);
         cx.emit(BarEvent::Ask(ask));
         cx.notify();
+    }
+
+    /// Reads the picked file off the main thread, then asks for its
+    /// bookmark; sync uploads it and adds the bookmark.
+    fn upload_file(
+        &mut self,
+        channel_id: SharedString,
+        name: SharedString,
+        emoji: SharedString,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let file_name: SharedString = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| name.to_string())
+            .into();
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move { std::fs::read(path) })
+                .await;
+            let bytes = match read {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(%error, "could not read a file to bookmark");
+                    return;
+                }
+            };
+            this.update(cx, |_, cx| {
+                cx.emit(BarEvent::Ask(BookmarkAsk::AddFile {
+                    channel_id,
+                    name,
+                    emoji,
+                    file_name,
+                    bytes: bytes.into(),
+                }))
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn find_mut(&mut self, id: &SharedString) -> Option<&mut Bookmark> {
@@ -688,13 +853,11 @@ impl BookmarksBar {
         let mut items = Vec::new();
         if let Some(model) = &self.model {
             if model.can_edit {
-                let view = cx.entity().downgrade();
-                items.push(
-                    MenuItem::new("bookmarks.more.add", "Add a bookmark\u{2026}")
-                        .disabled(model.bookmarks.len() >= matty_sync::MAX_BOOKMARKS)
-                        .on_click(move |_, window, cx| {
-                            view.update(cx, |this, cx| this.add(window, cx)).ok();
-                        }),
+                let full = model.bookmarks.len() >= matty_sync::MAX_BOOKMARKS;
+                items.extend(
+                    Self::add_items("bookmarks.more.add", cx)
+                        .into_iter()
+                        .map(|item| item.disabled(full)),
                 );
                 if !model.bookmarks.is_empty() {
                     items.push(MenuItem::separator());
@@ -876,24 +1039,36 @@ impl Render for BookmarksBar {
                     .children(chips),
             )
             .when(model.can_edit && !full, |bar| {
-                let add = Button::new("bookmarks.add")
-                    .variant(ButtonVariant::Ghost)
-                    .size(if empty {
-                        ButtonSize::Sm
-                    } else {
-                        ButtonSize::IconSm
-                    })
-                    .aria_label("Add a bookmark")
-                    .text_color(theme.colors.muted_foreground)
-                    .type_style(style::UI, &theme)
-                    .on_click(cx.listener(|this, _, window, cx| this.add(window, cx)))
-                    .child(
-                        lucide(LucideIcon::Plus)
-                            .size(scaled(&theme, metrics::ICON_SMALL))
-                            .text_color(theme.colors.muted_foreground),
+                let add = Menu::new(&self.add_menu, "Add a bookmark")
+                    .trigger(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme.space(1.5))
+                            .text_color(theme.colors.muted_foreground)
+                            .type_style(style::UI, &theme)
+                            .child(
+                                lucide(LucideIcon::Plus)
+                                    .size(scaled(&theme, metrics::ICON_SMALL))
+                                    .text_color(theme.colors.muted_foreground),
+                            )
+                            .when(empty, |trigger| trigger.child("Add a bookmark")),
                     )
-                    .when(empty, |button| {
-                        button.gap(theme.space(1.5)).child("Add a bookmark")
+                    .trigger_style_with({
+                        let theme = theme.clone();
+                        move |button| {
+                            style_button(
+                                button.aria_label("Add a bookmark"),
+                                false,
+                                ButtonVariant::Ghost,
+                                if empty {
+                                    ButtonSize::Sm
+                                } else {
+                                    ButtonSize::IconSm
+                                },
+                                &theme,
+                            )
+                        }
                     });
                 bar.child(style::tipped(
                     "bookmarks.add.tip",
@@ -962,10 +1137,13 @@ mod tests {
         }
     }
 
-    /// Adding a link goes out as an add, and moving one shows at once and
-    /// goes out as a move; clicking one opens it.
-    #[gpui_kit::test]
-    fn adding_and_reordering_a_bookmark(cx: &mut gpui_kit::TestAppContext) {
+    type Events = Rc<RefCell<Vec<BarEvent>>>;
+
+    /// A bar over channel `c` with `a` and `b`, in a window, and what it
+    /// asks.
+    fn host(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (gpui_kit::VisualTestContext, Entity<BookmarksBar>, Events) {
         cx.update(|cx| {
             crate::ui::theme::init(cx);
             crate::settings::SettingsStore::init(None, cx);
@@ -992,13 +1170,22 @@ mod tests {
                 Host { bar }
             }
         });
-        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let bar = window.read_with(&cx, |host, _| host.bar.clone()).unwrap();
-        let click = |cx: &mut gpui_kit::VisualTestContext, selector: &'static str| {
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            let bounds = cx.debug_bounds(selector).expect(selector);
-            cx.simulate_click(bounds.center(), Default::default());
-        };
+        (cx, bar, events)
+    }
+
+    fn click(cx: &mut gpui_kit::VisualTestContext, selector: &'static str) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(bounds.center(), Default::default());
+    }
+
+    /// Adding a link goes out as an add, and moving one shows at once and
+    /// goes out as a move; clicking one opens it.
+    #[gpui_kit::test]
+    fn adding_and_reordering_a_bookmark(cx: &mut gpui_kit::TestAppContext) {
+        let (mut cx, bar, events) = host(cx);
         assert!(bar.read_with(&cx, |bar, _| bar.shows("c") && !bar.shows("d")));
 
         click(&mut cx, "bookmark-b");
@@ -1007,8 +1194,15 @@ mod tests {
             Some(&BarEvent::OpenLink("https://example.com/b".into()))
         );
 
-        // Add a bookmark: a bad link is refused, a good one goes out.
+        // Add a bookmark offers a link or a file; a bad link is refused,
+        // a good one goes out.
         click(&mut cx, "bookmarks-add");
+        let menu = bar.read_with(&cx, |bar, _| bar.add_menu.clone());
+        assert!(menu.read_with(&cx, |menu, _| menu.is_open()));
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| menu.close(false, window, cx));
+            bar.update(cx, |bar, cx| bar.add(window, cx));
+        });
         let editor = bar.read_with(&cx, |bar, _| bar.editor.clone());
         assert!(editor.read_with(&cx, |editor, _| editor.handle.is_open()));
         cx.update(|window, cx| {
@@ -1102,5 +1296,73 @@ mod tests {
                 extension: "png".into()
             }
         );
+    }
+
+    /// "Add a file…": the picked file shows in the dialog, named after
+    /// itself; Add reads it and asks for a file bookmark, which sync
+    /// uploads and adds.
+    #[gpui_kit::test]
+    fn adding_a_file_bookmark(cx: &mut gpui_kit::TestAppContext) {
+        let (mut cx, bar, events) = host(cx);
+        let dir = std::env::temp_dir().join(format!("matty-bookmark-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plan.pdf");
+        std::fs::write(&path, b"%PDF-1.7").unwrap();
+
+        let editor = bar.read_with(&cx, |bar, _| bar.editor.clone());
+        cx.update(|window, cx| {
+            let file = Upload::from_path("bookmark-file", path.clone());
+            let size = file.size;
+            editor.update(cx, |editor, cx| {
+                editor.open_file(file.ready(size), window, cx)
+            });
+        });
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.title(), "Add a file");
+            assert!(editor.is_file() && editor.handle.is_open());
+            assert_eq!(editor.name.read(cx).value().as_ref(), "plan.pdf");
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor
+                    .name
+                    .update(cx, |input, cx| input.set_value("Plan", window, cx));
+                editor
+                    .emoji
+                    .update(cx, |input, cx| input.set_value(":memo:", window, cx));
+            })
+        });
+        click(&mut cx, "bookmark-edit-save");
+        cx.run_until_parked();
+        let ask = BookmarkAsk::AddFile {
+            channel_id: "c".into(),
+            name: "Plan".into(),
+            emoji: "memo".into(),
+            file_name: "plan.pdf".into(),
+            bytes: std::sync::Arc::from(&b"%PDF-1.7"[..]),
+        };
+        assert_eq!(events.borrow().last(), Some(&BarEvent::Ask(ask.clone())));
+        assert!(!editor.read_with(&cx, |editor, _| editor.handle.is_open()));
+        // Adding a link afterwards starts without the file.
+        cx.update(|window, cx| bar.update(cx, |bar, cx| bar.add(window, cx)));
+        assert_eq!(
+            editor.read_with(&cx, |editor, _| editor.title()),
+            "Add a bookmark"
+        );
+        let matty_sync::Command::Bookmark(command) = ask.command() else {
+            panic!("a bookmark command");
+        };
+        assert_eq!(
+            command,
+            matty_sync::BookmarkCommand::AddFile {
+                channel_id: "c".into(),
+                display_name: "Plan".into(),
+                emoji: "memo".into(),
+                file_name: "plan.pdf".into(),
+                bytes: b"%PDF-1.7".to_vec(),
+            }
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }

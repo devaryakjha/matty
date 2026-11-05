@@ -122,6 +122,7 @@ impl MainWindow {
         self.cancel_sso();
         self.login = None;
         self.login_server = None;
+        self.pending_page = None;
         window.focus(&self.focus, cx);
         cx.notify();
     }

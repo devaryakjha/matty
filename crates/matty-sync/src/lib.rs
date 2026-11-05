@@ -31,7 +31,7 @@ mod wake;
 #[cfg(target_family = "wasm")]
 mod web;
 
-pub use apps::{AppAnswer, AppCommand, DIALOG_URL as APP_DIALOG_URL};
+pub use apps::{AppAnswer, AppCommand, DIALOG_URL as APP_DIALOG_URL, DYNAMIC as APP_LOOKUP_SOURCE};
 pub use bookmarks::{BookmarkCommand, MAX_BOOKMARKS};
 pub use bridge::{SyncHandle, spawn, spawn_at, spawn_demo};
 pub use change::{

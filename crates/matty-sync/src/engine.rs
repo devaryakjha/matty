@@ -269,6 +269,12 @@ pub enum Command {
         /// For `dnd` with a duration: when it ends, in seconds since the epoch.
         dnd_end_time: Option<i64>,
     },
+    /// Sets the user's custom status, or with `None` clears it;
+    /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
+    SetCustomStatus {
+        /// The emoji, text and expiry.
+        status: Option<matty_api::models::CustomStatus>,
+    },
     /// Replaces the user's notification preferences, such as
     /// `mention_keys`, with this whole map;
     /// [`ChangeSet::Users`](crate::ChangeSet::Users) follows.
@@ -869,6 +875,7 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             // Keywords are the user's own words: keep them out of logs.
             Self::SetNotifyProps { .. } => f.write_str("SetNotifyProps"),
+            Self::SetCustomStatus { .. } => f.write_str("SetCustomStatus"),
             Self::UpdateProfile { .. } => f.write_str("UpdateProfile"),
             Self::SetPicture { picture } => f
                 .debug_struct("SetPicture")
@@ -1703,6 +1710,9 @@ impl Engine {
                     status,
                     dnd_end_time,
                 }),
+                Message::Command(Command::SetCustomStatus { status }) => {
+                    writes.push(Write::CustomStatus(status))
+                }
                 Message::Command(Command::SetNotifyProps { notify_props }) => {
                     writes.push(Write::NotifyProps(notify_props))
                 }

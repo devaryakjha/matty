@@ -527,3 +527,59 @@ async fn dragged_channels_and_categories_land_where_they_are_dropped() {
     assert_eq!(moved["channel_ids"], json!(["c4", "c2"]));
     assert_eq!(moved["sorting"], "manual");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_custom_status_is_set_then_cleared_and_the_user_reloads() {
+    let server = server().await;
+    for verb in ["PUT", "DELETE"] {
+        Mock::given(method(verb))
+            .and(path(format!("/api/v4/users/{ME}/status/custom")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": ME, "username": "me",
+            "props": {"customStatus": "{\"emoji\":\"calendar\",\"text\":\"In a meeting\"}"}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (sync, changes) = connected(&server).await;
+
+    sync.send(Command::SetCustomStatus {
+        status: Some(matty_api::models::CustomStatus {
+            emoji: "calendar".into(),
+            text: "In a meeting".into(),
+            duration: "dont_clear".into(),
+            expires_at: String::new(),
+        }),
+    });
+    next(&changes, |c| {
+        matches!(c, ChangeSet::Users(users)
+            if users.iter().any(|u| u.id == ME
+                && u.custom_status().is_some_and(|s| s.text == "In a meeting")))
+    })
+    .await;
+    sync.send(Command::SetCustomStatus { status: None });
+    for _ in 0..100 {
+        let requests = server.received_requests().await.unwrap_or_default();
+        if requests
+            .iter()
+            .any(|r| r.method.as_str() == "DELETE" && r.url.path().ends_with("/status/custom"))
+        {
+            let put = requests
+                .iter()
+                .find(|r| r.method.as_str() == "PUT" && r.url.path().ends_with("/status/custom"))
+                .unwrap();
+            let body: Value = serde_json::from_slice(&put.body).unwrap();
+            assert_eq!(body["emoji"], "calendar");
+            assert_eq!(body["duration"], "dont_clear");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the status was never cleared");
+}

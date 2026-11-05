@@ -184,6 +184,7 @@ pub fn channel_model(
         favorite: false,
         muted: row.muted,
         purpose: None,
+        person: None,
         loading: posts.is_none(),
         posts: rows,
         first_unread: None,
@@ -298,6 +299,7 @@ fn display_post(
         _ => post.message.clone().into(),
     };
     Post {
+        webhook: crate::webhooks::Webhook::of(post),
         id: post.id.clone().into(),
         author: author.into(),
         author_id: if from_system {
@@ -378,6 +380,7 @@ fn system_post(
     (time, day, date): (u16, SharedString, SharedString),
 ) -> Post {
     Post {
+        webhook: None,
         id: post.id.clone().into(),
         author: SharedString::default(),
         author_id: SharedString::default(),
@@ -1351,7 +1354,14 @@ mod tests {
         let posts = [
             post("own", "ada", NOON, "Morning"),
             hooked("hook", NOON + 1, "ci-bot"),
-            hooked("hook2", NOON + 2, "ci-bot"),
+            {
+                let mut post = hooked("hook2", NOON + 2, "ci-bot");
+                post.props.insert(
+                    "override_icon_url".into(),
+                    "https://ci.example.com/bot.png".into(),
+                );
+                post
+            },
             forged,
         ];
         let model = channel_model(&row, Some(&posts), &people(), &viewer(&zone), None, &[]);
@@ -1369,6 +1379,20 @@ mod tests {
                 ("Ada", false)
             ]
         );
+        // Its avatar is the webhook's, not its creator's picture.
+        assert_eq!(model.posts[0].webhook, None);
+        assert_eq!(
+            model.posts[1].webhook,
+            Some(crate::webhooks::Webhook::default())
+        );
+        assert_eq!(
+            model.posts[2]
+                .webhook
+                .as_ref()
+                .and_then(|w| w.icon_url.as_deref()),
+            Some("https://ci.example.com/bot.png")
+        );
+        assert_eq!(model.posts[3].webhook, None);
     }
 
     #[test]

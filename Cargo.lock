@@ -3475,9 +3475,9 @@ checksum = "99b18b06f5026b3d312488eacfdddbe78f82b4bf32bb2d2bc3186e31e552b797"
 
 [[package]]
 name = "gpuicn"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b26a2098ce402cf909fb6689d54b449256ce989934b4c52bfd1e539b152f06b7"
+checksum = "f78ede6f3684e0ab4cfa6d7bd5a5a5edee2bfb3a58dac904166eabb6bede1b86"
 dependencies = [
  "gpui-icons",
  "gpui-kit",
@@ -4802,6 +4802,15 @@ dependencies = [
  "objc2-user-notifications",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "matty-spell"
+version = "0.0.1"
+dependencies = [
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "spellbook",
 ]
 
 [[package]]
@@ -7657,6 +7666,16 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spellbook"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
+dependencies = [
+ "foldhash",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]

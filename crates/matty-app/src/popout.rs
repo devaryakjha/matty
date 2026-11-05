@@ -566,11 +566,10 @@ impl PopOutView {
         let interactive_dialog =
             cx.new(|_| crate::interactive_dialog::InteractiveDialogView::new());
         cx.subscribe(&interactive_dialog, |this: &mut Self, _, event, _| {
-            let crate::interactive_dialog::InteractiveDialogEvent::Submit(submit) = event;
             if let Some(live) = &this.live {
                 let channel = this.target.channel().to_string();
                 let team = live.team().unwrap_or_default().to_owned();
-                live.send(submit.command(channel, team));
+                live.send(event.command(channel, team));
             }
         })
         .detach();
@@ -1584,6 +1583,23 @@ impl PopOutView {
                     props: crate::embeds::send_props(*unfurl),
                     priority: None,
                 }
+            }
+            RightPaneEvent::Schedule {
+                channel,
+                root,
+                text,
+                files,
+                at,
+            } => {
+                let (file_ids, _) = live.take_files(files);
+                matty_sync::Command::Schedule(Box::new(matty_api::models::ScheduledPost {
+                    channel_id: channel.to_string(),
+                    root_id: root.to_string(),
+                    message: text.to_string(),
+                    file_ids,
+                    scheduled_at: *at,
+                    ..Default::default()
+                }))
             }
             RightPaneEvent::SuggestPeople(term) => matty_sync::Command::SuggestPeople {
                 term: term.to_string(),

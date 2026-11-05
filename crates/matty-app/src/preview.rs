@@ -283,7 +283,9 @@ pub fn sidebar() -> SidebarModel {
                 "Favorites",
                 vec![
                     public("design", "design").unread().mentions(2),
-                    dm("priya", "Priya Nair", Presence::Online).unread(),
+                    dm("priya", "Priya Nair", Presence::Online)
+                        .status_emoji("calendar")
+                        .unread(),
                 ],
             ),
             Category::new(
@@ -304,6 +306,7 @@ pub fn sidebar() -> SidebarModel {
                 vec![
                     dm("sam", "Sam Okafor", Presence::Away),
                     dm("lena", "Lena Fischer", Presence::Dnd)
+                        .status_emoji("headphones")
                         .unread()
                         .mentions(1),
                     ChannelRow::new("priya-sam", "Priya, Sam", ChannelKind::Group { members: 3 }),
@@ -683,6 +686,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         .flat_map(|category| category.rows)
         .find(|row| row.id.as_ref() == id)?;
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
@@ -794,6 +798,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     actions: preview_actions(),
                 },
             )],
+            webhook: Some(crate::webhooks::Webhook::default()),
             ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
         },
         // Build Bot's answer to Approve, which only the viewer sees (#211).
@@ -1052,6 +1057,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         muted: id == "random",
         purpose: (id == "release-2026-11").then(|| {
             "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
+        }),
+        person: row.person.as_ref().and_then(|person| {
+            profiles()
+                .into_iter()
+                .find(|profile| &profile.user_id == person)
+                .map(Box::new)
         }),
         loading,
         posts,
@@ -1337,6 +1348,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         return vec![];
     }
     let post = |id: &str, author: &str, time: &str, body: &str| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
@@ -1477,6 +1489,7 @@ pub fn empty_channel(
         favorite: false,
         muted: false,
         purpose,
+        person: None,
         loading: false,
         posts: vec![],
         first_unread: None,
@@ -1525,6 +1538,18 @@ pub fn uploads() -> Vec<Upload> {
     }
 }
 
+/// The file "Add a file…" picks in the preview's bookmarks bar (#226).
+pub fn bookmark_file() -> Upload {
+    Upload {
+        id: "bookmark-file".into(),
+        name: "Q4 planning.pdf".into(),
+        size: 1_258_291,
+        source: UploadSource::Path("Q4 planning.pdf".into()),
+        status: AttachmentStatus::Ready,
+        queued: false,
+    }
+}
+
 /// A screen recording over the default 100 MB limit, which the tray
 /// refuses when the fixtures go in.
 pub fn oversize_upload() -> Upload {
@@ -1568,7 +1593,7 @@ pub fn account() -> Account {
         display_name: "Arya".into(),
         username: "arya".into(),
         presence: Presence::Online,
-        status_text: None,
+        status: None,
         dnd_end: None,
     }
 }
@@ -1649,14 +1674,19 @@ pub fn profiles() -> Vec<UserProfile> {
                    display_name: &str,
                    position: Option<&str>,
                    presence,
-                   status_text: Option<&str>,
+                   status: Option<(&str, &str)>,
                    time_zone: Option<&str>| UserProfile {
         user_id: format!("u-{username}").into(),
         username: username.into(),
         display_name: display_name.into(),
         position: position.map(Into::into),
         presence,
-        status_text: status_text.map(Into::into),
+        status: status.map(|(emoji, text)| crate::custom_status::StatusLine {
+            emoji: emoji.into(),
+            text: text.into(),
+            until: None,
+            duration: Default::default(),
+        }),
         time_zone: time_zone.map(Into::into),
     };
     vec![
@@ -1665,7 +1695,7 @@ pub fn profiles() -> Vec<UserProfile> {
             "Priya Nair",
             Some("Product designer"),
             Presence::Online,
-            Some("In a review until 3"),
+            Some(("calendar", "In a design review")),
             Some("Asia/Kolkata"),
         ),
         profile(
@@ -1681,7 +1711,7 @@ pub fn profiles() -> Vec<UserProfile> {
             "Lena Fischer",
             Some("Engineer, Windows"),
             Presence::Dnd,
-            Some("Heads down"),
+            Some(("headphones", "Heads down")),
             Some("Europe/Berlin"),
         ),
         profile(
@@ -1823,6 +1853,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         .find(|post| post.id.as_ref() == post_id)?
         .clone();
     let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
@@ -1879,6 +1910,9 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
                             actions: thread_actions(),
                         },
                     )],
+                    // Posted through the deploy webhook: its glyph, not
+                    // its creator's picture.
+                    webhook: Some(crate::webhooks::Webhook::default()),
                     ..reply(
                         "r2",
                         "Build Bot",

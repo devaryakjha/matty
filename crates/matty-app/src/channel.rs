@@ -453,6 +453,8 @@ pub struct Post {
     pub embeds: Vec<crate::embeds::Embed>,
     /// Its priority label and acknowledgements (#220).
     pub priority: Option<crate::priority::Shown>,
+    /// The webhook it came from, whose icon it shows.
+    pub webhook: Option<crate::webhooks::Webhook>,
 }
 
 /// When "Remind me" brings a post back, as the webapp offers it.
@@ -560,6 +562,9 @@ pub struct ChannelModel {
     pub muted: bool,
     /// The channel purpose, shown in the empty state.
     pub purpose: Option<SharedString>,
+    /// A direct message's other person: the header shows their custom
+    /// status and local time (#221).
+    pub person: Option<Box<crate::profile::UserProfile>>,
     /// True while the first page of posts is on its way: skeleton rows
     /// instead of the empty state (PLAN §4.5).
     pub loading: bool,
@@ -1203,6 +1208,9 @@ pub struct ChannelView {
     /// The banner says the user is offline: actions that need the server
     /// are refused before the transcript changes (#163).
     offline: bool,
+    /// A server's sidebar is up, so with no channel open the view says
+    /// none is picked rather than that Matty is not connected.
+    connected: bool,
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
@@ -1523,6 +1531,7 @@ impl ChannelView {
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
+            connected: crate::preview::enabled(),
             profile_cards: 0,
             split_controls: false,
             action_menus: Default::default(),
@@ -1786,6 +1795,14 @@ impl ChannelView {
     }
 
     /// The banner went to or from "You're offline" (#163).
+    /// Whether a server's sidebar is up; see [`ChannelView::empty`].
+    pub fn set_connected(&mut self, connected: bool, cx: &mut Context<Self>) {
+        if self.connected != connected {
+            self.connected = connected;
+            cx.notify();
+        }
+    }
+
     pub fn set_offline(&mut self, offline: bool) {
         self.offline = offline;
     }
@@ -2571,6 +2588,7 @@ impl ChannelView {
         self.pending_seq += 1;
         let last = model.posts.last();
         let post = Post {
+            webhook: None,
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
             author_id: own_id(&model.posts),
@@ -3773,6 +3791,12 @@ impl ChannelView {
                                     }),
                             ),
                     ))
+                    .children(
+                        channel
+                            .person
+                            .as_ref()
+                            .and_then(|person| person_details(person, cx)),
+                    )
                     .children(channel.header.clone().map(|text| {
                         div()
                             .min_w_0()
@@ -3872,6 +3896,10 @@ impl ChannelView {
         card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("post.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let initial: String = post.author.chars().take(1).collect();
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
@@ -5046,7 +5074,7 @@ impl ChannelView {
             )
     }
 
-    fn empty(cx: &App) -> impl IntoElement + use<> {
+    fn empty(connected: bool, cx: &App) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let header = div()
             .flex_shrink_0()
@@ -5065,17 +5093,26 @@ impl ChannelView {
                     .text_color(theme.colors.muted_foreground),
             )
             .child("No channel open");
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(style::centered_empty(
-                LucideIcon::MessagesSquare,
-                "Not connected yet",
-                "Your channels appear here once Matty is connected to a Mattermost server.",
-                cx,
-            ))
+        div().size_full().flex().flex_col().child(header).child({
+            let (title, text) = empty_text(connected);
+            style::centered_empty(LucideIcon::MessagesSquare, title, text, cx)
+        })
+    }
+}
+
+/// What the view says with no channel open: that none is picked once a
+/// server's sidebar is up, else that Matty is not connected yet.
+fn empty_text(connected: bool) -> (&'static str, &'static str) {
+    if connected {
+        (
+            "No channel open",
+            "Pick a channel or a conversation in the sidebar.",
+        )
+    } else {
+        (
+            "Not connected yet",
+            "Your channels appear here once Matty is connected to a Mattermost server.",
+        )
     }
 }
 
@@ -5111,7 +5148,7 @@ impl Render for ChannelView {
                 cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
             );
         let Some(channel) = self.model.clone() else {
-            return root.child(Self::empty(cx));
+            return root.child(Self::empty(self.connected, cx));
         };
         // Back at the end, everything has been seen.
         if self.unseen > 0 && !self.list.read(cx).is_scrolled_up() {
@@ -5167,6 +5204,57 @@ impl Render for ChannelView {
 
 /// The picker's popover surface: gpuicn's popover colors and shadow around
 /// the borderless picker.
+/// A direct message's header beside the name: the other person's custom
+/// status and the time where they are (#221); `None` when neither is known.
+fn person_details(person: &crate::profile::UserProfile, cx: &App) -> Option<gpui_kit::Div> {
+    let theme = UiTheme::read(cx).clone();
+    let muted = theme.colors.muted_foreground;
+    let time = person.time_zone.as_ref().and_then(|zone| {
+        crate::profile::local_time(zone, crate::settings::ClockFormat::current(cx))
+    });
+    if person.status.is_none() && time.is_none() {
+        return None;
+    }
+    Some(
+        div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(theme.space(3.))
+            .pl(theme.space(2.))
+            .border_l(style::hairline())
+            .border_color(theme.colors.border)
+            .type_style(style::UI, &theme)
+            .text_color(muted)
+            .children(person.status.as_ref().map(|status| {
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .child(crate::custom_status::emoji(
+                        &status.emoji,
+                        scaled(&theme, metrics::ICON_SMALL),
+                        cx,
+                    ))
+                    .child(div().min_w_0().truncate().child(status.text.clone()))
+            }))
+            .children(time.map(|time| {
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.))
+                    .child(
+                        lucide(LucideIcon::Clock)
+                            .size(scaled(&theme, metrics::ICON_SMALL))
+                            .text_color(muted),
+                    )
+                    .child(format!("{time} local time"))
+            })),
+    )
+}
+
 fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx);
     div()
@@ -5367,6 +5455,26 @@ fn people_suggestions<'a>(
 mod tests {
     use super::*;
 
+    /// Connected with nothing open, the view no longer says Matty is not
+    /// connected; it asks for a channel.
+    #[gpui_kit::test]
+    fn an_empty_view_says_whether_matty_is_connected(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        assert_eq!(empty_text(false).0, "Not connected yet");
+        assert_eq!(empty_text(true).0, "No channel open");
+        let (view, cx) = cx.add_window_view(|window, cx| ChannelView::new(None, "me", window, cx));
+        cx.update(|window, cx| {
+            assert!(!view.read(cx).connected);
+            window.draw(cx).clear(cx);
+            view.update(cx, |view, cx| view.set_connected(true, cx));
+            assert!(view.read(cx).connected);
+            window.draw(cx).clear(cx);
+        });
+    }
+
     #[test]
     fn reminders_land_at_the_offered_times() {
         let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
@@ -5499,7 +5607,7 @@ mod tests {
             display_name: crate::transcript::display_name_as(&user, format).into(),
             position: None,
             presence: crate::sidebar::Presence::Offline,
-            status_text: None,
+            status: None,
             time_zone: None,
         };
         let shown = |format, query: &str| {
@@ -5554,6 +5662,7 @@ mod tests {
 
     fn post(id: &str, day: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),
@@ -5637,11 +5746,12 @@ mod tests {
             display_name: name.to_owned().into(),
             position: None,
             presence: crate::sidebar::Presence::Offline,
-            status_text: None,
+            status: None,
             time_zone: None,
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5710,6 +5820,7 @@ mod tests {
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: true,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5817,6 +5928,7 @@ mod tests {
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5898,6 +6010,7 @@ mod tests {
         let channel = ChannelModel {
             offline: false,
             purpose: None,
+            person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
@@ -5939,6 +6052,7 @@ mod tests {
     fn removing_a_post_changes_only_its_rows() {
         let mut channel = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5987,6 +6101,7 @@ mod tests {
         };
         let channel = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -6044,6 +6159,7 @@ mod tests {
         let mut channel = ChannelModel {
             offline: false,
             purpose: None,
+            person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
