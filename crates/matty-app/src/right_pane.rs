@@ -595,6 +595,8 @@ impl RightPaneView {
             state
         });
         crate::updater::watch_composer(&composer, cx);
+        #[cfg(not(target_family = "wasm"))]
+        crate::spelling::check(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
         let subscriptions = vec![

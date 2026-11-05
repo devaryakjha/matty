@@ -76,6 +76,7 @@ matty-markdown = { path = "crates/matty-markdown" }
 matty-notify = { path = "crates/matty-notify" }
 matty-app = { path = "crates/matty-app" }
 matty-update = { path = "crates/matty-update" }
+matty-spell = { path = "crates/matty-spell" }
 
 [workspace.lints.rust]
 missing_docs = "warn"
