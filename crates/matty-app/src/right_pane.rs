@@ -28,6 +28,7 @@ use crate::profile::{ProfileActions, UserProfile, profile_card, profile_pane};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, Presence};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     attachment::Attachment,
@@ -145,15 +146,29 @@ const DATE_MODIFIERS: [&str; 3] = ["on:", "before:", "after:"];
 /// The suggestions for a date modifier: today, yesterday and the five days
 /// before, by name, each inserting the date as the server reads it
 /// (`on:2026-11-05`). What was typed narrows them by name or by date.
+/// A weekday's name in the user's language.
+fn weekday(day: jiff::civil::Weekday) -> SharedString {
+    use jiff::civil::Weekday::*;
+    match day {
+        Monday => t!("pane-weekday-monday"),
+        Tuesday => t!("pane-weekday-tuesday"),
+        Wednesday => t!("pane-weekday-wednesday"),
+        Thursday => t!("pane-weekday-thursday"),
+        Friday => t!("pane-weekday-friday"),
+        Saturday => t!("pane-weekday-saturday"),
+        Sunday => t!("pane-weekday-sunday"),
+    }
+}
+
 fn date_suggestions(prefix: &str, typed: &str, today: jiff::civil::Date) -> Vec<Suggestion> {
     let typed = typed.to_lowercase();
     (0..7)
         .filter_map(|back| {
             let date = today.checked_sub(jiff::Span::new().days(back)).ok()?;
             let label = match back {
-                0 => "Today".to_string(),
-                1 => "Yesterday".to_string(),
-                _ => date.strftime("%A").to_string(),
+                0 => t!("pane-today").to_string(),
+                1 => t!("pane-yesterday").to_string(),
+                _ => weekday(date.weekday()).to_string(),
             };
             let iso = date.strftime("%Y-%m-%d").to_string();
             (iso.starts_with(&typed) || label.to_lowercase().starts_with(&typed)).then(|| {
@@ -534,7 +549,7 @@ impl RightPaneView {
         let paste = cx.weak_entity();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
-            state.set_placeholder("Reply…", window, cx);
+            state.set_placeholder(t!("pane-reply-placeholder"), window, cx);
             state.set_triggers(['@', '~', ':', '/'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
@@ -597,7 +612,8 @@ impl RightPaneView {
         crate::updater::watch_composer(&composer, cx);
         #[cfg(not(target_family = "wasm"))]
         crate::spelling::check(&composer, cx);
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("pane-search-placeholder")));
         let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
         let composer_input = composer.read(cx).input().clone();
         let subscriptions = vec![
@@ -797,7 +813,7 @@ impl RightPaneView {
         let open = Button::new("right-pane.lightbox.open")
             .size(ButtonSize::Icon)
             .variant(ButtonVariant::Ghost)
-            .aria_label("Download")
+            .aria_label(t!("pane-download"))
             .child(
                 lucide(LucideIcon::Download)
                     .size(theme.space(4.5))
@@ -1120,7 +1136,8 @@ impl RightPaneView {
     /// Runs a button or menu choice on an attachment (#211), unless
     /// offline.
     fn run_action(&mut self, choice: crate::interactive::ActionChoice, cx: &mut Context<Self>) {
-        if !self.refused_offline("run action", cx) {
+        let key = "run action"; // i18n-ignore: an offline key
+        if !self.refused_offline(key, cx) {
             cx.emit(RightPaneEvent::PostAction(choice));
         }
     }
@@ -1314,7 +1331,7 @@ impl RightPaneView {
         });
         let place: SharedString = thread
             .map(|thread| format!("#{}", thread.channel_name).into())
-            .unwrap_or_else(|| "the channel".into());
+            .unwrap_or_else(|| t!("pane-discard-place"));
         let popup = delete_popup("thread.discard", unsent, &place, 0, cx);
         let view = cx.entity().downgrade();
         alert_dialog("thread.discard", &self.discard, popup, window, cx).on_ok(move |_, _, cx| {
@@ -1336,9 +1353,9 @@ impl RightPaneView {
         });
         if self.refused_offline(
             if mine {
-                "remove reaction"
+                "remove reaction" // i18n-ignore: an offline key
             } else {
-                "add reaction"
+                "add reaction" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -1383,9 +1400,9 @@ impl RightPaneView {
         };
         if self.refused_offline(
             if following {
-                "unfollow thread"
+                "unfollow thread" // i18n-ignore: an offline key
             } else {
-                "follow thread"
+                "follow thread" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -1778,10 +1795,10 @@ impl RightPaneView {
                     .size(theme.space(3.5))
                     .text_color(theme.colors.muted_foreground),
             )
-            .child("Older replies load when you're back online.")
+            .child(t!("pane-older-offline"))
             .into_any_element()
         } else if thread.failed_older {
-            row.child("Couldn't load older replies.")
+            row.child(t!("pane-older-failed"))
                 .child(
                     div()
                         .debug_selector(|| "right-pane.older.retry".into())
@@ -1789,7 +1806,7 @@ impl RightPaneView {
                             Button::new("right-pane.older.retry")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Sm)
-                                .label("Retry")
+                                .label(t!("pane-older-retry"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(RightPaneContent::Thread(thread)) =
                                         &mut this.content
@@ -1804,10 +1821,10 @@ impl RightPaneView {
         } else {
             row.child(
                 Spinner::new("right-pane.older.spinner")
-                    .label("Loading older replies")
+                    .label(t!("pane-older-loading"))
                     .size(gpui_kit::px(14.)),
             )
-            .child("Loading older replies…")
+            .child(t!("pane-older-loading-text"))
             .into_any_element()
         }
     }
@@ -1952,7 +1969,7 @@ impl RightPaneView {
                 let emoji: SharedString = (*emoji).into();
                 MenuItem::new(
                     gpui_kit::ElementId::Name(format!("thread.react.{name}").into()),
-                    format!("{emoji}  {name}"),
+                    format!("{emoji}  {}", crate::channel::reaction_name(name)),
                 )
                 .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
                 .on_click(move |_, _, cx| {
@@ -1979,17 +1996,17 @@ impl RightPaneView {
         // The server does not have an unsent reply yet: nothing to react to.
         let mut items = if post.status == PostStatus::Sent {
             vec![
-                MenuItem::submenu("thread.context.react", "Add reaction", reactions),
+                MenuItem::submenu("thread.context.react", t!("pane-add-reaction"), reactions),
                 MenuItem::separator(),
             ]
         } else {
             Vec::new()
         };
         let copy_items = [
-            MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
+            MenuItem::new("thread.context.copy", t!("pane-copy-text")).on_click(move |_, _, cx| {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
-            MenuItem::new("thread.context.copy-markdown", "Copy as Markdown").on_click(
+            MenuItem::new("thread.context.copy-markdown", t!("pane-copy-markdown")).on_click(
                 move |_, _, cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                         markdown_body.to_string(),
@@ -2006,7 +2023,7 @@ impl RightPaneView {
         if post.status == PostStatus::Ephemeral {
             let (view, id) = (view.clone(), post.id.clone());
             items.push(
-                MenuItem::new("thread.context.dismiss", "Dismiss message").on_click(
+                MenuItem::new("thread.context.dismiss", t!("pane-dismiss")).on_click(
                     move |_, _, cx| {
                         let id = id.clone();
                         view.update(cx, |this, cx| this.dismiss(id, cx)).ok();
@@ -2030,21 +2047,21 @@ impl RightPaneView {
             items.extend([
                 emit(
                     "forward",
-                    "Forward\u{2026}".into(),
+                    t!("pane-forward"),
                     RightPaneEvent::Forward(id.clone()),
                 ),
                 emit(
                     "unread",
-                    "Mark as unread".into(),
+                    t!("pane-mark-unread"),
                     RightPaneEvent::MarkUnread(id.clone()),
                 ),
                 MenuItem::submenu(
                     "thread.context.remind",
-                    "Remind me",
+                    t!("pane-remind"),
                     crate::channel::RemindAt::ALL.map(|at| {
                         emit(
                             &format!("remind.{at:?}"),
-                            at.label().into(),
+                            at.label(),
                             RightPaneEvent::Remind {
                                 post: id.clone(),
                                 at,
@@ -2055,9 +2072,9 @@ impl RightPaneView {
                 emit(
                     "save",
                     if post.saved {
-                        "Unsave".into()
+                        t!("pane-unsave")
                     } else {
-                        "Save".into()
+                        t!("pane-save")
                     },
                     RightPaneEvent::SetSaved {
                         post: id.clone(),
@@ -2067,9 +2084,9 @@ impl RightPaneView {
                 emit(
                     "pin",
                     if post.pinned {
-                        "Unpin from channel".into()
+                        t!("pane-unpin")
                     } else {
-                        "Pin to channel".into()
+                        t!("pane-pin")
                     },
                     RightPaneEvent::SetPinned {
                         post: id.clone(),
@@ -2078,7 +2095,7 @@ impl RightPaneView {
                 ),
                 emit(
                     "copy-link",
-                    "Copy link".into(),
+                    t!("pane-copy-link"),
                     RightPaneEvent::CopyLink(id.clone()),
                 ),
                 MenuItem::separator(),
@@ -2088,10 +2105,12 @@ impl RightPaneView {
             let (retry_view, retry_id) = (view.clone(), post.id.clone());
             items.push(MenuItem::separator());
             items.push(
-                MenuItem::new("thread.context.retry", "Retry").on_click(move |_, _, cx| {
-                    let id = retry_id.clone();
-                    retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
-                }),
+                MenuItem::new("thread.context.retry", t!("pane-retry")).on_click(
+                    move |_, _, cx| {
+                        let id = retry_id.clone();
+                        retry_view.update(cx, |this, cx| this.retry(id, cx)).ok();
+                    },
+                ),
             );
         }
         // The user's own sent replies are edited and deleted here, as in
@@ -2100,13 +2119,15 @@ impl RightPaneView {
             reply && post.mine && post.kind == PostKind::Regular && post.status == PostStatus::Sent;
         if own_sent {
             let (edit_view, edit_id) = (view.clone(), post.id.clone());
-            items.push(MenuItem::new("thread.context.edit", "Edit").on_click(
-                move |_, window, cx| {
-                    edit_view
-                        .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
-                        .ok();
-                },
-            ));
+            items.push(
+                MenuItem::new("thread.context.edit", t!("pane-edit")).on_click(
+                    move |_, window, cx| {
+                        edit_view
+                            .update(cx, |this, cx| this.start_edit(edit_id.clone(), window, cx))
+                            .ok();
+                    },
+                ),
+            );
         }
         if sent {
             items.extend(copy_items);
@@ -2114,7 +2135,7 @@ impl RightPaneView {
         if own_sent {
             let (delete_view, delete_id) = (view.clone(), post.id.clone());
             items.push(
-                MenuItem::new("thread.context.delete", "Delete\u{2026}").on_click(
+                MenuItem::new("thread.context.delete", t!("pane-delete")).on_click(
                     move |_, window, cx| {
                         delete_view
                             .update(cx, |this, cx| {
@@ -2162,7 +2183,7 @@ impl RightPaneView {
             }
             _ => None,
         };
-        let action = |id: &'static str, label: &'static str, glyph: LucideIcon| {
+        let action = |id: &'static str, label: SharedString, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
@@ -2214,10 +2235,10 @@ impl RightPaneView {
                     .when_some(thread_root, |row, root| {
                         row.child(style::tipped(
                             "right-pane.pop-out.tip",
-                            actions::tooltip_text("Open in new window", "Open in new window"),
+                            actions::tooltip_text(&t!("pane-open-in-window"), "Open in new window"),
                             action(
                                 "right-pane.pop-out",
-                                "Open in new window",
+                                t!("pane-open-in-window"),
                                 LucideIcon::SquareArrowOutUpRight,
                             )
                             .on_click(cx.listener(
@@ -2228,14 +2249,18 @@ impl RightPaneView {
                     .when(!self.popped_out, |row| {
                         row.child(style::tipped(
                             "right-pane.expand.tip",
-                            actions::tooltip_text("Expand", "Expand right pane"),
-                            action("right-pane.expand", "Expand", LucideIcon::Maximize2),
+                            actions::tooltip_text(&t!("pane-expand"), "Expand right pane"),
+                            action(
+                                "right-pane.expand",
+                                t!("pane-expand"),
+                                LucideIcon::Maximize2,
+                            ),
                         ))
                     })
                     .child(style::tipped(
                         "right-pane.close.tip",
-                        actions::tooltip_text("Close", "Close right pane"),
-                        action("right-pane.close", "Close", LucideIcon::X)
+                        actions::tooltip_text(&t!("pane-close"), "Close right pane"),
+                        action("right-pane.close", t!("pane-close"), LucideIcon::X)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::Close))),
                     )),
             )
@@ -2379,7 +2404,13 @@ impl RightPaneView {
             .timestamp(time.clone())
             .when(
                 post.status == PostStatus::Sent && !post.date.is_empty(),
-                |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
+                |row| {
+                    row.timestamp_tooltip(t!(
+                        "pane-sent-at",
+                        date = post.date.to_string(),
+                        time = time.to_string()
+                    ))
+                },
             )
             .gutter_time(time)
             // A queued reply keeps its header so the clock shows (#195).
@@ -2401,7 +2432,7 @@ impl RightPaneView {
                         message_action(
                             gpui_kit::ElementId::Name(format!("thread.{id}.dismiss").into()),
                             LucideIcon::X,
-                            "Dismiss message",
+                            t!("pane-dismiss"),
                             cx,
                         )
                         .on_click(move |_, _, cx| {
@@ -2555,11 +2586,11 @@ impl RightPaneView {
                 style::tipped_when(
                     !menu_open,
                     gpui_kit::ElementId::Name(format!("thread.{id}.react.tip").into()),
-                    "Add reaction",
+                    t!("pane-add-reaction"),
                     message_action(
                         gpui_kit::ElementId::Name(format!("thread.{id}.react").into()),
                         LucideIcon::FaceSlightlySmilingPlus,
-                        "Add reaction",
+                        t!("pane-add-reaction"),
                         cx,
                     )
                     .on_click(
@@ -2578,11 +2609,11 @@ impl RightPaneView {
             .child(style::tipped_when(
                 !menu_open,
                 gpui_kit::ElementId::Name(format!("thread.{id}.more.tip").into()),
-                "More actions",
+                t!("pane-more-actions"),
                 message_action(
                     gpui_kit::ElementId::Name(format!("thread.{id}.more").into()),
                     LucideIcon::Ellipsis,
-                    "More actions",
+                    t!("pane-more-actions"),
                     cx,
                 )
                 .on_click(move |event: &gpui_kit::ClickEvent, window, cx| {
@@ -2665,10 +2696,7 @@ impl RightPaneView {
         let view = view.clone();
         // Older replies may not be loaded yet; the server's count holds.
         let count = thread.reply_count.max(thread.replies.len());
-        let label = match count {
-            1 => "1 reply".to_string(),
-            n => format!("{n} replies"),
-        };
+        let label = t!("pane-replies", count = count);
         div()
             .flex()
             .items_center()
@@ -2691,9 +2719,9 @@ impl RightPaneView {
                     })
                     .size(ButtonSize::Xs)
                     .label(if thread.following {
-                        "Following"
+                        t!("pane-following")
                     } else {
-                        "Follow"
+                        t!("pane-follow")
                     })
                     .on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| this.toggle_follow(cx)).ok();
@@ -2792,7 +2820,7 @@ impl RightPaneView {
         let send = Button::new("right-pane.send")
             .variant(ButtonVariant::Default)
             .size(ButtonSize::IconSm)
-            .aria_label("Reply")
+            .aria_label(t!("pane-reply"))
             .disabled(self.tray.gate(self.draft_len > 0) != SendGate::Now)
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.composer.read(cx).value(cx);
@@ -2819,11 +2847,11 @@ impl RightPaneView {
         let overlay = crate::attachments::drop_overlay(
             "right-pane.drop",
             crate::attachments::drop_title(&thread.channel_name),
-            "Files go into your reply.",
+            t!("pane-drop"),
             crate::attachments::preview_drop(),
             cx,
         );
-        let tool = |id: &'static str, label: &'static str, glyph: LucideIcon| {
+        let tool = |id: &'static str, label: SharedString, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
@@ -2873,28 +2901,34 @@ impl RightPaneView {
                             .rounded(theme.radius.lg)
                             .child(style::tipped(
                                 "right-pane.attach.tip",
-                                actions::tooltip_text("Attach files", "Upload files"),
-                                tool("right-pane.attach", "Attach files", LucideIcon::Plus)
+                                actions::tooltip_text(&t!("pane-attach"), "Upload files"),
+                                tool("right-pane.attach", t!("pane-attach"), LucideIcon::Plus)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_files(window, cx)
                                     })),
                             ))
                             .child(style::tipped(
                                 "right-pane.emoji.tip",
-                                "Emoji",
-                                tool("right-pane.emoji", "Emoji", LucideIcon::FaceSlightlySmiling)
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                t!("pane-emoji"),
+                                tool(
+                                    "right-pane.emoji",
+                                    t!("pane-emoji"),
+                                    LucideIcon::FaceSlightlySmiling,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
                                         this.composer.update(cx, |composer, cx| {
                                             composer.insert(":", window, cx);
                                             composer.focus(window, cx);
                                         })
-                                    })),
+                                    },
+                                )),
                             ))
                             .child(div().flex_1())
                             .children(self.schedule_button(cx))
                             .child(style::tipped(
                                 "right-pane.send.tip",
-                                actions::send_tooltip("Reply", send_on),
+                                actions::send_tooltip(&t!("pane-reply"), send_on),
                                 send,
                             )),
                     ),
@@ -2906,8 +2940,8 @@ impl RightPaneView {
     fn empty(cx: &App) -> impl IntoElement + use<> {
         style::centered_empty(
             LucideIcon::MessageSquareReply,
-            "No thread open",
-            "Hover a message and choose Reply in thread to follow it here.",
+            t!("pane-no-thread"),
+            t!("pane-no-thread-detail"),
             cx,
         )
     }
@@ -2929,10 +2963,11 @@ impl RightPaneView {
                         .pt(theme.space(2.))
                         .type_style(style::META, &theme)
                         .text_color(theme.colors.muted_foreground)
-                        .child(match model.results.len() {
-                            1 => format!("1 result for \u{201c}{}\u{201d}", model.query),
-                            n => format!("{n} results for \u{201c}{}\u{201d}", model.query),
-                        }),
+                        .child(t!(
+                            "pane-search-count",
+                            count = model.results.len(),
+                            query = model.query.to_string(),
+                        )),
                 )
             },
         )
@@ -2941,8 +2976,8 @@ impl RightPaneView {
             &model.results,
             (
                 LucideIcon::SearchX,
-                "Nothing matched",
-                "Try fewer words, or narrow with from: and in:.",
+                t!("pane-search-nothing"),
+                t!("pane-search-nothing-detail"),
             ),
             model.more.then_some(model.loading_more),
             cx,
@@ -2957,7 +2992,7 @@ impl RightPaneView {
         let more = if model.more { "+" } else { "" };
         div().px(theme.space(4.)).pt(theme.space(2.)).child(
             crate::ui::tabs::Tabs::new("right-pane.search.tabs")
-                .aria_label("Search results")
+                .aria_label(t!("pane-search-results"))
                 .selected(if self.search_files_tab {
                     "files"
                 } else {
@@ -2966,12 +3001,16 @@ impl RightPaneView {
                 .item(crate::ui::tabs::Tab::new(
                     "right-pane.search.tabs.messages",
                     "messages",
-                    format!("Messages ({}{more})", model.results.len()),
+                    t!(
+                        "pane-search-messages-tab",
+                        count = model.results.len(),
+                        more = more,
+                    ),
                 ))
                 .item(crate::ui::tabs::Tab::new(
                     "right-pane.search.tabs.files",
                     "files",
-                    format!("Files ({})", model.files.len()),
+                    t!("pane-search-files-tab", count = model.files.len()),
                 ))
                 .on_change(move |value, _, cx| {
                     view.update(cx, |this, cx| {
@@ -3002,12 +3041,12 @@ impl RightPaneView {
                 .py(theme.space(3.))
                 .type_style(style::META, &theme)
                 .text_color(theme.colors.muted_foreground)
-                .child("Loading\u{2026}")
+                .child(t!("pane-loading"))
                 .into_any_element(),
             Some([]) => style::centered_empty(
                 LucideIcon::Paperclip,
-                "No files yet",
-                "Files shared in this channel show up here.",
+                t!("pane-files-empty"),
+                t!("pane-files-empty-detail"),
                 cx,
             )
             .into_any_element(),
@@ -3075,7 +3114,7 @@ impl RightPaneView {
                                 ))
                                 .variant(ButtonVariant::Link)
                                 .size(ButtonSize::Xs)
-                                .label("Jump")
+                                .label(t!("pane-jump"))
                                 .on_click(move |_, _, cx| {
                                     let event = RightPaneEvent::Jump {
                                         channel: jump_channel.clone(),
@@ -3112,7 +3151,7 @@ impl RightPaneView {
         &self,
         id: &'static str,
         items: &[ListedPost],
-        empty: (LucideIcon, &'static str, &'static str),
+        empty: (LucideIcon, SharedString, SharedString),
         more: Option<bool>,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -3124,7 +3163,7 @@ impl RightPaneView {
                 .py(theme.space(3.))
                 .type_style(style::META, &theme)
                 .text_color(theme.colors.muted_foreground)
-                .child("Loading\u{2026}")
+                .child(t!("pane-loading"))
                 .into_any_element();
         }
         if items.is_empty() && self.offline {
@@ -3172,7 +3211,7 @@ impl RightPaneView {
                                 ))
                                 .variant(ButtonVariant::Link)
                                 .size(ButtonSize::Xs)
-                                .label("Jump")
+                                .label(t!("pane-jump"))
                                 .on_click(move |_, _, cx| {
                                     let event = RightPaneEvent::Jump {
                                         channel: jump_channel.clone(),
@@ -3206,9 +3245,9 @@ impl RightPaneView {
                             .w_full()
                             .disabled(loading)
                             .label(if loading {
-                                "Loading more\u{2026}"
+                                t!("pane-search-loading-more")
                             } else {
-                                "Show more results"
+                                t!("pane-search-more")
                             })
                             .on_click(
                                 cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::SearchMore)),
@@ -3234,8 +3273,8 @@ impl RightPaneView {
         } else if model.query.is_empty() {
             style::centered_empty(
                 LucideIcon::Search,
-                "Search messages",
-                "Words, \u{201c}exact phrases\u{201d}, from:someone, in:channel, on:, before: or after: a date, -word to leave a word out, and depl* for words that start with depl.",
+                t!("pane-search-empty"),
+                t!("pane-search-empty-detail"),
                 cx,
             )
             .into_any_element()
@@ -3246,10 +3285,7 @@ impl RightPaneView {
                 .py(theme.space(3.))
                 .type_style(style::META, &theme)
                 .text_color(muted)
-                .child(format!(
-                    "Searching for \u{201c}{}\u{201d}\u{2026}",
-                    model.query
-                ))
+                .child(t!("pane-searching", query = model.query.to_string()))
                 .into_any_element()
         } else {
             div()
@@ -3291,7 +3327,7 @@ impl RightPaneView {
                     .capture_action(
                         cx.listener(|this, _: &MoveUp, _, cx| this.step_suggestion(false, cx)),
                     )
-                    .child(Input::new(&self.search).aria_label("Search messages"))
+                    .child(Input::new(&self.search).aria_label(t!("pane-search-placeholder")))
                     .when(!self.suggestions.is_empty(), |field| {
                         field.child(self.suggestion_list(cx))
                     })
@@ -3299,7 +3335,7 @@ impl RightPaneView {
                         div()
                             .type_style(style::META, &theme)
                             .text_color(muted)
-                            .child("from:name  in:channel  on:date  -word  \u{201c}exact phrase\u{201d}"),
+                            .child(t!("pane-search-hint")),
                     ),
             )
             .child(body)
@@ -3328,7 +3364,10 @@ impl RightPaneView {
                         })
                         .w_full()
                         .justify_start()
-                        .aria_label(format!("Search {}", suggestion.insert))
+                        .aria_label(t!(
+                            "pane-search-suggestion",
+                            query = suggestion.insert.to_string()
+                        ))
                         .child(
                             div()
                                 .flex()
@@ -3380,13 +3419,13 @@ impl RightPaneView {
                         div()
                             .type_style(style::LABEL, &theme)
                             .text_color(muted)
-                            .child("Recent searches"),
+                            .child(t!("pane-recent-searches")),
                     )
                     .child(
                         Button::new("right-pane.recent-searches.clear")
                             .variant(ButtonVariant::Link)
                             .size(ButtonSize::Xs)
-                            .label("Clear")
+                            .label(t!("pane-recent-clear"))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 SettingsStore::global(cx).update(cx, |store, cx| {
                                     store.update(cx, |settings| settings.recent_searches.clear())
@@ -3403,7 +3442,7 @@ impl RightPaneView {
                 .variant(ButtonVariant::Ghost)
                 .w_full()
                 .justify_start()
-                .aria_label(format!("Search again for {query}"))
+                .aria_label(t!("pane-recent-again", query = query.clone()))
                 .child(
                     div()
                         .flex()
@@ -3506,7 +3545,11 @@ impl RightPaneView {
             .child(
                 chip(
                     "info.favorite",
-                    if favorite { "Favorited" } else { "Favorite" }.into(),
+                    if favorite {
+                        t!("pane-favorited")
+                    } else {
+                        t!("pane-favorite")
+                    },
                     LucideIcon::Star,
                     favorite,
                 )
@@ -3522,7 +3565,11 @@ impl RightPaneView {
             .child(
                 chip(
                     "info.mute",
-                    if is_muted { "Muted" } else { "Mute" }.into(),
+                    if is_muted {
+                        t!("pane-muted")
+                    } else {
+                        t!("pane-mute")
+                    },
                     if is_muted {
                         LucideIcon::BellOff
                     } else {
@@ -3542,14 +3589,14 @@ impl RightPaneView {
             .child(
                 chip(
                     "info.pinned",
-                    format!("{} pinned", channel.pinned).into(),
+                    t!("pane-pinned-count", count = channel.pinned),
                     LucideIcon::Pin,
                     false,
                 )
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::OpenPinned))),
             )
             .child(
-                chip("info.files", "Files".into(), LucideIcon::Paperclip, false)
+                chip("info.files", t!("pane-files"), LucideIcon::Paperclip, false)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::OpenChannelFiles))),
             );
         // Leaving sits on its own line, away from the toggles.
@@ -3564,7 +3611,7 @@ impl RightPaneView {
                     Button::new("info.leave")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .aria_label("Leave channel")
+                        .aria_label(t!("pane-leave-channel"))
                         .child(
                             div()
                                 .flex()
@@ -3576,7 +3623,7 @@ impl RightPaneView {
                                         .size(scaled(&theme, metrics::ICON_SMALL))
                                         .text_color(theme.colors.destructive),
                                 )
-                                .child("Leave"),
+                                .child(t!("pane-leave")),
                         )
                         .on_click(move |_, window, cx| leave.open(window, cx)),
                 )
@@ -3596,13 +3643,15 @@ impl RightPaneView {
                     .items_center()
                     .justify_between()
                     .pb(theme.space(1.))
-                    .child(label(format!("Members · {}", channel.members)))
+                    .child(label(
+                        t!("pane-members", count = channel.members).to_string(),
+                    ))
                     .when(manage_members, |row| {
                         row.child(
                             Button::new("info.members.add")
                                 .variant(ButtonVariant::Ghost)
                                 .size(ButtonSize::Xs)
-                                .aria_label("Add members")
+                                .aria_label(t!("pane-add-members"))
                                 .child(
                                     div()
                                         .flex()
@@ -3613,7 +3662,7 @@ impl RightPaneView {
                                                 .size(scaled(&theme, metrics::ICON_SMALL))
                                                 .text_color(theme.colors.foreground),
                                         )
-                                        .child("Add"),
+                                        .child(t!("pane-add")),
                                 )
                                 .on_click(
                                     cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::AddMembers)),
@@ -3633,7 +3682,7 @@ impl RightPaneView {
                     Button::new("info.members.all")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .label(format!("Show all {} members", channel.members))
+                        .label(t!("pane-all-members", count = channel.members))
                         .on_click(move |_, _, cx| {
                             let event = RightPaneEvent::LoadMembers(channel_id.clone());
                             view.update(cx, |_, cx| cx.emit(event)).ok();
@@ -3666,9 +3715,9 @@ impl RightPaneView {
         let (role_view, role_user) = (view.clone(), profile.user_id.clone());
         let (view, user_id) = (view.clone(), profile.user_id.clone());
         let role = if admin {
-            "Remove channel admin"
+            t!("pane-remove-admin")
         } else {
-            "Make channel admin"
+            t!("pane-make-admin")
         };
         let mut items = Vec::new();
         if roles {
@@ -3684,7 +3733,7 @@ impl RightPaneView {
         }
         if removable {
             items.push(
-                MenuItem::new("info.member.remove", "Remove from channel").on_click(
+                MenuItem::new("info.member.remove", t!("pane-remove-member")).on_click(
                     move |_, _, cx| {
                         let event = RightPaneEvent::RemoveMember {
                             user_id: user_id.clone(),
@@ -3787,7 +3836,7 @@ impl RightPaneView {
                 )
                 .when(admin, |row| {
                     row.child(
-                        Badge::new("Admin")
+                        Badge::new(t!("pane-admin"))
                             .variant(BadgeVariant::Secondary)
                             .flex_shrink_0()
                             .h(theme.space(4.5))
@@ -3849,14 +3898,16 @@ impl RightPaneView {
         let theme = UiTheme::read(cx).clone();
         let name: SharedString = match self.content.as_ref() {
             Some(RightPaneContent::ChannelInfo(channel)) => format!("#{}", channel.name).into(),
-            _ => "this channel".into(),
+            _ => t!("pane-leave-this-channel"),
         };
-        let popup = dialog_popup("channel.leave.popup", "Leave channel", cx)
-            .child(dialog_title("channel.leave.title", cx).child(format!("Leave {name}?")))
+        let popup = dialog_popup("channel.leave.popup", t!("pane-leave-channel"), cx)
             .child(
-                dialog_description("channel.leave.description", cx).child(
-                    "You stop receiving its messages and it leaves your sidebar. You can join again later.",
-                ),
+                dialog_title("channel.leave.title", cx)
+                    .child(t!("pane-leave-title", name = name.to_string())),
+            )
+            .child(
+                dialog_description("channel.leave.description", cx)
+                    .child(t!("pane-leave-description")),
             )
             .child(
                 div()
@@ -3867,12 +3918,12 @@ impl RightPaneView {
                     .child(
                         alert_dialog_cancel("channel.leave.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("pane-leave-cancel")),
                     )
                     .child(
                         alert_dialog_action("channel.leave.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Leave"),
+                            .label(t!("pane-leave")),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -3898,7 +3949,7 @@ impl Render for RightPaneView {
             .child(self.discard_dialog(window, cx))
             .child(self.schedule_dialog.clone())
             .child(
-                Menu::new(&self.menu, "Message actions")
+                Menu::new(&self.menu, t!("pane-message-actions"))
                     .context_area(div())
                     .disabled(true),
             )
@@ -3927,7 +3978,7 @@ impl Render for RightPaneView {
         match self.content.clone() {
             Some(RightPaneContent::Thread(thread)) => root
                 .child(self.header(
-                    "Thread".into(),
+                    t!("pane-thread"),
                     Some(match thread.channel_name.as_ref() {
                         name if name.contains(' ') => name.to_string().into(),
                         name => format!("#{name}").into(),
@@ -3936,7 +3987,7 @@ impl Render for RightPaneView {
                 ))
                 .child(div().flex_1().min_h_0().child(self.thread(&thread, cx))),
             Some(RightPaneContent::ChannelInfo(channel)) => root
-                .child(self.header("Channel info".into(), None, cx))
+                .child(self.header(t!("pane-channel-info"), None, cx))
                 .child(
                     div()
                         .flex_1()
@@ -3948,7 +3999,7 @@ impl Render for RightPaneView {
                 files,
             }) => root
                 .child(self.header(
-                    "Files".into(),
+                    t!("pane-files"),
                     Some(match channel_name.as_ref() {
                         name if name.contains(' ') => name.to_string().into(),
                         name => format!("#{name}").into(),
@@ -3961,7 +4012,7 @@ impl Render for RightPaneView {
                 posts,
             }) => root
                 .child(self.header(
-                    "Pinned messages".into(),
+                    t!("pane-pinned"),
                     Some(match channel_name.as_ref() {
                         name if name.contains(' ') => name.to_string().into(),
                         name => format!("#{name}").into(),
@@ -3973,59 +4024,59 @@ impl Render for RightPaneView {
                     &posts,
                     (
                         LucideIcon::Pin,
-                        "Nothing pinned yet",
-                        "Pin a message from its More menu to keep it here for everyone.",
+                        t!("pane-pinned-empty"),
+                        t!("pane-pinned-empty-detail"),
                     ),
                     None,
                     cx,
                 )),
             Some(RightPaneContent::Saved(posts)) => root
-                .child(self.header("Saved messages".into(), None, cx))
+                .child(self.header(t!("pane-saved"), None, cx))
                 .child(self.listing(
                     "right-pane.saved",
                     &posts,
                     (
                         LucideIcon::Bookmark,
-                        "Nothing saved yet",
-                        "Save a message from its hover toolbar to find it here later.",
+                        t!("pane-saved-empty"),
+                        t!("pane-saved-empty-detail"),
                     ),
                     None,
                     cx,
                 )),
             Some(RightPaneContent::Mentions(posts)) => root
-                .child(self.header("Recent mentions".into(), None, cx))
+                .child(self.header(t!("pane-mentions"), None, cx))
                 .child(self.listing(
                     "right-pane.mentions",
                     &posts,
                     (
                         LucideIcon::AtSign,
-                        "No mentions yet",
-                        "Messages that mention you or your keywords show up here.",
+                        t!("pane-mentions-empty"),
+                        t!("pane-mentions-empty-detail"),
                     ),
                     None,
                     cx,
                 )),
             Some(RightPaneContent::Unreads(posts)) => root
-                .child(self.header("Unreads".into(), None, cx))
+                .child(self.header(t!("pane-unreads"), None, cx))
                 .child(self.listing(
                     "right-pane.unreads",
                     &posts,
                     (
                         LucideIcon::Inbox,
-                        "You're all caught up",
-                        "Unread messages from every channel in the team show up here.",
+                        t!("pane-unreads-empty"),
+                        t!("pane-unreads-empty-detail"),
                     ),
                     None,
                     cx,
                 )),
             Some(RightPaneContent::Search(model)) => root
-                .child(self.header("Search".into(), None, cx))
+                .child(self.header(t!("pane-search"), None, cx))
                 .child(self.search(&model, cx)),
             Some(RightPaneContent::Profile(profile)) => {
                 let (message_view, mention_view) =
                     (cx.entity().downgrade(), cx.entity().downgrade());
                 let (message_profile, username) = (profile.clone(), profile.username.clone());
-                root.child(self.header("Profile".into(), None, cx)).child(
+                root.child(self.header(t!("pane-profile"), None, cx)).child(
                     div().flex_1().min_h_0().child(profile_pane(
                         &profile,
                         Box::new(move |_, cx| {
@@ -4057,11 +4108,11 @@ impl Render for RightPaneView {
             // Offline, a thread that is not cached never arrives (#163).
             None if self.offline => {
                 let (title, text) = crate::offline::pane_empty("thread");
-                root.child(self.header("Thread".into(), None, cx))
+                root.child(self.header(t!("pane-thread"), None, cx))
                     .child(style::centered_empty(LucideIcon::WifiOff, title, text, cx))
             }
             None => root
-                .child(self.header("Thread".into(), None, cx))
+                .child(self.header(t!("pane-thread"), None, cx))
                 .child(Self::empty(cx)),
         }
     }

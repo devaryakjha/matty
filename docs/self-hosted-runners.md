@@ -25,9 +25,10 @@ What runs where once both are set:
 
 | Job | Runner |
 | --- | --- |
-| CI `linux`, `web`, `linux packages`, `integration` | OVH box |
+| CI `linux`, `web`, `linux packages` | OVH box |
 | CI `macos`, `macos universal bundle` | Mac mini |
 | CI `changes`, `deny`, `ci` | GitHub's Ubuntu (seconds to a minute each) |
+| CI `integration` (live Mattermost) | GitHub's Ubuntu: on the box the server could not reach the tests' integrations on the host, and four servers beside the builds broke timing-sensitive tests |
 | CI `windows`, `windows installer` | GitHub's Windows |
 | Release `macos universal` (signing, notarization) | Mac mini |
 | Release `linux x86_64` | OVH box |

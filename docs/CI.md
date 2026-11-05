@@ -2,26 +2,28 @@
 
 `.github/workflows/ci.yml` is built so pull requests merge fast.
 
+Pull requests only lint. Matty is in early alpha, and waiting on the full
+suite for every feature branch cost more time than the breaks it caught,
+so the tests and builds run on master, where a break is fixed forward.
+
 | Job | Pull request | master |
 | --- | --- | --- |
-| `linux`: fmt, clippy, unit tests, plain-Rust checks | always (skipped for docs-only changes) | always |
-| `deny` | always (skipped for docs-only changes) | always |
-| `integration` (live Mattermost) | only when `matty-api`, `matty-store`, `matty-sync`, `docker/`, the seed script or the lockfile change; 12.0 and 10.5 | every supported version |
-| `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
-| `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
-| `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | only when `packaging/linux/` or `scripts/linux-package` change, or with the `linux` label | always, plus the artifact |
-| `windows`: clippy, tests (#215) | only when platform code changes, or with the `windows` label | only when platform code changes, and every night; plus the release build, `matty.exe --version` and the artifact |
-| `windows installer`: release build, MSI and zip, installed and uninstalled (#215) | only when `packaging/windows/` or `scripts/windows-package` change, or with the `windows` label | only when those change, and every night; plus the artifact |
+| `linux`: fmt, clippy, plain-Rust checks | always (skipped for docs-only changes) | always, plus the workspace tests |
+| `linux` workspace tests | with the `tests` label | always |
+| `deny` | when a `Cargo.toml`, `Cargo.lock` or `deny.toml` changes | always |
+| `web` build | with the `web` label | always |
+| `integration` (live Mattermost) | with the `integration` label (12.0 and 10.5) | every supported version; a failure opens or comments on the issue "Integration tests are failing on master" |
+| `macos`: clippy, tests | with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
+| `macos universal bundle` | with the `macos` label | always |
+| `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | with the `linux` label | always, plus the artifact |
+| `windows`: clippy, tests (#215) | with the `windows` label | when platform code changes, and every night; plus the release build, `matty.exe --version` and the artifact |
+| `windows installer`: release build, MSI and zip, installed and uninstalled (#215) | with the `windows` label | when `packaging/windows/` or `scripts/windows-package` change, and every night; plus the artifact |
 | `ci` | the one check to wait on | |
 
-Why: macOS runners are scarce (a handful at a time per account), and three
-build lanes queued enough macOS jobs that runs sat for 15 minutes or more
-before a step ran. Nearly all of Matty builds and tests the same on Linux.
-
-The macOS-only code is `crates/matty-notify`, and `logging.rs`, `actions.rs`
-and `menu.rs` in `crates/matty-app`. Touching those, `packaging/`, the root
-`Cargo.toml` or the toolchain turns the macOS job on for the pull request.
-Add the `macos` label to run it on any other pull request.
+The `full-ci` label runs everything master runs on a pull request. Add a
+label when a change is risky in a way lint cannot see: the sync engine, the
+store, platform code (`crates/matty-notify`, and `logging.rs`, `actions.rs`
+and `menu.rs` in `crates/matty-app` are macOS-specific), or packaging.
 
 When the macOS job fails on master it opens an issue titled "macOS CI is
 failing on master", or comments on the open one. Fix it before merging more.
@@ -45,7 +47,8 @@ GitHub's runners while they are unset. Setup, labels and upkeep are in
 always run on GitHub's runners.
 
 `changes`, `deny` and `ci` always stay on GitHub's Ubuntu runners: they take
-seconds to a minute, and `changes` decides where the rest run.
+seconds to a minute, and `changes` decides where the rest run. `integration`
+stays there too (see self-hosted-runners.md).
 
 There is no self-hosted Windows machine, and Windows minutes cost double,
 so the two Windows jobs no longer run on every merge: master runs them when
