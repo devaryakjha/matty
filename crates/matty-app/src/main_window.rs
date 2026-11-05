@@ -1240,7 +1240,6 @@ impl MainWindow {
             .detach();
         cx.observe(&this.rail, |this, _, cx| this.update_badge(cx))
             .detach();
-        this.follow_links(window, cx);
         this.restore_split(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
