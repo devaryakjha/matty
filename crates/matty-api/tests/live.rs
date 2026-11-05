@@ -1362,3 +1362,37 @@ async fn channel_members_admins_and_files_round_trip() {
     assert!(users.iter().all(|u| u.id != other.id));
     client.archive_channel(&channel.id).await.unwrap();
 }
+
+/// Changing the email needs the current password (#212); the test puts the
+/// address back afterwards. Runs as a user of its own.
+#[tokio::test]
+async fn changing_the_email_checks_the_password() {
+    let Some((_, _, password)) = server() else {
+        return;
+    };
+    let (client, me) = fresh_user("email").await;
+    let patch = |email: &str, password: &str| matty_api::ProfilePatch {
+        email: Some(email.into()),
+        password: Some(password.into()),
+        ..Default::default()
+    };
+
+    let wrong = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", "not-the-password"))
+        .await;
+    assert!(wrong.is_err(), "a wrong password changed the email");
+    assert_eq!(client.me().await.unwrap().email, me.email);
+
+    let changed = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", &password))
+        .await
+        .unwrap();
+    assert_eq!(changed.email, "alan@allen.dev");
+    assert_eq!(client.me().await.unwrap().email, "alan@allen.dev");
+
+    client
+        .patch_profile(&me.id, &patch(&me.email, &password))
+        .await
+        .unwrap();
+    assert_eq!(client.me().await.unwrap().email, me.email);
+}

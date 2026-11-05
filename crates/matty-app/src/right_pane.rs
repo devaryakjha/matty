@@ -372,6 +372,8 @@ pub enum RightPaneEvent {
     OpenLink(SharedString),
     /// View profile on a member's profile card; the window shows it here.
     ViewProfile(UserProfile),
+    /// "Add to channel" on a profile card or the profile pane (#212).
+    AddToChannel(UserProfile),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -3685,6 +3687,11 @@ impl RightPaneView {
             let (close_message, close_mention, close_view) =
                 (cx.entity(), cx.entity(), cx.entity());
             let (view_view, view_profile) = (mention_view.clone(), card_profile.clone());
+            let (add_view, add_profile, close_add) =
+                (mention_view.clone(), card_profile.clone(), cx.entity());
+            let own = add_view
+                .upgrade()
+                .is_some_and(|this| this.read(cx).me == card_profile.display_name);
             profile_card(
                 &username,
                 &card_profile,
@@ -3708,6 +3715,13 @@ impl RightPaneView {
                         let event = RightPaneEvent::ViewProfile(view_profile.clone());
                         view_view.update(cx, |_, cx| cx.emit(event)).ok();
                     })),
+                    on_add_to_channel: (!own).then(|| -> crate::profile::ProfileAction {
+                        Box::new(move |window, cx| {
+                            close_add.update(cx, |state, cx| state.dismiss(window, cx));
+                            let event = RightPaneEvent::AddToChannel(add_profile.clone());
+                            add_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        })
+                    }),
                 },
                 cx,
             )
@@ -3910,6 +3924,16 @@ impl Render for RightPaneView {
                             let event = RightPaneEvent::Mention(username.clone());
                             mention_view.update(cx, |_, cx| cx.emit(event)).ok();
                         }),
+                        (profile.display_name != self.me).then(
+                            || -> crate::profile::ProfileAction {
+                                let (add_view, add_profile) =
+                                    (cx.entity().downgrade(), profile.clone());
+                                Box::new(move |_, cx| {
+                                    let event = RightPaneEvent::AddToChannel(add_profile.clone());
+                                    add_view.update(cx, |_, cx| cx.emit(event)).ok();
+                                })
+                            },
+                        ),
                         cx,
                     )),
                 )
