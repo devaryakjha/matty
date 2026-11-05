@@ -78,6 +78,10 @@ pub fn pane_empty(listing: &str) -> (&'static str, &'static str) {
             TITLE,
             "Recent mentions load from the server when you're back online.",
         ),
+        "unreads" => (
+            TITLE,
+            "Unread messages load from the server when you're back online.",
+        ),
         "saved" => (
             TITLE,
             "None of your saved messages are on this computer yet. They load when you're back online.",

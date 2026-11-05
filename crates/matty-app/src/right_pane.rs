@@ -173,6 +173,9 @@ pub enum RightPaneContent {
     Saved(Vec<ListedPost>),
     /// Posts that mention the user, newest first.
     Mentions(Vec<ListedPost>),
+    /// The unread digest (#223): each unread channel's first unread
+    /// posts, channel by channel.
+    Unreads(Vec<ListedPost>),
     Search(SearchModel),
     /// Someone's profile (#212).
     Profile(UserProfile),
@@ -3448,6 +3451,19 @@ impl Render for RightPaneView {
                         LucideIcon::AtSign,
                         "No mentions yet",
                         "Messages that mention you or your keywords show up here.",
+                    ),
+                    None,
+                    cx,
+                )),
+            Some(RightPaneContent::Unreads(posts)) => root
+                .child(self.header("Unreads".into(), None, cx))
+                .child(self.listing(
+                    "right-pane.unreads",
+                    &posts,
+                    (
+                        LucideIcon::Inbox,
+                        "You're all caught up",
+                        "Unread messages from every channel in the team show up here.",
                     ),
                     None,
                     cx,

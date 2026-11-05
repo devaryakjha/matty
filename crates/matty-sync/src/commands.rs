@@ -17,6 +17,10 @@ const BROWSE_PAGES: u32 = 5;
 const PEOPLE_PAGES: u32 = 5;
 /// Saved posts and recent mentions show this many, newest first.
 const LISTING_PAGE: u32 = 60;
+/// The unread digest's channels at most, and each one's first unread
+/// posts at most (#223).
+const DIGEST_CHANNELS: usize = 30;
+const DIGEST_POSTS: u32 = 5;
 
 /// A server write a command asked for.
 #[derive(Debug)]
@@ -218,6 +222,7 @@ impl Write {
             Self::Listing(crate::Listing::Saved) => "load saved messages",
             Self::Listing(crate::Listing::Pinned { .. }) => "load pinned messages",
             Self::Listing(crate::Listing::Mentions { .. }) => "load recent mentions",
+            Self::Listing(crate::Listing::Unreads { .. }) => "load unread messages",
             Self::Pin { pinned: true, .. } => "pin message",
             Self::Pin { pinned: false, .. } => "unpin message",
             Self::DeletePreferences(_) => "delete preferences",
@@ -274,7 +279,9 @@ impl Write {
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
             | Self::AddMembers { channel_id, .. } => channel_id.clone(),
-            Self::Listing(crate::Listing::Saved) => user_id.to_owned(),
+            Self::Listing(crate::Listing::Saved | crate::Listing::Unreads { .. }) => {
+                user_id.to_owned()
+            }
             Self::Listing(crate::Listing::Pinned { channel_id }) => channel_id.clone(),
             Self::Listing(crate::Listing::Mentions { team_id, .. })
             | Self::Browse { team_id }
@@ -779,6 +786,36 @@ pub(crate) async fn run(
                             .search_posts(team_id, &query)
                             .await
                             .map(|found| found.list)
+                    }
+                    crate::Listing::Unreads {
+                        channel_ids,
+                        collapsed_threads,
+                    } => {
+                        // Channel by channel, in the digest's order: each
+                        // one's first few unread posts, oldest first.
+                        let mut posts = Vec::new();
+                        for channel_id in channel_ids.iter().take(DIGEST_CHANNELS) {
+                            let list = match client
+                                .posts_around_unread(
+                                    &user_id,
+                                    channel_id,
+                                    0,
+                                    DIGEST_POSTS,
+                                    *collapsed_threads,
+                                )
+                                .await
+                            {
+                                Ok(list) => list,
+                                Err(error) if told(&error).is_none() => {
+                                    return Ok(Some(Loaded::ListingOffline(listing)));
+                                }
+                                Err(error) => return Err(error),
+                            };
+                            let mut found: Vec<_> = list.ordered().cloned().collect();
+                            found.sort_by_key(|post| post.create_at);
+                            posts.extend(found.into_iter().take(DIGEST_POSTS as usize));
+                        }
+                        return Ok(Some(Loaded::Listing { listing, posts }));
                     }
                 };
                 let list = match list {
