@@ -1188,3 +1188,130 @@ async fn custom_emoji_upload_and_delete() {
             .any(|e| e.id == emoji.id)
     );
 }
+
+/// Channel management against the server (#208): a private channel's
+/// roles, Add members' candidates, admins, Channel files and removal.
+#[tokio::test]
+async fn channel_members_admins_and_files_round_trip() {
+    let Some((url, login, password)) = server() else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let credentials = Credentials {
+        login_id: login,
+        password,
+        device_id: "live-channel-members".into(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let team = client.my_teams().await.unwrap().remove(0);
+    let name = format!("live-members-{}", web_time_millis());
+    let channel = client
+        .create_channel(&matty_api::NewChannel {
+            team_id: team.id.clone(),
+            name: name.clone(),
+            display_name: name.clone(),
+            purpose: String::new(),
+            kind: "P".into(),
+        })
+        .await
+        .unwrap();
+
+    // The roles that gate Add members on a private channel.
+    let roles = client
+        .roles(&["channel_user".into(), "channel_admin".into()])
+        .await
+        .unwrap();
+    let user = roles.iter().find(|r| r.name == "channel_user").unwrap();
+    assert!(
+        user.permissions
+            .iter()
+            .any(|p| p == "manage_private_channel_members"),
+        "{:?}",
+        user.permissions
+    );
+
+    // Add members offers the team's people who are not in it.
+    let candidates = client
+        .users_not_in_channel(&team.id, &channel.id, 0, 200)
+        .await
+        .unwrap();
+    assert!(candidates.iter().all(|u| u.id != me.id));
+    let other = candidates
+        .iter()
+        .find(|u| !u.is_bot && u.delete_at == 0)
+        .expect("someone else on the team");
+    client
+        .add_channel_member(&channel.id, &other.id)
+        .await
+        .unwrap();
+    let still_out = client
+        .users_not_in_channel(&team.id, &channel.id, 0, 200)
+        .await
+        .unwrap();
+    assert!(still_out.iter().all(|u| u.id != other.id));
+
+    // The full list, and who is an admin: the creator, then the other.
+    let users = client.channel_users(&channel.id, 0, 200).await.unwrap();
+    assert!(users.iter().any(|u| u.id == other.id));
+    let admin = |members: &[matty_api::models::ChannelMember], id: &str| {
+        members
+            .iter()
+            .find(|m| m.user_id == id)
+            .is_some_and(|m| m.scheme_admin)
+    };
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(admin(&members, &me.id) && !admin(&members, &other.id));
+    client
+        .set_channel_admin(&channel.id, &other.id, true)
+        .await
+        .unwrap();
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(admin(&members, &other.id));
+    client
+        .set_channel_admin(&channel.id, &other.id, false)
+        .await
+        .unwrap();
+    let members = client.channel_members(&channel.id, 0, 200).await.unwrap();
+    assert!(!admin(&members, &other.id));
+
+    // Channel files finds a file posted there.
+    let Fetched::Fresh { bytes: png, .. } = client.avatar(&me.id, None).await.unwrap() else {
+        panic!("no avatar")
+    };
+    let uploaded = client
+        .upload_file(
+            Upload {
+                channel_id: channel.id.clone(),
+                client_id: "live-channel-file".into(),
+                file_name: "channel-file.png".into(),
+                bytes: png,
+            },
+            Arc::new(|_, _| {}),
+        )
+        .await
+        .unwrap();
+    client
+        .create_post(&NewPost {
+            channel_id: channel.id.clone(),
+            message: "a file for Channel files".into(),
+            file_ids: vec![uploaded.file_infos[0].id.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut query = SearchQuery::new(format!("channel:{}", channel.id));
+    query.include_deleted_channels = true;
+    let found = client.search_files(&team.id, &query).await.unwrap();
+    let names: Vec<_> = found.ordered().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["channel-file.png"]);
+
+    client
+        .remove_channel_member(&channel.id, &other.id)
+        .await
+        .unwrap();
+    let users = client.channel_users(&channel.id, 0, 200).await.unwrap();
+    assert!(users.iter().all(|u| u.id != other.id));
+    client.archive_channel(&channel.id).await.unwrap();
+}
