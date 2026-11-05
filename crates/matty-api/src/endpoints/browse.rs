@@ -112,6 +112,17 @@ impl Client {
             .await
     }
 
+    /// `POST teams/{team_id}/files/search`: files whose name or content
+    /// match, with the same modifiers as a post search (#207).
+    pub async fn search_files(
+        &self,
+        team_id: &str,
+        query: &SearchQuery,
+    ) -> Result<crate::models::FileInfoList, ApiError> {
+        self.post(&format!("teams/{team_id}/files/search"), query)
+            .await
+    }
+
     /// `GET users/{user_id}/posts/flagged`: saved posts, newest first,
     /// across all teams.
     pub async fn saved_posts(

@@ -3169,6 +3169,7 @@ impl MainWindow {
         }
         let preview = crate::preview::enabled();
         let model = SearchModel {
+            files: Vec::new(),
             more: false,
             loading_more: false,
             results: if preview && !offline {

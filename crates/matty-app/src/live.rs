@@ -104,6 +104,8 @@ pub struct Live {
     /// The search's last page asked for, whether another may follow, and
     /// whether it is on its way.
     search_page: (u32, bool, bool),
+    /// The files the search on screen found (#207).
+    search_files: Arc<[matty_api::models::FileInfo]>,
     /// The saved, pinned or mentions listing on screen and its posts once
     /// they come (#130–#132).
     listing: Option<(matty_sync::Listing, Option<Arc<[matty_api::models::Post]>>)>,
@@ -599,6 +601,7 @@ impl Live {
                 ready: None,
                 search: None,
                 search_page: (0, false, false),
+                search_files: Arc::from(Vec::new()),
                 listing: None,
                 saved: Default::default(),
                 uploads: HashMap::new(),
@@ -859,8 +862,24 @@ impl Live {
             .chain(searched)
             .flatten()
             .flat_map(|post| &post.metadata.files)
+            .chain(self.search_files.iter())
             .find(|file| file.id == file_id)
             .map(|file| file.name.clone())
+    }
+
+    /// Asks sync for the thumbnails of the found image files (#207).
+    fn ask_file_thumbnails(&mut self) {
+        let files = self.search_files.clone();
+        for file in files.iter() {
+            if crate::attachments::is_image(&file.name)
+                && self.asked_thumbnails.insert(file.id.clone())
+            {
+                self.sync.send(Command::LoadImage {
+                    file_id: file.id.clone(),
+                    size: ImageSize::Thumbnail,
+                });
+            }
+        }
     }
 
     /// The full-size images already here for `file_ids`; sync is asked
@@ -1013,6 +1032,7 @@ impl Live {
         let offset = self.zone.to_offset(jiff::Timestamp::now()).seconds();
         self.search = Some((terms.to_owned(), None));
         self.search_page = (0, false, false);
+        self.search_files = Arc::from(Vec::new());
         self.send(Command::Search {
             team_id,
             terms: terms.to_owned(),
@@ -1486,7 +1506,35 @@ impl Live {
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
         };
+        let files = self
+            .search_files
+            .iter()
+            .map(|info| {
+                let mut file = crate::attachments::PostFile::from_info(info);
+                if let Some(image) = self.thumbnails.get(&info.id) {
+                    file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+                }
+                let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+                let (_, day, _) = crate::transcript::when(info.create_at, viewer.zone, today);
+                crate::right_pane::FoundFile {
+                    file,
+                    channel_id: info.channel_id.clone().into(),
+                    channel_name: self
+                        .channel_name(&info.channel_id)
+                        .unwrap_or_else(|| "Another channel".into()),
+                    post_id: info.post_id.clone().into(),
+                    author: self
+                        .users
+                        .get(&info.user_id)
+                        .map(|user| crate::transcript::display_name_as(user, self.names))
+                        .unwrap_or_else(|| "Someone".into())
+                        .into(),
+                    day,
+                }
+            })
+            .collect();
         Some(crate::right_pane::SearchModel {
+            files,
             query: terms.clone().into(),
             searching: posts.is_none(),
             more: self.search_page.1,
@@ -1739,11 +1787,18 @@ impl Live {
                 let shown = self.shown.as_ref().is_some_and(|posts| {
                     posts
                         .iter()
-                        .flat_map(|post| &post.files)
+                        .flat_map(|post| {
+                            post.files
+                                .iter()
+                                .chain(post.embeds.iter().flat_map(crate::embeds::Embed::files))
+                        })
                         .any(|file| file.id.as_ref() == file_id)
                 });
                 if shown {
                     update.channel = self.channel_update();
+                }
+                if self.search_files.iter().any(|file| &file.id == file_id) {
+                    update.search = self.search_model();
                 }
             }
             ChangeSet::Picture {
@@ -1843,6 +1898,7 @@ impl Live {
                 page,
                 posts,
                 more,
+                files,
             } => {
                 if let Some((asked, results)) = self.search.as_mut()
                     && asked == terms
@@ -1862,6 +1918,10 @@ impl Live {
                         _ => posts.clone(),
                     });
                     self.search_page = (*page, *more, false);
+                    if *page == 0 {
+                        self.search_files = files.clone();
+                        self.ask_file_thumbnails();
+                    }
                     update.search = self.search_model();
                 }
             }
@@ -3864,10 +3924,28 @@ mod tests {
                 page: 0,
                 posts: Arc::from(vec![hit("p1"), hit("p2")]),
                 more: true,
+                files: Arc::from(vec![matty_api::models::FileInfo {
+                    id: "f1".into(),
+                    user_id: "ada".into(),
+                    post_id: "p9".into(),
+                    channel_id: "c1".into(),
+                    name: "plan.pdf".into(),
+                    size: 2048,
+                    ..Default::default()
+                }]),
             })
             .search
             .unwrap();
         assert!(first.more && !first.loading_more);
+        // Found files come with the first page, under where they were posted.
+        let [found] = first.files.as_slice() else {
+            panic!("expected one found file, got {:?}", first.files);
+        };
+        assert_eq!(
+            (found.file.name.as_ref(), found.post_id.as_ref()),
+            ("plan.pdf", "p9")
+        );
+        assert_eq!(live.file_name("f1").as_deref(), Some("plan.pdf"));
         let asked = live.search_more().unwrap();
         assert!(asked.loading_more);
         assert!(live.search_more().is_none(), "one page at a time");
@@ -3877,6 +3955,7 @@ mod tests {
                 page: 1,
                 posts: Arc::from(vec![hit("p2"), hit("p3")]),
                 more: false,
+                files: Arc::from(Vec::new()),
             })
             .search
             .unwrap();
@@ -3926,6 +4005,7 @@ mod tests {
             more: false,
             terms: "lunc".into(),
             posts: Arc::from(vec![hit("p0", "town")]),
+            files: Arc::from(Vec::new()),
         });
         assert_eq!(stale.search, None);
         let model = live
@@ -3934,6 +4014,7 @@ mod tests {
                 more: false,
                 terms: "lunch".into(),
                 posts: Arc::from(vec![hit("p1", "town"), hit("p2", "elsewhere")]),
+                files: Arc::from(Vec::new()),
             })
             .search
             .unwrap();
