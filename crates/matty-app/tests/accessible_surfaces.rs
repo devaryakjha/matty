@@ -191,12 +191,17 @@ fn the_new_surfaces_have_no_unnamed_controls(cx: &mut gpui_kit::TestAppContext) 
 
     // The account menu and what it opens (#212).
     click(&mut cx, "Arya, online");
-    audit(&mut cx, "Account menu", "Edit profile\u{2026}", &mut failures);
+    audit(
+        &mut cx,
+        "Account menu",
+        "Edit profile\u{2026}",
+        &mut failures,
+    );
     click(&mut cx, "Edit profile\u{2026}");
     audit(&mut cx, "Edit profile", "Username", &mut failures);
     close(&mut cx);
 
-        cx.dispatch_action(actions::OpenInSplitView);
+    cx.dispatch_action(actions::OpenInSplitView);
     audit(&mut cx, "Split view", "Swap panes", &mut failures);
     cx.dispatch_action(actions::ClosePane);
     cx.run_until_parked();
