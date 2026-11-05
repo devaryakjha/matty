@@ -295,8 +295,12 @@ pub struct UserAutocomplete {
     pub out_of_channel: Vec<User>,
 }
 
+mod apps;
+mod bookmarks;
 mod dialogs;
 mod posts;
+pub use apps::*;
+pub use bookmarks::*;
 pub use dialogs::*;
 pub use posts::*;
 

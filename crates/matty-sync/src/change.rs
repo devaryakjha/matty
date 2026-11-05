@@ -325,6 +325,30 @@ pub enum ChangeSet {
         /// The channel (for a post, the post's channel) or the user.
         answer: Option<LinkAnswer>,
     },
+    /// A channel's bookmarks changed, or were read from the cache when it
+    /// opened (#226): the whole list, in bar order.
+    Bookmarks {
+        /// The channel.
+        channel_id: String,
+        /// Its bookmarks.
+        bookmarks: Arc<[matty_api::models::ChannelBookmark]>,
+    },
+    /// What installed Apps add in a channel: the answer to
+    /// [`AppCommand::Bindings`](crate::AppCommand::Bindings) (#226).
+    AppBindings {
+        /// The channel.
+        channel_id: String,
+        /// The top-level bindings: post menu, channel header, commands.
+        bindings: Arc<[matty_api::models::AppBinding]>,
+    },
+    /// How an App's call ended: the answer to
+    /// [`AppCommand::Run`](crate::AppCommand::Run) (#226).
+    AppAnswered {
+        /// The caller's id for the call.
+        call_id: String,
+        /// What happened.
+        answer: crate::AppAnswer,
+    },
 }
 
 /// Something a link names that the app cannot find on its own (#85, #103).

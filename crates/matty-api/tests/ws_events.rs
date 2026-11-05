@@ -23,6 +23,10 @@ fn decode(name: &str) -> WsEvent {
 /// The variant name each event must decode to.
 const EXPECTED: &[(&str, &str)] = &[
     ("added_to_team", "AddedToTeam"),
+    ("channel_bookmark_created", "ChannelBookmarkCreated"),
+    ("channel_bookmark_deleted", "ChannelBookmarkDeleted"),
+    ("channel_bookmark_sorted", "ChannelBookmarkSorted"),
+    ("channel_bookmark_updated", "ChannelBookmarkUpdated"),
     ("channel_converted", "ChannelConverted"),
     ("channel_created", "ChannelCreated"),
     ("channel_deleted", "ChannelDeleted"),
@@ -174,6 +178,34 @@ fn values_come_through() {
     assert_eq!(open.dialog.elements[1].data_source, "users");
     assert!(open.dialog.elements[1].options.is_empty(), "null options");
     assert_eq!(open.dialog.elements[3].options[1].value, "night");
+
+    let WsEvent::ChannelBookmarkCreated {
+        channel_id,
+        bookmark,
+    } = decode("channel_bookmark_created")
+    else {
+        unreachable!()
+    };
+    assert_eq!(channel_id, bookmark.channel_id);
+    assert_eq!(
+        (bookmark.display_name.as_str(), bookmark.emoji.as_str()),
+        ("Docs", "book")
+    );
+    let WsEvent::ChannelBookmarkUpdated { update, .. } = decode("channel_bookmark_updated") else {
+        unreachable!()
+    };
+    let (updated, deleted) = (update.updated.unwrap(), update.deleted.unwrap());
+    assert_eq!(updated.original_id, deleted.id);
+    assert!(deleted.delete_at > 0);
+    let WsEvent::ChannelBookmarkSorted {
+        channel_id,
+        bookmarks,
+    } = decode("channel_bookmark_sorted")
+    else {
+        unreachable!()
+    };
+    assert_eq!(channel_id, fixture("channel_bookmark_sorted").broadcast.channel_id);
+    assert_eq!(bookmarks[1].sort_order, 1);
 
     let event = Event::from(fixture("user_removed"));
     let WsEvent::UserRemoved { user_id, .. } = &event.kind else {

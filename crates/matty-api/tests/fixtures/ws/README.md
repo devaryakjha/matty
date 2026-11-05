@@ -16,3 +16,6 @@ for every save), `post_acknowledgement_added` and
 single-preference form older servers send). Their shapes follow the server
 source and the recorded neighbours; replace them with recordings when a
 licensed or older server is available.
+
+The four `channel_bookmark_*` events are hand-written too, from the
+server's `app/channel_bookmark.go`, until the recorder drives bookmarks.
