@@ -9,14 +9,13 @@ use std::rc::Rc;
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     AnyElement, App, Global, IntoElement, ParentElement as _, SharedString, Styled as _, Window,
-    div, prelude::FluentBuilder as _,
+    div,
 };
 use matty_api::models::{PostMetadata, PostPriority};
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::t;
 use crate::ui::{
-    avatar::{Avatar, AvatarSize},
     badge::{Badge, BadgeVariant},
     button::{Button, ButtonSize, ButtonVariant},
     menu::MenuItem,
@@ -255,33 +254,6 @@ impl Shown {
     pub fn can_undo(&self, now_ms: i64) -> bool {
         self.mine.is_some_and(|at| now_ms - at < UNDO_WINDOW_MS)
     }
-
-    /// "Acknowledged by You, Ada and 2 others", for the avatars' tooltip.
-    pub fn ack_summary(&self) -> String {
-        let names: Vec<String> = self.acks.iter().map(|ack| ack.name.to_string()).collect();
-        match names.as_slice() {
-            [] => t!("priority-no-acks"),
-            [first] => t!("priority-acked-by-one", first = first.clone()),
-            [first, second] => t!(
-                "priority-acked-by-two",
-                first = first.clone(),
-                second = second.clone()
-            ),
-            [first, second, third] => t!(
-                "priority-acked-by-three",
-                first = first.clone(),
-                second = second.clone(),
-                third = third.clone()
-            ),
-            [first, second, rest @ ..] => t!(
-                "priority-acked-by-more",
-                first = first.clone(),
-                second = second.clone(),
-                count = rest.len()
-            ),
-        }
-        .to_string()
-    }
 }
 
 /// The label after a post's time: a primary "Important" badge or a
@@ -373,41 +345,28 @@ pub fn ack_bar(
     .on_click(move |_, window, cx| on_ack(!acked, window, cx));
     let count = shown.acks.len();
     let people = (count > 0).then(|| {
-        let summary = shown.ack_summary();
-        style::tipped(
-            gpui_kit::ElementId::Name(format!("post.{post_id}.acks").into()),
-            summary.clone(),
-            div()
-                .flex()
-                .items_center()
-                .gap(theme.space(1.5))
-                .child(div().flex().items_center().children(
-                    shown.acks.iter().take(3).enumerate().map(|(index, ack)| {
-                        let initial: String = ack.name.chars().take(1).collect();
-                        div()
-                            .when(index > 0, |slot| slot.ml(-theme.space(1.5)))
-                            .rounded_full()
-                            .border(gpui_kit::px(1.5))
-                            .border_color(theme.colors.background)
-                            .child(crate::avatars::with_picture(
-                                Avatar::new(gpui_kit::ElementId::Name(
-                                    format!("post.{post_id}.acks.{index}").into(),
-                                ))
-                                .size(AvatarSize::Sm)
-                                .fallback(initial)
-                                .aria_label(ack.name.clone()),
-                                &ack.user_id,
-                                cx,
-                            ))
-                    }),
-                ))
-                .child(
-                    div()
-                        .type_style(style::META, &theme)
-                        .text_color(theme.colors.muted_foreground)
-                        .child(count.to_string()),
-                ),
-        )
+        div()
+            .flex()
+            .items_center()
+            .gap(theme.space(1.5))
+            .child(
+                crate::avatars::group(
+                    &format!("post.{post_id}.acks"),
+                    shown
+                        .acks
+                        .iter()
+                        .map(|ack| (&ack.name, ack.user_id.as_ref())),
+                    cx,
+                )
+                .max(3)
+                .aria_label(t!("priority-acked-by")),
+            )
+            .child(
+                div()
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child(count.to_string()),
+            )
     });
     Some(
         div()
@@ -622,21 +581,6 @@ mod tests {
         assert_eq!(shown.level, Level::Urgent);
         assert_eq!(shown.mine, Some(1_000));
         assert_eq!(shown.acks.len(), 2, "a removed one is left out");
-        assert_eq!(shown.ack_summary(), "Acknowledged by You and name of u2");
-        let named = |name: &str| Ack {
-            user_id: name.into(),
-            name: name.into(),
-        };
-        let many = Shown {
-            acks: ["Ada", "Bo", "Cy", "Di"].map(named).to_vec(),
-            ..shown.clone()
-        };
-        assert_eq!(many.ack_summary(), "Acknowledged by Ada, Bo and 2 others");
-        let three = Shown {
-            acks: ["Ada", "Bo", "Cy"].map(named).to_vec(),
-            ..shown.clone()
-        };
-        assert_eq!(three.ack_summary(), "Acknowledged by Ada, Bo and Cy");
         assert!(shown.can_undo(1_000 + UNDO_WINDOW_MS - 1));
         assert!(!shown.can_undo(1_000 + UNDO_WINDOW_MS));
         assert_eq!(

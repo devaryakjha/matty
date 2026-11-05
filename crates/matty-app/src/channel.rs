@@ -465,6 +465,10 @@ pub struct Post {
     pub files: Vec<PostFile>,
     /// Link previews and message attachments under the body (#187).
     pub embeds: Vec<crate::embeds::Embed>,
+    /// Sizes the server measured for images in the body, by URL
+    /// (`metadata.images`), so inline images keep their box before they
+    /// load (#159).
+    pub image_sizes: Vec<(SharedString, u32, u32)>,
     /// Its priority label and acknowledgements (#220).
     pub priority: Option<crate::priority::Shown>,
     /// The webhook it came from, whose icon it shows.
@@ -2671,6 +2675,7 @@ impl ChannelView {
             reply_to: None,
             files,
             embeds: Vec::new(),
+            image_sizes: Vec::new(),
             priority: Self::shown_priority(priority.as_ref()),
         };
         model.posts.push(post);
@@ -4327,6 +4332,7 @@ impl ChannelView {
                         crate::links::message_body(
                             gpui_kit::ElementId::Name(format!("post.{id}.body").into()),
                             &post.body,
+                            &post.image_sizes,
                             move |url, _, cx| {
                                 let event = ChannelEvent::OpenLink(url.clone());
                                 link_view.update(cx, |_, cx| cx.emit(event)).ok();
@@ -4597,33 +4603,18 @@ impl ChannelView {
                 cx.listener(move |_, _, _, cx| cx.emit(ChannelEvent::OpenThread(open_id.clone()))),
             )
             .child(
-                div().flex().items_center().children(
-                    summary
-                        .participants
-                        .iter()
-                        .take(3)
-                        .enumerate()
-                        .map(|(index, name)| {
-                            let initial: String = name.chars().take(1).collect();
-                            let user_id = summary
-                                .participant_ids
-                                .get(index)
-                                .map(SharedString::as_ref)
-                                .unwrap_or_default();
-                            div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                crate::avatars::with_picture(
-                                    Avatar::new(gpui_kit::ElementId::Name(
-                                        format!("post.{id}.thread.{index}").into(),
-                                    ))
-                                    .size(AvatarSize::Sm)
-                                    .fallback(initial)
-                                    .aria_label(name.clone()),
-                                    user_id,
-                                    cx,
-                                ),
-                            )
-                        }),
-                ),
+                crate::avatars::group(
+                    &format!("post.{id}.thread.people"),
+                    summary.participants.iter().zip(
+                        summary
+                            .participant_ids
+                            .iter()
+                            .map(SharedString::as_ref)
+                            .chain(std::iter::repeat("")),
+                    ),
+                    cx,
+                )
+                .max(3),
             )
             .child(
                 div()
@@ -5898,6 +5889,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            image_sizes: vec![],
             priority: None,
         }
     }

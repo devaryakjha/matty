@@ -118,8 +118,8 @@ fn store(cx: &App) -> Option<&RemoteImages> {
 }
 
 /// An inline Markdown image for gpuicn's `MarkdownImages`: the image once
-/// it has landed; until then `None`, which draws the alt text in a muted
-/// frame, and a fetch unless the person is asked first.
+/// it has landed; until then `None`, which draws its [`placeholder`] or
+/// an empty box, and a fetch unless the person is asked first.
 pub fn source(url: &str, cx: &App) -> Option<ImageSource> {
     let store = store(cx)?;
     match store.image(url) {
@@ -136,11 +136,6 @@ pub fn waiting(url: &str, cx: &App) -> bool {
     store(cx).is_some_and(|store| store.waiting(url))
 }
 
-/// Whether `url` has landed.
-pub fn loaded(url: &str, cx: &App) -> bool {
-    store(cx).is_some_and(|store| store.image(url).is_some())
-}
-
 /// The person asked to load `url`: its placeholder gives way to the
 /// image's empty box until the image lands.
 pub fn load(url: &str, cx: &mut App) {
@@ -148,6 +143,19 @@ pub fn load(url: &str, cx: &mut App) {
         store.load(url);
     }
     cx.refresh_windows();
+}
+
+/// The click-to-load stand-in for an inline image still waiting under
+/// "Load remote images: Ask": its host, and a click loads it.
+pub fn placeholder(url: &str, cx: &App) -> Option<crate::ui::embed::ImagePlaceholder> {
+    if !waiting(url, cx) {
+        return None;
+    }
+    let url = url.to_owned();
+    Some(crate::ui::embed::ImagePlaceholder::new(
+        host(&url),
+        move |_, _, cx| load(&url, cx),
+    ))
 }
 
 /// The host a placeholder names, such as "github.com".

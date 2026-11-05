@@ -19,13 +19,14 @@ use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant, style_button},
+    date_time_picker::DateTimePicker,
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     field::Field,
     input::{InputEvent, InputState},
     menu::{Menu, MenuItem, MenuState},
     popover::popover,
-    select::{Select, SelectEvent, SelectItem, SelectState},
+    select::{Select, SelectItem, SelectState},
     theme::UiTheme,
 };
 
@@ -103,12 +104,9 @@ pub struct AccountView {
     /// The statuses the user set lately, newest first, from the server.
     recent: Vec<StatusLine>,
     sign_out: DialogHandle,
-    /// The custom Do not disturb picker: a day and a time.
+    /// The custom Do not disturb picker: a date and time still ahead.
     custom: DialogHandle,
-    custom_day: Entity<SelectState>,
-    custom_time: Entity<SelectState>,
-    /// The days `custom_day` offers, from when the picker last opened.
-    custom_days: Vec<jiff::civil::Date>,
+    custom_end: Entity<crate::ui::date_time_picker::DateTimeState>,
     /// Set when the status dialog opens: the next frame moves the cursor
     /// into the field, after the dialog has taken focus for itself.
     focus_status_input: bool,
@@ -132,12 +130,7 @@ impl AccountView {
                 cx,
             )
         });
-        let custom_day = cx.new(|cx| SelectState::new([], window, cx));
-        let clock = ClockFormat::current(cx);
-        let times = (0..24 * 60)
-            .step_by(dnd::STEP_MINUTES as usize)
-            .map(|minutes: u16| SelectItem::new(minutes.to_string(), clock.format(minutes)));
-        let custom_time = cx.new(|cx| SelectState::new(times, window, cx));
+        let custom_end = crate::when::state(cx);
         let subscriptions = vec![
             cx.subscribe_in(
                 &status_input,
@@ -164,7 +157,10 @@ impl AccountView {
             // The suggestions show while the field is empty.
             cx.subscribe(&status_input, |_, _, _: &InputEvent, cx| cx.notify()),
             // The Done button follows whether the pick is still ahead.
-            cx.subscribe(&custom_time, |_, _, _: &SelectEvent, cx| cx.notify()),
+            cx.subscribe(
+                &custom_end,
+                |_, _, _: &crate::ui::date_time_picker::DateTimeEvent, cx| cx.notify(),
+            ),
         ];
         let mut this = Self {
             account,
@@ -178,9 +174,7 @@ impl AccountView {
             recent: Vec::new(),
             sign_out: DialogHandle::new(false),
             custom: DialogHandle::new(false),
-            custom_day,
-            custom_time,
-            custom_days: Vec::new(),
+            custom_end,
             focus_status_input: false,
             _subscriptions: subscriptions,
         };
@@ -258,39 +252,15 @@ impl AccountView {
 
     fn open_custom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = jiff::Zoned::now();
-        let days = dnd::custom_days(&now);
-        let items = days
-            .iter()
-            .enumerate()
-            .map(|(index, (_, label))| SelectItem::new(index.to_string(), label.clone()));
-        // The days are relative to today, so the list is made afresh.
-        self.custom_day = cx.new(|cx| SelectState::new(items, window, cx));
-        cx.subscribe(&self.custom_day, |_, _, _: &SelectEvent, cx| cx.notify())
-            .detach();
-        self.custom_days = days.into_iter().map(|(date, _)| date).collect();
-        // The first half hour still ahead, which may be tomorrow's first.
-        let (day, minutes) = match dnd::custom_times(now.date(), &now).first() {
-            Some(minutes) => (0, *minutes),
-            None => (1, 0),
-        };
-        self.custom_day.update(cx, |select, cx| {
-            select.set_value(Some(day.to_string().into()), window, cx)
-        });
-        self.custom_time.update(cx, |select, cx| {
-            select.set_value(Some(minutes.to_string().into()), window, cx)
-        });
+        let clock = ClockFormat::current(cx);
+        crate::when::reset(&self.custom_end, None, &now, clock, cx);
         self.custom.open(window, cx);
         cx.notify();
     }
 
     /// The custom pick in seconds since the epoch, if it is still ahead.
     fn custom_end(&self, cx: &App) -> Option<i64> {
-        let day: usize = self.custom_day.read(cx).value()?.parse().ok()?;
-        let minutes: u16 = self.custom_time.read(cx).value()?.parse().ok()?;
-        let date = *self.custom_days.get(day)?;
-        let now = jiff::Zoned::now();
-        dnd::local_end(date, minutes, now.time_zone())
-            .filter(|end| *end > now.timestamp().as_second())
+        crate::when::picked(&self.custom_end, &jiff::Zoned::now(), cx)
     }
 
     /// Takes the user's own custom status and recent ones from the server.
@@ -515,54 +485,45 @@ impl AccountView {
     fn custom_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
         let end = self.custom_end(cx);
-        let popup =
-            dialog_popup("account.dnd.custom.popup", t!("dnd-custom-title"), cx)
-                .child(dialog_title("account.dnd.custom.title", cx).child(t!("dnd-custom-title")))
-                .child(
-                    dialog_description("account.dnd.custom.description", cx)
-                        .child(t!("dnd-custom-hint")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(theme.space(2.))
-                        .pt(theme.space(2.))
-                        .child(
-                            div().flex_1().child(
-                                Select::new(&self.custom_day).aria_label(t!("dnd-custom-day")),
-                            ),
-                        )
-                        .child(div().w(scaled(&theme, metrics::FIELD_NARROW_WIDTH)).child(
-                            Select::new(&self.custom_time).aria_label(t!("dnd-custom-time")),
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(theme.space(2.))
-                        .pt(theme.space(2.))
-                        .child(
-                            Button::new("account.dnd.custom.cancel")
-                                .variant(ButtonVariant::Outline)
-                                .label(t!("account-cancel"))
-                                .on_click(cx.listener(|this, _, window, cx| {
+        let popup = dialog_popup("account.dnd.custom.popup", t!("dnd-custom-title"), cx)
+            .child(dialog_title("account.dnd.custom.title", cx).child(t!("dnd-custom-title")))
+            .child(
+                dialog_description("account.dnd.custom.description", cx)
+                    .child(t!("dnd-custom-hint")),
+            )
+            .child(
+                div().pt(theme.space(2.)).child(
+                    DateTimePicker::new("account.dnd.custom.when", &self.custom_end)
+                        .aria_label(t!("dnd-custom-end")),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(theme.space(2.))
+                    .pt(theme.space(2.))
+                    .child(
+                        Button::new("account.dnd.custom.cancel")
+                            .variant(ButtonVariant::Outline)
+                            .label(t!("account-cancel"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.custom.close(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("account.dnd.custom.save")
+                            .variant(ButtonVariant::Default)
+                            .label(t!("account-done"))
+                            .disabled(end.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(end) = this.custom_end(cx) {
+                                    this.set_presence(Presence::Dnd, Some(end), cx);
                                     this.custom.close(window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("account.dnd.custom.save")
-                                .variant(ButtonVariant::Default)
-                                .label(t!("account-done"))
-                                .disabled(end.is_none())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(end) = this.custom_end(cx) {
-                                        this.set_presence(Presence::Dnd, Some(end), cx);
-                                        this.custom.close(window, cx);
-                                    }
-                                })),
-                        ),
-                );
+                                }
+                            })),
+                    ),
+            );
         dialog("account.dnd.custom", &self.custom, popup, window, cx)
     }
 

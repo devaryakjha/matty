@@ -11,14 +11,8 @@ priority-ack-requested = Acknowledgement requested
 priority-persistent = Persistent notifications
 # Stands in for the viewer's own name among who acknowledged.
 priority-you = You
-priority-no-acks = No one has acknowledged yet
-priority-acked-by-one = Acknowledged by { $first }
-priority-acked-by-two = Acknowledged by { $first } and { $second }
-priority-acked-by-three = Acknowledged by { $first }, { $second } and { $third }
-priority-acked-by-more = Acknowledged by { $first }, { $second } and { $count ->
-        [one] { $count } other
-       *[other] { $count } others
-    }
+# The avatars of who acknowledged.
+priority-acked-by = Acknowledged by
 priority-acknowledge = Acknowledge
 priority-acknowledged = Acknowledged
 priority-acknowledge-tip = Let the author know you saw this

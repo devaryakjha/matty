@@ -3790,6 +3790,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            image_sizes: vec![],
             priority: None,
         }
     }
