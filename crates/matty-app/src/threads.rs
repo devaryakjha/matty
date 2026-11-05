@@ -14,6 +14,7 @@ use crate::channel::ReplySummary;
 use crate::right_pane::{RightPaneContent, RightPaneView, ThreadModel};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::Badge,
@@ -224,13 +225,13 @@ impl ThreadsView {
             .text_color(theme.colors.muted_foreground)
             .debug_selector(|| "threads.more".into());
         Some(if self.model.failed {
-            row.child("Couldn't load more threads.")
+            row.child(t!("threads-more-failed"))
                 .child(
                     div().debug_selector(|| "threads.more.retry".into()).child(
                         Button::new("threads.more.retry")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Sm)
-                            .label("Retry")
+                            .label(t!("threads-retry"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.model.failed = false;
                                 this.loading_more = true;
@@ -243,10 +244,10 @@ impl ThreadsView {
         } else {
             row.child(
                 Spinner::new("threads.more.spinner")
-                    .label("Loading more threads")
+                    .label(t!("threads-loading-more"))
                     .size(px(14.)),
             )
-            .child("Loading more threads…")
+            .child(t!("threads-loading-more-text"))
             .into_any_element()
         })
     }
@@ -263,7 +264,7 @@ impl ThreadsView {
         let theme = UiTheme::read(cx).clone();
         let unread = self.model.unread();
         let filter: SharedString = if self.unread_only { "unread" } else { "all" }.into();
-        let item = |id: &'static str, value: &'static str, text: String| {
+        let item = |id: &'static str, value: &'static str, text: SharedString| {
             ToggleGroupItem::new(id, value)
                 .aria_label(text.clone())
                 .px(theme.space(2.5))
@@ -288,21 +289,21 @@ impl ThreadsView {
                         div()
                             .type_style(style::TITLE, &theme)
                             .text_color(theme.colors.foreground)
-                            .child("Threads"),
+                            .child(t!("threads-title")),
                     )
                     .child(
                         ToggleGroup::new("threads.filter")
-                            .aria_label("Show")
+                            .aria_label(t!("threads-filter"))
                             .joined(true)
                             .value([filter])
-                            .item(item("threads.filter.all", "all", "All".into()))
+                            .item(item("threads.filter.all", "all", t!("threads-filter-all")))
                             .item(item(
                                 "threads.filter.unread",
                                 "unread",
                                 if unread > 0 {
-                                    format!("Unread {unread}")
+                                    t!("threads-filter-unread-count", count = unread)
                                 } else {
-                                    "Unread".into()
+                                    t!("threads-filter-unread")
                                 },
                             ))
                             .on_change({
@@ -324,7 +325,7 @@ impl ThreadsView {
                     Button::new("threads.mark-all-read")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .label("Mark all as read")
+                        .label(t!("threads-mark-all-read"))
                         .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
                 )
             })
@@ -348,11 +349,13 @@ impl ThreadsView {
         div()
             .id(gpui_kit::ElementId::Name(format!("threads.{id}").into()))
             .role(gpui_kit::Role::Button)
-            .aria_label(match mentions {
-                0 => format!("{}, {replies}, in {channel}", root.author),
-                1 => format!("{}, {replies}, 1 mention, in {channel}", root.author),
-                n => format!("{}, {replies}, {n} mentions, in {channel}", root.author),
-            })
+            .aria_label(t!(
+                "threads-row-label",
+                author = root.author.to_string(),
+                replies = replies.to_string(),
+                mentions = mentions,
+                channel = channel.clone()
+            ))
             .mx(theme.space(2.))
             .px(theme.space(3.))
             .py(theme.space(2.5))
@@ -400,7 +403,7 @@ impl ThreadsView {
                                     .truncate()
                                     .type_style(style::META, &theme)
                                     .text_color(theme.colors.muted_foreground)
-                                    .child(format!("in {channel}")),
+                                    .child(t!("threads-in-channel", channel = channel.clone())),
                             )
                             .child(
                                 div()
@@ -498,15 +501,9 @@ impl ThreadsView {
 
     fn empty(&self, cx: &App) -> impl IntoElement + use<> {
         let (title, description) = if self.unread_only {
-            (
-                "No unread threads",
-                "You are caught up. New replies will show here.",
-            )
+            (t!("threads-empty-unread"), t!("threads-empty-unread-hint"))
         } else {
-            (
-                "No followed threads",
-                "Reply in a thread, or choose Follow on one, and it shows up here.",
-            )
+            (t!("threads-empty"), t!("threads-empty-hint"))
         };
         style::centered_empty(LucideIcon::MessagesSquare, title, description, cx)
     }
@@ -514,12 +511,10 @@ impl ThreadsView {
 
 /// What a row says of its replies: how many are unread, or how many
 /// there are once all are read (#124).
-fn replies_label(summary: &ReplySummary) -> String {
-    match (summary.unread_replies, summary.count) {
-        (1, _) => "1 new reply".to_string(),
-        (0, 1) => "1 reply".to_string(),
-        (0, n) => format!("{n} replies"),
-        (n, _) => format!("{n} new replies"),
+fn replies_label(summary: &ReplySummary) -> SharedString {
+    match summary.unread_replies {
+        0 => t!("threads-replies", count = summary.count),
+        n => t!("threads-new-replies", count = n),
     }
 }
 
