@@ -298,6 +298,9 @@ pub enum ChangeSet {
     /// Roles and the permissions they grant: the answer to
     /// [`Command::Roles`](crate::Command::Roles).
     Roles(Arc<[matty_api::models::Role]>),
+    /// The user's team memberships, with their team roles: the answer to
+    /// [`Command::TeamRoles`](crate::Command::TeamRoles).
+    TeamMembers(Arc<[matty_api::models::TeamMember]>),
     /// The team's people who are not in a channel, for Add members: the
     /// answer to [`Command::NonMembers`](crate::Command::NonMembers).
     NonMembers {

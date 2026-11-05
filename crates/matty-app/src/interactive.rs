@@ -102,6 +102,18 @@ impl ActionCard {
             _ => ButtonVariant::Outline,
         }
     }
+
+    /// The colour an integration gave the button: `good`, `success` or
+    /// `warning`, or its own like `#3f51b5`. The others are variants.
+    fn tint(&self, theme: &UiTheme) -> Option<gpui_kit::Rgba> {
+        let style = self.style.trim();
+        match style.to_ascii_lowercase().as_str() {
+            "good" | "success" => Some(theme.colors.success),
+            "warning" => Some(theme.colors.warning),
+            _ if style.starts_with('#') => gpui_kit::Rgba::try_from(style).ok(),
+            _ => None,
+        }
+    }
 }
 
 /// A button pressed or a menu option picked.
@@ -452,20 +464,15 @@ impl Menus {
     }
 }
 
-/// The row of buttons and menus under an attachment, or `None` without
-/// any. gpuicn's `MessageEmbed` has no slot for them, so they sit right
-/// under the card, inset past its colour bar.
-pub fn actions_row(
+/// An attachment's buttons and menus, for the bottom of its card.
+pub fn actions(
     element_id: &ElementId,
     post_id: &str,
     actions: &[ActionCard],
     menus: &Menus,
     on_action: &ActionHandler,
     cx: &App,
-) -> Option<AnyElement> {
-    if actions.is_empty() {
-        return None;
-    }
+) -> Vec<AnyElement> {
     let theme = UiTheme::read(cx).clone();
     let post_id: SharedString = post_id.to_owned().into();
     let controls = actions.iter().filter_map(|action| {
@@ -517,9 +524,13 @@ pub fn actions_row(
                 } else {
                     action.name.clone()
                 };
-                let button = Button::new(id.clone())
+                let mut button = Button::new(id.clone())
                     .variant(action.variant())
-                    .size(ButtonSize::Sm)
+                    .size(ButtonSize::Sm);
+                if let Some(tint) = action.tint(&theme) {
+                    button = button.tint(tint);
+                }
+                let button = button
                     .aria_label(name)
                     .disabled(off)
                     .on_click(move |_, window, cx| on_action(choice.clone(), window, cx))
@@ -545,16 +556,7 @@ pub fn actions_row(
             }
         }
     });
-    Some(
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(theme.space(2.))
-            .pl(theme.space(1.))
-            .children(controls)
-            .into_any_element(),
-    )
+    controls.collect()
 }
 
 #[cfg(test)]
@@ -596,6 +598,29 @@ mod tests {
         assert_eq!(region.source, MenuSource::Static);
         assert_eq!(region.options, [("eu".into(), "EU".into())]);
         assert_eq!(region.default.as_ref(), "eu");
+    }
+
+    #[test]
+    fn integrations_colour_their_buttons() {
+        let theme = UiTheme::default();
+        let action = |style: &str| ActionCard {
+            id: "a".into(),
+            name: "Go".into(),
+            style: style.into(),
+            disabled: false,
+            cookie: "".into(),
+            menu: None,
+            pending: false,
+        };
+        let tint = |style: &str| action(style).tint(&theme);
+        assert_eq!(tint("#3f51b5"), gpui_kit::Rgba::try_from("#3f51b5").ok());
+        assert_eq!(tint("good"), Some(theme.colors.success));
+        assert_eq!(tint("Warning"), Some(theme.colors.warning));
+        // Variants, and a colour that does not parse.
+        assert_eq!(tint("primary"), None);
+        assert_eq!(tint("danger"), None);
+        assert_eq!(tint("#zz"), None);
+        assert_eq!(action("danger").variant(), ButtonVariant::Destructive);
     }
 
     /// `post` as the channel view draws it.

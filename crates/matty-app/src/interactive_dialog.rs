@@ -15,13 +15,14 @@ use std::sync::Arc;
 
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 use matty_api::models::{DialogElement, OpenDialogRequest, SubmitDialogResponse};
 use serde_json::Value;
 
 use crate::ui::{
+    alert::{Alert, AlertVariant},
     button::{Button, ButtonVariant},
     checkbox::Checkbox,
     dialog::{
@@ -641,52 +642,42 @@ impl InteractiveDialogView {
             Control::Bool(checked) => {
                 let name = element.name.clone();
                 let view = cx.weak_entity();
-                let toggle = move |checked: bool, cx: &mut App| {
-                    let name = name.clone();
-                    view.update(cx, |this, cx| this.set_bool(&name, checked, cx))
-                        .ok();
+                let checkbox = Checkbox::new(id("checkbox")).checked(*checked).on_change(
+                    move |next, _, _, cx| {
+                        let name = name.clone();
+                        view.update(cx, |this, cx| this.set_bool(&name, next, cx))
+                            .ok();
+                    },
+                );
+                // The placeholder is the text beside the box; with one, the
+                // field's name heads it.
+                let beside: Option<SharedString> =
+                    (!element.placeholder.is_empty()).then(|| element.placeholder.clone().into());
+                let field = Field::from_control(id("bool"), checkbox)
+                    .label(beside.clone().unwrap_or_else(|| label.clone()))
+                    .required(required && beside.is_none())
+                    .disabled(disabled);
+                let field = match (error, help) {
+                    (Some(error), _) => field.error(error),
+                    (None, Some(help)) => field.description(help),
+                    (None, None) => field,
                 };
-                let click = toggle.clone();
-                let checked = *checked;
-                let text: SharedString = if element.placeholder.is_empty() {
-                    label.clone()
-                } else {
-                    element.placeholder.clone().into()
-                };
-                field_content(cx)
-                    .child(
-                        field_title(cx)
-                            .child(label.clone())
-                            .when(required, |title| title.child(" *")),
-                    )
-                    .child(
-                        div()
-                            .id(id("bool"))
-                            .flex()
-                            .items_center()
-                            .gap(theme.space(2.))
-                            .when(!disabled, |row| {
-                                row.cursor_pointer()
-                                    .on_click(move |_, _, cx| click(!checked, cx))
-                            })
-                            .child(
-                                Checkbox::new(id("checkbox"))
-                                    .checked(checked)
-                                    .disabled(disabled)
-                                    .aria_label(label)
-                                    .on_change(move |next, _, _, cx| toggle(next, cx)),
-                            )
-                            .child(div().text_size(theme.text(14.)).child(text)),
-                    )
-                    .children(note(id("note"), error, help, &theme))
-                    .into_any_element()
+                match beside {
+                    None => field.into_any_element(),
+                    Some(_) => field_content(cx)
+                        .child(
+                            field_title(cx)
+                                .child(label)
+                                .when(required, |title| title.child(" *")),
+                        )
+                        .child(field)
+                        .into_any_element(),
+                }
             }
             Control::Radio(choice) => {
                 let name = element.name.clone();
                 let view = cx.weak_entity();
-                let mut group = RadioGroup::new(id("radio"))
-                    .aria_label(label.clone())
-                    .disabled(disabled);
+                let mut group = RadioGroup::new(id("radio"));
                 if let Some(choice) = choice {
                     group = group.value(choice.clone());
                 }
@@ -696,19 +687,21 @@ impl InteractiveDialogView {
                             .label(option.text.clone()),
                     );
                 }
-                field_content(cx)
-                    .child(
-                        field_title(cx)
-                            .child(label)
-                            .when(required, |title| title.child(" *")),
-                    )
-                    .child(group.on_change(move |next, _, cx| {
-                        let name = name.clone();
-                        view.update(cx, |this, cx| this.set_choice(&name, next, cx))
-                            .ok();
-                    }))
-                    .children(note(id("note"), error, help, &theme))
-                    .into_any_element()
+                let group = group.on_change(move |next, _, cx| {
+                    let name = name.clone();
+                    view.update(cx, |this, cx| this.set_choice(&name, next, cx))
+                        .ok();
+                });
+                let field = Field::from_control(id("radio-field"), group)
+                    .label(label)
+                    .required(required)
+                    .disabled(disabled);
+                match (error, help) {
+                    (Some(error), _) => field.error(error),
+                    (None, Some(help)) => field.description(help),
+                    (None, None) => field,
+                }
+                .into_any_element()
             }
         };
         div()
@@ -759,31 +752,6 @@ impl InteractiveDialogView {
     }
 }
 
-/// The line under a checkbox or radio field: its error, or else its help.
-fn note(
-    id: gpui_kit::ElementId,
-    error: Option<SharedString>,
-    help: Option<SharedString>,
-    theme: &UiTheme,
-) -> Option<gpui_kit::AnyElement> {
-    let invalid = error.is_some();
-    let text = error.or(help)?;
-    Some(
-        div()
-            .id(id)
-            .when(invalid, |note| note.role(gpui_kit::Role::Alert))
-            .text_size(theme.text(14.))
-            .line_height(theme.text(20.))
-            .text_color(if invalid {
-                theme.colors.destructive
-            } else {
-                theme.colors.muted_foreground
-            })
-            .child(text)
-            .into_any_element(),
-    )
-}
-
 impl Render for InteractiveDialogView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.focus_first_field(window, cx);
@@ -827,23 +795,25 @@ impl Render for InteractiveDialogView {
                             .pr(theme.space(8.))
                             .child(dialog_title("interactive-dialog.title", cx).child(title))
                             .when(!dialog.introduction_text.is_empty(), |header| {
-                                header.child(div().text_color(theme.colors.muted_foreground).child(
-                                    markdown(
-                                        "interactive-dialog.introduction",
-                                        dialog.introduction_text.clone(),
-                                        cx,
-                                    ),
-                                ))
+                                header.child(
+                                    Alert::new("interactive-dialog.introduction")
+                                        .variant(AlertVariant::Info)
+                                        .child(markdown(
+                                            "interactive-dialog.introduction.text",
+                                            dialog.introduction_text.clone(),
+                                            cx,
+                                        )),
+                                )
                             }),
                     )
                     .children(error.enumerate().map(|(index, error)| {
                         div()
-                            .id(("interactive-dialog.error", index))
                             .debug_selector(|| "interactive-dialog-error".into())
-                            .role(gpui_kit::Role::Alert)
-                            .text_size(theme.text(14.))
-                            .text_color(theme.colors.destructive)
-                            .child(error)
+                            .child(
+                                Alert::new(("interactive-dialog.error", index))
+                                    .variant(AlertVariant::Destructive)
+                                    .description(error),
+                            )
                     }))
                     .child(
                         div()
