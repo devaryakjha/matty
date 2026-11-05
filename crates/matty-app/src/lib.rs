@@ -153,6 +153,13 @@ pub fn run_with_links(links: Vec<String>) {
             let _ = links_tx.try_send(url);
         }
     });
+    // macOS keeps Matty running when its window closes; clicking the Dock
+    // icon then asks for it again.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_main_window(cx);
+        }
+    });
     app.run(move |cx: &mut App| {
         // Debug builds check that no image is fetched or read from the
         // media cache on this thread (#153).
