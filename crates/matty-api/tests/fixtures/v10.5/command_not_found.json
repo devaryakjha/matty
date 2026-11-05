@@ -1,0 +1,7 @@
+{
+  "id": "api.command.execute_command.not_found.app_error",
+  "message": "Command with a trigger of 'nope' not found. To send a message beginning with \"/\", try adding an empty space at the beginning of the message.",
+  "detailed_error": "",
+  "request_id": "u9rk9owrrfd5ink94oosqf6d5r",
+  "status_code": 404
+}

@@ -163,7 +163,10 @@ pub struct ServerCapabilities {
     pub image_proxy: bool,
     /// Channel bookmarks are on (#226): the `ChannelBookmarks` feature flag
     /// where the server still has it (9.x), and every server from 10.0 on,
-    /// which dropped the flag once bookmarks shipped.
+    /// which dropped the flag once bookmarks shipped. They need a license
+    /// too: without one the server answers every bookmark call with 501
+    /// `api.channel.bookmark.channel_bookmark.license.error` (recorded
+    /// from 10.5, whose config still reports the flag on).
     pub channel_bookmarks: bool,
     /// The server has a license.
     pub licensed: bool,
@@ -265,10 +268,11 @@ impl ServerCapabilities {
                 .unwrap_or(DEFAULT_MAX_POST_SIZE),
             max_file_size: number(config, "MaxFileSize").unwrap_or(DEFAULT_MAX_FILE_SIZE),
             image_proxy: flag(config, "HasImageProxy"),
-            channel_bookmarks: match config.get("FeatureFlagChannelBookmarks") {
-                Some(_) => flag(config, "FeatureFlagChannelBookmarks"),
-                None => version >= Version::new(10, 0, 0),
-            },
+            channel_bookmarks: licensed
+                && match config.get("FeatureFlagChannelBookmarks") {
+                    Some(_) => flag(config, "FeatureFlagChannelBookmarks"),
+                    None => version >= Version::new(10, 0, 0),
+                },
             licensed,
             sku,
         })
@@ -407,8 +411,6 @@ mod tests {
                 .available()
         );
         assert_eq!(gate("MaxPostSize", "4000").max_post_size, 4000);
-        assert!(gate("FeatureFlagChannelBookmarks", "true").channel_bookmarks);
-        assert!(!gate("FeatureFlagChannelBookmarks", "false").channel_bookmarks);
         assert_eq!(gate("MaxFileSize", "52428800").max_file_size, 52_428_800);
     }
 
@@ -473,23 +475,27 @@ mod tests {
     }
 
     #[test]
-    fn bookmarks_follow_the_flag_or_the_version() {
-        let license = load("license_client_unlicensed.json");
-        let caps = |version: &str, flag: Option<&str>| {
+    fn bookmarks_follow_the_flag_or_the_version_and_need_a_license() {
+        let caps = |version: &str, flag: Option<&str>, license: &str| {
             let mut config = load("config_client_team.json");
             config.insert("Version".into(), version.into());
             config.remove("FeatureFlagChannelBookmarks");
             if let Some(flag) = flag {
                 config.insert("FeatureFlagChannelBookmarks".into(), flag.into());
             }
-            ServerCapabilities::from_old_format(&config, &license)
+            ServerCapabilities::from_old_format(&config, &load(license))
                 .unwrap()
                 .channel_bookmarks
         };
-        assert!(!caps("9.11.0", None));
-        assert!(caps("9.11.0", Some("true")));
-        assert!(caps("12.0.1", None));
-        assert!(!caps("10.5.0", Some("false")));
+        let licensed = "license_client_enterprise.json";
+        assert!(!caps("9.11.0", None, licensed));
+        assert!(caps("9.11.0", Some("true"), licensed));
+        assert!(caps("12.0.1", None, licensed));
+        assert!(!caps("10.5.0", Some("false"), licensed));
+        // An unlicensed 10.5 reports the flag on and refuses bookmarks.
+        let unlicensed = "license_client_unlicensed.json";
+        assert!(!caps("10.5.14", Some("true"), unlicensed));
+        assert!(!caps("12.0.1", None, unlicensed));
     }
 
     #[test]

@@ -2744,12 +2744,21 @@ impl Engine {
     }
 
     /// Fetches an open channel's posts once per session, after the account
-    /// has loaded.
+    /// has loaded, and its counts each time it opens: they are not stored,
+    /// and the app forgets them when the user moves to another channel.
     fn fetch_channel(&mut self, channel_id: &str) {
         let Some(session) = &mut self.session else {
             return;
         };
-        if session.user_id.is_empty() || !session.fetched.insert(channel_id.to_owned()) {
+        if session.user_id.is_empty() {
+            return;
+        }
+        matty_api::rt::spawn(load::channel_stats(
+            session.client.clone(),
+            channel_id.to_owned(),
+            self.loaded.clone(),
+        ));
+        if !session.fetched.insert(channel_id.to_owned()) {
             return;
         }
         matty_api::rt::spawn(load::open_channel(
@@ -2757,11 +2766,6 @@ impl Engine {
             session.user_id.clone(),
             channel_id.to_owned(),
             session.collapsed_threads,
-            self.loaded.clone(),
-        ));
-        matty_api::rt::spawn(load::channel_stats(
-            session.client.clone(),
-            channel_id.to_owned(),
             self.loaded.clone(),
         ));
         if self

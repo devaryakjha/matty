@@ -148,3 +148,38 @@ async fn channel_settings_reach_the_server_and_come_back() {
     });
     next(&changes, |c| matches!(c, ChangeSet::Stats(_))).await;
 }
+
+/// The app forgets a channel's counts when the user moves on, so opening
+/// it again asks the server again rather than showing no members.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reopened_channel_sends_its_counts_again() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/channels/c1/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "channel_id": "c1", "member_count": 12, "pinnedpost_count": 3
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    let open = || Command::OpenChannel {
+        channel_id: "c1".into(),
+    };
+    sync.send(open());
+    next(&changes, |c| matches!(c, ChangeSet::Stats(_))).await;
+    sync.send(Command::CloseChannel {
+        channel_id: "c1".into(),
+    });
+    sync.send(open());
+    let again = next(&changes, |c| matches!(c, ChangeSet::Stats(_))).await;
+    let ChangeSet::Stats(stats) = again else {
+        unreachable!()
+    };
+    assert_eq!(stats.member_count, 12);
+}

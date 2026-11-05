@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{connected, next, requested, server, server_with_config};
+use common::{connected, next, requested, server, server_licensed};
 use matty_api::models::{AppBinding, AppCall, AppContext, ChannelBookmark};
 use matty_api::ws::WsEvent;
 use matty_sync::{AppAnswer, AppCommand, BookmarkCommand, ChangeSet, Command, CommandError};
@@ -52,7 +52,7 @@ fn is_bookmarks(change: &ChangeSet) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bookmarks_load_change_and_undo_a_refusal() {
-    let server = server().await;
+    let server = server_licensed(json!({})).await;
     Mock::given(method("GET"))
         .and(path("/api/v4/channels/c1/bookmarks"))
         .respond_with(
@@ -186,7 +186,7 @@ async fn a_file_bookmark_uploads_its_file_first() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn events_keep_the_bar_current_and_it_shows_from_the_cache() {
-    let server = server().await;
+    let server = server_licensed(json!({})).await;
     Mock::given(method("GET"))
         .and(path("/api/v4/channels/c1/bookmarks"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
@@ -215,16 +215,22 @@ async fn events_keep_the_bar_current_and_it_shows_from_the_cache() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_without_bookmarks_is_not_asked() {
-    let server = server_with_config(json!({"FeatureFlagChannelBookmarks": "false"})).await;
-    let (_sync, _changes) = connected(&server).await;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !requested(&server)
-            .await
-            .iter()
-            .any(|path| path.ends_with("/bookmarks")),
-        "no bookmarks request"
-    );
+    // Turned off, or unlicensed: the recorded 10.5 reports the flag on
+    // and refuses every bookmark call without a license.
+    for server in [
+        server_licensed(json!({"FeatureFlagChannelBookmarks": "false"})).await,
+        server().await,
+    ] {
+        let (_sync, _changes) = connected(&server).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !requested(&server)
+                .await
+                .iter()
+                .any(|path| path.ends_with("/bookmarks")),
+            "no bookmarks request"
+        );
+    }
 }
 
 fn context() -> AppContext {
