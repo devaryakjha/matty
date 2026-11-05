@@ -477,8 +477,14 @@ fn submission_call(submit: &SubmitDialogRequest) -> Option<(String, AppCallReque
     let context: AppContext = serde_json::from_value(state.get("context")?.clone()).ok()?;
     let mut request = AppCallRequest::new(&call, context);
     for field in state.get("fields")?.as_array()? {
-        let name = field.get("name").and_then(Value::as_str).unwrap_or_default();
-        let kind = field.get("type").and_then(Value::as_str).unwrap_or_default();
+        let name = field
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let kind = field
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let options: Vec<AppSelectOption> = field
             .get("options")
             .cloned()
@@ -640,7 +646,10 @@ mod tests {
         assert_eq!(call.expand, Some(json!({"post": "all"})));
         assert_eq!(call.context, context());
         assert_eq!(call.values["text"], json!("hi"));
-        assert_eq!(call.values["level"], json!({"label": "High", "value": "high"}));
+        assert_eq!(
+            call.values["level"],
+            json!({"label": "High", "value": "high"})
+        );
         assert_eq!(call.values["who"], json!({"label": "u1", "value": "u1"}));
         assert_eq!(call.values["loud"], json!(false));
         assert_eq!(call.values["fixed"], json!("kept"));

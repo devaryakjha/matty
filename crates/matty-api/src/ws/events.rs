@@ -11,8 +11,8 @@ use super::{Broadcast, Hello, RawEvent};
 use crate::{
     capabilities::OldFormat,
     models::{
-        BookmarkUpdate, Channel, ChannelBookmark, ChannelMember, Draft, Emoji, Post, PostAcknowledgement, Preference, Reaction,
-        SidebarCategory, Team, User, UserThread,
+        BookmarkUpdate, Channel, ChannelBookmark, ChannelMember, Draft, Emoji, Post,
+        PostAcknowledgement, Preference, Reaction, SidebarCategory, Team, User, UserThread,
     },
 };
 

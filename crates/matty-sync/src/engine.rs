@@ -2592,7 +2592,11 @@ impl Engine {
             channel_id.to_owned(),
             self.loaded.clone(),
         ));
-        if self.capabilities.as_ref().is_some_and(|c| c.channel_bookmarks) {
+        if self
+            .capabilities
+            .as_ref()
+            .is_some_and(|c| c.channel_bookmarks)
+        {
             matty_api::rt::spawn(crate::bookmarks::fetch(
                 session.client.clone(),
                 channel_id.to_owned(),

@@ -980,6 +980,10 @@ pub enum ChannelEvent {
     OpenPinned,
     /// The user clicked a link or an entity chip in a message (#103).
     OpenLink(SharedString),
+    /// The user changed the channel's bookmarks (#226).
+    Bookmark(crate::bookmarks::BookmarkAsk),
+    /// The user chose something an App added (#226).
+    App(crate::apps::AppAsk),
     /// The user asked for the channel info pane (header info button or the
     /// members count).
     OpenInfo,
@@ -1182,6 +1186,10 @@ pub struct ChannelView {
     split_controls: bool,
     /// Interactive messages' menus (#211).
     action_menus: crate::interactive::Menus,
+    /// The bookmarks bar under the header, and what Apps add here (#226).
+    bookmarks: Entity<crate::bookmarks::BookmarksBar>,
+    apps: crate::apps::ChannelApps,
+    apps_menu: Entity<MenuState>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1348,7 +1356,19 @@ impl ChannelView {
         let notifications = cx.new(|_| NotificationsView::new());
         let add_members = cx.new(|cx| AddMembersView::new(window, cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
+        let bookmarks = cx.new(|cx| crate::bookmarks::BookmarksBar::new(window, cx));
         let subscriptions = vec![
+            cx.subscribe(
+                &bookmarks,
+                |_, _, event: &crate::bookmarks::BarEvent, cx| {
+                    use crate::bookmarks::BarEvent;
+                    cx.emit(match event {
+                        BarEvent::Ask(ask) => ChannelEvent::Bookmark(ask.clone()),
+                        BarEvent::OpenLink(url) => ChannelEvent::OpenLink(url.clone()),
+                        BarEvent::OpenFile(id) => ChannelEvent::OpenFile(id.clone()),
+                    });
+                },
+            ),
             cx.subscribe(&edit, |this, _, event: &ChannelEditEvent, cx| {
                 let ChannelEditEvent::Save { field, value } = event;
                 this.apply_edit(*field, value.clone(), cx);
@@ -1466,6 +1486,9 @@ impl ChannelView {
             profile_cards: 0,
             split_controls: false,
             action_menus: Default::default(),
+            bookmarks,
+            apps: Default::default(),
+            apps_menu: cx.new(|cx| MenuState::new([], cx)),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1503,6 +1526,22 @@ impl ChannelView {
             model.as_ref().map_or(0, |model| model.posts.len()),
         );
         self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
+        if model.as_ref().map(|m| &m.id) != self.model.as_ref().map(|m| &m.id) {
+            crate::apps::forget(cx.entity_id(), cx);
+            if let Some((bookmarks, apps)) = model
+                .as_ref()
+                .and_then(|model| crate::preview::bookmarks(&model.id))
+            {
+                crate::apps::remember(cx.entity_id(), &apps, cx);
+                let view = cx.entity().downgrade();
+                let items = crate::apps::header_items(&apps, &view);
+                self.apps_menu
+                    .update(cx, |menu, cx| menu.set_items(items, cx));
+                self.apps = apps;
+                self.bookmarks
+                    .update(cx, |bar, cx| bar.set_model(Some(bookmarks), cx));
+            }
+        }
         self.refresh_header_menu(model.as_ref(), cx);
         let count = self.rows.len();
         self.list = cx.new(|cx| MessageListState::new(count, cx));
@@ -1963,6 +2002,14 @@ impl ChannelView {
             let menu_changed = model.can_manage != details.can_manage;
             model.can_manage = details.can_manage;
             model.delete_others = details.delete_others;
+            crate::apps::remember(cx.entity_id(), &details.apps, cx);
+            let view = cx.entity().downgrade();
+            let items = crate::apps::header_items(&details.apps, &view);
+            self.apps_menu
+                .update(cx, |menu, cx| menu.set_items(items, cx));
+            self.apps = details.apps;
+            self.bookmarks
+                .update(cx, |bar, cx| bar.set_model(details.bookmarks, cx));
             if menu_changed {
                 let model = self.model.clone();
                 self.refresh_header_menu(model.as_ref(), cx);
@@ -3122,6 +3169,14 @@ impl ChannelView {
                 })
             }),
         ));
+        let root = (!post.root_id.is_empty()).then_some(&post.root_id);
+        items.extend(crate::apps::post_menu_items(
+            &view,
+            cx.entity_id(),
+            &id,
+            root,
+            cx,
+        ));
         if post.mine || deletable(post, away, delete_others) {
             items.push(MenuItem::separator());
         }
@@ -3686,6 +3741,29 @@ impl ChannelView {
                     .items_center()
                     .flex_shrink_0()
                     .gap(theme.space(0.5))
+                    .when(
+                        self.apps.channel_id == channel.id && !self.apps.channel_header.is_empty(),
+                        |row| {
+                            row.child(style::tipped(
+                                "channel.apps.tip",
+                                "Apps",
+                                Menu::new(&self.apps_menu, "Apps")
+                                    .trigger(icon(LucideIcon::Blocks))
+                                    .trigger_style_with({
+                                        let theme = theme.clone();
+                                        move |button| {
+                                            style_button(
+                                                button.aria_label("Apps"),
+                                                false,
+                                                ButtonVariant::Ghost,
+                                                ButtonSize::IconSm,
+                                                &theme,
+                                            )
+                                        }
+                                    }),
+                            ))
+                        },
+                    )
                     .child(style::tipped(
                         "channel.members.tip",
                         actions::tooltip_text("Members", "Channel info"),
@@ -4985,6 +5063,9 @@ impl Render for ChannelView {
                 this.add_paths(paths.paths().iter().cloned(), cx)
             }))
             .child(self.header(&channel, cx))
+            .when(self.bookmarks.read(cx).shows(&channel.id), |view| {
+                view.child(self.bookmarks.clone())
+            })
             .child(div().flex_1().min_h_0().child(body))
             .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))

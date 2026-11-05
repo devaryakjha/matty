@@ -73,7 +73,9 @@ async fn bookmarks_load_change_and_undo_a_refusal() {
         .and(path("/api/v4/channels/c1/bookmarks/c/sort_order"))
         .and(body_json(json!(0)))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            bookmark("c", 0), bookmark("a", 1), bookmark("b", 2)
+            bookmark("c", 0),
+            bookmark("a", 1),
+            bookmark("b", 2)
         ])))
         .expect(1)
         .mount(&server)
@@ -114,7 +116,10 @@ async fn bookmarks_load_change_and_undo_a_refusal() {
         channel_id: "c1".into(),
         bookmark_id: "a".into(),
     }));
-    let gone = next(&changes, |c| is_bookmarks(c) && !ids(c).contains(&"a".into())).await;
+    let gone = next(&changes, |c| {
+        is_bookmarks(c) && !ids(c).contains(&"a".into())
+    })
+    .await;
     assert_eq!(ids(&gone).len(), 2);
     let refused = next(&changes, |c| matches!(c, ChangeSet::Failed(_))).await;
     let ChangeSet::Failed(CommandError::Server { action, error, .. }) = refused else {
@@ -123,7 +128,10 @@ async fn bookmarks_load_change_and_undo_a_refusal() {
     assert_eq!(action, "delete bookmark");
     assert!(error.contains("permission"), "{error}");
     // The server's list again, from the GET mock.
-    let back = next(&changes, |c| is_bookmarks(c) && ids(c).contains(&"a".into())).await;
+    let back = next(&changes, |c| {
+        is_bookmarks(c) && ids(c).contains(&"a".into())
+    })
+    .await;
     assert_eq!(ids(&back), ["a", "b"]);
 }
 
@@ -216,7 +224,9 @@ async fn an_app_form_opens_as_a_dialog_and_its_errors_come_back_to_it() {
         .await;
     Mock::given(method("POST"))
         .and(path("/plugins/com.mattermost.apps/api/v1/call"))
-        .and(body_partial_json(json!({"path": "/submit", "values": {"to": "ada"}})))
+        .and(body_partial_json(
+            json!({"path": "/submit", "values": {"to": "ada"}}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "type": "ok", "text": "Hello sent to ada"
         })))
@@ -272,8 +282,7 @@ async fn an_app_form_opens_as_a_dialog_and_its_errors_come_back_to_it() {
         unreachable!()
     };
     assert!(answer.accepted());
-    let ChangeSet::Ephemeral(post) =
-        next(&changes, |c| matches!(c, ChangeSet::Ephemeral(_))).await
+    let ChangeSet::Ephemeral(post) = next(&changes, |c| matches!(c, ChangeSet::Ephemeral(_))).await
     else {
         unreachable!()
     };
@@ -314,7 +323,11 @@ async fn without_the_apps_plugin_nothing_shows_and_a_call_failure_is_told() {
     sync.send(bindings());
     // Once the 404 is in, the next channel does not ask again.
     for _ in 0..100 {
-        if requested(&server).await.iter().any(|p| p.ends_with("/bindings")) {
+        if requested(&server)
+            .await
+            .iter()
+            .any(|p| p.ends_with("/bindings"))
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -333,11 +346,20 @@ async fn without_the_apps_plugin_nothing_shows_and_a_call_failure_is_told() {
         context: Box::new(context()),
     }));
     let answered = next(&changes, |c| {
-        matches!(c, ChangeSet::AppAnswered { .. } | ChangeSet::AppBindings { .. })
+        matches!(
+            c,
+            ChangeSet::AppAnswered { .. } | ChangeSet::AppBindings { .. }
+        )
     })
     .await;
     assert!(
-        matches!(&answered, ChangeSet::AppAnswered { answer: AppAnswer::Failed(_), .. }),
+        matches!(
+            &answered,
+            ChangeSet::AppAnswered {
+                answer: AppAnswer::Failed(_),
+                ..
+            }
+        ),
         "{answered:?}"
     );
 }

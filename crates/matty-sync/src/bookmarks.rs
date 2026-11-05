@@ -252,9 +252,7 @@ async fn run(client: Client, command: BookmarkCommand, results: UnboundedSender<
             BookmarkCommand::Delete {
                 channel_id,
                 bookmark_id,
-            } => BookmarksLoaded::Deleted(
-                client.delete_bookmark(&channel_id, &bookmark_id).await?,
-            ),
+            } => BookmarksLoaded::Deleted(client.delete_bookmark(&channel_id, &bookmark_id).await?),
             BookmarkCommand::Move {
                 channel_id,
                 bookmark_id,

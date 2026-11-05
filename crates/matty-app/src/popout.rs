@@ -892,6 +892,12 @@ impl PopOutView {
             let text = format!("The integration couldn't take that: {error}");
             self.toast("pop-out.action-refused", text, cx);
         }
+        if let Some(text) = update.refused.take() {
+            self.toast("pop-out.refused", text, cx);
+        }
+        if let Some(url) = update.navigate.take() {
+            self.ask(Ask::OpenLink(url), cx);
+        }
     }
 
     /// The channel view's part of an update.
@@ -1338,6 +1344,8 @@ impl PopOutView {
                 let update = live.dismiss_ephemeral(post);
                 return self.apply_update(update, window, cx);
             }
+            ChannelEvent::Bookmark(ask) => return live.bookmark(ask),
+            ChannelEvent::App(ask) => return live.run_app(ask),
             _ => {}
         }
         let channel_id = channel.to_string();

@@ -204,7 +204,10 @@ fn values_come_through() {
     else {
         unreachable!()
     };
-    assert_eq!(channel_id, fixture("channel_bookmark_sorted").broadcast.channel_id);
+    assert_eq!(
+        channel_id,
+        fixture("channel_bookmark_sorted").broadcast.channel_id
+    );
     assert_eq!(bookmarks[1].sort_order, 1);
 
     let event = Event::from(fixture("user_removed"));
