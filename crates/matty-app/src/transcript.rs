@@ -78,7 +78,9 @@ pub fn channel_model(
 ) -> ChannelModel {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
-    let mut previous: Option<((&str, Option<&str>), i64, SharedString)> = None;
+    // Who wrote the last message row (user and webhook name), when, and on
+    // which day.
+    let mut previous: Option<(Author<'_>, i64, SharedString)> = None;
     // Joins and leaves since the last other row, combined into one row.
     let mut activity: Vec<Activity> = Vec::new();
     let mention = viewer.keys;
@@ -244,6 +246,10 @@ fn reply_summary(
         unread_mentions: 0,
     }
 }
+
+/// Who a post is from as runs of posts group them: its user, and the name
+/// a webhook posted it under.
+type Author<'a> = (&'a str, Option<&'a str>);
 
 /// The name a webhook or a slash command's integration posts under
 /// (`override_username`), as the server keeps it only where it allows
