@@ -1073,7 +1073,11 @@ impl Live {
             })
             .collect();
         people.sort();
-        crate::right_pane::SearchHints { channels, people }
+        crate::right_pane::SearchHints {
+            channels,
+            people,
+            today: Some(jiff::Timestamp::now().to_zoned(self.zone.clone()).date()),
+        }
     }
 
     /// Loads the user's saved posts; they come as [`Update::listing`].
