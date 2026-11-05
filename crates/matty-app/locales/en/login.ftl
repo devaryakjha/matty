@@ -48,5 +48,11 @@ login-retry = Retry
 login-browser-failed-title = Browser sign-in did not finish
 login-browser-failed-hint = Try again to open a new sign-in page, or cancel to pick another way in.
 login-browser-waiting-title = Waiting for your browser…
+# Another app, { $app }, opens mattermost:// links, so the browser may hand it the sign-in (#489).
+login-scheme-title = { $app } may get this sign-in
+login-scheme-hint = { $app } opens mattermost:// links on this computer, so your browser may hand it the sign-in instead of Matty.
+login-claim-links = Make Matty open them
+login-continue-anyway = Continue anyway
+login-use-token = Use a personal access token instead
 login-browser-waiting-hint = Finish signing in in the browser window Matty opened. Matty continues on its own when you are done.
 login-footer = Matty is a native Mattermost client. Your password goes only to your server.
