@@ -64,7 +64,7 @@ pub mod style;
 pub mod switcher;
 pub mod threads;
 pub mod transcript;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod tray;
 mod ui;
 #[cfg(not(target_family = "wasm"))]
@@ -225,7 +225,7 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     }
     #[cfg(not(target_family = "wasm"))]
     follow_launch_at_login(&settings, cx);
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     follow_close_to_tray(&settings, cx);
     actions::bind(cx);
     #[cfg(not(target_family = "wasm"))]
@@ -350,7 +350,7 @@ fn follow_launch_at_login(settings: &Entity<SettingsStore>, cx: &mut App) {
 /// Keeps the tray icon (#634) in step with the "Keep running when closed"
 /// setting. While the icon is up, closing the last window leaves Matty
 /// running; without one, closing quits as usual.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn follow_close_to_tray(settings: &Entity<SettingsStore>, cx: &mut App) {
     struct Shown {
         _tray: Option<tray::Tray>,
@@ -376,7 +376,7 @@ fn follow_close_to_tray(settings: &Entity<SettingsStore>, cx: &mut App) {
     .detach();
 
     let apply = move |wanted: bool, cx: &mut App| {
-        if !wanted || cfg!(target_os = "macos") {
+        if !wanted {
             cx.set_global(Shown { _tray: None });
             cx.set_quit_mode(gpui_kit::QuitMode::Default);
             return;

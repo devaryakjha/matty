@@ -3,7 +3,8 @@
 //! menu opens the window again or quits. On Linux the icon is a
 //! StatusNotifierItem, which KDE, GNOME's AppIndicator extension and most
 //! other panels show; on Windows it sits in the notification area. macOS
-//! keeps Matty running in the dock anyway, so it has no tray.
+//! keeps Matty running in the dock anyway, so it has no tray and this
+//! module is not built there.
 //!
 //! Without a tray to show the icon, Matty keeps quitting on close, so it
 //! never runs with no way back to it.
@@ -33,6 +34,7 @@ const MENU: [(TrayEvent, &str); 2] = [
 
 /// The icon as StatusNotifierItem wants it: ARGB32, each pixel in network
 /// byte order.
+#[cfg(target_os = "linux")]
 pub fn argb(rgba: &[u8]) -> Vec<u8> {
     rgba.as_chunks::<4>()
         .0
@@ -380,19 +382,6 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-mod platform {
-    use async_channel::Sender;
-
-    use super::TrayEvent;
-
-    pub struct Handle;
-
-    pub async fn show(_events: Sender<TrayEvent>) -> Result<Handle, String> {
-        Err("no tray on this platform".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +391,7 @@ mod tests {
         assert_eq!(ICON_RGBA.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn argb_moves_alpha_first() {
         assert_eq!(
