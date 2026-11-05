@@ -9,7 +9,8 @@
 #   scripts/linux-package 0.0.1 path/to/matty
 #
 # The AppImage needs appimagetool on PATH, or MATTY_APPIMAGETOOL pointing at
-# it; without one it is skipped with a note.
+# it; without one it is skipped with a note. MATTY_APPIMAGE_RUNTIME names a
+# downloaded AppImage runtime; without it appimagetool fetches one itself.
 set -euo pipefail
 
 version="${1:?usage: scripts/linux-package VERSION [BINARY]}"
@@ -118,7 +119,11 @@ exec "$here/usr/bin/matty" "$@"
 EOF
 	chmod +x "$appdir/AppRun"
 	# Extracting instead of mounting, so it runs without FUSE, as on CI.
-	APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$arch" "$appimagetool" --no-appstream \
+	runtime=()
+	if [[ -n "${MATTY_APPIMAGE_RUNTIME:-}" ]]; then
+		runtime=(--runtime-file "$MATTY_APPIMAGE_RUNTIME")
+	fi
+	APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$arch" "$appimagetool" --no-appstream "${runtime[@]}" \
 		"$appdir" "$out/Matty-$version-$arch.AppImage" >/dev/null
 else
 	echo "appimagetool not found: no AppImage" >&2

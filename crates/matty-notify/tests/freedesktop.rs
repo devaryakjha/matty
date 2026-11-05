@@ -166,14 +166,19 @@ fn notifications_post_open_and_close_through_the_service() {
             .interface::<_, Service>("/org/freedesktop/Notifications")
             .await
             .unwrap();
-        Service::action_invoked(emitter.signal_emitter(), 1, "default")
-            .await
-            .unwrap();
-        let opened = future::or(async { clicked_rx.recv().await.ok() }, async {
-            async_io::Timer::after(Duration::from_secs(2)).await;
+        // The backend starts listening for the click only after the service
+        // answers Notify, so a click sent straight away can land before it
+        // listens. Click again until it arrives, as a person would.
+        let click = async {
+            for _ in 0..40 {
+                Service::action_invoked(emitter.signal_emitter(), 1, "default")
+                    .await
+                    .unwrap();
+                async_io::Timer::after(Duration::from_millis(50)).await;
+            }
             None
-        })
-        .await;
+        };
+        let opened = future::or(async { clicked_rx.recv().await.ok() }, click).await;
         assert_eq!(
             opened,
             Some(Clicked {
