@@ -489,7 +489,13 @@ impl MainWindow {
                     }
                 }
                 // Custom status text has no sync command yet (#136).
-                AccountEvent::SetStatus(_) => {}
+                AccountEvent::SetStatus(status) => {
+                    if let Some(live) = &this.live {
+                        live.send(matty_sync::Command::SetCustomStatus {
+                            status: status.clone(),
+                        });
+                    }
+                }
                 AccountEvent::EditProfile => this.edit_profile(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
@@ -1275,7 +1281,7 @@ impl MainWindow {
                     } else {
                         crate::sidebar::Presence::Online
                     },
-                    status_text: None,
+                    status: None,
                     dnd_end: None,
                 },
                 cx,
@@ -2048,6 +2054,10 @@ impl MainWindow {
             if self.selected_channel.as_deref() == Some(arrival.event.channel_id.as_str()) {
                 self.view_later(window, cx);
             }
+        }
+        if let Some((status, recent)) = update.own_status.take() {
+            self.account
+                .update(cx, |view, cx| view.set_server_status(status, recent, cx));
         }
         if let Some((presence, dnd_end)) = update.own_presence {
             self.account.update(cx, |view, cx| {

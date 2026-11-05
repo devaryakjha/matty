@@ -293,3 +293,54 @@ async fn a_channel_by_its_url_name() {
         .unwrap();
     assert_eq!(channel.id, channels[0]["id"].as_str().unwrap());
 }
+
+#[tokio::test]
+async fn custom_status_is_set_cleared_and_read_from_props() {
+    use matty_api::models::CustomStatus;
+    use wiremock::matchers::body_json;
+    let server = MockServer::start().await;
+    let status = CustomStatus {
+        emoji: "calendar".into(),
+        text: "In a meeting".into(),
+        duration: "one_hour".into(),
+        expires_at: "2026-11-05T10:00:00Z".into(),
+    };
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/users/u1/status/custom"))
+        .and(body_json(json!({
+            "emoji": "calendar", "text": "In a meeting",
+            "duration": "one_hour", "expires_at": "2026-11-05T10:00:00Z"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/users/u1/status/custom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap();
+    client.set_custom_status("u1", &status).await.unwrap();
+    client.clear_custom_status("u1").await.unwrap();
+
+    // The server keeps both as JSON strings in `props`.
+    let user: User = serde_json::from_value(json!({
+        "id": "u1",
+        "props": {
+            "customStatus": serde_json::to_string(&status).unwrap(),
+            "recentCustomStatuses": "[{\"emoji\":\"palm_tree\",\"text\":\"On a vacation\",\"duration\":\"this_week\"}]"
+        }
+    }))
+    .unwrap();
+    assert_eq!(user.custom_status(), Some(status));
+    assert_eq!(user.recent_custom_statuses()[0].emoji, "palm_tree");
+    // Cleared statuses, missing ones and `null` props read as none.
+    let cleared: User =
+        serde_json::from_value(json!({"id": "u1", "props": {"customStatus": ""}})).unwrap();
+    assert_eq!(cleared.custom_status(), None);
+    let bare: User = serde_json::from_value(json!({"id": "u1", "props": null})).unwrap();
+    assert_eq!(bare.custom_status(), None);
+    assert!(bare.recent_custom_statuses().is_empty());
+}

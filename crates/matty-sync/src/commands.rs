@@ -52,6 +52,8 @@ pub(crate) enum Write {
         dnd_end_time: Option<i64>,
     },
     NotifyProps(std::collections::HashMap<String, String>),
+    /// A custom status, or `None` to clear it.
+    CustomStatus(Option<matty_api::models::CustomStatus>),
     Profile(matty_api::ProfilePatch),
     /// A new profile picture, or `None` to remove it.
     Picture(Option<(Vec<u8>, String)>),
@@ -191,6 +193,8 @@ impl Write {
             Self::DeleteDraft { .. } => "delete draft",
             Self::Status { .. } => "set status",
             Self::NotifyProps(_) => "save notification preferences",
+            Self::CustomStatus(Some(_)) => "set your status",
+            Self::CustomStatus(None) => "clear your status",
             Self::Profile(_) => "save your profile",
             Self::Picture(Some(_)) => "change your picture",
             Self::Picture(None) => "remove your picture",
@@ -246,9 +250,11 @@ impl Write {
                 channel_id.clone()
             }
             Self::SaveDraft(draft) => draft.channel_id.clone(),
-            Self::Status { .. } | Self::NotifyProps(_) | Self::Profile(_) | Self::Picture(_) => {
-                user_id.to_owned()
-            }
+            Self::Status { .. }
+            | Self::NotifyProps(_)
+            | Self::CustomStatus(_)
+            | Self::Profile(_)
+            | Self::Picture(_) => user_id.to_owned(),
             Self::OpenDirect { user_ids } => user_ids.join(","),
             Self::Join { channel_id }
             | Self::Leave { channel_id }
@@ -463,6 +469,14 @@ pub(crate) async fn run(
             Write::NotifyProps(notify_props) => {
                 let user = client.patch_notify_props(&user_id, &notify_props).await?;
                 Some(Loaded::Users(vec![user]))
+            }
+            Write::CustomStatus(status) => {
+                match status {
+                    Some(status) => client.set_custom_status(&user_id, &status).await?,
+                    None => client.clear_custom_status(&user_id).await?,
+                }
+                // The user's props now hold it, and the recent statuses.
+                Some(Loaded::Users(vec![client.me().await?]))
             }
             Write::Profile(patch) => {
                 let user = client.patch_profile(&user_id, &patch).await?;

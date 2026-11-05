@@ -9,18 +9,21 @@ use gpui_kit::{
 };
 
 use crate::actions::{AddServer, OpenPreferences};
+use crate::custom_status::{self, Duration, StatusLine};
 use crate::dnd::{self, DURATIONS, DndDuration};
 use crate::settings::ClockFormat;
 use crate::sidebar::Presence;
-use crate::style::{Palette, metrics, scaled, tipped_when};
+use crate::style::{Palette, TypeStyleExt as _, metrics, scaled, tipped_when};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant, style_button},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
+    emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     field::Field,
     input::{InputEvent, InputState},
     menu::{Menu, MenuItem, MenuState},
+    popover::popover,
     select::{Select, SelectEvent, SelectItem, SelectState},
     theme::UiTheme,
 };
@@ -34,7 +37,8 @@ pub struct Account {
     pub display_name: SharedString,
     pub username: SharedString,
     pub presence: Presence,
-    pub status_text: Option<SharedString>,
+    /// The custom status, when set and not expired (#221).
+    pub status: Option<StatusLine>,
     /// When Do not disturb ends, in seconds since the epoch; `None` while
     /// it has no end or another presence is set.
     pub dnd_end: Option<i64>,
@@ -45,11 +49,16 @@ pub struct Account {
 pub enum AccountEvent {
     /// A presence, and for Do not disturb when it ends.
     SetPresence(Presence, Option<i64>),
-    SetStatus(Option<SharedString>),
+    /// A custom status, or `None` to clear it (#221).
+    SetStatus(Option<matty_api::models::CustomStatus>),
     /// "Edit profile…" (#212).
     EditProfile,
     SignOut,
 }
+
+/// The emoji a status starts with until the user picks one, as in
+/// Mattermost.
+const DEFAULT_EMOJI: &str = "speech_balloon";
 
 const PRESENCES: [(Presence, &str, &str); 4] = [
     (Presence::Online, "online", "Online"),
@@ -80,6 +89,14 @@ pub struct AccountView {
     menu: Entity<MenuState>,
     status: DialogHandle,
     status_input: Entity<InputState>,
+    /// The emoji the status dialog will set, and its picker.
+    status_emoji: SharedString,
+    status_picker: Entity<EmojiPickerState>,
+    status_picker_open: bool,
+    /// When the status clears.
+    status_duration: Entity<SelectState>,
+    /// The statuses the user set lately, newest first, from the server.
+    recent: Vec<StatusLine>,
     sign_out: DialogHandle,
     /// The custom Do not disturb picker: a day and a time.
     custom: DialogHandle,
@@ -100,6 +117,16 @@ impl AccountView {
         let menu = cx.new(|cx| MenuState::new([], cx));
         let status_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("What are you up to?"));
+        let status_picker =
+            cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
+        let status_duration = cx.new(|cx| {
+            SelectState::new(
+                Duration::ALL
+                    .map(|duration| SelectItem::new(duration.server_name(), duration.label())),
+                window,
+                cx,
+            )
+        });
         let custom_day = cx.new(|cx| SelectState::new([], window, cx));
         let clock = ClockFormat::current(cx);
         let times = (0..24 * 60)
@@ -116,6 +143,20 @@ impl AccountView {
                     }
                 },
             ),
+            cx.subscribe_in(
+                &status_picker,
+                window,
+                |this, _, event: &EmojiPickerEvent, window, cx| match event {
+                    EmojiPickerEvent::Pick(name) => {
+                        this.status_emoji = name.clone();
+                        this.close_status_picker(window, cx);
+                    }
+                    EmojiPickerEvent::Cancel => this.close_status_picker(window, cx),
+                    EmojiPickerEvent::SkinTone(_) => {}
+                },
+            ),
+            // The suggestions show while the field is empty.
+            cx.subscribe(&status_input, |_, _, _: &InputEvent, cx| cx.notify()),
             // The Done button follows whether the pick is still ahead.
             cx.subscribe(&custom_time, |_, _, _: &SelectEvent, cx| cx.notify()),
         ];
@@ -124,6 +165,11 @@ impl AccountView {
             menu,
             status: DialogHandle::new(false),
             status_input,
+            status_emoji: DEFAULT_EMOJI.into(),
+            status_picker,
+            status_picker_open: false,
+            status_duration,
+            recent: Vec::new(),
             sign_out: DialogHandle::new(false),
             custom: DialogHandle::new(false),
             custom_day,
@@ -241,32 +287,95 @@ impl AccountView {
             .filter(|end| *end > now.timestamp().as_second())
     }
 
-    fn set_status(&mut self, status: Option<SharedString>, cx: &mut Context<Self>) {
-        if self.account.status_text != status {
-            self.account.status_text = status.clone();
+    /// Takes the user's own custom status and recent ones from the server.
+    pub fn set_server_status(
+        &mut self,
+        status: Option<StatusLine>,
+        recent: Vec<StatusLine>,
+        cx: &mut Context<Self>,
+    ) {
+        self.recent = recent;
+        if self.account.status != status {
+            self.account.status = status;
             self.refresh_items(cx);
-            cx.emit(AccountEvent::SetStatus(status));
-            cx.notify();
         }
+        cx.notify();
+    }
+
+    fn set_status(
+        &mut self,
+        status: Option<matty_api::models::CustomStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        self.account.status = status
+            .as_ref()
+            .and_then(|status| StatusLine::from_server(status, jiff::Timestamp::now()));
+        self.refresh_items(cx);
+        cx.emit(AccountEvent::SetStatus(status));
+        cx.notify();
     }
 
     fn open_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.account.status_text.clone().unwrap_or_default();
-        self.status_input.update(cx, |input, cx| {
-            input.set_value(current, window, cx);
-        });
+        let (emoji, text, duration) = match &self.account.status {
+            Some(status) => (status.emoji.clone(), status.text.clone(), status.duration),
+            None => (
+                DEFAULT_EMOJI.into(),
+                SharedString::default(),
+                Duration::Today,
+            ),
+        };
+        self.fill_status(emoji, text, duration, window, cx);
         self.status.open(window, cx);
         self.focus_status_input = true;
         cx.notify();
+    }
+
+    /// Puts a status in the dialog's fields: an opened one, or a picked
+    /// suggestion.
+    fn fill_status(
+        &mut self,
+        emoji: SharedString,
+        text: SharedString,
+        duration: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_emoji = emoji;
+        self.status_input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+        });
+        self.status_duration.update(cx, |select, cx| {
+            select.set_value(Some(duration.server_name().into()), window, cx)
+        });
+    }
+
+    fn close_status_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.status_picker_open {
+            self.status_picker_open = false;
+            let focus = self.status_input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            cx.notify();
+        }
     }
 
     fn save_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.status.is_open() {
             return;
         }
-        let typed = self.status_input.read(cx).value().trim().to_string();
-        let status = (!typed.is_empty()).then(|| SharedString::from(typed));
-        self.set_status(status, cx);
+        let text = self.status_input.read(cx).value().trim().to_string();
+        let duration = self
+            .status_duration
+            .read(cx)
+            .value()
+            .map(|name| Duration::from_server(name))
+            .unwrap_or_default();
+        let status = (!text.is_empty()).then(|| {
+            custom_status::to_server(&self.status_emoji, &text, duration, &jiff::Zoned::now())
+        });
+        // An emptied field clears the status, as Clear does.
+        if status.is_some() || self.account.status.is_some() {
+            self.set_status(status, cx);
+        }
         self.status.close(window, cx);
     }
 
@@ -300,8 +409,8 @@ impl AccountView {
         items.push(
             MenuItem::new(
                 "account.status",
-                match &account.status_text {
-                    Some(text) => format!("Status: {text}"),
+                match &account.status {
+                    Some(status) => format!("Status: {}", status.label()),
                     None => "Set a status…".to_string(),
                 },
             )
@@ -480,17 +589,141 @@ impl AccountView {
 
     fn status_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let has_status = self.account.status_text.is_some();
+        let has_status = self.account.status.is_some();
+        let picker = self.status_picker.clone();
+        let picker_open = self.status_picker_open;
+        let emoji_size = scaled(&theme, 18.);
+        let emoji_name = self.status_emoji.clone();
+        let emoji_popover = popover("account.status.emoji.popover")
+            .open(picker_open)
+            .offset(px(6.))
+            .trigger_with(move |_, _, cx| {
+                Button::new("account.status.emoji")
+                    .variant(ButtonVariant::Outline)
+                    .size(ButtonSize::Icon)
+                    .aria_label(format!("Emoji: {}", emoji_name.replace('_', " ")))
+                    .child(custom_status::emoji(&emoji_name, emoji_size, cx))
+                    .into_any_element()
+            })
+            .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                if *open {
+                    this.status_picker_open = true;
+                    cx.notify();
+                } else {
+                    this.close_status_picker(window, cx);
+                }
+            }))
+            .content(move |_, window, cx| {
+                picker.update(cx, |picker, cx| picker.open(window, cx));
+                let theme = UiTheme::read(cx);
+                div()
+                    .rounded(theme.radius.xl)
+                    .border_1()
+                    .border_color(theme.colors.foreground.opacity(0.1))
+                    .bg(theme.colors.popover)
+                    .shadow(theme.shadows.md.to_vec())
+                    .overflow_hidden()
+                    .child(EmojiPicker::new(&picker).bordered(false))
+            });
+        // With nothing typed, the recent statuses and Mattermost's
+        // suggestions offer a one-click start.
+        let empty = self.status_input.read(cx).value().trim().is_empty();
+        let mut offers: Vec<(SharedString, SharedString, Duration)> = self
+            .recent
+            .iter()
+            .take(5)
+            .map(|status| (status.emoji.clone(), status.text.clone(), status.duration))
+            .collect();
+        let recent_count = offers.len();
+        for (emoji, text, duration) in custom_status::SUGGESTIONS {
+            if !offers.iter().any(|(_, shown, _)| shown == text) {
+                offers.push((emoji.into(), text.into(), duration));
+            }
+        }
+        let offer = |index: usize,
+                     (emoji, text, duration): (SharedString, SharedString, Duration),
+                     cx: &mut Context<Self>| {
+            let theme = UiTheme::read(cx).clone();
+            let label = format!("{text}, {}", duration.label().to_lowercase());
+            let (fill_emoji, fill_text) = (emoji.clone(), text.clone());
+            Button::new(gpui_kit::ElementId::NamedInteger(
+                "account.status.offer".into(),
+                index as u64,
+            ))
+            .variant(ButtonVariant::Ghost)
+            .aria_label(label)
+            .w_full()
+            .justify_start()
+            .gap(theme.space(2.))
+            .child(custom_status::emoji(&emoji, scaled(&theme, 16.), cx))
+            .child(div().flex_1().min_w_0().truncate().text_left().child(text))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(theme.colors.muted_foreground)
+                    .child(duration.label()),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.fill_status(fill_emoji.clone(), fill_text.clone(), duration, window, cx);
+                let focus = this.status_input.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+                cx.notify();
+            }))
+        };
+        let heading = |label: &'static str| {
+            div()
+                .pt(theme.space(2.))
+                .px(theme.space(3.))
+                .type_style(crate::style::LABEL, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child(label.to_uppercase())
+        };
+        let mut suggestions = div().flex().flex_col();
+        if empty {
+            for (index, item) in offers.into_iter().enumerate() {
+                if index == 0 && recent_count > 0 {
+                    suggestions = suggestions.child(heading("Recent"));
+                }
+                if index == recent_count {
+                    suggestions = suggestions.child(heading("Suggestions"));
+                }
+                suggestions = suggestions.child(offer(index, item, cx));
+            }
+        }
         let popup = dialog_popup("account.status.popup", "Set a status", cx)
             .child(dialog_title("account.status.title", cx).child("Set a status"))
             .child(
                 dialog_description("account.status.description", cx)
-                    .child("Shown next to your name until you clear it."),
+                    .child("Shown next to your name until it clears."),
             )
             .child(
                 div()
                     .pt(theme.space(2.))
-                    .child(Field::new("account.status.input", &self.status_input).label("Status")),
+                    .flex()
+                    .items_end()
+                    .gap(theme.space(2.))
+                    .child(emoji_popover)
+                    .child(div().flex_1().child(
+                        Field::new("account.status.input", &self.status_input).label("Status"),
+                    )),
+            )
+            .child(suggestions)
+            .child(
+                div()
+                    .pt(theme.space(2.))
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(2.))
+                    .child(
+                        div()
+                            .type_style(crate::style::UI, &theme)
+                            .child("Clear after"),
+                    )
+                    .child(
+                        div()
+                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
+                            .child(Select::new(&self.status_duration).aria_label("Clear after")),
+                    ),
             )
             .child(
                 div()
@@ -633,7 +866,7 @@ mod tests {
             display_name: "Arya".into(),
             username: "arya".into(),
             presence,
-            status_text: None,
+            status: None,
             dnd_end,
         }
     }

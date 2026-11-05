@@ -218,7 +218,9 @@ pub fn sidebar() -> SidebarModel {
                 "Favorites",
                 vec![
                     public("design", "design").unread().mentions(2),
-                    dm("priya", "Priya Nair", Presence::Online).unread(),
+                    dm("priya", "Priya Nair", Presence::Online)
+                        .status_emoji("calendar")
+                        .unread(),
                 ],
             ),
             Category::new(
@@ -239,6 +241,7 @@ pub fn sidebar() -> SidebarModel {
                 vec![
                     dm("sam", "Sam Okafor", Presence::Away),
                     dm("lena", "Lena Fischer", Presence::Dnd)
+                        .status_emoji("headphones")
                         .unread()
                         .mentions(1),
                     ChannelRow::new("priya-sam", "Priya, Sam", ChannelKind::Group { members: 3 }),
@@ -951,6 +954,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         purpose: (id == "release-2026-11").then(|| {
             "Everything about shipping the November release: checklist, blockers, go/no-go.".into()
         }),
+        person: row.person.as_ref().and_then(|person| {
+            profiles()
+                .into_iter()
+                .find(|profile| &profile.user_id == person)
+                .map(Box::new)
+        }),
         loading,
         posts,
         first_unread,
@@ -1374,6 +1383,7 @@ pub fn empty_channel(
         favorite: false,
         muted: false,
         purpose,
+        person: None,
         loading: false,
         posts: vec![],
         first_unread: None,
@@ -1465,7 +1475,7 @@ pub fn account() -> Account {
         display_name: "Arya".into(),
         username: "arya".into(),
         presence: Presence::Online,
-        status_text: None,
+        status: None,
         dnd_end: None,
     }
 }
@@ -1546,14 +1556,19 @@ pub fn profiles() -> Vec<UserProfile> {
                    display_name: &str,
                    position: Option<&str>,
                    presence,
-                   status_text: Option<&str>,
+                   status: Option<(&str, &str)>,
                    time_zone: Option<&str>| UserProfile {
         user_id: format!("u-{username}").into(),
         username: username.into(),
         display_name: display_name.into(),
         position: position.map(Into::into),
         presence,
-        status_text: status_text.map(Into::into),
+        status: status.map(|(emoji, text)| crate::custom_status::StatusLine {
+            emoji: emoji.into(),
+            text: text.into(),
+            until: None,
+            duration: Default::default(),
+        }),
         time_zone: time_zone.map(Into::into),
     };
     vec![
@@ -1562,7 +1577,7 @@ pub fn profiles() -> Vec<UserProfile> {
             "Priya Nair",
             Some("Product designer"),
             Presence::Online,
-            Some("In a review until 3"),
+            Some(("calendar", "In a design review")),
             Some("Asia/Kolkata"),
         ),
         profile(
@@ -1578,7 +1593,7 @@ pub fn profiles() -> Vec<UserProfile> {
             "Lena Fischer",
             Some("Engineer, Windows"),
             Presence::Dnd,
-            Some("Heads down"),
+            Some(("headphones", "Heads down")),
             Some("Europe/Berlin"),
         ),
         profile(

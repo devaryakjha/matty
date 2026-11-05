@@ -3599,7 +3599,7 @@ mod tests {
                         display_name: "Ada".into(),
                         position: None,
                         presence: Presence::Online,
-                        status_text: None,
+                        status: None,
                         time_zone: None,
                     }],
                     cx,

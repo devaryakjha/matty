@@ -177,6 +177,7 @@ pub fn channel_model(
         favorite: false,
         muted: row.muted,
         purpose: None,
+        person: None,
         loading: posts.is_none(),
         posts: rows,
         first_unread: None,

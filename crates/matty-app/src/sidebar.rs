@@ -55,6 +55,9 @@ pub struct ChannelRow {
     /// finds the row by it whatever the name format shows (#156); for a
     /// channel, its URL name, which `~` mentions use.
     pub handle: Option<SharedString>,
+    /// A direct message's other person's custom status emoji, shown after
+    /// the name (#221).
+    pub status_emoji: Option<SharedString>,
 }
 
 impl ChannelRow {
@@ -72,12 +75,19 @@ impl ChannelRow {
             muted: false,
             person: None,
             handle: None,
+            status_emoji: None,
         }
     }
 
     /// The direct message's other person, by user id.
     pub fn person(mut self, user_id: impl Into<SharedString>) -> Self {
         self.person = Some(user_id.into());
+        self
+    }
+
+    /// The other person's custom status emoji.
+    pub fn status_emoji(mut self, emoji: impl Into<SharedString>) -> Self {
+        self.status_emoji = Some(emoji.into());
         self
     }
 
@@ -1098,31 +1108,46 @@ impl SidebarView {
         if row.muted && !selected {
             item = item.opacity(0.6);
         }
-        // The count or dot hides while the row is hovered, where the options
-        // button takes its place, as in Mattermost.
+        let mut trailing: Vec<gpui_kit::AnyElement> = Vec::new();
+        if let Some(emoji) = &row.status_emoji {
+            trailing.push(crate::custom_status::emoji(
+                emoji,
+                scaled(&theme, metrics::ICON_SMALL),
+                cx,
+            ));
+        }
         if row.mentions > 0 {
-            item = item.trailing(
-                div()
-                    .group_hover(ROW_GROUP, |style| style.invisible())
-                    .child(
-                        Badge::count(row.mentions, 99)
-                            .bg(palette.mention)
-                            .text_color(palette.mention_foreground)
-                            .h(theme.space(4.5))
-                            .min_w(theme.space(4.5))
-                            .px(theme.space(1.5))
-                            .text_size(theme.text(11.))
-                            .line_height(theme.text(11.)),
-                    ),
+            trailing.push(
+                Badge::count(row.mentions, 99)
+                    .bg(palette.mention)
+                    .text_color(palette.mention_foreground)
+                    .h(theme.space(4.5))
+                    .min_w(theme.space(4.5))
+                    .px(theme.space(1.5))
+                    .text_size(theme.text(11.))
+                    .line_height(theme.text(11.))
+                    .into_any_element(),
             );
         } else if row.unread && !row.muted {
-            item = item.trailing(
+            trailing.push(
                 div()
                     .size(theme.space(1.5))
                     .rounded_full()
                     .bg(theme.colors.sidebar_foreground)
                     .mr(theme.space(1.))
-                    .group_hover(ROW_GROUP, |style| style.invisible()),
+                    .into_any_element(),
+            );
+        }
+        // The emoji and the count or dot hide while the row is hovered,
+        // where the options button takes their place, as in Mattermost.
+        if !trailing.is_empty() {
+            item = item.trailing(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .group_hover(ROW_GROUP, |style| style.invisible())
+                    .children(trailing),
             );
         }
         let menu_id = row.id.clone();
