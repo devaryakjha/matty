@@ -36,10 +36,12 @@ pub struct Outgoing {
     pub attempts: i64,
     /// Why the last attempt failed; `None` while it is pending.
     pub last_error: Option<String>,
+    /// Message priority, sent as `metadata.priority` (#220).
+    pub priority: Option<matty_api::models::PostPriority>,
 }
 
 const COLUMNS: &str = "pending_post_id, channel_id, root_id, message, file_ids, props, created_at,
-    attempts, last_error, local_files";
+    attempts, last_error, local_files, priority";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<Outgoing> {
     let file_ids: String = row.get(4)?;
@@ -55,13 +57,14 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Outgoing> {
         attempts: row.get(7)?,
         last_error: row.get(8)?,
         local_files: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+        priority: serde_json::from_str(&row.get::<_, String>(10)?).ok(),
     })
 }
 
 /// Queues a send. Queuing the same id again changes nothing.
 pub fn push(conn: &Connection, outgoing: &Outgoing) -> Result<()> {
     conn.prepare_cached(&format!(
-        "INSERT INTO outbox ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO outbox ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (pending_post_id) DO NOTHING"
     ))?
     .execute(params![
@@ -74,7 +77,12 @@ pub fn push(conn: &Connection, outgoing: &Outgoing) -> Result<()> {
         outgoing.created_at,
         outgoing.attempts,
         outgoing.last_error,
-        serde_json::to_string(&outgoing.local_files).unwrap_or_else(|_| "[]".into())
+        serde_json::to_string(&outgoing.local_files).unwrap_or_else(|_| "[]".into()),
+        outgoing
+            .priority
+            .as_ref()
+            .and_then(|priority| serde_json::to_string(priority).ok())
+            .unwrap_or_default()
     ])?;
     Ok(())
 }

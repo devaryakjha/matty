@@ -105,6 +105,12 @@ two users and a channel, so the tests run in parallel without seeing each
 other's posts or read state. Only the seeded-account test uses `tester`
 (`MATTY_TEST_LOGIN`), and nothing else changes that account.
 
+The tests of interactive messages, dialogs and slash commands in
+`crates/matty-api/tests/live.rs` run a stand-in integration on this machine,
+which the server calls as `host.docker.internal` (`docker/compose.yml` maps
+it to the host and allows it). Against a server elsewhere, set
+`MATTY_TEST_INTEGRATION_HOST` to a name that server reaches this machine by.
+
 CI's `integration` job does the same on Ubuntu for each server version in its
 matrix, and uploads the server log when a test fails. Changes that only touch
 Markdown, `docs/` or the license skip its steps.

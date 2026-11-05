@@ -28,6 +28,10 @@ services:
         condition: service_healthy
     ports:
       - "${MATTY_MM_PORT:-8065}:8065"
+    # The host, for integrations a script runs there (Docker Desktop
+    # defines it already; Linux needs this).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@db:5432/mattermost?sslmode=disable&connect_timeout=10
@@ -39,8 +43,15 @@ services:
       MM_SERVICESETTINGS_ENABLECUSTOMEMOJI: "true"
       MM_SERVICESETTINGS_ENABLELINKPREVIEWS: "true"
       # Lets link previews fetch pages the server serves itself, which
-      # scripts/record-fixtures.py uses to record embeds offline.
-      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "localhost 127.0.0.1"
+      # scripts/record-fixtures.py uses to record embeds offline, and lets
+      # integrations call a test integration on this machine (the recorder
+      # runs one to record interactive messages, dialogs and commands).
+      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: "localhost 127.0.0.1 host.docker.internal"
+      # Integrations and slash commands, for the recorder and live tests.
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: "true"
+      MM_SERVICESETTINGS_ENABLECOMMANDS: "true"
+      MM_SERVICESETTINGS_ENABLECUSTOMSLASHCOMMANDS: "true"
+      MM_SERVICESETTINGS_ENABLEPOSTUSERNAMEOVERRIDE: "true"
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
       # The web build (scripts/web serve) calls the server from another
       # origin. It reads the session from the `Token` header, which a

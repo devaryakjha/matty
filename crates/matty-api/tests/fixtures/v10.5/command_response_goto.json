@@ -1,0 +1,14 @@
+{
+  "response_type": "",
+  "text": "",
+  "username": "",
+  "channel_id": "",
+  "icon_url": "",
+  "type": "",
+  "props": null,
+  "goto_location": "/dev/channels/design",
+  "trigger_id": "btb6gkceobgipxuh4rjqsjqxuw",
+  "skip_slack_parsing": false,
+  "attachments": null,
+  "extra_responses": null
+}

@@ -141,8 +141,20 @@ pub struct ServerCapabilities {
     pub link_previews: bool,
     /// Drafts sync through the server.
     pub synced_drafts: bool,
-    /// Message priority is on.
+    /// Message priority is on (`PostPriority`).
     pub post_priority: bool,
+    /// Posts can ask for acknowledgements: message priority is on and the
+    /// license is Professional or above (`PostAcknowledgements`).
+    pub post_acknowledgements: bool,
+    /// Urgent posts can repeat their notification until acknowledged:
+    /// acknowledgements are on and `AllowPersistentNotifications`.
+    pub persistent_notifications: bool,
+    /// How often a persistent notification repeats, in minutes.
+    pub persistent_notification_interval_minutes: u64,
+    /// How many times a persistent notification repeats at most.
+    pub persistent_notification_max_count: u64,
+    /// Messages can be scheduled (`ScheduledPosts`, licensed servers).
+    pub scheduled_posts: bool,
     /// The longest message the server accepts, in characters.
     pub max_post_size: usize,
     /// The largest upload the server accepts, in bytes.
@@ -151,7 +163,10 @@ pub struct ServerCapabilities {
     pub image_proxy: bool,
     /// Channel bookmarks are on (#226): the `ChannelBookmarks` feature flag
     /// where the server still has it (9.x), and every server from 10.0 on,
-    /// which dropped the flag once bookmarks shipped.
+    /// which dropped the flag once bookmarks shipped. They need a license
+    /// too: without one the server answers every bookmark call with 501
+    /// `api.channel.bookmark.channel_bookmark.license.error` (recorded
+    /// from 10.5, whose config still reports the flag on).
     pub channel_bookmarks: bool,
     /// The server has a license.
     pub licensed: bool,
@@ -186,6 +201,10 @@ fn number(map: &OldFormat, key: &str) -> Option<u64> {
 
 /// Mattermost's default `MaxPostSize` when the server does not send one.
 const DEFAULT_MAX_POST_SIZE: usize = 16_383;
+/// Mattermost's default `PersistentNotificationIntervalMinutes`.
+const DEFAULT_PERSISTENT_INTERVAL: u64 = 5;
+/// Mattermost's default `PersistentNotificationMaxCount`.
+const DEFAULT_PERSISTENT_COUNT: u64 = 6;
 /// Mattermost's default `MaxFileSize` (100 MB).
 const DEFAULT_MAX_FILE_SIZE: u64 = 104_857_600;
 
@@ -202,6 +221,14 @@ impl ServerCapabilities {
             Some("always_on") => CollapsedThreads::AlwaysOn,
             _ => CollapsedThreads::Disabled,
         };
+        let sku = licensed
+            .then(|| text(license, "SkuShortName").map(str::to_string))
+            .flatten();
+        let post_priority = flag(config, "PostPriority");
+        // Acknowledgements and persistent notifications need Professional
+        // or above; the server only sends their settings then.
+        let paid = licensed && sku.as_deref() != Some("starter");
+        let post_acknowledgements = post_priority && (flag(config, "PostAcknowledgements") || paid);
         Ok(Self {
             version,
             build_number: text(config, "BuildNumber").map(str::to_string),
@@ -221,20 +248,33 @@ impl ServerCapabilities {
             custom_emoji: flag(config, "EnableCustomEmoji"),
             link_previews: flag(config, "EnableLinkPreviews"),
             synced_drafts: flag(config, "AllowSyncedDrafts"),
-            post_priority: flag(config, "PostPriority"),
+            post_priority,
+            post_acknowledgements,
+            persistent_notifications: post_acknowledgements
+                && paid
+                && flag(config, "AllowPersistentNotifications"),
+            persistent_notification_interval_minutes: number(
+                config,
+                "PersistentNotificationIntervalMinutes",
+            )
+            .filter(|minutes| *minutes > 0)
+            .unwrap_or(DEFAULT_PERSISTENT_INTERVAL),
+            persistent_notification_max_count: number(config, "PersistentNotificationMaxCount")
+                .filter(|count| *count > 0)
+                .unwrap_or(DEFAULT_PERSISTENT_COUNT),
+            scheduled_posts: licensed && flag(config, "ScheduledPosts"),
             max_post_size: number(config, "MaxPostSize")
                 .and_then(|n| usize::try_from(n).ok())
                 .unwrap_or(DEFAULT_MAX_POST_SIZE),
             max_file_size: number(config, "MaxFileSize").unwrap_or(DEFAULT_MAX_FILE_SIZE),
             image_proxy: flag(config, "HasImageProxy"),
-            channel_bookmarks: match config.get("FeatureFlagChannelBookmarks") {
-                Some(_) => flag(config, "FeatureFlagChannelBookmarks"),
-                None => version >= Version::new(10, 0, 0),
-            },
+            channel_bookmarks: licensed
+                && match config.get("FeatureFlagChannelBookmarks") {
+                    Some(_) => flag(config, "FeatureFlagChannelBookmarks"),
+                    None => version >= Version::new(10, 0, 0),
+                },
             licensed,
-            sku: licensed
-                .then(|| text(license, "SkuShortName").map(str::to_string))
-                .flatten(),
+            sku,
         })
     }
 
@@ -371,29 +411,91 @@ mod tests {
                 .available()
         );
         assert_eq!(gate("MaxPostSize", "4000").max_post_size, 4000);
-        assert!(gate("FeatureFlagChannelBookmarks", "true").channel_bookmarks);
-        assert!(!gate("FeatureFlagChannelBookmarks", "false").channel_bookmarks);
         assert_eq!(gate("MaxFileSize", "52428800").max_file_size, 52_428_800);
     }
 
     #[test]
-    fn bookmarks_follow_the_flag_or_the_version() {
-        let license = load("license_client_unlicensed.json");
-        let caps = |version: &str, flag: Option<&str>| {
+    fn priority_gates_follow_the_config_and_the_license() {
+        let licensed = |sku: &str| {
+            let mut license = load("license_client_enterprise.json");
+            license.insert("SkuShortName".into(), sku.into());
+            license
+        };
+        let unlicensed = load("license_client_unlicensed.json");
+        let caps = |pairs: &[(&str, &str)], license: &OldFormat| {
+            let mut config = load("config_client_team.json");
+            for (key, value) in pairs {
+                config.insert((*key).into(), (*value).into());
+            }
+            ServerCapabilities::from_old_format(&config, license).unwrap()
+        };
+        let all = [
+            ("PostPriority", "true"),
+            ("AllowPersistentNotifications", "true"),
+            ("ScheduledPosts", "true"),
+            ("PersistentNotificationIntervalMinutes", "10"),
+            ("PersistentNotificationMaxCount", "3"),
+        ];
+
+        let on = caps(&all, &licensed("professional"));
+        assert!(on.post_priority && on.post_acknowledgements);
+        assert!(on.persistent_notifications && on.scheduled_posts);
+        assert_eq!(on.persistent_notification_interval_minutes, 10);
+        assert_eq!(on.persistent_notification_max_count, 3);
+
+        // Each gate off hides its feature, and only what depends on it.
+        let off = caps(
+            &[("PostPriority", "false"), all[1], all[2]],
+            &licensed("enterprise"),
+        );
+        assert!(!off.post_priority && !off.post_acknowledgements);
+        assert!(!off.persistent_notifications && off.scheduled_posts);
+        let off = caps(
+            &[all[0], ("AllowPersistentNotifications", "false")],
+            &licensed("enterprise"),
+        );
+        assert!(off.post_acknowledgements && !off.persistent_notifications);
+        assert!(!off.scheduled_posts, "ScheduledPosts missing is off");
+
+        // Without a license: labels only; no acknowledgements, persistent
+        // notifications or scheduling.
+        let free = caps(&all, &unlicensed);
+        assert!(free.post_priority && !free.post_acknowledgements);
+        assert!(!free.persistent_notifications && !free.scheduled_posts);
+        // A server that says acknowledgements are on is believed.
+        let told = caps(&[all[0], ("PostAcknowledgements", "true")], &unlicensed);
+        assert!(told.post_acknowledgements);
+        // Starter has scheduling but not the Professional features.
+        let starter = caps(&all, &licensed("starter"));
+        assert!(!starter.post_acknowledgements && starter.scheduled_posts);
+
+        let defaults = caps(&[], &unlicensed);
+        assert_eq!(defaults.persistent_notification_interval_minutes, 5);
+        assert_eq!(defaults.persistent_notification_max_count, 6);
+    }
+
+    #[test]
+    fn bookmarks_follow_the_flag_or_the_version_and_need_a_license() {
+        let caps = |version: &str, flag: Option<&str>, license: &str| {
             let mut config = load("config_client_team.json");
             config.insert("Version".into(), version.into());
             config.remove("FeatureFlagChannelBookmarks");
             if let Some(flag) = flag {
                 config.insert("FeatureFlagChannelBookmarks".into(), flag.into());
             }
-            ServerCapabilities::from_old_format(&config, &license)
+            ServerCapabilities::from_old_format(&config, &load(license))
                 .unwrap()
                 .channel_bookmarks
         };
-        assert!(!caps("9.11.0", None));
-        assert!(caps("9.11.0", Some("true")));
-        assert!(caps("12.0.1", None));
-        assert!(!caps("10.5.0", Some("false")));
+        let licensed = "license_client_enterprise.json";
+        assert!(!caps("9.11.0", None, licensed));
+        assert!(caps("9.11.0", Some("true"), licensed));
+        assert!(caps("12.0.1", None, licensed));
+        assert!(!caps("10.5.0", Some("false"), licensed));
+        // An unlicensed 10.5 reports the flag on and refuses bookmarks.
+        let unlicensed = "license_client_unlicensed.json";
+        assert!(!caps("10.5.14", Some("true"), unlicensed));
+        assert!(!caps("12.0.1", None, unlicensed));
     }
 
     #[test]

@@ -89,6 +89,9 @@ pub enum ChangeSet {
     },
     /// A command could not be carried out.
     Failed(CommandError),
+    /// The user's scheduled messages in every team, soonest first (#220),
+    /// whenever they change. Only on servers that allow scheduling.
+    Scheduled(Arc<[matty_api::models::ScheduledPost]>),
     /// A post only this user sees, such as a slash command's reply. It is
     /// never stored; the view shows it until the channel is left. The
     /// server changes one with `post_edited` and removes one with

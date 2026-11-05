@@ -256,6 +256,20 @@ pub(crate) enum Loaded {
     },
     /// A listing could not reach the server: the cache answers instead.
     ListingOffline(crate::Listing),
+    /// The user's scheduled messages changed (#220).
+    Scheduled(crate::priority::ScheduledChange),
+    /// The server took an acknowledgement, or taking one back.
+    Acknowledged {
+        ack: matty_api::models::PostAcknowledgement,
+        acknowledged: bool,
+    },
+    /// An acknowledgement the store already shows did not reach the
+    /// server; `error` is `None` when it could not be reached.
+    AckFailed {
+        ack: matty_api::models::PostAcknowledgement,
+        acknowledged: bool,
+        error: Option<String>,
+    },
 }
 
 /// Runs a fetch an event asked for. Failures are logged: the next resync
@@ -333,6 +347,7 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
         .collect();
     let custom_emoji = capabilities.custom_emoji;
     let synced_drafts = capabilities.synced_drafts;
+    let scheduled_posts = capabilities.scheduled_posts;
     let draft_teams = team_ids.clone();
     if results
         .send(Loaded::Account {
@@ -392,8 +407,8 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
         }
     }
     if synced_drafts {
-        for team_id in draft_teams {
-            match client.drafts(&user_id, &team_id).await {
+        for team_id in &draft_teams {
+            match client.drafts(&user_id, team_id).await {
                 Ok(drafts) if !drafts.is_empty() => {
                     let _ = results.send(Loaded::Drafts(drafts));
                 }
@@ -401,6 +416,9 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
                 Err(error) => tracing::warn!(%error, %team_id, "could not load drafts"),
             }
         }
+    }
+    if scheduled_posts {
+        load_scheduled(&client, &draft_teams, &results).await;
     }
     if custom_emoji {
         match client.all_emoji().await {
@@ -411,6 +429,24 @@ pub(crate) async fn run(client: Client, results: UnboundedSender<Loaded>) {
         }
     }
     let _ = results.send(Loaded::Done);
+}
+
+/// Lists the user's scheduled messages in every team, direct and group
+/// messages once with the first (#220).
+async fn load_scheduled(client: &Client, team_ids: &[String], results: &UnboundedSender<Loaded>) {
+    let mut all = Vec::new();
+    for (index, team_id) in team_ids.iter().enumerate() {
+        match client.scheduled_posts(team_id, index == 0).await {
+            Ok(posts) => all.extend(posts),
+            Err(error) => {
+                tracing::warn!(%error, %team_id, "could not load scheduled messages");
+                return;
+            }
+        }
+    }
+    let _ = results.send(Loaded::Scheduled(
+        crate::priority::ScheduledChange::Replace(all),
+    ));
 }
 
 async fn team(client: &Client, user_id: &str, team_id: &str) -> Result<Loaded, ApiError> {

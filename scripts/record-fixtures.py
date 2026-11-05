@@ -17,9 +17,12 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +40,110 @@ PREVIEW_PAGES = {
 </head><body>preview</body></html>""",
     "plain.html": "<!doctype html><html><head><title>Plain page</title></head><body>no tags</body></html>",
 }
+
+
+# The server reaches an integration this script runs through this name
+# (docker/compose.yml maps it to the host and lets the server call it).
+INTEGRATION_HOST = "host.docker.internal"
+RECORDER_DIALOG = {
+    "callback_id": "recorder-dialog",
+    "title": "Recorder dialog",
+    "introduction_text": "Fields of **every** kind.",
+    "submit_label": "Send",
+    "notify_on_cancel": True,
+    "state": "recorder-state",
+    "elements": [
+        {"display_name": "Name", "name": "name", "type": "text", "placeholder": "Your name",
+         "help_text": "Type bad to fail", "min_length": 2, "max_length": 40},
+        {"display_name": "Age", "name": "age", "type": "text", "subtype": "number", "optional": True},
+        {"display_name": "Notes", "name": "notes", "type": "textarea", "optional": True, "default": "hello"},
+        {"display_name": "Color", "name": "color", "type": "select", "default": "blue",
+         "options": [{"text": "Red", "value": "red"}, {"text": "Blue", "value": "blue"}]},
+        {"display_name": "Owner", "name": "owner", "type": "select", "data_source": "users", "optional": True},
+        {"display_name": "Agree", "name": "agree", "type": "bool", "placeholder": "I agree", "default": "true",
+         "optional": True},
+        {"display_name": "Size", "name": "size", "type": "radio", "default": "s",
+         "options": [{"text": "Small", "value": "s"}, {"text": "Large", "value": "l"}]},
+    ],
+}
+
+
+class Integration:
+    """A tiny integration on this machine: it answers post actions, dialog
+    submissions and the `/recorder` slash command the way real ones do, so
+    the server's own answers to them can be recorded."""
+
+    def __init__(self, server: str):
+        self.server = server
+        self.dialogs_opened = 0
+        integration = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+                if "form" in self.headers.get("Content-Type", ""):
+                    body = dict(urllib.parse.parse_qsl(raw))
+                else:
+                    body = json.loads(raw or "{}")
+                self.answer(integration.handle(self.path, body))
+
+            def answer(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        self.url = f"http://{INTEGRATION_HOST}:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def open_dialog(self, trigger_id: str) -> None:
+        body = json.dumps({"trigger_id": trigger_id, "url": f"{self.url}/dialog",
+                           "dialog": RECORDER_DIALOG}).encode()
+        req = urllib.request.Request(f"{self.server}/api/v4/actions/dialogs/open", data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30):
+            self.dialogs_opened += 1
+
+    def action(self, id_: str, name: str, action: str, **extra) -> dict:
+        return {"id": id_, "name": name, "type": "button",
+                "integration": {"url": f"{self.url}/action", "context": {"action": action}}, **extra}
+
+    def handle(self, path: str, body: dict):
+        if path == "/action":
+            action = (body.get("context") or {}).get("action")
+            if action == "update":
+                return {"update": {"message": "Approved by the recorder", "props": {"attachments": [{
+                    "fallback": "Approved", "color": "good", "title": "Deploy approved",
+                    "actions": [self.action("undo", "Undo", "ephemeral")]}]}},
+                        "ephemeral_text": "Approved."}
+            if action == "dialog":
+                self.open_dialog(body["trigger_id"])
+                return {}
+            return {"ephemeral_text": f"You chose {body.get('context', {}).get('selected_option', action)}."}
+        if path == "/dialog":
+            name = (body.get("submission") or {}).get("name")
+            if body.get("cancelled") or name not in ("bad", "fail"):
+                return {}
+            if name == "bad":
+                return {"errors": {"name": "That name is taken."}}
+            return {"error": "The deploy service is down."}
+        if path == "/command":
+            text = body.get("text", "").strip()
+            if text == "dialog":
+                self.open_dialog(body["trigger_id"])
+                return {}
+            if text == "goto":
+                return {"goto_location": "/dev/channels/design"}
+            if text == "shout":
+                return {"response_type": "in_channel", "text": "Posted for everyone."}
+            return {"response_type": "ephemeral", "text": f"You ran /recorder {text}"}
+        return {}
 
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -228,8 +335,78 @@ def main() -> None:
     get("users_autocomplete", f"users/autocomplete?name=a&in_team={team}")
     get("users_autocomplete_in_channel", f"users/autocomplete?name=a&in_team={team}&in_channel={design}")
 
+    record_integrations(save, server, tester, admin, team, random_ch)
+
     save("channel_unread_at", tester.call("POST", f"users/{me}/posts/{busy['pinned_posts'][0]}/set_unread",
                                           {"collapsed_threads_supported": True}))
+
+
+def record_integrations(save, server: str, tester: Session, admin: Session, team: str, channel: str) -> None:
+    """Interactive messages, dialogs and slash commands (#210, #211),
+    answered by an integration this script runs."""
+    integration = Integration(server)
+    hook = integration.url
+    # Interactive message: buttons and menus the server hands to the
+    # integration; it strips their URLs and adds cookies when serving them.
+    menu = {"type": "select", "integration": {"url": f"{hook}/action", "context": {"action": "select"}}}
+    post = tester.call("POST", "posts", {"channel_id": channel, "message": "", "props": {"attachments": [{
+        "fallback": "Deploy matty to production?", "color": "warning", "pretext": "A deploy is waiting.",
+        "title": "matty → production", "text": "Requested by the recorder.",
+        "fields": [{"title": "Commits", "value": 14, "short": True}],
+        "actions": [
+            integration.action("approve", "Approve", "update", style="primary"),
+            integration.action("details", "Details", "dialog"),
+            integration.action("reject", "Reject", "ephemeral", style="danger", disabled=True),
+            {**menu, "id": "region", "name": "Pick a region", "default_option": "eu",
+             "options": [{"text": "Europe", "value": "eu"}, {"text": "US East", "value": "us"}]},
+            {**menu, "id": "reviewer", "name": "Ask a reviewer", "data_source": "users"},
+        ]}]}})
+    post_id = post["id"]
+    save("post_interactive", tester.call("GET", f"posts/{post_id}"))
+    tester.call("POST", f"posts/{post_id}/actions/region", {"selected_option": "us"})
+    tester.call("POST", f"posts/{post_id}/actions/details", {})
+    save("post_action", tester.call("POST", f"posts/{post_id}/actions/approve", {}))
+    save("post_interactive_updated", tester.call("GET", f"posts/{post_id}"))
+
+    def submit(name: str, cancelled: bool = False):
+        return tester.call("POST", "actions/dialogs/submit", {
+            "type": "dialog_submission", "url": f"{hook}/dialog", "callback_id": "recorder-dialog",
+            "state": "recorder-state", "channel_id": channel, "team_id": team, "cancelled": cancelled,
+            "submission": {} if cancelled else {"name": name, "agree": True, "age": 3}}, ok_error=True)
+    save("dialog_submit_errors", submit("bad"))
+    save("dialog_submit_error", submit("fail"))
+    submit("Ada")
+    submit("", cancelled=True)
+
+    # Slash commands: the server's own and an integration's.
+    if not any(c["trigger"] == "recorder" for c in admin.call("GET", f"commands?team_id={team}&custom_only=true")):
+        admin.call("POST", "commands", {
+            "team_id": team, "trigger": "recorder", "method": "P", "url": f"{hook}/command",
+            "display_name": "Recorder", "description": "Answers the fixture recorder", "username": "recorder",
+            "auto_complete": True, "auto_complete_desc": "Answers the fixture recorder",
+            "auto_complete_hint": "[dialog|goto|shout|text]"})
+    else:
+        command = next(c for c in admin.call("GET", f"commands?team_id={team}&custom_only=true")
+                       if c["trigger"] == "recorder")
+        admin.call("PUT", f"commands/{command['id']}", {**command, "url": f"{hook}/command"})
+    get = lambda path: tester.call("GET", path)  # noqa: E731
+    save("commands_autocomplete", get(f"teams/{team}/commands/autocomplete"))
+    query = urllib.parse.urlencode({"user_input": "/re", "channel_id": channel})
+    save("command_suggestions", get(f"teams/{team}/commands/autocomplete_suggestions?{query}"))
+
+    def run(line: str):
+        return tester.call("POST", "commands/execute", {"command": line, "channel_id": channel, "team_id": team},
+                           ok_error=True)
+    save("command_response_ephemeral", run("/recorder hello"))
+    save("command_response_in_channel", run("/recorder shout"))
+    save("command_response_goto", run("/recorder goto"))
+    save("command_response_dialog", run("/recorder dialog"))
+    save("command_response_builtin", run("/away"))
+    run("/online")
+    save("command_not_found", run("/nope"))
+    integration.httpd.shutdown()
+    if integration.dialogs_opened != 2:
+        raise SystemExit(f"the integration opened {integration.dialogs_opened} dialogs, not 2")
 
 
 if __name__ == "__main__":

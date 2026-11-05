@@ -881,6 +881,11 @@ impl SidebarView {
     }
 
     /// Whether `id` shows unread messages or mentions.
+    /// Whether the sidebar on screen lists the channel.
+    pub fn has_row(&self, id: &str) -> bool {
+        self.model.rows().any(|row| row.id.as_ref() == id)
+    }
+
     pub fn is_unread(&self, id: &str) -> bool {
         self.model
             .rows()

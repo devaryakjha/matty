@@ -25,6 +25,7 @@ async fn a_post_is_sent_edited_and_deleted() {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: Default::default(),
+        priority: None,
     });
     // The optimistic row, then the server's.
     let window = engine

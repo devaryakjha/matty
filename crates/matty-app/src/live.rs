@@ -279,6 +279,11 @@ pub struct Update {
     pub resume_uploads: Vec<SharedString>,
     /// The server's `MaxFileSize`, for the trays to check files against.
     pub max_file_size: Option<u64>,
+    /// What the server allows of message priority, acknowledgements and
+    /// scheduling (#220).
+    pub features: Option<crate::priority::Features>,
+    /// The user's scheduled messages, when they changed (#220).
+    pub scheduled: Option<Arc<[matty_api::models::ScheduledPost]>>,
     /// The open channel's history: whether its first post is loaded,
     /// whether it reaches the newest post, and whether the last page failed.
     pub history: Option<(bool, bool, bool)>,
@@ -308,6 +313,8 @@ pub struct Arrival {
     pub user: matty_notify::UserPrefs,
     pub channel: matty_notify::ChannelPrefs,
     pub collapsed_threads: bool,
+    /// An urgent post that asks for persistent notifications (#220).
+    pub persistent: bool,
 }
 
 impl Arrival {
@@ -342,6 +349,11 @@ impl Arrival {
             user: user.clone(),
             channel: matty_notify::ChannelPrefs::from_props(&arrived.channel_props),
             collapsed_threads: arrived.collapsed_threads,
+            persistent: post
+                .metadata
+                .priority
+                .as_ref()
+                .is_some_and(|priority| priority.is_urgent() && priority.persistent_notifications),
         }
     }
 
@@ -2168,9 +2180,11 @@ impl Live {
                         .map(|graph| crate::embeds::link_card(url, graph)),
                 ));
             }
+            ChangeSet::Scheduled(posts) => update.scheduled = Some(posts.clone()),
             ChangeSet::Config(capabilities) => {
                 self.max_post_size = Some(capabilities.max_post_size);
                 update.max_file_size = Some(capabilities.max_file_size);
+                update.features = Some(crate::priority::Features::of(capabilities));
                 self.threads_choice = Some(matches!(
                     capabilities.collapsed_threads,
                     matty_api::capabilities::CollapsedThreads::DefaultOn
@@ -3336,6 +3350,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            priority: None,
         }
     }
 

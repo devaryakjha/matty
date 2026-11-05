@@ -61,6 +61,9 @@ const EXPECTED: &[(&str, &str)] = &[
     ("preferences_deleted", "PreferencesDeleted"),
     ("reaction_added", "ReactionAdded"),
     ("reaction_removed", "ReactionRemoved"),
+    ("scheduled_post_created", "ScheduledPostCreated"),
+    ("scheduled_post_deleted", "ScheduledPostDeleted"),
+    ("scheduled_post_updated", "ScheduledPostUpdated"),
     ("sidebar_category_created", "SidebarCategoryCreated"),
     ("sidebar_category_deleted", "SidebarCategoryDeleted"),
     (
