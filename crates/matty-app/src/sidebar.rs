@@ -353,6 +353,15 @@ impl SidebarModel {
             .collect()
     }
 
+    /// The channels the unread digest lists, in sidebar order: unread
+    /// ones that are not muted, and any with a mention (#223).
+    pub fn digest_ids(&self) -> Vec<SharedString> {
+        self.rows()
+            .filter(|row| (row.unread && !row.muted) || row.mentions > 0)
+            .map(|row| row.id.clone())
+            .collect()
+    }
+
     /// Clears every unread mark and mention count.
     pub fn mark_all_read(&mut self) {
         for row in self

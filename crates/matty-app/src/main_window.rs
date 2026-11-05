@@ -14,9 +14,9 @@ use gpui_kit::{
 
 use crate::account::{Account, AccountEvent, AccountView};
 use crate::actions::{
-    self, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu, FocusComposer,
-    FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead, NextChannel,
-    NextUnreadChannel, OpenInNewWindow, OpenPreferences, Platform, PreviousChannel,
+    self, AllUnreads, BrowseChannels, ChannelInfo, CreateChannel, DirectMessagesMenu,
+    FocusComposer, FocusSearch, HistoryBack, HistoryForward, MarkAllRead, MarkChannelRead,
+    NextChannel, NextUnreadChannel, OpenInNewWindow, OpenPreferences, Platform, PreviousChannel,
     PreviousUnreadChannel, QuickSwitcher, RecentMentions, ResetZoom, SavedMessages, Search,
     ShowShortcuts, ToggleRightPane, ToggleSidebar, UnreadsFilter, UploadFiles, ZoomIn, ZoomOut,
 };
@@ -3100,7 +3100,7 @@ impl MainWindow {
         }
     }
 
-    fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
+    pub(super) fn show_listing(&mut self, content: RightPaneContent, cx: &mut Context<Self>) {
         self.leave_thread();
         self.threads_open = false;
         self.drafts_open = false;
@@ -3508,6 +3508,14 @@ impl MainWindow {
                     .gap(theme.space(0.5))
                     .pr(theme.space(2.))
                     .flex_shrink_0()
+                    .child(Self::icon_button(
+                        "titlebar.unreads",
+                        "All unreads",
+                        LucideIcon::Inbox,
+                        Box::new(AllUnreads),
+                        true,
+                        cx,
+                    ))
                     .child(Self::icon_button(
                         "titlebar.mentions",
                         "Recent mentions",
@@ -4414,6 +4422,7 @@ impl Render for MainWindow {
                 this.open_in_new_window(window, cx)
             }))
             .on_action(cx.listener(|this, _: &RecentMentions, _, cx| this.show_mentions(cx)))
+            .on_action(cx.listener(|this, _: &AllUnreads, _, cx| this.show_unreads(cx)))
             .on_action(cx.listener(|this, _: &SavedMessages, _, cx| this.show_saved(cx)))
             .on_action(
                 cx.listener(|this, _: &DirectMessagesMenu, window, cx| {

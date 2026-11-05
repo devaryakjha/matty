@@ -1089,6 +1089,15 @@ impl Live {
         });
     }
 
+    /// Loads the unread digest (#223): the first unread posts of each of
+    /// `channel_ids`, in that order. They come as [`Update::listing`].
+    pub fn show_unreads(&mut self, channel_ids: Vec<String>) {
+        self.show_listing(matty_sync::Listing::Unreads {
+            channel_ids,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+        });
+    }
+
     fn show_listing(&mut self, listing: matty_sync::Listing) {
         self.listing = Some((listing.clone(), None));
         self.send(Command::LoadListing(listing));
@@ -1218,6 +1227,7 @@ impl Live {
         Some(match listing {
             matty_sync::Listing::Saved => RightPaneContent::Saved(listed),
             matty_sync::Listing::Mentions { .. } => RightPaneContent::Mentions(listed),
+            matty_sync::Listing::Unreads { .. } => RightPaneContent::Unreads(listed),
             matty_sync::Listing::Pinned { channel_id } => RightPaneContent::Pinned {
                 channel_name: self.channel_name(channel_id).unwrap_or_default(),
                 posts: listed,
@@ -3752,6 +3762,41 @@ mod tests {
             .map(|p| p.username.to_string())
             .collect();
         assert_eq!(names, ["ada", "zed"]);
+    }
+
+    #[test]
+    fn the_unread_digest_keeps_the_channel_order_it_asked_for() {
+        let mut live = live();
+        let post = |id: &str, channel: &str, at: i64| matty_api::models::Post {
+            id: id.into(),
+            channel_id: channel.into(),
+            user_id: "ada".into(),
+            message: "news".into(),
+            create_at: at,
+            ..Default::default()
+        };
+        live.show_unreads(vec!["b".into(), "a".into()]);
+        let asked = matty_sync::Listing::Unreads {
+            channel_ids: vec!["b".into(), "a".into()],
+            collapsed_threads: false,
+        };
+        // Channel by channel, oldest first within each, as sync sends them;
+        // never re-sorted newest first like the other listings.
+        let shown = live
+            .apply(&ChangeSet::Listing {
+                listing: asked,
+                posts: Arc::from(vec![
+                    post("b1", "b", 1),
+                    post("b2", "b", 5),
+                    post("a1", "a", 3),
+                ]),
+            })
+            .listing;
+        let Some(crate::right_pane::RightPaneContent::Unreads(posts)) = shown else {
+            panic!("expected the unread digest, got {shown:?}");
+        };
+        let ids: Vec<&str> = posts.iter().map(|item| item.post.id.as_ref()).collect();
+        assert_eq!(ids, ["b1", "b2", "a1"]);
     }
 
     #[test]

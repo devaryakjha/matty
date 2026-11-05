@@ -405,6 +405,7 @@ conventions or Matty additions. A Cmd/Ctrl+/ sheet lists them all.
 | Channel info | Cmd+Shift+I (MM) |
 | Toggle / expand right pane | Cmd+. / Cmd+Shift+. (MM) |
 | Recent mentions | Cmd+Shift+M (MM) |
+| All unreads | Cmd+Shift+A (Slack) |
 | Upload files | Cmd+U (MM) |
 | Edit last message | Up in empty composer (MM) |
 | Reply to last message | Shift+Up in empty composer (MM) |

@@ -1,11 +1,13 @@
 //! Keyboard triage (#223): Alt+Shift+Up/Down walk the unread channels and
 //! carry on into the next team with unreads when the team on screen has
 //! none left that way. While a channel reached that way is open, Escape
-//! reads it and moves on to the next unread one.
+//! reads it and moves on to the next unread one. Cmd/Ctrl+Shift+A shows
+//! the unread digest.
 
 use gpui_kit::{Context, SharedString, Window};
 
 use super::MainWindow;
+use crate::right_pane::RightPaneContent;
 use crate::sidebar::Step;
 
 impl MainWindow {
@@ -32,6 +34,19 @@ impl MainWindow {
         let wrapped = self.sidebar.read(cx).shown().neighbor(step, true);
         if let Some(id) = wrapped {
             self.triage_to(id, window, cx);
+        }
+    }
+
+    /// Cmd/Ctrl+Shift+A and the title bar's inbox (#223): the first
+    /// unread messages of every unread channel in the team, in the right
+    /// pane, channel by channel in sidebar order.
+    pub(super) fn show_unreads(&mut self, cx: &mut Context<Self>) {
+        let ids = self.sidebar.read(cx).model().digest_ids();
+        self.show_listing(RightPaneContent::Unreads(Vec::new()), cx);
+        if let Some(live) = self.live.as_mut() {
+            live.show_unreads(ids.iter().map(ToString::to_string).collect());
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_loading(true, cx));
         }
     }
 

@@ -578,4 +578,12 @@ pub enum Listing {
         /// The mention keys, space separated, such as `@ada ada deploy`.
         terms: String,
     },
+    /// The unread digest (#223): the first unread posts of each channel,
+    /// channel by channel in the order given, oldest first within each.
+    Unreads {
+        /// The unread channels, in the order the digest lists them.
+        channel_ids: Vec<String>,
+        /// Whether collapsed reply threads are on, so replies stay out.
+        collapsed_threads: bool,
+    },
 }

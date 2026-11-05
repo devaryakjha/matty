@@ -50,6 +50,8 @@ gpui_kit::actions!(
         ExpandRightPane,
         /// Show recent mentions. (MM)
         RecentMentions,
+        /// Show the first unread messages of every unread channel. (Slack)
+        AllUnreads,
         /// Show saved messages. (Matty)
         SavedMessages,
         /// Pick files to upload to the current channel. (MM)
@@ -446,6 +448,13 @@ pub fn bindings() -> Vec<Binding> {
             "ctrl-shift-m"
         ),
         row!(
+            "All unreads",
+            AllUnreads,
+            main,
+            "cmd-shift-a",
+            "ctrl-shift-a"
+        ),
+        row!(
             "Saved messages",
             SavedMessages,
             main,
@@ -685,6 +694,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
-        assert_eq!(count, 45);
+        assert_eq!(count, 46);
     }
 }
