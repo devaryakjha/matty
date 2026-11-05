@@ -609,7 +609,7 @@ impl RightPaneView {
                         if let Some(term) = this.people.ask(*trigger, query) {
                             cx.emit(RightPaneEvent::SuggestPeople(term.into()));
                         }
-                        let suggestions = this.reply_suggestions(*trigger, query);
+                        let suggestions = this.reply_suggestions(*trigger, query, cx);
                         composer
                             .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
                     }
@@ -2187,7 +2187,7 @@ impl RightPaneView {
     /// Keeps the people whose presence the thread's avatars show.
     /// Suggestions for the reply composer's triggers, as in the channel's;
     /// the server's matches stand in for the thread's people.
-    fn reply_suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+    fn reply_suggestions(&self, trigger: char, query: &str, cx: &App) -> Vec<ComposerSuggestion> {
         crate::channel::composer_suggestions(
             trigger,
             query,
@@ -2195,6 +2195,7 @@ impl RightPaneView {
             &self.people,
             &self.directory,
             true,
+            &crate::emoji::frequent(cx),
         )
     }
 
@@ -2207,7 +2208,7 @@ impl RightPaneView {
         cx: &mut Context<Self>,
     ) {
         if self.people.answer(&term, people) {
-            let suggestions = self.reply_suggestions('@', &term);
+            let suggestions = self.reply_suggestions('@', &term, cx);
             self.composer
                 .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
         }
