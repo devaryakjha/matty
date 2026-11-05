@@ -1085,7 +1085,10 @@ impl SidebarView {
                             Avatar::new(element_id("sidebar.avatar", &row.id))
                                 .size(AvatarSize::Sm)
                                 .fallback(initial)
-                                .aria_label(crate::style::presence_name(&row.name, *presence)),
+                                .aria_label(row.name.clone())
+                                .status(crate::style::avatar_status(*presence, palette))
+                                .status_size(scaled(theme, 8.))
+                                .ring_color(theme.colors.sidebar),
                             row.person.as_deref().unwrap_or_default(),
                             cx,
                         )
@@ -1093,13 +1096,6 @@ impl SidebarView {
                         .h(slot)
                         .text_size(theme.text(9.)),
                     )
-                    .child(crate::style::presence_dot(
-                        *presence,
-                        scaled(theme, 8.),
-                        theme.colors.sidebar,
-                        theme,
-                        palette,
-                    ))
                     .into_any_element()
             }
         }
