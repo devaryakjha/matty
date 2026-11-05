@@ -1072,3 +1072,68 @@ async fn slash_commands_suggest_and_run() {
     connection.close();
     let _ = me;
 }
+
+#[tokio::test]
+async fn bookmarks_round_trip_where_the_license_allows() {
+    use matty_api::models::{BookmarkKind, BookmarkPatch, NewBookmark};
+    let Some((client, _me)) = sign_in_tester().await else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    let (_, channel_id) = team_and_channel(&client).await;
+    let caps = client.capabilities().await.unwrap();
+    if !caps.channel_bookmarks {
+        // Without a license the server refuses bookmarks even where its
+        // config reports the feature flag on, which is why the capability
+        // needs the license too.
+        let refused = client.channel_bookmarks(&channel_id).await.unwrap_err();
+        if !caps.licensed {
+            assert!(
+                matches!(refused, ApiError::Server { status: 501, .. }),
+                "{refused:?}"
+            );
+            assert_eq!(
+                refused.id(),
+                Some("api.channel.bookmark.channel_bookmark.license.error")
+            );
+        }
+        return;
+    }
+    let new = |name: &str| NewBookmark {
+        channel_id: channel_id.clone(),
+        display_name: name.into(),
+        kind: BookmarkKind::Link,
+        link_url: format!("https://example.com/{name}"),
+        ..Default::default()
+    };
+    let first = client.create_bookmark(&new("live-one")).await.unwrap();
+    let second = client.create_bookmark(&new("live-two")).await.unwrap();
+    assert_eq!(first.kind, BookmarkKind::Link);
+    let listed = client.channel_bookmarks(&channel_id).await.unwrap();
+    assert!(listed.iter().any(|b| b.id == first.id));
+    let patched = client
+        .patch_bookmark(
+            &channel_id,
+            &first.id,
+            &BookmarkPatch {
+                display_name: Some("live-renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let renamed = patched.updated.expect("the updated bookmark");
+    assert_eq!(renamed.display_name, "live-renamed");
+    let moved = client
+        .sort_bookmark(&channel_id, &second.id, 0)
+        .await
+        .unwrap();
+    assert!(moved.iter().any(|b| b.id == second.id && b.sort_order == 0));
+    for bookmark in [&second, &renamed] {
+        let deleted = client
+            .delete_bookmark(&channel_id, &bookmark.id)
+            .await
+            .unwrap();
+        assert!(deleted.delete_at > 0);
+    }
+}

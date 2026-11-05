@@ -41,6 +41,24 @@ pub async fn server_unpooled() -> MockServer {
     account_on(MockServer::builder().start().await, json!({})).await
 }
 
+/// [`server`] with an Enterprise license, for licensed features such as
+/// channel bookmarks.
+pub async fn server_licensed(overrides: Value) -> MockServer {
+    let server = MockServer::start().await;
+    let license = format!(
+        "{}/../matty-api/tests/fixtures/license_client_enterprise.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    // Mounted first, so it answers before the recorded (unlicensed) one.
+    get(
+        "license/client",
+        serde_json::from_slice(&std::fs::read(license).unwrap()).unwrap(),
+    )
+    .mount(&server)
+    .await;
+    account_on(server, overrides).await
+}
+
 async fn account_on(server: MockServer, overrides: Value) -> MockServer {
     let mut config = fixture("config_client");
     for (key, value) in overrides.as_object().unwrap() {
