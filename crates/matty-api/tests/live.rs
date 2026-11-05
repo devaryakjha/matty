@@ -1193,10 +1193,13 @@ async fn custom_emoji_upload_and_delete() {
 /// roles, Add members' candidates, admins, Channel files and removal.
 #[tokio::test]
 async fn channel_members_admins_and_files_round_trip() {
-    let Some((url, login, password)) = server() else {
+    let Some((url, tester, password)) = server() else {
         eprintln!("MATTY_TEST_SERVER not set; skipping");
         return;
     };
+    // Another seeded user than the tester, whose channel lists the other
+    // tests count while this one creates and leaves channels.
+    let login = std::env::var("MATTY_TEST_MANAGER").unwrap_or_else(|_| "ada.lovelace".into());
     let credentials = Credentials {
         login_id: login,
         password,
@@ -1240,7 +1243,7 @@ async fn channel_members_admins_and_files_round_trip() {
     assert!(candidates.iter().all(|u| u.id != me.id));
     let other = candidates
         .iter()
-        .find(|u| !u.is_bot && u.delete_at == 0)
+        .find(|u| !u.is_bot && u.delete_at == 0 && u.username != tester)
         .expect("someone else on the team");
     client
         .add_channel_member(&channel.id, &other.id)
