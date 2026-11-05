@@ -22,7 +22,7 @@ use matty_api::models::Preference;
 use crate::contrast::{self, Pair, over};
 use crate::settings::Settings;
 use crate::style::{self, Palette};
-use crate::ui::theme::{ThemeMode, UiTheme};
+use crate::ui::theme::{CodeTheme, ThemeMode, UiTheme};
 
 /// The preference category Mattermost keeps themes in.
 pub const CATEGORY: &str = "theme";
@@ -258,15 +258,21 @@ impl Theme {
         c.sidebar_accent_foreground = over(m.sidebar_text_active_color, c.sidebar_accent);
         c.sidebar_border = on_side(m.sidebar_text.opacity(BORDER));
         c.sidebar_ring = c.sidebar_primary;
+        c.sidebar_muted_foreground = Some(on_side(m.sidebar_text.opacity(QUIET_TEXT)));
+        let badge = on_side(m.mention_bg);
+        c.sidebar_badge = Some(badge);
+        c.sidebar_badge_foreground = Some(over(m.mention_color, badge));
+        c.link = Some(over(m.link_color, bg));
+        let highlight = over(m.mention_highlight_bg, bg);
+        c.mention_highlight = Some(highlight);
+        c.mention_highlight_foreground = Some(over(m.mention_highlight_link, highlight));
+        c.new_messages = Some(over(m.new_message_separator, bg));
+        theme.code_theme = CodeTheme::from_name(&self.code_theme).unwrap_or_default();
 
-        let mention = on_side(m.mention_bg);
         let palette = Palette {
             online: m.online_indicator,
             away: m.away_indicator,
             dnd: m.dnd_indicator,
-            sidebar_muted: on_side(m.sidebar_text.opacity(QUIET_TEXT)),
-            mention,
-            mention_foreground: over(m.mention_color, mention),
         };
         (theme, palette)
     }
@@ -532,46 +538,55 @@ mod tests {
         assert_eq!(hex(palette.online), 0x3db887);
         assert_eq!(hex(palette.away), 0xffbc1f);
         assert_eq!(hex(palette.dnd), 0xd24b4e);
-        assert_eq!(hex(palette.mention), 0xffffff);
-        assert_eq!(hex(palette.mention_foreground), 0x1e325c);
+        assert_eq!(hex(c.sidebar_badge()), 0xffffff);
+        assert_eq!(hex(c.sidebar_badge_foreground()), 0x1e325c);
         // Read channels: white at 72% over the navy sidebar.
-        assert_eq!(hex(palette.sidebar_muted), 0xc0c6d1);
+        assert_eq!(hex(c.sidebar_muted_foreground()), 0xc0c6d1);
+        assert_eq!(hex(c.link()), 0x1c58d9);
+        assert_eq!(hex(c.mention_highlight()), 0xffd470);
+        assert_eq!(hex(c.mention_highlight_foreground()), 0x1b1d22);
+        assert_eq!(hex(c.new_messages()), 0xcc8f00);
+        assert_eq!(ui.code_theme, CodeTheme::GitHub);
         // Matty's radius and fonts stay.
         assert_eq!(ui.radius, style::theme(ThemeMode::Light).radius);
     }
 
     #[test]
     fn sapphire_and_quartz_map_onto_light_tokens() {
-        let (ui, palette) = Theme::built_in("Sapphire").unwrap().ui();
+        let (ui, _) = Theme::built_in("Sapphire").unwrap().ui();
         assert_eq!(ui.mode, ThemeMode::Light);
         assert_eq!(hex(ui.colors.sidebar), 0x1543a3);
         assert_eq!(hex(ui.colors.sidebar_ring), 0x57b5f0);
-        assert_eq!(hex(palette.mention_foreground), 0x174ab5);
+        assert_eq!(hex(ui.colors.sidebar_badge_foreground()), 0x174ab5);
+        assert_eq!(hex(ui.colors.new_messages()), 0x15b7b7);
 
         let (ui, palette) = Theme::built_in("Quartz").unwrap().ui();
         assert_eq!(ui.mode, ThemeMode::Light);
         assert_eq!(hex(ui.colors.sidebar), 0xf4f4f6);
         assert_eq!(hex(ui.colors.sidebar_foreground), 0x1f2228);
-        assert_eq!(hex(palette.mention), 0x1c58d9);
-        assert_eq!(hex(palette.mention_foreground), 0xffffff);
+        assert_eq!(hex(ui.colors.sidebar_badge()), 0x1c58d9);
+        assert_eq!(hex(ui.colors.sidebar_badge_foreground()), 0xffffff);
         assert_eq!(hex(palette.away), 0xf5ab07);
     }
 
     #[test]
     fn indigo_and_onyx_map_onto_dark_tokens() {
-        let (ui, palette) = Theme::built_in("Indigo").unwrap().ui();
+        let (ui, _) = Theme::built_in("Indigo").unwrap().ui();
         assert_eq!(ui.mode, ThemeMode::Dark);
         assert_eq!(hex(ui.colors.background), 0x111827);
         assert_eq!(hex(ui.colors.foreground), 0xdddfe4);
         assert_eq!(hex(ui.colors.sidebar), 0x151e32);
         assert_eq!(hex(ui.colors.primary), 0x4a7ce8);
-        assert_eq!(hex(palette.mention), 0x4a7ce8);
+        assert_eq!(hex(ui.colors.sidebar_badge()), 0x4a7ce8);
+        assert_eq!(hex(ui.colors.link()), 0x5d89ea);
+        assert_eq!(ui.code_theme, CodeTheme::SolarizedDark);
 
         let (ui, _) = Theme::built_in("Onyx").unwrap().ui();
         assert_eq!(ui.mode, ThemeMode::Dark);
         assert_eq!(hex(ui.colors.background), 0x191b1f);
         assert_eq!(hex(ui.colors.foreground), 0xe3e4e8);
         assert_eq!(hex(ui.colors.destructive), 0xda6c6e);
+        assert_eq!(ui.code_theme, CodeTheme::Monokai);
         assert_eq!(ui.radius, style::theme(ThemeMode::Dark).radius);
     }
 
@@ -627,7 +642,7 @@ mod tests {
         assert!(sidebar.ratio() < 4.5);
         // A well-chosen theme passes every pair.
         let calm = Theme::parse(
-            r##"{"type":"custom","sidebarBg":"#1b1f2a","sidebarText":"#e8eaef","sidebarUnreadText":"#ffffff","sidebarTextHoverBg":"#2a2f3c","sidebarTextActiveBorder":"#8aa6ff","sidebarTextActiveColor":"#ffffff","onlineIndicator":"#16a34a","awayIndicator":"#b86e00","dndIndicator":"#d42020","mentionBg":"#ffffff","mentionColor":"#1b1f2a","centerChannelBg":"#ffffff","centerChannelColor":"#1b1f2a","linkColor":"#3056d3","buttonBg":"#3056d3","buttonColor":"#ffffff","errorTextColor":"#c01818"}"##,
+            r##"{"type":"custom","sidebarBg":"#1b1f2a","sidebarText":"#e8eaef","sidebarUnreadText":"#ffffff","sidebarTextHoverBg":"#2a2f3c","sidebarTextActiveBorder":"#8aa6ff","sidebarTextActiveColor":"#ffffff","onlineIndicator":"#16a34a","awayIndicator":"#b86e00","dndIndicator":"#d42020","mentionBg":"#ffffff","mentionColor":"#1b1f2a","centerChannelBg":"#ffffff","centerChannelColor":"#1b1f2a","linkColor":"#3056d3","buttonBg":"#3056d3","buttonColor":"#ffffff","errorTextColor":"#c01818","newMessageSeparator":"#9a5b00"}"##,
         );
         let failing: Vec<String> = calm
             .failing()
