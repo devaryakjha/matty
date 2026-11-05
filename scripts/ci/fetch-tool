@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Downloads a pinned tool once per runner and puts it on PATH.
+#
+#   scripts/ci/fetch-tool NAME VERSION URL SHA256|- [TAR-MEMBER [STRIP]]
+#
+# The tool lands in $RUNNER_TOOL_CACHE/matty/NAME-VERSION/NAME. That folder
+# outlives the job on a self-hosted runner, so later jobs skip the download.
+# With TAR-MEMBER the URL is a .tar.gz and only that member is kept, with
+# STRIP leading folders removed from its path. Pass - for SHA256 when the
+# download has no published checksum to check.
+set -euo pipefail
+
+name="$1" version="$2" url="$3" sha="$4" member="${5:-}" strip="${6:-0}"
+dir="${RUNNER_TOOL_CACHE:?}/matty/$name-$version"
+bin="$dir/$name"
+
+if [[ ! -x "$bin" ]]; then
+	mkdir -p "$dir"
+	# Next to the tool, so the final move stays on one file system and a
+	# cancelled job never leaves half a tool behind.
+	tmp="$(mktemp -d "$dir/.download.XXXXXX")"
+	trap 'rm -rf "$tmp"' EXIT
+	curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$tmp/download" "$url"
+	if [[ "$sha" != - ]]; then
+		echo "$sha  $tmp/download" | sha256sum -c
+	fi
+	if [[ -n "$member" ]]; then
+		mkdir "$tmp/x"
+		tar xzf "$tmp/download" -C "$tmp/x" --strip-components="$strip" "$member"
+		mv "$tmp/x/$(basename "$member")" "$tmp/tool"
+	else
+		mv "$tmp/download" "$tmp/tool"
+	fi
+	chmod +x "$tmp/tool"
+	mv "$tmp/tool" "$bin"
+fi
+echo "$dir" >>"$GITHUB_PATH"
+echo "$name $version: $bin"

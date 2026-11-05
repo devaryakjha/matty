@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::{Badge, BadgeVariant},
@@ -332,14 +333,14 @@ impl SidebarModel {
     pub fn set_favorite(&mut self, id: &str, favorite: bool) {
         let Some(row) = self.remove(id) else { return };
         let (target_id, target_name) = if favorite {
-            (FAVORITES_ID, "Favorites")
+            (FAVORITES_ID, t!("sidebar-favorites"))
         } else if matches!(
             row.kind,
             ChannelKind::Direct { .. } | ChannelKind::Group { .. }
         ) {
-            (DIRECT_ID, "Direct messages")
+            (DIRECT_ID, t!("sidebar-direct-messages"))
         } else {
-            (CHANNELS_ID, "Channels")
+            (CHANNELS_ID, t!("sidebar-channels"))
         };
         match self.categories.iter_mut().find(|c| c.id == target_id) {
             Some(category) => category.rows.push(row),
@@ -518,7 +519,7 @@ impl SidebarView {
         cx: &mut Context<Self>,
     ) -> Self {
         let view = cx.weak_entity();
-        let item = |id: &'static str, label: &'static str, event: SidebarEvent| {
+        let item = |id: &'static str, label: SharedString, event: SidebarEvent| {
             let view = view.clone();
             MenuItem::new(id, label).on_click(move |_, _, cx| {
                 view.update(cx, |_, cx| cx.emit(event.clone())).ok();
@@ -529,24 +530,24 @@ impl SidebarView {
                 [
                     item(
                         "sidebar.new-message",
-                        "New message",
+                        t!("sidebar-new-message"),
                         SidebarEvent::NewMessage,
                     ),
                     MenuItem::separator(),
                     item(
                         "sidebar.browse-channels",
-                        "Browse channels",
+                        t!("sidebar-browse-channels"),
                         SidebarEvent::BrowseChannels,
                     ),
                     item(
                         "sidebar.create-channel",
-                        "Create channel",
+                        t!("sidebar-create-channel"),
                         SidebarEvent::CreateChannel,
                     ),
                     MenuItem::separator(),
                     item(
                         "sidebar.create-category",
-                        "Create new category",
+                        t!("sidebar-create-category"),
                         SidebarEvent::NewCategory { channel_id: None },
                     ),
                 ],
@@ -609,9 +610,9 @@ impl SidebarView {
     /// mute, move, open in a new window, then leave or close.
     fn row_items(&self, row: &ChannelRow, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.weak_entity();
-        let emit = |id: &'static str, label: &str, event: SidebarEvent| {
+        let emit = |id: &'static str, label: SharedString, event: SidebarEvent| {
             let view = view.clone();
-            MenuItem::new(id, label.to_string()).on_click(move |_, _, cx| {
+            MenuItem::new(id, label).on_click(move |_, _, cx| {
                 view.update(cx, |_, cx| cx.emit(event.clone())).ok();
             })
         };
@@ -624,16 +625,16 @@ impl SidebarView {
         if row.unread {
             items.push(emit(
                 "sidebar.row.read",
-                "Mark as read",
+                t!("sidebar-mark-read"),
                 SidebarEvent::MarkRead(row.id.clone()),
             ));
         }
         items.push(emit(
             "sidebar.row.favorite",
             if favorite {
-                "Remove from favorites"
+                t!("sidebar-favorite-remove")
             } else {
-                "Add to favorites"
+                t!("sidebar-favorite-add")
             },
             SidebarEvent::SetFavorite {
                 id: row.id.clone(),
@@ -643,10 +644,10 @@ impl SidebarView {
         items.push(emit(
             "sidebar.row.mute",
             match (row.muted, direct) {
-                (true, true) => "Unmute conversation",
-                (true, false) => "Unmute channel",
-                (false, true) => "Mute conversation",
-                (false, false) => "Mute channel",
+                (true, true) => t!("sidebar-unmute-conversation"),
+                (true, false) => t!("sidebar-unmute-channel"),
+                (false, true) => t!("sidebar-mute-conversation"),
+                (false, false) => t!("sidebar-mute-channel"),
             },
             SidebarEvent::SetMuted {
                 id: row.id.clone(),
@@ -656,25 +657,25 @@ impl SidebarView {
         items.push(self.move_to(row, cx));
         items.push(emit(
             "sidebar.row.split",
-            "Open in split view",
+            t!("sidebar-open-split"),
             SidebarEvent::OpenInSplit(row.id.clone()),
         ));
         items.push(emit(
             "sidebar.row.pop-out",
-            "Open in new window",
+            t!("sidebar-open-window"),
             SidebarEvent::PopOut(row.id.clone()),
         ));
         items.push(MenuItem::separator());
         items.push(if direct {
             emit(
                 "sidebar.row.close",
-                "Close conversation",
+                t!("sidebar-close-conversation"),
                 SidebarEvent::Close(row.id.clone()),
             )
         } else {
             emit(
                 "sidebar.row.leave",
-                "Leave channel",
+                t!("sidebar-leave-channel"),
                 SidebarEvent::Leave(row.id.clone()),
             )
         });
@@ -703,13 +704,17 @@ impl SidebarView {
                 .position(|other| other.id == row.id)
                 .unwrap_or_default();
             for (up, label, end) in [
-                (true, "Move up", at == 0),
-                (false, "Move down", at + 1 >= category.rows.len()),
+                (true, t!("sidebar-move-up"), at == 0),
+                (
+                    false,
+                    t!("sidebar-move-down"),
+                    at + 1 >= category.rows.len(),
+                ),
             ] {
                 items.push(
                     emit(
                         format!("sidebar.row.move.{}", if up { "up" } else { "down" }),
-                        label.into(),
+                        label,
                         SidebarEvent::MoveChannel {
                             category_id: category.id.clone(),
                             channel_id: row.id.clone(),
@@ -746,12 +751,12 @@ impl SidebarView {
         }
         items.push(emit(
             "sidebar.row.move.new".into(),
-            "New category\u{2026}".into(),
+            t!("sidebar-new-category"),
             SidebarEvent::NewCategory {
                 channel_id: Some(row.id.clone()),
             },
         ));
-        MenuItem::submenu("sidebar.row.move", "Move to", items)
+        MenuItem::submenu("sidebar.row.move", t!("sidebar-move-to"), items)
     }
 
     /// A category's menu: move it, and for a custom one rename or delete it.
@@ -769,7 +774,7 @@ impl SidebarView {
         let category = &categories[index];
         let custom = category.kind == CategoryKind::Custom;
         let view = cx.weak_entity();
-        let emit = |id: &'static str, label: &'static str, event: SidebarEvent| {
+        let emit = |id: &'static str, label: SharedString, event: SidebarEvent| {
             let view = view.clone();
             MenuItem::new(id, label).on_click(move |_, _, cx| {
                 view.update(cx, |_, cx| cx.emit(event.clone())).ok();
@@ -780,7 +785,7 @@ impl SidebarView {
         if custom {
             items.push(emit(
                 "sidebar.category.rename",
-                "Rename category",
+                t!("sidebar-rename-category"),
                 SidebarEvent::RenameCategory {
                     id: id.clone(),
                     name: name.clone(),
@@ -789,14 +794,14 @@ impl SidebarView {
         }
         items.push(emit(
             "sidebar.category.new",
-            "Create new category",
+            t!("sidebar-create-category"),
             SidebarEvent::NewCategory { channel_id: None },
         ));
         items.push(MenuItem::separator());
         items.push(
             emit(
                 "sidebar.category.up",
-                "Move category up",
+                t!("sidebar-category-up"),
                 SidebarEvent::MoveCategory {
                     id: id.clone(),
                     up: true,
@@ -807,7 +812,7 @@ impl SidebarView {
         items.push(
             emit(
                 "sidebar.category.down",
-                "Move category down",
+                t!("sidebar-category-down"),
                 SidebarEvent::MoveCategory {
                     id: id.clone(),
                     up: false,
@@ -819,7 +824,7 @@ impl SidebarView {
             items.push(MenuItem::separator());
             items.push(emit(
                 "sidebar.category.delete",
-                "Delete category",
+                t!("sidebar-delete-category"),
                 SidebarEvent::DeleteCategory { id, name },
             ));
         }
@@ -942,7 +947,7 @@ impl SidebarView {
         let team = Button::new("sidebar.team")
             .variant(ButtonVariant::Ghost)
             .size(ButtonSize::Sm)
-            .aria_label("Team menu")
+            .aria_label(t!("sidebar-team-menu"))
             .px(theme.space(2.))
             .type_style(style::TITLE, &theme)
             .text_color(theme.colors.sidebar_foreground)
@@ -954,7 +959,7 @@ impl SidebarView {
             );
         let loading = self.model.loading;
         let button_theme = theme.clone();
-        let compose = Menu::new(&self.menu, "New")
+        let compose = Menu::new(&self.menu, t!("sidebar-new"))
             .trigger(
                 lucide(LucideIcon::SquarePen)
                     .size(scaled(&theme, metrics::ICON))
@@ -962,7 +967,7 @@ impl SidebarView {
             )
             .trigger_style_with(move |button| {
                 style_button(
-                    button.aria_label("New…").disabled(loading),
+                    button.aria_label(t!("sidebar-new-label")).disabled(loading),
                     false,
                     ButtonVariant::Ghost,
                     ButtonSize::IconSm,
@@ -974,7 +979,7 @@ impl SidebarView {
             .size(ToggleSize::Sm)
             .pressed(on)
             .disabled(loading)
-            .aria_label("Unreads filter")
+            .aria_label(t!("sidebar-unreads-filter"))
             .on_change({
                 let view = cx.weak_entity();
                 move |on, _, _, cx| {
@@ -992,9 +997,9 @@ impl SidebarView {
                     }),
             );
         let filter_tip = if on {
-            "Show all channels"
+            t!("sidebar-show-all")
         } else {
-            "Show unreads only"
+            t!("sidebar-show-unreads")
         };
         div()
             .h(scaled(&theme, metrics::HEADER_HEIGHT) - theme.space(4.))
@@ -1008,7 +1013,11 @@ impl SidebarView {
                     .items_center()
                     .gap(theme.space(0.5))
                     .child(style::tipped("sidebar.unreads.tip", filter_tip, filter))
-                    .child(style::tipped("sidebar.compose.tip", "New…", compose)),
+                    .child(style::tipped(
+                        "sidebar.compose.tip",
+                        t!("sidebar-new-label"),
+                        compose,
+                    )),
             )
     }
 
@@ -1182,7 +1191,7 @@ impl SidebarView {
         let context_id = row.id.clone();
         let options = sidebar_menu_action(
             element_id("sidebar.channel.options", &row.id),
-            format!("Options for {}", row.name),
+            t!("sidebar-row-options", name = row.name.to_string()),
             cx,
         )
         .child(
@@ -1230,7 +1239,7 @@ impl SidebarView {
     fn fixed_entries(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let entry = |id: &'static str,
-                     label: &'static str,
+                     label: SharedString,
                      glyph: LucideIcon,
                      count: EntryCount,
                      event: SidebarEvent,
@@ -1288,7 +1297,7 @@ impl SidebarView {
             .pb(theme.space(3.))
             .child(entry(
                 THREADS_ID,
-                "Threads",
+                t!("sidebar-threads"),
                 LucideIcon::MessageSquareText,
                 self.model.threads_count(),
                 SidebarEvent::OpenThreads,
@@ -1296,7 +1305,7 @@ impl SidebarView {
             ))
             .child(entry(
                 DRAFTS_ID,
-                "Drafts",
+                t!("sidebar-drafts"),
                 LucideIcon::FilePenLine,
                 match self.model.drafts {
                     0 => EntryCount::None,
@@ -1404,7 +1413,7 @@ impl SidebarView {
         });
         let (rows, groups_moved) = (view.downgrade(), view.downgrade());
         let theme = UiTheme::read(cx);
-        Sortable::new("sidebar.categories", "Categories")
+        Sortable::new("sidebar.categories", t!("sidebar-categories"))
             .gap(theme.space(3.))
             .reorder_groups(true)
             .groups(groups.collect::<Vec<_>>())
@@ -1492,11 +1501,15 @@ fn placed_index(full: &[SharedString], shown: &[SharedString], index: usize) -> 
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let mut sidebar = Sidebar::new("sidebar", "Channels")
+        let mut sidebar = Sidebar::new("sidebar", t!("sidebar-channels"))
             .roving_focus(true)
             .header(self.header(cx));
         if self.model.loading {
-            for (label, rows) in [("Favorites", 2), ("Channels", 4), ("Direct messages", 3)] {
+            for (label, rows) in [
+                (t!("sidebar-favorites"), 2),
+                (t!("sidebar-channels"), 4),
+                (t!("sidebar-direct-messages"), 3),
+            ] {
                 sidebar = sidebar.child(
                     div()
                         .flex()
@@ -1548,13 +1561,13 @@ impl Render for SidebarView {
         if self.unreads_only && self.model.caught_up() {
             sidebar = sidebar.child(div().pt(theme.space(4.)).child(style::empty_state(
                 LucideIcon::CircleCheck,
-                "You're all caught up",
-                "Nothing unread. Turn the filter off to see every channel.",
+                t!("sidebar-caught-up"),
+                t!("sidebar-caught-up-hint"),
                 cx,
             )));
         }
         sidebar.child(
-            Menu::new(&self.row_menu, "Channel options")
+            Menu::new(&self.row_menu, t!("sidebar-channel-options"))
                 .context_area(div())
                 .disabled(true),
         )

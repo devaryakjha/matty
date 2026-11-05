@@ -10,8 +10,8 @@
 | `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
 | `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
 | `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | only when `packaging/linux/` or `scripts/linux-package` change, or with the `linux` label | always, plus the artifact |
-| `windows`: clippy, tests (#215) | only when platform code changes, or with the `windows` label | always, plus the release build, `matty.exe --version` and the artifact |
-| `windows installer`: release build, MSI and zip, installed and uninstalled (#215) | only when `packaging/windows/` or `scripts/windows-package` change, or with the `windows` label | always, plus the artifact |
+| `windows`: clippy, tests (#215) | only when platform code changes, or with the `windows` label | only when platform code changes, and every night; plus the release build, `matty.exe --version` and the artifact |
+| `windows installer`: release build, MSI and zip, installed and uninstalled (#215) | only when `packaging/windows/` or `scripts/windows-package` change, or with the `windows` label | only when those change, and every night; plus the artifact |
 | `ci` | the one check to wait on | |
 
 Why: macOS runners are scarce (a handful at a time per account), and three
@@ -35,3 +35,22 @@ same way.
 
 `linux` also runs a test of the Linux notification backend against a
 stand-in notification service, on a private `dbus-daemon` the test starts.
+
+## Runners
+
+Linux and macOS jobs run on Arya's own machines when the repository
+variables `MATTY_LINUX_RUNNER` and `MATTY_MACOS_RUNNER` name them, and on
+GitHub's runners while they are unset. Setup, labels and upkeep are in
+[self-hosted-runners.md](self-hosted-runners.md). Pull requests from forks
+always run on GitHub's runners.
+
+`changes`, `deny` and `ci` always stay on GitHub's Ubuntu runners: they take
+seconds to a minute, and `changes` decides where the rest run.
+
+There is no self-hosted Windows machine, and Windows minutes cost double,
+so the two Windows jobs no longer run on every merge: master runs them when
+Windows code or packaging changes, and a scheduled run at 02:23 UTC runs
+both on the latest master every night (every other job skips it). Use the
+`windows` label to run them on a pull request. A tag still builds the
+Windows installer for the release.
+

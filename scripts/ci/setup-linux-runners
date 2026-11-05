@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Turns an Ubuntu machine into Matty's self-hosted Linux CI runners
+# (docs/self-hosted-runners.md). Run it as root, with a registration token
+# from https://github.com/devaryakjha/matty/settings/actions/runners/new:
+#
+#   sudo scripts/ci/setup-linux-runners --token AAAA... [--count N] [--user matty-ci]
+#
+# It installs what the CI jobs expect to find (the packages GitHub's Ubuntu
+# image has and the jobs would otherwise apt-get, Docker, Rust), creates an
+# unprivileged user, and registers N runners as systemd services labelled
+# `matty`. N defaults to one runner for every 4 cores and 8 GB of memory, up
+# to 4. Each runner runs one job at a time in its own checkout. It also
+# installs a daily cleanup of leftover test servers, old images and logs.
+# Running it again upgrades the packages and adds runners up to N; existing
+# runners are left as they are.
+set -euo pipefail
+
+repo_url="https://github.com/devaryakjha/matty"
+user="matty-ci"
+token=""
+count=""
+labels="matty"
+
+while (($#)); do
+	case "$1" in
+		--token) token="$2"; shift 2 ;;
+		--count) count="$2"; shift 2 ;;
+		--user) user="$2"; shift 2 ;;
+		*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+	esac
+done
+[[ $EUID -eq 0 ]] || { echo "run this as root (sudo)" >&2; exit 1; }
+[[ -n "$token" ]] || { echo "--token is required" >&2; exit 1; }
+[[ "$(uname -m)" == x86_64 ]] || { echo "the CI jobs expect an x86_64 machine" >&2; exit 1; }
+
+if [[ -z "$count" ]]; then
+	cores="$(nproc)"
+	mem_gb="$(awk '/MemTotal/ { print int($2 / 1024 / 1024) }' /proc/meminfo)"
+	count=$((cores / 4 < mem_gb / 8 ? cores / 4 : mem_gb / 8))
+	((count <= 4)) || count=4
+	((count >= 1)) || count=1
+	echo "$cores cores and $mem_gb GB of memory: $count runners"
+fi
+
+echo "== Packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q
+apt-get install -y -q --no-install-recommends \
+	build-essential pkg-config clang curl ca-certificates git jq python3 \
+	file unzip xz-utils zstd libssl-dev \
+	libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev \
+	libvulkan-dev libx11-xcb-dev libxcb1-dev dbus-daemon \
+	rpm desktop-file-utils appstream
+if ! docker compose version >/dev/null 2>&1; then
+	apt-get install -y -q docker.io docker-compose-v2
+	systemctl enable --now docker
+fi
+
+echo "== User $user"
+id "$user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$user"
+# Docker access for the integration tests. Membership of the docker group
+# is as good as root on this machine: keep fork pull requests off it
+# (docs/self-hosted-runners.md).
+usermod -aG docker "$user"
+home="$(getent passwd "$user" | cut -d: -f6)"
+as_user() { sudo -u "$user" -H -- "$@"; }
+
+echo "== Rust"
+# Installed up front so parallel jobs never race to install a toolchain.
+if [[ ! -x "$home/.cargo/bin/rustup" ]]; then
+	as_user bash -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none'
+fi
+as_user "$home/.cargo/bin/rustup" toolchain install 1.99.1 --profile minimal -c rustfmt,clippy
+as_user "$home/.cargo/bin/rustup" toolchain install nightly-2026-08-17 --profile minimal \
+	-c rust-src -t wasm32-unknown-unknown
+
+echo "== Runners"
+runner_version="$(curl -sSf https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name)"
+runner_version="${runner_version#v}"
+tarball="$home/actions-runner-$runner_version.tar.gz"
+[[ -f "$tarball" ]] || as_user curl -sSfL -o "$tarball" \
+	"https://github.com/actions/runner/releases/download/v$runner_version/actions-runner-linux-x64-$runner_version.tar.gz"
+
+for i in $(seq 1 "$count"); do
+	dir="$home/matty-runner-$i"
+	if [[ -f "$dir/.runner" ]]; then
+		echo "runner $i is already registered ($dir)"
+		continue
+	fi
+	as_user mkdir -p "$dir"
+	as_user tar xzf "$tarball" -C "$dir"
+	(cd "$dir" && as_user ./config.sh --unattended --url "$repo_url" --token "$token" \
+		--name "$(hostname -s)-matty-$i" --labels "$labels" --work _work --replace)
+	# The service takes PATH from .path. sudo dropped ~/.cargo/bin from it,
+	# and without rustup on PATH the toolchain action would install another.
+	as_user tee "$dir/.path" >/dev/null <<<"$home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	(cd "$dir" && ./svc.sh install "$user" && ./svc.sh start)
+done
+
+echo "== Daily cleanup"
+cat >/usr/local/bin/matty-ci-cleanup <<'EOF'
+#!/usr/bin/env bash
+# Installed by Matty's scripts/ci/setup-linux-runners. Removes what CI runs
+# left behind: integration test servers older than 3 hours (a cancelled job
+# can skip its own cleanup), dangling images, and runner logs older than two
+# weeks.
+set -uo pipefail
+cutoff=$(($(date +%s) - 3 * 3600))
+docker ps -a --filter label=com.docker.compose.project \
+	--format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^matty-ci-' |
+	while read -r project; do
+		created="$(docker ps -a --filter "label=com.docker.compose.project=$project" \
+			--format '{{.CreatedAt}}' | head -n 1)"
+		[[ -n "$created" ]] || continue
+		(($(date -d "${created% *}" +%s) < cutoff)) || continue
+		echo "removing $project"
+		docker ps -aq --filter "label=com.docker.compose.project=$project" | xargs -r docker rm -f
+		docker volume ls -q --filter "label=com.docker.compose.project=$project" | xargs -r docker volume rm
+	done
+docker image prune -f
+find /home/*/matty-runner-*/_diag -name '*.log' -mtime +14 -delete 2>/dev/null || true
+EOF
+chmod 755 /usr/local/bin/matty-ci-cleanup
+cat >/etc/cron.d/matty-ci-cleanup <<'EOF'
+17 4 * * * root /usr/local/bin/matty-ci-cleanup >/var/log/matty-ci-cleanup.log 2>&1
+EOF
+
+echo
+echo "Done: $count runners labelled self-hosted, Linux, X64, $labels."
+echo "Now set the repository variable MATTY_LINUX_RUNNER to"
+echo '  ["self-hosted","Linux","X64","matty"]'
+echo "at $repo_url/settings/variables/actions"
