@@ -552,6 +552,9 @@ pub enum ImageSize {
     /// Up to about 1920 pixels wide, for the tile on a post and the
     /// lightbox.
     Preview,
+    /// The file itself, for animated GIFs: the server's scaled images keep
+    /// only the first frame (#618).
+    Original,
 }
 
 /// Where a download is.
