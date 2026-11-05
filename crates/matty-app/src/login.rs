@@ -12,6 +12,7 @@ use gpui_kit::{
 
 use crate::settings::{RecentServer, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, scaled};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     field::{Field, field_title},
@@ -38,10 +39,10 @@ pub enum SsoProvider {
 impl SsoProvider {
     pub fn label(self) -> &'static str {
         match self {
-            SsoProvider::GitLab => "GitLab",
-            SsoProvider::Google => "Google",
-            SsoProvider::Office365 => "Office 365",
-            SsoProvider::OpenId => "OpenID Connect",
+            SsoProvider::GitLab => "GitLab",        // i18n-ignore: product names
+            SsoProvider::Google => "Google",        // i18n-ignore
+            SsoProvider::Office365 => "Office 365", // i18n-ignore
+            SsoProvider::OpenId => "OpenID Connect", // i18n-ignore
             SsoProvider::Saml => "SAML",
         }
     }
@@ -72,11 +73,11 @@ impl SignInMethods {
     }
 
     /// The login field's label for the method in use.
-    pub fn login_label(&self, picked_ldap: bool) -> &'static str {
+    pub fn login_label(&self, picked_ldap: bool) -> SharedString {
         if self.ldap_only(picked_ldap) {
-            "AD/LDAP username"
+            t!("login-ldap-username")
         } else {
-            "Email or username"
+            t!("login-email-or-username")
         }
     }
 }
@@ -182,12 +183,9 @@ impl LoginModel {
                 };
                 None
             }
-            (SignInFailure::MfaRequired, LoginStep::Mfa { .. }) => Some(
-                "That code is not right. Enter the current code from your authenticator app."
-                    .into(),
-            ),
+            (SignInFailure::MfaRequired, LoginStep::Mfa { .. }) => Some(t!("login-mfa-wrong")),
             (SignInFailure::MfaRequired, LoginStep::Server | LoginStep::Browser { .. }) => {
-                Some("This account needs a multi-factor code. Sign in again.".into())
+                Some(t!("login-mfa-needed"))
             }
             (SignInFailure::Message(message), _) => Some(message),
         };
@@ -263,10 +261,10 @@ pub enum LoginEvent {
 
 /// Turns what someone typed into the server URL to check, assuming
 /// `https://` and dropping a trailing slash. `Err` is the sentence to show.
-pub fn normalize_server_url(input: &str) -> Result<String, &'static str> {
+pub fn normalize_server_url(input: &str) -> Result<String, SharedString> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err("Enter your server's address, like chat.example.com.");
+        return Err(t!("login-address-empty"));
     }
     let with_scheme = if trimmed.contains("://") {
         trimmed.to_string()
@@ -274,10 +272,10 @@ pub fn normalize_server_url(input: &str) -> Result<String, &'static str> {
         format!("https://{trimmed}")
     };
     let Some((scheme, rest)) = with_scheme.split_once("://") else {
-        return Err("That does not look like a server address.");
+        return Err(t!("login-address-invalid"));
     };
     if scheme != "https" && scheme != "http" {
-        return Err("The address has to start with https://.");
+        return Err(t!("login-address-scheme"));
     }
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host_only = host.rsplit_once(':').map_or(host, |(h, _)| h);
@@ -285,7 +283,7 @@ pub fn normalize_server_url(input: &str) -> Result<String, &'static str> {
         || host_only.contains(char::is_whitespace)
         || (!host_only.contains('.') && host_only != "localhost")
     {
-        return Err("That does not look like a server address.");
+        return Err(t!("login-address-invalid"));
     }
     Ok(with_scheme.trim_end_matches('/').to_string())
 }
@@ -485,7 +483,7 @@ impl LoginView {
             return;
         }
         if let Err(message) = normalize_server_url(&typed) {
-            self.model.error = Some(message.into());
+            self.model.error = Some(message);
             cx.notify();
         }
     }
@@ -518,13 +516,13 @@ impl LoginView {
                         self.checking = Some(url.clone());
                         cx.emit(LoginEvent::CheckServer(url));
                     }
-                    Err(message) => self.model.error = Some(message.into()),
+                    Err(message) => self.model.error = Some(message),
                 }
             }
             Submit::Password => {
                 let sign_in = self.password_sign_in(None, cx);
                 if sign_in.login_id.is_empty() || sign_in.password.is_empty() {
-                    self.model.error = Some("Enter your email or username and password.".into());
+                    self.model.error = Some(t!("login-password-missing"));
                 } else {
                     self.model.error = None;
                     cx.emit(LoginEvent::SignIn(sign_in));
@@ -533,10 +531,7 @@ impl LoginView {
             Submit::Code => {
                 let code = self.code.read(cx).value().to_string();
                 if code.len() < MFA_CODE_LEN {
-                    self.model.error = Some(
-                        format!("Enter the {MFA_CODE_LEN}-digit code from your authenticator app.")
-                            .into(),
-                    );
+                    self.model.error = Some(t!("login-code-short", digits = MFA_CODE_LEN));
                 } else {
                     self.model.error = None;
                     cx.emit(LoginEvent::SignIn(self.password_sign_in(Some(code), cx)));
@@ -545,7 +540,7 @@ impl LoginView {
             Submit::Token => {
                 let token = self.token.read(cx).value().trim().to_string();
                 if token.is_empty() {
-                    self.model.error = Some("Paste a personal access token.".into());
+                    self.model.error = Some(t!("login-token-missing"));
                 } else {
                     self.model.error = None;
                     cx.emit(LoginEvent::Token(token));
@@ -559,7 +554,7 @@ impl LoginView {
     fn primary(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         submit: Submit,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -570,7 +565,7 @@ impl LoginView {
             .size(ButtonSize::Lg)
             .w_full()
             .disabled(busy)
-            .aria_label(label)
+            .aria_label(label.clone())
             .on_click(cx.listener(move |this, _, window, cx| this.submit(submit, window, cx)))
             .when(busy, |button| {
                 button.child(
@@ -609,25 +604,17 @@ impl LoginView {
             .flex_col()
             .gap(theme.space(4.))
             .child(if self.model.adding {
-                Self::heading(
-                    "Add a Mattermost server",
-                    "Enter the address you open in the browser. Matty assumes https.",
-                    &theme,
-                )
+                Self::heading(t!("login-add-title"), t!("login-address-hint"), &theme)
             } else {
-                Self::heading(
-                    "Connect to your Mattermost server",
-                    "Enter the address you open in the browser. Matty assumes https.",
-                    &theme,
-                )
+                Self::heading(t!("login-connect-title"), t!("login-address-hint"), &theme)
             })
             .child(
                 Field::new("login.server", &self.server)
-                    .label("Server address")
+                    .label(t!("login-address"))
                     .required(true),
             )
             .children(self.error_line(cx))
-            .child(self.primary("login.continue", "Continue", Submit::Server, cx))
+            .child(self.primary("login.continue", t!("login-continue"), Submit::Server, cx))
             .when(!self.recent.is_empty(), |step| {
                 step.child(self.recent_servers(cx))
             })
@@ -650,7 +637,7 @@ impl LoginView {
             .w_full()
             .justify_start()
             .disabled(self.model.busy)
-            .aria_label(format!("Connect to {}", server.name))
+            .aria_label(t!("login-connect-to", server = server.name.to_string()))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.server
                     .update(cx, |field, cx| field.set_value(url.clone(), window, cx));
@@ -688,7 +675,7 @@ impl LoginView {
                 div()
                     .type_style(style::LABEL, &theme)
                     .text_color(muted)
-                    .child("RECENT SERVERS"),
+                    .child(t!("login-recent")),
             )
             .children(rows)
     }
@@ -733,12 +720,12 @@ impl LoginView {
                 Button::new("login.change-server")
                     .variant(ButtonVariant::Ghost)
                     .size(ButtonSize::Xs)
-                    .aria_label("Change server")
+                    .aria_label(t!("login-change-server"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.model.error = None;
                         cx.emit(LoginEvent::ChangeServer);
                     }))
-                    .child("Change"),
+                    .child(t!("login-change")),
             );
         let password_form = methods.password || methods.ldap;
         let login_label = methods.login_label(self.picked_ldap);
@@ -747,8 +734,8 @@ impl LoginView {
             .flex_col()
             .gap(theme.space(4.))
             .child(Self::heading(
-                "Sign in",
-                "Use the account you have on this server.",
+                t!("login-sign-in-title"),
+                t!("login-sign-in-hint"),
                 &theme,
             ))
             .child(server_row);
@@ -763,10 +750,13 @@ impl LoginView {
                         .flex_col()
                         .gap(theme.space(3.))
                         .child(Field::new("login.login-id", &self.login_id).label(login_label))
-                        .child(Field::new("login.password", &self.password).label("Password")),
+                        .child(
+                            Field::new("login.password", &self.password)
+                                .label(t!("login-password")),
+                        ),
                 )
                 .children(self.error_line(cx))
-                .child(self.primary("login.sign-in", "Sign in", Submit::Password, cx));
+                .child(self.primary("login.sign-in", t!("login-sign-in"), Submit::Password, cx));
         } else {
             card = card.children(self.error_line(cx));
         }
@@ -783,14 +773,14 @@ impl LoginView {
                 .size(ButtonSize::Lg)
                 .w_full()
                 .disabled(self.model.busy)
-                .aria_label(format!("Continue with {}", provider.label()))
+                .aria_label(t!("login-continue-with", provider = provider.label()))
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(LoginEvent::Sso(provider))))
                 .child(
                     lucide(LucideIcon::ExternalLink)
                         .size(scaled(&theme, 14.))
                         .text_color(muted),
                 )
-                .child(format!("Continue with {}", provider.label()))
+                .child(t!("login-continue-with", provider = provider.label()))
             });
             card = card.child(
                 div()
@@ -803,7 +793,7 @@ impl LoginView {
         let token_toggle = Button::new("login.token-toggle")
             .variant(ButtonVariant::Ghost)
             .size(ButtonSize::Sm)
-            .aria_label("Use a personal access token")
+            .aria_label(t!("login-token-show"))
             .text_color(muted)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.show_token = !this.show_token;
@@ -814,9 +804,9 @@ impl LoginView {
                 cx.notify();
             }))
             .child(if self.show_token {
-                "Hide personal access token"
+                t!("login-token-hide-toggle")
             } else {
-                "Use a personal access token instead"
+                t!("login-token-show-toggle")
             });
         card = card.child(
             div()
@@ -835,14 +825,12 @@ impl LoginView {
                             .gap(theme.space(3.))
                             .child(
                                 Field::new("login.token", &self.token)
-                                    .label("Personal access token")
-                                    .description(
-                                        "From Profile › Security › Personal access tokens.",
-                                    ),
+                                    .label(t!("login-token"))
+                                    .description(t!("login-token-hint")),
                             )
                             .child(self.primary(
                                 "login.token-sign-in",
-                                "Sign in with token",
+                                t!("login-token-sign-in"),
                                 Submit::Token,
                                 cx,
                             )),
@@ -855,14 +843,14 @@ impl LoginView {
     /// Email or username against AD/LDAP, where the server offers both.
     fn method_choice(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let view = cx.entity().downgrade();
-        let item = |id: &'static str, value: &'static str, text: &'static str| {
+        let item = |id: &'static str, value: &'static str, text: SharedString| {
             ToggleGroupItem::new(id, value)
-                .aria_label(text)
+                .aria_label(text.clone())
                 .flex_1()
                 .child(text)
         };
         ToggleGroup::new("login.method")
-            .aria_label("Sign in with")
+            .aria_label(t!("login-method"))
             .joined(true)
             .w_full()
             .disabled(self.model.busy)
@@ -870,9 +858,9 @@ impl LoginView {
             .item(item(
                 "login.method.password",
                 "password",
-                "Email or username",
+                t!("login-email-or-username"),
             ))
-            .item(item("login.method.ldap", "ldap", "AD/LDAP"))
+            .item(item("login.method.ldap", "ldap", t!("login-method-ldap")))
             .on_change(move |next, _, cx| {
                 let ldap = next.first().is_some_and(|value| value == "ldap");
                 view.update(cx, |this, cx| {
@@ -896,8 +884,8 @@ impl LoginView {
             .flex_col()
             .gap(theme.space(4.))
             .child(Self::heading(
-                "Enter your code",
-                "This account uses multi-factor authentication. Open your authenticator app and enter the code it shows.",
+                t!("login-mfa-title"),
+                t!("login-mfa-hint"),
                 &theme,
             ))
             .child(
@@ -905,21 +893,25 @@ impl LoginView {
                     .flex()
                     .flex_col()
                     .gap(theme.space(2.))
-                    .child(field_title(cx).child(format!("{MFA_CODE_LEN}-digit code for {server_name}")))
+                    .child(field_title(cx).child(t!(
+                        "login-mfa-code-for",
+                        digits = MFA_CODE_LEN,
+                        server = server_name.to_string()
+                    )))
                     .child(
                         OtpField::new(&self.code)
-                            .aria_label("Authentication code")
+                            .aria_label(t!("login-mfa-code"))
                             .disabled(self.model.busy),
                     ),
             )
             .children(self.error_line(cx))
-            .child(self.primary("login.verify", "Verify", Submit::Code, cx))
+            .child(self.primary("login.verify", t!("login-verify"), Submit::Code, cx))
             .child(
                 div().flex().justify_center().child(
                     Button::new("login.mfa-back")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .aria_label("Back to sign in")
+                        .aria_label(t!("login-back-to-sign-in"))
                         .text_color(theme.colors.muted_foreground)
                         .disabled(self.model.busy)
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -927,7 +919,7 @@ impl LoginView {
                             this.focus_step(window, cx);
                             cx.notify();
                         }))
-                        .child("Back"),
+                        .child(t!("login-back")),
                 ),
             )
     }
@@ -945,9 +937,9 @@ impl LoginView {
         let muted = theme.colors.muted_foreground;
         let failed = self.model.error.is_some();
         let status = if self.model.busy {
-            "Signing in…".to_string()
+            t!("login-signing-in")
         } else {
-            format!("Waiting for {}…", provider.label())
+            t!("login-waiting-for", provider = provider.label())
         };
         let status_row = div()
             .flex()
@@ -994,17 +986,17 @@ impl LoginView {
             .size(ButtonSize::Lg)
             .w_full()
             .disabled(self.model.busy)
-            .aria_label("Cancel browser sign-in")
+            .aria_label(t!("login-browser-cancel"))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.model.error = None;
                 cx.emit(LoginEvent::CancelSso);
             }))
-            .child("Cancel");
+            .child(t!("login-cancel"));
         let retry = Button::new("login.browser.retry")
             .variant(ButtonVariant::Default)
             .size(ButtonSize::Lg)
             .w_full()
-            .aria_label(format!("Try {} sign-in again", provider.label()))
+            .aria_label(t!("login-retry-label", provider = provider.label()))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.model.error = None;
                 cx.emit(LoginEvent::Sso(provider));
@@ -1014,21 +1006,21 @@ impl LoginView {
                     .size(scaled(&theme, 14.))
                     .text_color(theme.colors.primary_foreground),
             )
-            .child("Retry");
+            .child(t!("login-retry"));
         div()
             .flex()
             .flex_col()
             .gap(theme.space(4.))
             .child(if failed {
                 Self::heading(
-                    "Browser sign-in did not finish",
-                    "Try again to open a new sign-in page, or cancel to pick another way in.",
+                    t!("login-browser-failed-title"),
+                    t!("login-browser-failed-hint"),
                     &theme,
                 )
             } else {
                 Self::heading(
-                    "Waiting for your browser…",
-                    "Finish signing in in the browser window Matty opened. Matty continues on its own when you are done.",
+                    t!("login-browser-waiting-title"),
+                    t!("login-browser-waiting-hint"),
                     &theme,
                 )
             })
@@ -1045,8 +1037,8 @@ impl LoginView {
     }
 
     fn heading(
-        title: &'static str,
-        text: &'static str,
+        title: SharedString,
+        text: SharedString,
         theme: &UiTheme,
     ) -> impl IntoElement + use<> {
         div()
@@ -1148,7 +1140,7 @@ impl Render for LoginView {
                             .text_size(theme.text(18.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(theme.colors.foreground)
-                            .child("Matty"),
+                            .child("Matty"), // i18n-ignore: the app's name
                     ),
             )
             .child(
@@ -1167,7 +1159,7 @@ impl Render for LoginView {
                 page.child(
                     Button::new("login.cancel")
                         .variant(ButtonVariant::Ghost)
-                        .label("Cancel")
+                        .label(t!("login-cancel"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(LoginEvent::Cancel))),
                 )
             })
@@ -1175,7 +1167,7 @@ impl Render for LoginView {
                 div()
                     .type_style(style::META, &theme)
                     .text_color(theme.colors.muted_foreground)
-                    .child("Matty is a native Mattermost client. Your password goes only to your server."),
+                    .child(t!("login-footer")),
             )
     }
 }
