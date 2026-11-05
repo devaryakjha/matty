@@ -1146,7 +1146,6 @@ pub struct ChannelView {
     picker_target: Option<SharedString>,
     /// Shortcodes picked this session, newest first, for the picker's
     /// Recent row; sync persists them later.
-    recent_emoji: Vec<SharedString>,
     /// The sidebar's channels, for `~` autocomplete.
     directory: Vec<ChannelRow>,
     /// What the server said about typed `@` names.
@@ -1467,7 +1466,7 @@ impl ChannelView {
                     ComposerEvent::Autocomplete { trigger, query } => {
                         this.slash.closed();
                         this.ask_people(*trigger, query, cx);
-                        let suggestions = this.suggestions(*trigger, query);
+                        let suggestions = this.suggestions(*trigger, query, cx);
                         composer
                             .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
                     }
@@ -1480,7 +1479,7 @@ impl ChannelView {
                 |this, _, event: &EmojiPickerEvent, window, cx| match event {
                     EmojiPickerEvent::Pick(name) => this.pick_emoji(name.clone(), window, cx),
                     EmojiPickerEvent::Cancel => this.close_picker(window, cx),
-                    EmojiPickerEvent::SkinTone(_) => {}
+                    EmojiPickerEvent::SkinTone(tone) => crate::emoji::save_skin_tone(*tone, cx),
                 },
             ),
         ];
@@ -1500,7 +1499,6 @@ impl ChannelView {
             picker,
             picker_open: false,
             picker_target: None,
-            recent_emoji: Vec::new(),
             directory: Vec::new(),
             people: PeopleAsk::default(),
             tray: UploadTray::new("upload"),
@@ -2829,7 +2827,7 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) {
         if self.people.answer(&term, people) {
-            let suggestions = self.suggestions('@', &term);
+            let suggestions = self.suggestions('@', &term, cx);
             self.composer
                 .update(cx, |composer, cx| composer.set_suggestions(suggestions, cx));
         }
@@ -2844,7 +2842,16 @@ impl ChannelView {
     /// Suggestions for a composer trigger (PLAN §4.3): `@` people from the
     /// channel's profiles, `~` channels from the sidebar, `:` emoji from the
     /// catalog once two characters narrow it.
-    fn suggestions(&self, trigger: char, query: &str) -> Vec<ComposerSuggestion> {
+    fn suggestions(&self, trigger: char, query: &str, cx: &App) -> Vec<ComposerSuggestion> {
+        self.suggestions_with(trigger, query, &crate::emoji::frequent(cx))
+    }
+
+    fn suggestions_with(
+        &self,
+        trigger: char,
+        query: &str,
+        frequent: &[SharedString],
+    ) -> Vec<ComposerSuggestion> {
         let in_channel = self
             .model
             .as_ref()
@@ -2856,6 +2863,7 @@ impl ChannelView {
             &self.people,
             &self.directory,
             in_channel,
+            frequent,
         )
     }
 
@@ -2865,6 +2873,7 @@ impl ChannelView {
 
     /// Opens the picker for `target` (a post to react to, or the composer).
     fn open_picker(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
+        self.picker.update(cx, crate::emoji::prepare_picker);
         self.picker_target = target;
         self.picker_open = true;
         cx.notify();
@@ -2881,12 +2890,7 @@ impl ChannelView {
     }
 
     fn pick_emoji(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        self.recent_emoji.retain(|recent| recent != &name);
-        self.recent_emoji.insert(0, name.clone());
-        self.recent_emoji.truncate(crate::emoji::RECENT_LIMIT);
-        let recents = self.recent_emoji.clone();
-        self.picker
-            .update(cx, |picker, cx| picker.set_recents(recents, cx));
+        crate::emoji::record_pick(&name, cx);
         let glyph = crate::emoji::glyph(&name).unwrap_or_else(|| format!(":{name}:").into());
         match self.picker_target.take() {
             Some(post) => self.toggle_reaction(post, glyph, cx),
@@ -5373,6 +5377,7 @@ pub(crate) fn composer_suggestions<'a>(
     people: &'a PeopleAsk,
     directory: &[ChannelRow],
     groups: bool,
+    frequent: &[SharedString],
 ) -> Vec<ComposerSuggestion> {
     const LIMIT: usize = 8;
     let query = query.to_lowercase();
@@ -5418,7 +5423,7 @@ pub(crate) fn composer_suggestions<'a>(
                     })
             })
             .collect(),
-        ':' => crate::emoji::suggest(&query, LIMIT)
+        ':' => crate::emoji::suggest(&query, LIMIT, frequent)
             .into_iter()
             .map(|(name, glyph)| ComposerSuggestion::new(glyph, format!(":{name}:")))
             .collect(),
@@ -5516,6 +5521,7 @@ mod tests {
                 &PeopleAsk::default(),
                 &rows,
                 true,
+                &[],
             )
             .into_iter()
             .map(|s| (s.value.to_string(), s.label.to_string()))
@@ -5784,7 +5790,7 @@ mod tests {
             .detach();
         });
         let values = |view: &ChannelView, query: &str| {
-            view.suggestions('@', query)
+            view.suggestions_with('@', query, &[])
                 .into_iter()
                 .map(|s| s.value.to_string())
                 .collect::<Vec<_>>()

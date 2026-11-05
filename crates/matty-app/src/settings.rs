@@ -300,6 +300,12 @@ pub struct Settings {
     pub recent_servers: Vec<RecentServer>,
     /// The last searches, newest first, at most [`RECENT_SEARCHES`] (#129).
     pub recent_searches: Vec<String>,
+    /// Emoji picked, most used first and the latest first among equals,
+    /// at most [`EMOJI_USAGE`] (#209). Names are in the default tone.
+    pub emoji_usage: Vec<EmojiUse>,
+    /// The picker's skin tone, 0 the lightest; `None` is the default
+    /// yellow (#209).
+    pub skin_tone: Option<usize>,
     /// Channels and threads in their own windows (#222).
     pub popouts: Vec<PopOutPlace>,
     /// Split view's second pane, one per server (#222).
@@ -338,6 +344,8 @@ impl Default for Settings {
             servers: Vec::new(),
             recent_servers: Vec::new(),
             recent_searches: Vec::new(),
+            emoji_usage: Vec::new(),
+            skin_tone: None,
             popouts: Vec::new(),
             splits: Vec::new(),
             unknown: serde_json::Map::new(),
@@ -348,7 +356,39 @@ impl Default for Settings {
 /// How many searches the Search pane offers again.
 pub const RECENT_SEARCHES: usize = 10;
 
+/// How often an emoji was picked (#209).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmojiUse {
+    pub name: String,
+    pub count: u32,
+}
+
+/// How many picked emoji [`Settings::emoji_usage`] remembers.
+pub const EMOJI_USAGE: usize = 100;
+
 impl Settings {
+    /// Counts a pick of `name`: it moves ahead of every emoji picked as
+    /// often or less, so ties go to the latest.
+    pub fn count_emoji(&mut self, name: &str) {
+        let count = match self.emoji_usage.iter().position(|seen| seen.name == name) {
+            Some(at) => self.emoji_usage.remove(at).count + 1,
+            None => 1,
+        };
+        let at = self
+            .emoji_usage
+            .iter()
+            .position(|seen| seen.count <= count)
+            .unwrap_or(self.emoji_usage.len());
+        self.emoji_usage.insert(
+            at,
+            EmojiUse {
+                name: name.to_owned(),
+                count,
+            },
+        );
+        self.emoji_usage.truncate(EMOJI_USAGE);
+    }
+
     /// Puts `query` first among the recent searches, once, ignoring case.
     pub fn remember_search(&mut self, query: &str) {
         let query = query.trim();
@@ -640,6 +680,30 @@ impl SettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_usage_ranks_by_count_then_the_latest() {
+        let mut settings = Settings::default();
+        for name in ["a", "b", "a", "c"] {
+            settings.count_emoji(name);
+        }
+        let names = |settings: &Settings| {
+            settings
+                .emoji_usage
+                .iter()
+                .map(|seen| (seen.name.clone(), seen.count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&settings),
+            [("a".into(), 2), ("c".into(), 1), ("b".into(), 1)]
+        );
+        settings.count_emoji("b");
+        assert_eq!(
+            names(&settings),
+            [("b".into(), 2), ("a".into(), 2), ("c".into(), 1)]
+        );
+    }
 
     #[test]
     fn recent_searches_put_the_newest_first_once_and_keep_ten() {
