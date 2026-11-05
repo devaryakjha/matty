@@ -1,1 +1,6 @@
+# Text checks out with LF everywhere, so generated files and fixtures
+# compare byte for byte on Windows too.
+* text=auto eol=lf
 *.sqlite binary
+# The font license, kept byte for byte as upstream ships it.
+crates/matty-web/assets/*-LICENSE.txt -text
