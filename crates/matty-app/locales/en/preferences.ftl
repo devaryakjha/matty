@@ -36,6 +36,7 @@ prefs-theme-from-mattermost = Your Mattermost theme decides light or dark.
 prefs-colors = Colors
 prefs-colors-matty = Matty
 prefs-colors-mattermost = My Mattermost theme
+prefs-colors-custom = Custom theme
 prefs-colors-matty-hint = Matty's own colors, light or dark as chosen above.
 prefs-colors-imported-hint = { $name } from your Mattermost account, for the team on screen. It sets light or dark itself.
 prefs-colors-waiting-hint = Your Mattermost theme shows once Matty connects to your server.

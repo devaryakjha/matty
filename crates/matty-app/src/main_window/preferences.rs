@@ -684,10 +684,7 @@ impl MainWindow {
         let colors_hint: SharedString = match (&imported, use_imported) {
             (_, false) => t!("prefs-colors-matty-hint"),
             (Some(imported), true) => {
-                t!(
-                    "prefs-colors-imported-hint",
-                    name = imported.name().to_string()
-                )
+                t!("prefs-colors-imported-hint", name = imported.name())
             }
             (None, true) => t!("prefs-colors-waiting-hint"),
         };
@@ -1479,7 +1476,7 @@ fn contrast_warning(failing: &[crate::contrast::Pair], theme: &UiTheme) -> Div {
         .map(|pair| {
             t!(
                 "prefs-contrast-pair",
-                name = pair.name.to_lowercase(),
+                name = pair.label().to_string(),
                 ratio = format!("{:.1}", pair.ratio()),
             )
             .to_string()
