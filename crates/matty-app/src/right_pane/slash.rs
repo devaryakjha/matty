@@ -33,6 +33,25 @@ impl RightPaneView {
         self.show_commands(query, cx);
     }
 
+    /// The composer's text changed, typed or set: past a command's name,
+    /// the server is asked about the whole line and its suggestions show
+    /// over it; otherwise they close.
+    pub(super) fn slash_line(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.slash.text_changed(text) {
+            return;
+        }
+        if let Some(user_input) = self.slash.line_typing(text, !self.offline)
+            && let Some((channel_id, root_id)) = self.command_place()
+        {
+            cx.emit(RightPaneEvent::Slash(Request::Suggest {
+                channel_id,
+                root_id,
+                user_input,
+            }));
+        }
+        crate::slash::show_line(&self.slash, &self.composer, cx);
+    }
+
     fn show_commands(&self, query: &str, cx: &mut Context<Self>) {
         let rows = self.slash.suggestions(query);
         self.composer
@@ -140,6 +159,9 @@ impl RightPaneView {
                 }
                 if shown && let Some(query) = self.slash.query().map(str::to_owned) {
                     self.show_commands(&query, cx);
+                }
+                if shown && self.slash.line().is_some() {
+                    crate::slash::show_line(&self.slash, &self.composer, cx);
                 }
             }
             Some(Change::Ran { command, outcome }) => {

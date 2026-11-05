@@ -773,24 +773,22 @@ impl BookmarksBar {
     /// Right on a focused chip (gpuicn#137).
     fn sortable(&self, bookmarks: &[Bookmark], cx: &mut Context<Self>) -> Sortable {
         let view = cx.entity();
-        let gap = UiTheme::read(cx).space(1.);
-        let rows = bookmarks.iter().enumerate().map(|(index, bookmark)| {
+        let rows = bookmarks.iter().map(|bookmark| {
             let (view, bookmark) = (view.clone(), bookmark.clone());
             SortableRow::new(
                 gpui_kit::ElementId::Name(format!("bookmark.{}.drag", bookmark.id).into()),
                 bookmark.name.clone(),
                 move |_: &mut Window, cx: &mut gpui_kit::App| {
-                    let chip =
-                        view.update(cx, |this, cx| this.chip(&bookmark, cx).into_any_element());
-                    // The bar's own gap, inside the rows so a drag can land
-                    // between two chips.
-                    div().when(index > 0, |row| row.pl(gap)).child(chip)
+                    view.update(cx, |this, cx| this.chip(&bookmark, cx).into_any_element())
                 },
             )
         });
         let moved = view.downgrade();
+        // Sortable spaces its rows itself and wraps them; at its content's
+        // width the bar's list scrolls instead, as plain chips did.
         Sortable::new("bookmarks.sortable", t!("bookmark-bar-label"))
             .horizontal()
+            .flex_shrink_0()
             .group(
                 SortableGroup::new("bookmarks.sortable.group", t!("bookmark-bar-label"))
                     .header(|_, _| div())

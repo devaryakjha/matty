@@ -269,7 +269,25 @@ pub struct Binding {
     pub other: &'static str,
 }
 
+/// The Fluent id of a keymap or message-key label: `prefix`, then the
+/// English label in kebab case, such as `keymap-quick-switcher`.
+fn label_id(prefix: &str, label: &str) -> String {
+    format!("{prefix}-{}", label.to_lowercase().replace(' ', "-"))
+}
+
+/// What the shortcuts sheet calls the message key labelled `label` in
+/// [`MESSAGE_KEYS`], in the user's language.
+pub fn message_key_name(label: &str) -> gpui_kit::SharedString {
+    crate::i18n::text(&label_id("message-key", label), &[])
+}
+
 impl Binding {
+    /// The row's name in the user's language, for the menu and the
+    /// shortcuts sheet. `label` stays the English key that finds the row.
+    pub fn name(&self) -> gpui_kit::SharedString {
+        crate::i18n::text(&label_id("keymap", self.label), &[])
+    }
+
     pub fn keys(&self, platform: Platform) -> &'static str {
         match platform {
             Platform::MacOs => self.macos,
@@ -724,5 +742,15 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), count, "an action appears in two rows");
         assert_eq!(count, 47);
+    }
+
+    #[test]
+    fn every_row_and_message_key_has_a_name() {
+        for row in bindings() {
+            assert_eq!(row.name(), row.label, "keymap.ftl lacks {:?}", row.label);
+        }
+        for (_, label) in MESSAGE_KEYS {
+            assert_eq!(message_key_name(label), label, "keymap.ftl lacks {label:?}");
+        }
     }
 }

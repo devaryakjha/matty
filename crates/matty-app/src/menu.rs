@@ -6,9 +6,10 @@
 //! without drawing them.
 
 use gpui_kit::base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
+use gpui_kit::{Action, App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
 
 use crate::actions::{self, Binding};
+use crate::t;
 
 gpui_kit::actions!(
     matty,
@@ -33,6 +34,9 @@ gpui_kit::actions!(
         ReportProblem,
     ]
 );
+
+/// The first menu's title, the app's name in every language.
+const APP_NAME: &str = "Matty"; // i18n-ignore: a name
 
 /// Where "Report a problem" goes.
 const REPORT_URL: &str = "https://github.com/devaryakjha/matty/issues/new";
@@ -88,105 +92,105 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut gpui_kit::Window, &mut A
 /// The menu bar.
 pub fn menus() -> Vec<Menu> {
     let keymap = actions::bindings();
-    let item = |label: &str| keymap_item(&keymap, label, false);
-    let dialog = |label: &str| keymap_item(&keymap, label, true);
+    let item = |action: &dyn Action| keymap_item(&keymap, action, false);
+    let dialog = |action: &dyn Action| keymap_item(&keymap, action, true);
     vec![
-        Menu::new("Matty").items([
-            dialog("Preferences"),
+        Menu::new(APP_NAME).items([
+            dialog(&actions::OpenPreferences),
             MenuItem::separator(),
-            MenuItem::action("Add server\u{2026}", actions::AddServer),
-            MenuItem::action("Sign out", SignOut),
+            MenuItem::action(t!("menu-add-server"), actions::AddServer),
+            MenuItem::action(t!("menu-sign-out"), SignOut),
             MenuItem::separator(),
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::os_submenu(t!("menu-services"), SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Matty", Hide),
-            MenuItem::action("Hide others", HideOthers),
-            MenuItem::action("Show all", ShowAll),
+            MenuItem::action(t!("menu-hide"), Hide),
+            MenuItem::action(t!("menu-hide-others"), HideOthers),
+            MenuItem::action(t!("menu-show-all"), ShowAll),
             MenuItem::separator(),
-            MenuItem::action("Quit Matty", Quit),
+            MenuItem::action(t!("menu-quit"), Quit),
         ]),
-        Menu::new("File").items([
-            item("Open in new window"),
+        Menu::new(t!("menu-file")).items([
+            item(&actions::OpenInNewWindow),
             MenuItem::separator(),
-            dialog("Upload files"),
+            dialog(&actions::UploadFiles),
             MenuItem::separator(),
-            dialog("Create channel"),
-            dialog("Browse channels"),
+            dialog(&actions::CreateChannel),
+            dialog(&actions::BrowseChannels),
         ]),
-        Menu::new("Edit").items([
-            MenuItem::os_action("Undo", Undo, OsAction::Undo),
-            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+        Menu::new(t!("menu-edit")).items([
+            MenuItem::os_action(t!("menu-undo"), Undo, OsAction::Undo),
+            MenuItem::os_action(t!("menu-redo"), Redo, OsAction::Redo),
             MenuItem::separator(),
-            MenuItem::os_action("Cut", Cut, OsAction::Cut),
-            MenuItem::os_action("Copy", Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", Paste, OsAction::Paste),
-            MenuItem::os_action("Select all", SelectAll, OsAction::SelectAll),
+            MenuItem::os_action(t!("menu-cut"), Cut, OsAction::Cut),
+            MenuItem::os_action(t!("menu-copy"), Copy, OsAction::Copy),
+            MenuItem::os_action(t!("menu-paste"), Paste, OsAction::Paste),
+            MenuItem::os_action(t!("menu-select-all"), SelectAll, OsAction::SelectAll),
             MenuItem::separator(),
-            item("Search"),
+            item(&actions::Search),
         ]),
-        Menu::new("View").items([
-            item("Toggle sidebar"),
-            item("Toggle right pane"),
-            item("Expand right pane"),
-            item("Unreads filter"),
+        Menu::new(t!("menu-view")).items([
+            item(&actions::ToggleSidebar),
+            item(&actions::ToggleRightPane),
+            item(&actions::ExpandRightPane),
+            item(&actions::UnreadsFilter),
             MenuItem::separator(),
-            item("Open in split view"),
-            item("Focus other pane"),
-            item("Swap panes"),
-            item("Close pane"),
+            item(&actions::OpenInSplitView),
+            item(&actions::FocusOtherPane),
+            item(&actions::SwapPanes),
+            item(&actions::ClosePane),
             MenuItem::separator(),
-            item("Channel info"),
-            item("Recent mentions"),
-            item("All unreads"),
-            item("Saved messages"),
+            item(&actions::ChannelInfo),
+            item(&actions::RecentMentions),
+            item(&actions::AllUnreads),
+            item(&actions::SavedMessages),
             MenuItem::separator(),
-            item("Zoom in"),
-            item("Zoom out"),
-            item("Reset zoom"),
+            item(&actions::ZoomIn),
+            item(&actions::ZoomOut),
+            item(&actions::ResetZoom),
         ]),
-        Menu::new("Go").items([
-            dialog("Quick switcher"),
-            dialog("Direct messages"),
+        Menu::new(t!("menu-go")).items([
+            dialog(&actions::QuickSwitcher),
+            dialog(&actions::DirectMessagesMenu),
             MenuItem::separator(),
-            item("Previous channel"),
-            item("Next channel"),
-            item("Previous unread channel"),
-            item("Next unread channel"),
+            item(&actions::PreviousChannel),
+            item(&actions::NextChannel),
+            item(&actions::PreviousUnreadChannel),
+            item(&actions::NextUnreadChannel),
             MenuItem::separator(),
-            item("Previous team"),
-            item("Next team"),
+            item(&actions::PreviousTeam),
+            item(&actions::NextTeam),
             MenuItem::separator(),
-            item("Back"),
-            item("Forward"),
+            item(&actions::HistoryBack),
+            item(&actions::HistoryForward),
         ]),
-        Menu::new("Window").items([
-            MenuItem::action("Minimize", Minimize),
-            MenuItem::action("Zoom", ZoomWindow),
+        Menu::new(t!("menu-window")).items([
+            MenuItem::action(t!("menu-minimize"), Minimize),
+            MenuItem::action(t!("menu-zoom"), ZoomWindow),
             MenuItem::separator(),
-            item("Close window"),
+            item(&actions::CloseWindow),
         ]),
-        Menu::new("Help").items([
-            item("Keyboard shortcuts"),
+        Menu::new(t!("menu-help")).items([
+            item(&actions::ShowShortcuts),
             MenuItem::separator(),
-            MenuItem::action("Open logs folder", OpenLogs),
-            MenuItem::action("Report a problem", ReportProblem),
+            MenuItem::action(t!("menu-open-logs"), OpenLogs),
+            MenuItem::action(t!("menu-report-problem"), ReportProblem),
         ]),
     ]
 }
 
-/// The item for the keymap row labelled `label`, with its action; `dialog`
-/// adds the ellipsis of an item that opens a dialog. A label missing from
-/// the keymap is a bug, caught by the tests.
-fn keymap_item(keymap: &[Binding], label: &str, dialog: bool) -> MenuItem {
+/// The item for the keymap row that dispatches `action`, named as the row
+/// is; `dialog` adds the ellipsis of an item that opens a dialog. An
+/// action missing from the keymap is a bug, caught by the tests.
+fn keymap_item(keymap: &[Binding], action: &dyn Action, dialog: bool) -> MenuItem {
     let row = keymap
         .iter()
-        .find(|row| row.label == label)
-        .unwrap_or_else(|| panic!("no keymap row is labelled {label:?}"));
+        .find(|row| (row.action)().name() == action.name())
+        .unwrap_or_else(|| panic!("no keymap row dispatches {}", action.name())); // i18n-ignore: a panic
     MenuItem::Action {
         name: if dialog {
-            format!("{label}\u{2026}").into()
+            t!("menu-dialog-item", name = row.name().to_string())
         } else {
-            label.to_owned().into()
+            row.name()
         },
         action: (row.action)(),
         os_action: None,
@@ -207,8 +211,6 @@ fn action_name(item: &MenuItem) -> Option<(&str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-
-    use gpui_kit::Action as _;
 
     use super::*;
 
