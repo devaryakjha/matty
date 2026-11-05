@@ -29,6 +29,8 @@ pub const LOCALIZED: &[&str] = &[
     "dnd.rs",
     "emoji_manager.rs",
     "login.rs",
+    "profile.rs",
+    "profile_editor.rs",
 ];
 
 struct Strings {
