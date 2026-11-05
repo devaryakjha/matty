@@ -180,7 +180,7 @@ jobs:
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'macos-master' || format('macos-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 40
     permissions:
@@ -242,7 +242,7 @@ jobs:
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'macos-universal-master' || format('macos-universal-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 60
     steps:
@@ -291,7 +291,7 @@ jobs:
       needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'windows-master' || format('windows-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 60
     steps:
@@ -331,7 +331,7 @@ jobs:
       needs.changes.outputs.linux-package == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'linux-package-master' || format('linux-package-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 40
     steps:
@@ -387,7 +387,7 @@ jobs:
       needs.changes.outputs.windows-package == 'true'
     runs-on: windows-latest
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'windows-package-master' || format('windows-package-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 60
     defaults:
