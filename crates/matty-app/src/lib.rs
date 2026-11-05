@@ -64,6 +64,8 @@ pub mod style;
 pub mod switcher;
 pub mod threads;
 pub mod transcript;
+#[cfg(not(target_family = "wasm"))]
+pub mod tray;
 mod ui;
 #[cfg(not(target_family = "wasm"))]
 mod updater;
@@ -223,6 +225,8 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     }
     #[cfg(not(target_family = "wasm"))]
     follow_launch_at_login(&settings, cx);
+    #[cfg(not(target_family = "wasm"))]
+    follow_close_to_tray(&settings, cx);
     actions::bind(cx);
     #[cfg(not(target_family = "wasm"))]
     menu::init(cx);
@@ -338,6 +342,74 @@ fn follow_launch_at_login(settings: &Entity<SettingsStore>, cx: &mut App) {
             applied = wanted;
             cx.background_spawn(async move { login_item::apply(wanted) })
                 .detach();
+        }
+    })
+    .detach();
+}
+
+/// Keeps the tray icon (#634) in step with the "Keep running when closed"
+/// setting. While the icon is up, closing the last window leaves Matty
+/// running; without one, closing quits as usual.
+#[cfg(not(target_family = "wasm"))]
+fn follow_close_to_tray(settings: &Entity<SettingsStore>, cx: &mut App) {
+    struct Shown {
+        _tray: Option<tray::Tray>,
+    }
+    impl gpui_kit::Global for Shown {}
+
+    let (events, picked) = async_channel::unbounded();
+    cx.spawn(async move |cx| {
+        while let Ok(event) = picked.recv().await {
+            cx.update(|cx| match event {
+                tray::TrayEvent::Open => {
+                    if cx.windows().is_empty() {
+                        open_main_window(cx);
+                    } else if let Some(window) = cx.windows().first() {
+                        let _ = window.update(cx, |_, window, _| window.activate_window());
+                    }
+                    cx.activate(true);
+                }
+                tray::TrayEvent::Quit => cx.quit(),
+            });
+        }
+    })
+    .detach();
+
+    let apply = move |wanted: bool, cx: &mut App| {
+        if !wanted || cfg!(target_os = "macos") {
+            cx.set_global(Shown { _tray: None });
+            cx.set_quit_mode(gpui_kit::QuitMode::Default);
+            return;
+        }
+        let events = events.clone();
+        let settings = SettingsStore::global(cx);
+        cx.spawn(async move |cx| {
+            let shown = tray::show(events).await;
+            cx.update(|cx| {
+                // The switch may have gone off while the icon came up.
+                if !settings.read(cx).get().close_to_tray {
+                    return;
+                }
+                match shown {
+                    Ok(tray) => {
+                        cx.set_global(Shown { _tray: Some(tray) });
+                        cx.set_quit_mode(gpui_kit::QuitMode::Explicit);
+                    }
+                    Err(error) => tracing::warn!(%error, "no tray icon; closing quits"),
+                }
+            });
+        })
+        .detach();
+    };
+    let mut applied = settings.read(cx).get().close_to_tray;
+    if applied {
+        apply(true, cx);
+    }
+    cx.subscribe(settings, move |store, _: &settings::SettingsChanged, cx| {
+        let wanted = store.read(cx).get().close_to_tray;
+        if wanted != applied {
+            applied = wanted;
+            apply(wanted, cx);
         }
     })
     .detach();
