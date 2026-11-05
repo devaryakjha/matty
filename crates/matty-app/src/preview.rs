@@ -708,6 +708,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        image_sizes: vec![],
         priority: None,
     };
     let reaction = |emoji: &str, count: usize, mine: bool, users: &[&str]| PostReaction {
@@ -1393,6 +1394,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        image_sizes: vec![],
         priority: None,
     };
     vec![
@@ -1900,6 +1902,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         reply_to: None,
         files: vec![],
         embeds: vec![],
+        image_sizes: vec![],
         priority: None,
     };
     // Build Bot's thread carries the deploy conversation (#211): a reply

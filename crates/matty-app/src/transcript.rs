@@ -340,6 +340,7 @@ fn display_post(
             .filter(|file| file.delete_at == 0)
             .map(PostFile::from_info)
             .collect(),
+        image_sizes: image_sizes(post),
         embeds: crate::embeds::from_post(post)
             .into_iter()
             .filter(|embed| viewer.link_previews || !matches!(embed, crate::embeds::Embed::Link(_)))
@@ -404,6 +405,7 @@ fn system_post(
         reply_to: None,
         files: Vec::new(),
         embeds: Vec::new(),
+        image_sizes: Vec::new(),
         priority: None,
     }
 }
@@ -741,6 +743,23 @@ fn emoji(name: &str) -> String {
     crate::emoji::lookup(name)
         .map(|emoji| emoji.as_str().to_string())
         .unwrap_or_else(|| format!(":{name}:"))
+}
+
+/// The sizes the server measured for a post's images (`metadata.images`),
+/// by URL, sorted so the list compares the same each time.
+fn image_sizes(post: &ApiPost) -> Vec<(SharedString, u32, u32)> {
+    let mut sizes: Vec<_> = post
+        .metadata
+        .images
+        .iter()
+        .filter_map(|(url, image)| {
+            let width = u32::try_from(image.width).ok().filter(|w| *w > 0)?;
+            let height = u32::try_from(image.height).ok().filter(|h| *h > 0)?;
+            Some((SharedString::from(url.clone()), width, height))
+        })
+        .collect();
+    sizes.sort();
+    sizes
 }
 
 #[cfg(test)]

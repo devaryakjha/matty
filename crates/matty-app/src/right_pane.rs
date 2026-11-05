@@ -874,6 +874,7 @@ impl RightPaneView {
             reply_to: None,
             files,
             embeds: vec![],
+            image_sizes: vec![],
             priority: None,
         };
         thread.replies.push(reply);
@@ -2402,6 +2403,7 @@ impl RightPaneView {
                     crate::links::message_body(
                         gpui_kit::ElementId::Name(format!("thread.{id}.body").into()),
                         &post.body,
+                        &post.image_sizes,
                         move |url, _, cx| {
                             let event = RightPaneEvent::OpenLink(url.clone());
                             link_view.update(cx, |_, cx| cx.emit(event)).ok();
@@ -4054,6 +4056,7 @@ mod tests {
             reply_to: None,
             files: vec![],
             embeds: vec![],
+            image_sizes: vec![],
             priority: None,
         }
     }
