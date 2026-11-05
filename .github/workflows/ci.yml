@@ -37,7 +37,6 @@ jobs:
       linux-runner: ${{ steps.runners.outputs.linux }}
       macos-runner: ${{ steps.runners.outputs.macos }}
       code: ${{ steps.code.outputs.code }}
-      live: ${{ steps.filter.outputs.live }}
       macos: ${{ steps.filter.outputs.macos }}
       bundle: ${{ steps.filter.outputs.bundle }}
       windows: ${{ steps.filter.outputs.windows }}
@@ -87,17 +86,6 @@ jobs:
         id: filter
         with:
           filters: |
-            live:
-              - 'crates/matty-api/**'
-              - 'crates/matty-store/**'
-              - 'crates/matty-sync/**'
-              - 'docker/**'
-              - 'scripts/seed.py'
-              - 'scripts/dev-server'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
             macos:
               - 'crates/matty-notify/**'
               - 'crates/matty-app/src/logging.rs'
@@ -527,17 +515,23 @@ jobs:
 
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
-    # Mattermost server (docs/dev-server.md). Pull requests run them only
-    # when those crates change, against the newest and the dev server's
-    # versions; master runs every supported version.
+    # Mattermost server (docs/dev-server.md). They are the slowest part of
+    # CI, so pull requests skip them unless labelled `integration`; every
+    # master push runs every supported version, and a failure there opens
+    # an issue like the macOS job does.
     name: integration (Mattermost ${{ matrix.server }})
     needs: changes
-    if: needs.changes.outputs.live == 'true' || github.event_name == 'push'
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'integration')
     # Stays on GitHub's runners. On the self-hosted box the server could
     # not reach the tests' stand-in integrations on the host, and four
     # servers next to the builds made the timing-sensitive tests fail.
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    permissions:
+      contents: read
+      issues: write
     strategy:
       fail-fast: false
       matrix:
@@ -602,6 +596,21 @@ jobs:
         with:
           name: mattermost-${{ matrix.server }}-logs
           path: mattermost.log
+      - name: Report an integration break on master
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVER: ${{ matrix.server }}
+        run: |
+          title="Integration tests are failing on master"
+          body="Mattermost $SERVER failed on ${GITHUB_SHA::7}: $RUN_URL"
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
       - name: Remove the server
         # A self-hosted machine would otherwise keep every run's containers.
         if: always()

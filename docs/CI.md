@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `linux`: fmt, clippy, unit tests, plain-Rust checks | always (skipped for docs-only changes) | always |
 | `deny` | always (skipped for docs-only changes) | always |
-| `integration` (live Mattermost) | only when `matty-api`, `matty-store`, `matty-sync`, `docker/`, the seed script or the lockfile change; 12.0 and 10.5 | every supported version |
+| `integration` (live Mattermost) | never, unless labelled `integration` (12.0 and 10.5) | every supported version; a failure opens or comments on the issue "Integration tests are failing on master" |
 | `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
 | `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
 | `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | only when `packaging/linux/` or `scripts/linux-package` change, or with the `linux` label | always, plus the artifact |
