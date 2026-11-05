@@ -183,7 +183,7 @@ jobs:
           # appimagetool would fetch this itself, without retrying a 504.
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/appimage-runtime-x86_64" \
             https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
-          echo "MATTY_APPIMAGE_RUNTIME="$RUNNER_TEMP/appimage-runtime-x86_64"" >> "$GITHUB_ENV"
+          echo "MATTY_APPIMAGE_RUNTIME=$RUNNER_TEMP/appimage-runtime-x86_64" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
