@@ -1259,6 +1259,25 @@ async fn channel_members_admins_and_files_round_trip() {
         "{:?}",
         user.permissions
     );
+    // The team roles, which grant making a channel private.
+    let membership = client.my_team_members().await.unwrap();
+    let in_team = membership.iter().find(|m| m.team_id == team.id).unwrap();
+    assert!(in_team.roles.split_whitespace().any(|r| r == "team_user"));
+    assert!(!in_team.scheme_admin);
+    let roles = client
+        .roles(&["team_user".into(), "team_admin".into()])
+        .await
+        .unwrap();
+    let grants = |name: &str| {
+        roles
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap()
+            .permissions
+            .iter()
+            .any(|p| p == "convert_public_channel_to_private")
+    };
+    assert!(grants("team_admin") && !grants("team_user"));
 
     // Add members offers the team's people who are not in it.
     let candidates = client

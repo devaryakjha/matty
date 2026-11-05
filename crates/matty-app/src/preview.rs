@@ -1075,8 +1075,12 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         // The private release channel is one the user only belongs to:
         // its roles grant neither admin nor member management (#208).
-        can_manage: id != "release-2026-11",
-        manage_members: id != "release-2026-11",
+        // A private channel the user only belongs to.
+        rights: if id == "release-2026-11" {
+            crate::channel::ChannelRights::NONE
+        } else {
+            crate::channel::ChannelRights::default()
+        },
         delete_others: true,
         admins: vec!["u-priya".into()],
         profiles: profiles(),
@@ -1517,8 +1521,7 @@ pub fn empty_channel(
         posts: vec![],
         first_unread: None,
         max_post_size: DEFAULT_MAX_POST_SIZE,
-        can_manage: true,
-        manage_members: true,
+        rights: crate::channel::ChannelRights::default(),
         delete_others: true,
         admins: Vec::new(),
         profiles: profiles(),

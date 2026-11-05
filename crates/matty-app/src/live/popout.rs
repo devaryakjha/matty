@@ -127,6 +127,8 @@ impl Live {
             asked_thumbnails: self.asked_thumbnails.clone(),
             roles: self.roles.clone(),
             asked_roles: self.asked_roles.clone(),
+            team_roles: self.team_roles.clone(),
+            asked_team_roles: self.asked_team_roles,
             remote_images: self.remote_images.clone(),
             full_images: self.full_images.clone(),
             avatars: self.avatars.clone(),

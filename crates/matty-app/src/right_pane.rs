@@ -3464,10 +3464,10 @@ impl RightPaneView {
                 )
             });
         let is_channel = kind_icon.is_some();
-        let manage_members = is_channel && channel.manage_members;
+        let manage_members = is_channel && channel.rights.members;
         let view = cx.entity().downgrade();
         let me = self.me.clone();
-        let can_manage = channel.can_manage;
+        let can_manage = channel.rights.roles;
         let members = div()
             .flex()
             .flex_col()
