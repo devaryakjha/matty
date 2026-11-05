@@ -204,7 +204,7 @@ mod tests {
             .unwrap_or_else(|(_, errors)| panic!("matty.ftl: {errors:?}"));
         let mut english = FluentBundle::new(vec![LanguageIdentifier::default()]);
         english.add_resource(resource).expect("no repeated ids");
-        let id = regex::Regex::new(r#"t!\(\s*"([a-z0-9-]+)""#).unwrap();
+        let id = regex::Regex::new(r#"(?:^|[^\w])t!\(\s*"([a-z0-9-]+)""#).unwrap();
         for (file, source) in sources() {
             for found in id.captures_iter(&source) {
                 assert!(
@@ -221,6 +221,7 @@ mod tests {
     #[test]
     fn localized_files_have_no_hard_coded_strings() {
         let literal = regex::Regex::new(r#""((?:[^"\\]|\\.)*)""#).unwrap();
+        let lookup = regex::Regex::new(r"(?:^|[^\w])t!\(").unwrap();
         let wordy = regex::Regex::new(r"[A-Za-z]{2,}[^A-Za-z0-9_.\-{}]|^[A-Z][a-z]").unwrap();
         let mut found = Vec::new();
         for (file, source) in sources() {
@@ -230,10 +231,15 @@ mod tests {
             let code = source.split("#[cfg(test)]").next().unwrap_or_default();
             for (number, line) in code.lines().enumerate() {
                 let trimmed = line.trim_start();
+                // Names, keys and log text are not UI text; a line that
+                // shows a name as is says so with `i18n-ignore`.
                 let skipped = trimmed.starts_with("//")
                     || trimmed.starts_with("#[")
-                    || line.contains("t!(")
-                    || line.contains("tracing::");
+                    || lookup.is_match(line)
+                    || line.contains("tracing::")
+                    || line.contains("i18n-ignore")
+                    || line.contains("debug_struct(")
+                    || trimmed.starts_with(".field(");
                 if skipped {
                     continue;
                 }
