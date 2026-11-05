@@ -942,7 +942,10 @@ impl Live {
         }
     }
 
-    /// Asks sync for the thumbnails of image files not yet asked for.
+    /// Asks sync for the images of image files not yet asked for. Posts
+    /// show them as tiles a few hundred points wide, so they get the
+    /// preview: the server's thumbnail is about 120 pixels and blurs when
+    /// drawn that big.
     fn ask_thumbnails(&mut self, posts: &[Post]) {
         for file in posts.iter().flat_map(|post| {
             post.files
@@ -954,7 +957,7 @@ impl Live {
             {
                 self.sync.send(Command::LoadImage {
                     file_id: file.id.to_string(),
-                    size: ImageSize::Thumbnail,
+                    size: ImageSize::Preview,
                 });
             }
         }
@@ -1822,7 +1825,9 @@ impl Live {
                 let image = Arc::new(gpui_kit::Image::from_bytes(format, bytes.to_vec()));
                 if *size == ImageSize::Preview {
                     self.full_images.insert(file_id.clone(), image.clone());
-                    update.full_image = Some((file_id.as_str().into(), image));
+                    update.full_image = Some((file_id.as_str().into(), image.clone()));
+                } else if self.full_images.contains_key(file_id) {
+                    // The sharper preview is already on the tile.
                     return update;
                 }
                 self.thumbnails.insert(file_id.clone(), image);
@@ -4292,7 +4297,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thumbnail_fills_its_file_on_screen() {
+    fn a_preview_fills_its_file_on_screen() {
         let mut live = live();
         live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
         let mut post = matty_api::models::Post {
@@ -4312,7 +4317,7 @@ mod tests {
         assert!(live.asked_thumbnails.contains("f1"));
         let update = live.apply(&ChangeSet::Image {
             file_id: "f1".into(),
-            size: ImageSize::Thumbnail,
+            size: ImageSize::Preview,
             bytes: Arc::from(&b"png"[..]),
             content_type: "image/png".into(),
         });
@@ -4320,6 +4325,15 @@ mod tests {
             panic!("expected a patch, got {:?}", update.channel);
         };
         assert!(updated[0].files[0].preview.is_some());
+        // A small thumbnail that comes later, as for a search result, does
+        // not replace the sharper preview on the tile.
+        let update = live.apply(&ChangeSet::Image {
+            file_id: "f1".into(),
+            size: ImageSize::Thumbnail,
+            bytes: Arc::from(&b"png"[..]),
+            content_type: "image/png".into(),
+        });
+        assert!(update.channel.is_none());
     }
 
     #[test]
