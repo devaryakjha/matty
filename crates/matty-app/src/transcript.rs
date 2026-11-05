@@ -534,8 +534,9 @@ fn name_list(names: &[String]) -> String {
     }
 }
 
-/// One sentence per kind of change, in the order they first happened:
-/// "Ada, Sam and 3 others joined the channel. Lena left the channel."
+/// One sentence per kind of change, in the order they first happened, a
+/// line each: "Ada, Sam and 3 others joined the channel.\nLena left the
+/// channel."
 fn activity_text(entries: &[Activity]) -> String {
     let mut groups: Vec<(Verb, Option<&str>, Vec<String>)> = Vec::new();
     for entry in entries {
@@ -564,7 +565,7 @@ fn activity_text(entries: &[Activity]) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n")
 }
 
 /// The sentence for a system post other than a join or leave, in the web
@@ -1034,7 +1035,7 @@ mod tests {
             shown(&model),
             [(
                 ACTIVITY,
-                "Ada, Sam and 3 others joined the channel. @zed left the channel. \
+                "Ada, Sam and 3 others joined the channel.\n@zed left the channel.\n\
                  You added to the channel by Ada.",
                 false
             )]

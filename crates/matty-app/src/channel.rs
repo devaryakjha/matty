@@ -4453,11 +4453,21 @@ impl ChannelView {
             .child(row)
     }
 
-    /// A system message (#104): a muted line in the body column, with the
-    /// time in the gutter on hover like a continuation, and no actions.
+    /// A system message (#104, #624): an icon for the kind of change, then
+    /// one line per event with the people in it set in the body color and
+    /// the rest muted. The time shows in the gutter on hover, like a
+    /// continuation, and there are no actions.
     fn system_row(post: &Post, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let time: SharedString = ClockFormat::current(cx).format(post.time).into();
+        let lines: Vec<&str> = post
+            .body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let icon = system_icon(&lines);
+        let slot = scaled(&theme, metrics::ROW_SLOT);
         Message::new(gpui_kit::ElementId::Name(
             format!("post.{}", post.id).into(),
         ))
@@ -4472,10 +4482,47 @@ impl ChannelView {
         .py(theme.space(1.))
         .child(
             div()
+                .flex()
+                .items_start()
+                .gap(theme.space(2.))
                 .text_size(theme.text(13.))
                 .line_height(theme.text(20.))
-                .text_color(theme.colors.muted_foreground)
-                .child(post.body.clone()),
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size(slot)
+                        .rounded_full()
+                        .bg(theme.colors.muted)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            lucide(icon)
+                                .size(scaled(&theme, metrics::ICON_TINY))
+                                .text_color(theme.colors.muted_foreground),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .children(lines.into_iter().map(|line| {
+                            let mut text = div().text_color(theme.colors.muted_foreground);
+                            for (span, people) in system_spans(line) {
+                                text = text.child(if people {
+                                    div()
+                                        .text_color(theme.colors.foreground)
+                                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                        .child(span)
+                                } else {
+                                    div().child(span)
+                                });
+                            }
+                            text.flex().flex_wrap()
+                        })),
+                ),
         )
     }
 
@@ -5649,6 +5696,74 @@ fn people_suggestions<'a>(
         .collect()
 }
 
+/// The words that end the people at the start of a system line and begin
+/// what happened to them.
+const SYSTEM_VERBS: [&str; 10] = [
+    " joined the ",
+    " left the ",
+    " added to the ",
+    " was removed from the ",
+    " were removed from the ",
+    " updated the channel ",
+    " removed the channel ",
+    " archived the channel",
+    " unarchived the channel",
+    " was added to the ",
+];
+
+/// A system line in spans, `true` for the people: the names before the
+/// verb, and whoever did an add ("… by Ada."). A line without a known verb
+/// is one plain span.
+fn system_spans(line: &str) -> Vec<(String, bool)> {
+    let Some(at) = SYSTEM_VERBS.iter().filter_map(|verb| line.find(verb)).min() else {
+        return vec![(line.to_owned(), false)];
+    };
+    let mut spans = vec![(line[..at].to_owned(), true)];
+    let rest = &line[at..];
+    let by = rest
+        .contains(" added to the ")
+        .then(|| rest.rfind(" by "))
+        .flatten();
+    match by {
+        Some(by) => {
+            let actor = rest[by + 4..].trim_end_matches('.');
+            spans.push((rest[..by + 4].to_owned(), false));
+            spans.push((actor.to_owned(), true));
+            if rest.ends_with('.') {
+                spans.push((".".to_owned(), false));
+            }
+        }
+        None => spans.push((rest.to_owned(), false)),
+    }
+    spans
+}
+
+/// The icon beside a system row: someone arrived, someone left, the
+/// channel changed, or a mix.
+fn system_icon(lines: &[&str]) -> LucideIcon {
+    let kind = |line: &&str| {
+        if line.contains(" joined the ") || line.contains(" added to the ") {
+            LucideIcon::UserPlus
+        } else if line.contains(" left the ") || line.contains(" removed from the ") {
+            LucideIcon::UserMinus
+        } else if line.contains(" unarchived the channel") {
+            LucideIcon::ArchiveRestore
+        } else if line.contains(" archived the channel") {
+            LucideIcon::Archive
+        } else if line.contains(" the channel ") {
+            LucideIcon::Pencil
+        } else {
+            LucideIcon::Info
+        }
+    };
+    let mut kinds = lines.iter().map(kind);
+    match kinds.next() {
+        None => LucideIcon::Info,
+        Some(first) if kinds.all(|other| other == first) => first,
+        Some(_) => LucideIcon::Users,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6316,6 +6431,61 @@ mod tests {
         channel.first_unread = Some(0);
         let after = channel.row_keys(&channel.rows());
         assert_eq!(changed_rows(&before, &after), (1..3, 0));
+    }
+
+    #[test]
+    fn system_lines_set_the_people_apart() {
+        assert_eq!(
+            system_spans("Sam, Lena and 3 others joined the channel."),
+            [
+                ("Sam, Lena and 3 others".to_owned(), true),
+                (" joined the channel.".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            system_spans("You added to the team by Ada Lovelace."),
+            [
+                ("You".to_owned(), true),
+                (" added to the team by ".to_owned(), false),
+                ("Ada Lovelace".to_owned(), true),
+                (".".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            system_spans("Priya updated the channel header to: hi"),
+            [
+                ("Priya".to_owned(), true),
+                (" updated the channel header to: hi".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            system_spans("Reminder from the server"),
+            [("Reminder from the server".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn system_rows_pick_an_icon_for_the_change() {
+        assert_eq!(
+            system_icon(&["Sam joined the channel."]),
+            LucideIcon::UserPlus
+        );
+        assert_eq!(
+            system_icon(&["retentionbot was removed from the team."]),
+            LucideIcon::UserMinus
+        );
+        assert_eq!(
+            system_icon(&["Sam joined the team.", "Ola left the team."]),
+            LucideIcon::Users
+        );
+        assert_eq!(
+            system_icon(&["Priya archived the channel"]),
+            LucideIcon::Archive
+        );
+        assert_eq!(
+            system_icon(&["Priya unarchived the channel"]),
+            LucideIcon::ArchiveRestore
+        );
     }
 
     #[test]
