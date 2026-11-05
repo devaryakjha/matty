@@ -3244,6 +3244,16 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::ToggleReaction { post, emoji } => {
+                // Before #620 this fell through: a reaction from the
+                // thread pane never reached the server.
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::ToggleReaction {
+                        post_id: post.to_string(),
+                        emoji_name: crate::transcript::emoji_name(emoji),
+                    });
+                }
+            }
             RightPaneEvent::ToggleFollow { root, following } => {
                 if let Some(live) = &self.live {
                     live.follow_thread(root, *following);
@@ -3267,8 +3277,6 @@ impl MainWindow {
                     self.apply_update(update, window, cx);
                 }
             }
-            // Sync owns the rest (PLAN §4.3); the pane already shows them.
-            _ => {}
         }
     }
 

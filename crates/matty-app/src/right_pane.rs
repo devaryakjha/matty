@@ -1352,6 +1352,14 @@ impl RightPaneView {
                         reaction.count += 1;
                         reaction.mine = true;
                     }
+                } else {
+                    // A new emoji on this post (#620).
+                    post.reactions.push(crate::channel::PostReaction {
+                        emoji: emoji.clone(),
+                        count: 1,
+                        mine: true,
+                        users: vec![],
+                    });
                 }
             },
             cx,
@@ -4263,6 +4271,40 @@ mod tests {
             .expect("hovering shows the add-reaction button");
         cx.simulate_click(react.center(), Default::default());
         assert!(view.read_with(&cx, |pane, cx| pane.menu.read(cx).is_open()));
+    }
+
+    /// #620: a reaction a reply doesn't have yet shows at once and is
+    /// sent. Before, only an emoji already on the reply could be added.
+    #[gpui_kit::test]
+    fn a_new_reaction_on_a_reply_shows_and_is_sent(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..2, false, false), cx);
+                pane.toggle_reaction("r1".into(), "👍".into(), cx);
+            })
+        });
+        let reactions = view.read_with(&cx, |pane, _| {
+            pane.thread_post(&"r1".into())
+                .map(|post| post.reactions.clone())
+                .unwrap_or_default()
+        });
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(
+            (
+                reactions[0].emoji.as_ref(),
+                reactions[0].count,
+                reactions[0].mine
+            ),
+            ("👍", 1, true)
+        );
+        assert_eq!(
+            *events.borrow(),
+            [RightPaneEvent::ToggleReaction {
+                post: "r1".into(),
+                emoji: "👍".into()
+            }]
+        );
     }
 
     /// #163: offline, a reaction or an edit to a sent reply is refused
