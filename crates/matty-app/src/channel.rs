@@ -578,6 +578,11 @@ pub struct ChannelModel {
     /// The user may archive the channel or make it private: a channel or
     /// system admin (#208). The server has the last word.
     pub can_manage: bool,
+    /// The user may add people to the channel and remove them: their
+    /// roles grant `manage_public_channel_members` or
+    /// `manage_private_channel_members` (#208). True until the roles are
+    /// known; the server has the last word.
+    pub manage_members: bool,
     /// The user may delete other people's posts: a system admin, as
     /// Mattermost's default `delete_others_posts` allows (#106). Team
     /// admins may too, but their role is not kept. The server has the
@@ -2051,8 +2056,10 @@ impl ChannelView {
             model.purpose = details.purpose;
             model.members = details.members;
             model.pinned = details.pinned;
-            let menu_changed = model.can_manage != details.can_manage;
+            let menu_changed = model.can_manage != details.can_manage
+                || model.manage_members != details.manage_members;
             model.can_manage = details.can_manage;
+            model.manage_members = details.manage_members;
             model.delete_others = details.delete_others;
             crate::apps::remember(cx.entity_id(), &details.apps, cx);
             let view = cx.entity().downgrade();
@@ -3434,16 +3441,18 @@ impl ChannelView {
                 ChannelField::Name,
             ));
             items.push(MenuItem::separator());
-            let members_view = view.clone();
-            items.push(
-                MenuItem::new("channel.menu.add-members", "Add members…").on_click(
-                    move |_, window, cx| {
-                        members_view
-                            .update(cx, |this, cx| this.open_add_members(window, cx))
-                            .ok();
-                    },
-                ),
-            );
+            if model.is_none_or(|m| m.manage_members) {
+                let members_view = view.clone();
+                items.push(
+                    MenuItem::new("channel.menu.add-members", "Add members…").on_click(
+                        move |_, window, cx| {
+                            members_view
+                                .update(cx, |this, cx| this.open_add_members(window, cx))
+                                .ok();
+                        },
+                    ),
+                );
+            }
             let leave = self.leave.clone();
             items.push(
                 MenuItem::new("channel.menu.leave", "Leave channel…")
@@ -5149,7 +5158,7 @@ impl ChannelView {
             LucideIcon::Hash
         };
         let mut empty = style::empty_state(glyph, title, description, cx);
-        if !direct {
+        if !direct && channel.manage_members {
             empty = empty.content(
                 EmptyContent::new().child(
                     Button::new("channel.empty.add-members")
@@ -5879,6 +5888,7 @@ mod tests {
             posts: vec![],
             first_unread: None,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
         };
@@ -5949,6 +5959,7 @@ mod tests {
             posts: vec![post("1", "Today"), queued],
             first_unread: None,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6058,6 +6069,7 @@ mod tests {
             posts: vec![mine],
             first_unread: None,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6127,6 +6139,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],
@@ -6171,6 +6184,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],
@@ -6234,6 +6248,7 @@ mod tests {
             posts: vec![post("1", "Today"), system("2")],
             first_unread: None,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
         };
@@ -6279,6 +6294,7 @@ mod tests {
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
+            manage_members: true,
             delete_others: false,
             admins: Vec::new(),
             profiles: vec![],

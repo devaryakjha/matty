@@ -123,6 +123,10 @@ pub struct Live {
     /// Image files' thumbnails by file id, and those asked for.
     thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
     asked_thumbnails: std::collections::HashSet<String>,
+    /// Roles' permissions as the server sent them, by role name, and the
+    /// names already asked for (#208).
+    roles: HashMap<String, Vec<String>>,
+    asked_roles: std::collections::HashSet<String>,
     /// Images from outside the server, in cards and inline, shared with
     /// the views (#159).
     remote_images: crate::remote_images::RemoteImages,
@@ -191,6 +195,8 @@ pub struct Details {
     pub pinned: usize,
     /// See [`crate::channel::ChannelModel::can_manage`].
     pub can_manage: bool,
+    /// See [`crate::channel::ChannelModel::manage_members`].
+    pub manage_members: bool,
     /// See [`crate::channel::ChannelModel::delete_others`].
     pub delete_others: bool,
     /// The bookmarks bar, where the server has bookmarks (#226).
@@ -637,6 +643,8 @@ impl Live {
                 uploads: HashMap::new(),
                 thumbnails: HashMap::new(),
                 asked_thumbnails: std::collections::HashSet::new(),
+                roles: HashMap::new(),
+                asked_roles: std::collections::HashSet::new(),
                 remote_images,
                 full_images: HashMap::new(),
                 avatars,
@@ -1004,6 +1012,7 @@ impl Live {
                 .as_ref()
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
             can_manage: self.can_manage(),
+            manage_members: self.manage_members(),
             delete_others: self.is_system_admin(),
             bookmarks: self.bookmarks_model(),
             apps: self.channel_apps(),
@@ -1019,6 +1028,63 @@ impl Live {
             .as_ref()
             .is_some_and(|member| member.scheme_admin || has(&member.roles, "channel_admin"));
         channel_admin || self.is_system_admin()
+    }
+
+    /// The roles that decide what the user may do in the open channel:
+    /// their channel roles, `channel_user` (and `channel_admin`) from the
+    /// scheme, and their system roles.
+    fn role_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut add = |name: &str| {
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        };
+        if let Some(member) = &self.member {
+            add("channel_user");
+            if member.scheme_admin {
+                add("channel_admin");
+            }
+            member.roles.split_whitespace().for_each(&mut add);
+        }
+        if let Some(me) = self.users.get(&self.me.0) {
+            me.roles.split_whitespace().for_each(&mut add);
+        }
+        names
+    }
+
+    /// Asks for the permissions of roles not yet known.
+    fn ask_roles(&mut self) {
+        let names: Vec<String> = self
+            .role_names()
+            .into_iter()
+            .filter(|name| !self.roles.contains_key(name) && self.asked_roles.insert(name.clone()))
+            .collect();
+        if !names.is_empty() {
+            self.send(Command::Roles { names });
+        }
+    }
+
+    /// Whether the user may add and remove the open channel's members, as
+    /// their roles say. A system admin may; until the roles are known,
+    /// the server decides.
+    fn manage_members(&self) -> bool {
+        let permission = match self.open.as_ref().map(|row| &row.kind) {
+            Some(ChannelKind::Public) => "manage_public_channel_members",
+            Some(ChannelKind::Private) => "manage_private_channel_members",
+            _ => return false,
+        };
+        if self.is_system_admin() {
+            return true;
+        }
+        let names = self.role_names();
+        if names.is_empty() || names.iter().any(|name| !self.roles.contains_key(name)) {
+            return true;
+        }
+        names
+            .iter()
+            .filter_map(|name| self.roles.get(name))
+            .any(|permissions| permissions.iter().any(|p| p == permission))
     }
 
     /// Whether the user is a system admin.
@@ -2283,6 +2349,7 @@ impl Live {
                     }
                 }
                 // After the member: whether the user may manage it follows.
+                self.ask_roles();
                 update.details = self.shown_details();
             }
             ChangeSet::History {
@@ -2302,6 +2369,13 @@ impl Live {
                 }) {
                     self.load_members();
                 }
+            }
+            ChangeSet::Roles(roles) => {
+                for role in roles.iter() {
+                    self.roles
+                        .insert(role.name.clone(), role.permissions.clone());
+                }
+                update.details = self.shown_details();
             }
             ChangeSet::NonMembers { channel_id, users } if self.is_open(channel_id) => {
                 for user in users.iter() {
@@ -4063,6 +4137,40 @@ mod tests {
     }
 
     #[test]
+    fn member_management_follows_the_roles_permissions() {
+        let mut live = live();
+        live.open(ChannelRow::new("c1", "secret", ChannelKind::Private));
+        live.apply(&ChangeSet::Channel {
+            channel: Arc::new(Channel {
+                id: "c1".into(),
+                ..Channel::default()
+            }),
+            member: Some(Arc::new(ChannelMember {
+                channel_id: "c1".into(),
+                user_id: "me".into(),
+                roles: "channel_user".into(),
+                ..ChannelMember::default()
+            })),
+        });
+        // Until the server says what the roles grant, it decides.
+        assert!(live.details(0).manage_members);
+        let role = |name: &str, permissions: &[&str]| matty_api::models::Role {
+            name: name.into(),
+            permissions: permissions.iter().map(|p| p.to_string()).collect(),
+        };
+        live.apply(&ChangeSet::Roles(Arc::from(vec![role(
+            "channel_user",
+            &["read_channel", "manage_public_channel_members"],
+        )])));
+        assert!(!live.details(0).manage_members);
+        live.apply(&ChangeSet::Roles(Arc::from(vec![role(
+            "channel_user",
+            &["manage_private_channel_members"],
+        )])));
+        assert!(live.details(0).manage_members);
+    }
+
+    #[test]
     fn the_banner_counts_waiting_sends_across_channels() {
         let mut live = live();
         let outbox = |channel: &str, errors: &[Option<&str>]| ChangeSet::Outbox {
@@ -4145,6 +4253,7 @@ mod tests {
                 members: 0,
                 pinned: 1,
                 can_manage: false,
+                manage_members: true,
                 delete_others: false,
                 bookmarks: None,
                 apps: crate::apps::ChannelApps {
