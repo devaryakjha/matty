@@ -27,10 +27,7 @@ dnd-tomorrow = Tomorrow
 dnd-custom = Custom…
 dnd-custom-title = Do not disturb until
 dnd-custom-hint = Notifications stay quiet until then. Your status goes back afterwards.
-dnd-custom-day = Day
-dnd-custom-time = Time
-day-today = Today
-day-tomorrow = Tomorrow
+dnd-custom-end = Ends
 # When Do not disturb or a status ends; { $time } is a clock time.
 until-today = Until { $time }
 until-tomorrow = Until tomorrow { $time }
