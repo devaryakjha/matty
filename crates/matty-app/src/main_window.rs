@@ -305,6 +305,9 @@ pub struct MainWindow {
     /// The channel Alt+Shift+Up/Down last reached: while it is open,
     /// Escape reads it and moves on to the next unread (#223).
     triaging: Option<gpui_kit::SharedString>,
+    /// Triage moved to another server: its first (or last) unread channel
+    /// opens once its sidebar is here (#223).
+    triage_on_load: Option<crate::sidebar::Step>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     /// The browser sign-in the card waits on (#75).
@@ -1184,6 +1187,7 @@ impl MainWindow {
             _persistent_task: None,
             kept_unread: None,
             triaging: None,
+            triage_on_load: None,
             link_asked: None,
             pending_page: None,
             link_join: DialogHandle::new(false),
@@ -1943,6 +1947,7 @@ impl MainWindow {
             }
             self.channel
                 .update(cx, |view, cx| view.set_connected(true, cx));
+            self.continue_triage(window, cx);
             self.open_first_channel(window, cx);
             self.open_pending_page(window, cx);
         }
