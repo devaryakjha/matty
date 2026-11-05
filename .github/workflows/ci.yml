@@ -30,6 +30,7 @@ jobs:
       live: ${{ steps.filter.outputs.live }}
       macos: ${{ steps.filter.outputs.macos }}
       bundle: ${{ steps.filter.outputs.bundle }}
+      windows: ${{ steps.filter.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -69,6 +70,17 @@ jobs:
               - 'scripts/macos-bundle'
               - 'Cargo.toml'
               - 'rust-toolchain.toml'
+            windows:
+              - 'crates/matty-notify/**'
+              - 'crates/matty-app/src/logging.rs'
+              - 'crates/matty-app/src/actions.rs'
+              - 'crates/matty-app/src/menu.rs'
+              - 'crates/matty-app/Cargo.toml'
+              - 'crates/matty/**'
+              - 'packaging/windows/**'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
             bundle:
               - 'packaging/macos/**'
               - 'scripts/macos-bundle'
@@ -259,6 +271,43 @@ jobs:
           path: target/dist/Matty-macos-universal.zip
           if-no-files-found: error
 
+  # Windows (#215): clippy and the workspace tests on Windows. Windows
+  # runners are slower to start and build, so pull requests run it only
+  # when platform code changes or with the `windows` label.
+  windows:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'windows') ||
+      needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - if: github.event_name == 'push'
+        run: cargo build --release --locked -p matty
+      - if: github.event_name == 'push'
+        run: target/release/matty.exe --version
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: matty-windows-x86_64
+          path: target/release/matty.exe
+          if-no-files-found: error
+
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
     # Mattermost server (docs/dev-server.md). Pull requests run them only
@@ -323,7 +372,7 @@ jobs:
   # were skipped on purpose.
   ci:
     if: ${{ !cancelled() }}
-    needs: [changes, linux, web, deny, macos, macos-universal, integration]
+    needs: [changes, linux, web, deny, macos, macos-universal, windows, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -332,7 +381,7 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
           # A master macOS job dropped from the queue for a newer merge is
           # cancelled, and the newer run checks it instead.
-          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }}
+          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }}
           PUSH: ${{ github.event_name == 'push' }}
         run: |
           echo "$RESULTS"
