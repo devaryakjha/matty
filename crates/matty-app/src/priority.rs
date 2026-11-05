@@ -14,6 +14,7 @@ use gpui_kit::{
 use matty_api::models::{PostMetadata, PostPriority};
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::{Badge, BadgeVariant},
@@ -114,11 +115,20 @@ impl Level {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::Standard => "Standard",
-            Self::Important => "Important",
-            Self::Urgent => "Urgent",
+            Self::Standard => t!("priority-standard"),
+            Self::Important => t!("priority-important"),
+            Self::Urgent => t!("priority-urgent"),
+        }
+    }
+
+    /// A name for element ids, the same in every language.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Important => "important",
+            Self::Urgent => "urgent",
         }
     }
 
@@ -173,17 +183,17 @@ impl Choice {
     /// "Urgent · Acknowledgement requested", for the composer's line and
     /// the scheduled list.
     pub fn summary(self) -> String {
-        let mut parts: Vec<&str> = Vec::new();
+        let mut parts: Vec<SharedString> = Vec::new();
         if self.level != Level::Standard {
             parts.push(self.level.label());
         }
         if self.ack {
-            parts.push("Acknowledgement requested");
+            parts.push(t!("priority-ack-requested"));
         }
         if self.persistent {
-            parts.push("Persistent notifications");
+            parts.push(t!("priority-persistent"));
         }
-        parts.join(" · ")
+        parts.join(" · ") // i18n-ignore: a separator
     }
 }
 
@@ -232,7 +242,7 @@ impl Shown {
                 .map(|ack| Ack {
                     user_id: ack.user_id.clone().into(),
                     name: if ack.user_id == me {
-                        "You".into()
+                        t!("priority-you")
                     } else {
                         name(&ack.user_id).into()
                     },
@@ -248,15 +258,29 @@ impl Shown {
 
     /// "Acknowledged by You, Ada and 2 others", for the avatars' tooltip.
     pub fn ack_summary(&self) -> String {
-        let names: Vec<&str> = self.acks.iter().map(|ack| ack.name.as_ref()).collect();
-        let who = match names.as_slice() {
-            [] => return "No one has acknowledged yet".into(),
-            [one] => (*one).to_string(),
-            [first, second] => format!("{first} and {second}"),
-            [first, second, third] => format!("{first}, {second} and {third}"),
-            [first, second, rest @ ..] => format!("{first}, {second} and {} others", rest.len()),
-        };
-        format!("Acknowledged by {who}")
+        let names: Vec<String> = self.acks.iter().map(|ack| ack.name.to_string()).collect();
+        match names.as_slice() {
+            [] => t!("priority-no-acks"),
+            [first] => t!("priority-acked-by-one", first = first.clone()),
+            [first, second] => t!(
+                "priority-acked-by-two",
+                first = first.clone(),
+                second = second.clone()
+            ),
+            [first, second, third] => t!(
+                "priority-acked-by-three",
+                first = first.clone(),
+                second = second.clone(),
+                third = third.clone()
+            ),
+            [first, second, rest @ ..] => t!(
+                "priority-acked-by-more",
+                first = first.clone(),
+                second = second.clone(),
+                count = rest.len()
+            ),
+        }
+        .to_string()
     }
 }
 
@@ -307,11 +331,15 @@ pub fn ack_bar(
     let now = jiff::Timestamp::now().as_millisecond();
     let acked = shown.mine.is_some();
     let undo = shown.can_undo(now);
-    let label = if acked { "Acknowledged" } else { "Acknowledge" };
+    let label = if acked {
+        t!("priority-acknowledged")
+    } else {
+        t!("priority-acknowledge")
+    };
     let tip = match (acked, undo) {
-        (false, _) => "Let the author know you saw this",
-        (true, true) => "Remove acknowledgement",
-        (true, false) => "Acknowledged",
+        (false, _) => t!("priority-acknowledge-tip"),
+        (true, true) => t!("priority-remove-ack"),
+        (true, false) => t!("priority-acknowledged"),
     };
     let button = Button::new(gpui_kit::ElementId::Name(
         format!("post.{post_id}.ack").into(),
@@ -323,9 +351,9 @@ pub fn ack_bar(
     })
     .size(ButtonSize::Sm)
     .aria_label(if acked && undo {
-        "Remove acknowledgement"
+        t!("priority-remove-ack")
     } else {
-        label
+        label.clone()
     })
     .child(
         lucide(if acked {
@@ -403,12 +431,12 @@ pub type OnChoice = Rc<dyn Fn(Choice, &mut Window, &mut App)>;
 /// The priority menu: the three labels, then the requests the server
 /// allows. Picking one keeps the others.
 pub fn menu_items(choice: Choice, features: Features, on_choice: OnChoice) -> Vec<MenuItem> {
-    let mut items = vec![MenuItem::label("priority.heading", "Message priority")];
+    let mut items = vec![MenuItem::label("priority.heading", t!("priority-heading"))];
     for level in Level::ALL {
         let on_choice = on_choice.clone();
         items.push(
             MenuItem::new(
-                gpui_kit::ElementId::Name(format!("priority.{}", level.label()).into()),
+                gpui_kit::ElementId::Name(format!("priority.{}", level.key()).into()),
                 level.label(),
             )
             .radio(choice.level == level)
@@ -430,7 +458,7 @@ pub fn menu_items(choice: Choice, features: Features, on_choice: OnChoice) -> Ve
         items.push(MenuItem::separator());
         let ack_choice = on_choice.clone();
         items.push(
-            MenuItem::new("priority.ack", "Request acknowledgement")
+            MenuItem::new("priority.ack", t!("priority-request-ack"))
                 .checked(choice.ack)
                 .on_click(move |_, window, cx| {
                     ack_choice(
@@ -445,7 +473,7 @@ pub fn menu_items(choice: Choice, features: Features, on_choice: OnChoice) -> Ve
         );
         if features.persistent {
             items.push(
-                MenuItem::new("priority.persistent", "Send persistent notifications")
+                MenuItem::new("priority.persistent", t!("priority-send-persistent"))
                     .checked(choice.persistent)
                     .disabled(choice.level != Level::Urgent)
                     .on_click(move |_, window, cx| {
@@ -485,11 +513,11 @@ pub fn composer_button(
     Some(
         style::tipped(
             gpui_kit::ElementId::Name(format!("{id}.tip").into()),
-            "Message priority",
+            t!("priority-heading"),
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
-                .aria_label("Message priority")
+                .aria_label(t!("priority-heading"))
                 .child(
                     lucide(LucideIcon::CircleAlert)
                         .size(scaled(theme, metrics::ICON))
@@ -595,6 +623,20 @@ mod tests {
         assert_eq!(shown.mine, Some(1_000));
         assert_eq!(shown.acks.len(), 2, "a removed one is left out");
         assert_eq!(shown.ack_summary(), "Acknowledged by You and name of u2");
+        let named = |name: &str| Ack {
+            user_id: name.into(),
+            name: name.into(),
+        };
+        let many = Shown {
+            acks: ["Ada", "Bo", "Cy", "Di"].map(named).to_vec(),
+            ..shown.clone()
+        };
+        assert_eq!(many.ack_summary(), "Acknowledged by Ada, Bo and 2 others");
+        let three = Shown {
+            acks: ["Ada", "Bo", "Cy"].map(named).to_vec(),
+            ..shown.clone()
+        };
+        assert_eq!(three.ack_summary(), "Acknowledged by Ada, Bo and Cy");
         assert!(shown.can_undo(1_000 + UNDO_WINDOW_MS - 1));
         assert!(!shown.can_undo(1_000 + UNDO_WINDOW_MS));
         assert_eq!(
