@@ -532,7 +532,10 @@ jobs:
     name: integration (Mattermost ${{ matrix.server }})
     needs: changes
     if: needs.changes.outputs.live == 'true' || github.event_name == 'push'
-    runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
+    # Stays on GitHub's runners. On the self-hosted box the server could
+    # not reach the tests' stand-in integrations on the host, and four
+    # servers next to the builds made the timing-sensitive tests fail.
+    runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
       fail-fast: false
