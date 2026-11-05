@@ -6,7 +6,7 @@
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::sidebar::Presence;
@@ -77,6 +77,27 @@ pub struct ProfileActions {
     /// "View profile", which opens the profile in the right pane; `None`
     /// where the profile is already the pane.
     pub on_view: Option<ProfileAction>,
+    /// "Add to channel", which picks one of the team's channels for the
+    /// person to join (#212); `None` for the user's own card.
+    pub on_add_to_channel: Option<ProfileAction>,
+}
+
+/// "Add to channel" as a quiet button, on the card and the pane (#212).
+fn add_to_channel(id: &SharedString, on_add: ProfileAction, cx: &App) -> Button {
+    let theme = UiTheme::read(cx).clone();
+    Button::new(gpui_kit::ElementId::Name(
+        format!("profile.{id}.add-to-channel").into(),
+    ))
+    .variant(ButtonVariant::Ghost)
+    .size(ButtonSize::Sm)
+    .aria_label(t!("profile-add-to-channel"))
+    .child(
+        lucide(LucideIcon::UserPlus)
+            .size(scaled(&theme, metrics::ICON))
+            .text_color(theme.colors.foreground),
+    )
+    .child(t!("profile-add-to-channel"))
+    .on_click(move |_, window, cx| on_add(window, cx))
 }
 
 fn presence_color(profile: &UserProfile, theme: &UiTheme, palette: &Palette) -> gpui_kit::Rgba {
@@ -316,6 +337,7 @@ pub fn profile_card(
         on_message,
         on_mention,
         on_view,
+        on_add_to_channel,
     } = actions;
     popover_popup(
         gpui_kit::ElementId::Name(format!("profile.{id}").into()),
@@ -336,16 +358,24 @@ pub fn profile_card(
     ))
     .child(details(profile, cx))
     .child(buttons(id, on_message, on_mention, cx))
-    .children(on_view.map(|on_view| {
-        Button::new(gpui_kit::ElementId::Name(
-            format!("profile.{id}.view").into(),
-        ))
-        .variant(ButtonVariant::Ghost)
-        .size(ButtonSize::Sm)
-        .aria_label(t!("profile-view"))
-        .child(t!("profile-view"))
-        .on_click(move |_, window, cx| on_view(window, cx))
-    }))
+    .when(on_view.is_some() || on_add_to_channel.is_some(), |card| {
+        card.child(
+            div()
+                .flex()
+                .gap(theme.space(2.))
+                .children(on_view.map(|on_view| {
+                    Button::new(gpui_kit::ElementId::Name(
+                        format!("profile.{id}.view").into(),
+                    ))
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::Sm)
+                    .aria_label(t!("profile-view"))
+                    .child(t!("profile-view"))
+                    .on_click(move |_, window, cx| on_view(window, cx))
+                }))
+                .children(on_add_to_channel.map(|on_add| add_to_channel(id, on_add, cx))),
+        )
+    })
 }
 
 /// The profile as the right pane shows it (#212): the card's contents with
@@ -354,6 +384,7 @@ pub fn profile_pane(
     profile: &UserProfile,
     on_message: ProfileAction,
     on_mention: ProfileAction,
+    on_add_to_channel: Option<ProfileAction>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx).clone();
@@ -392,6 +423,9 @@ pub fn profile_pane(
             cx,
         ))
         .child(buttons(&id, on_message, on_mention, cx))
+        .children(
+            on_add_to_channel.map(|on_add| div().flex().child(add_to_channel(&id, on_add, cx))),
+        )
         .child(details(profile, cx))
         .child(
             div()

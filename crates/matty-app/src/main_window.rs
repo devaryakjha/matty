@@ -639,6 +639,7 @@ impl MainWindow {
                 ChannelEvent::ViewProfile(profile) => {
                     this.show_listing(RightPaneContent::Profile(profile.clone()), cx)
                 }
+                ChannelEvent::AddToChannel(profile) => this.pick_channel_for(profile, window),
                 ChannelEvent::Schedule {
                     text,
                     files,
@@ -3048,6 +3049,7 @@ impl MainWindow {
             }
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
+            RightPaneEvent::AddToChannel(profile) => self.pick_channel_for(profile, window),
             RightPaneEvent::OpenChannelFiles => self.show_channel_files(cx),
             RightPaneEvent::AddMembers => self
                 .channel
@@ -3340,6 +3342,15 @@ impl MainWindow {
             self.right_pane
                 .update(cx, |pane, cx| pane.set_loading(true, cx));
         }
+    }
+
+    /// Opens the switcher to pick a channel to add `profile` to (#212),
+    /// once the card that asked has closed and handed focus back.
+    fn pick_channel_for(&self, profile: &crate::profile::UserProfile, window: &mut Window) {
+        let (profile, switcher) = (profile.clone(), self.switcher.clone());
+        window.on_next_frame(move |window, cx| {
+            switcher.update(cx, |switcher, cx| switcher.open_add_to(profile, window, cx));
+        });
     }
 
     /// Lists the open channel's files in the right pane (#208).

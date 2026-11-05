@@ -157,6 +157,8 @@ profile-mention = Mention
 # The profile card's accessible name.
 profile-card-label = { $name }'s profile
 profile-view = View profile
+# Picks a channel for the person on the card to join.
+profile-add-to-channel = Add to channel
 profile-position = Position
 profile-time-zone = Time zone
 profile-edit-title = Edit profile
