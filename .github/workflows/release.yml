@@ -2,8 +2,9 @@ name: Release
 
 # Runs only for a pushed version tag (PLAN §10, #179), never for branch pushes
 # or pull requests. A tag with a pre-release suffix (v0.1.0-beta.1) makes a
-# GitHub pre-release. Publishing waits for an approval on the `release`
-# environment, so a release needs Arya's explicit go.
+# GitHub pre-release. Pushing the tag is the go: the release publishes as
+# soon as the build passes, with no approval step. Guard who can push `v*`
+# tags with a tag ruleset instead.
 #
 # Optional repository secrets. Without them the app is ad hoc signed and the
 # release notes say so:
@@ -163,9 +164,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Configure required reviewers on this environment in the repository
-    # settings; without them the release publishes without waiting.
-    environment: release
     permissions:
       contents: write
     env:
