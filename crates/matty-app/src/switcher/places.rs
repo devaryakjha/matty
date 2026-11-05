@@ -60,14 +60,6 @@ pub struct Elsewhere {
     pub servers: Vec<ServerChannels>,
 }
 
-/// What a row shows at its trailing edge.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct Trailing {
-    /// The team (and server) a row from elsewhere belongs to.
-    pub note: Option<SharedString>,
-    pub mentions: usize,
-}
-
 /// A channel the switcher may list, with where it comes from.
 struct Place<'a> {
     row: &'a ChannelRow,
@@ -87,14 +79,14 @@ impl Place<'_> {
     }
 }
 
-/// The rows for `query`, ranked, with the trailing note and count of
-/// each by value.
+/// The rows for `query`, ranked, with the mention count of each by value.
+/// A row from another team or server names it as its description.
 pub(super) fn items(
     model: &SidebarModel,
     elsewhere: &Elsewhere,
     query: &str,
     all_servers: bool,
-) -> (Vec<CommandItem>, Vec<(SharedString, Trailing)>) {
+) -> (Vec<CommandItem>, Vec<(SharedString, usize)>) {
     let typed = query.trim();
     let query = typed.to_lowercase();
     let mut places: Vec<Place> = Vec::new();
@@ -192,14 +184,8 @@ pub(super) fn items(
             Bucket::Rest => place.home.clone(),
         };
         items.push(item(place, group));
-        if place.note.is_some() || place.row.mentions > 0 {
-            trailing.push((
-                place.value.clone(),
-                Trailing {
-                    note: place.note.clone(),
-                    mentions: place.row.mentions,
-                },
-            ));
+        if place.row.mentions > 0 {
+            trailing.push((place.value.clone(), place.row.mentions));
         }
     }
     if all_servers && !elsewhere.servers.is_empty() && !items.iter().any(is_server) {
@@ -345,6 +331,12 @@ fn item(place: &Place, group: SharedString) -> CommandItem {
     let mut item = CommandItem::new(place.value.clone(), row.name.clone())
         .group(group)
         .icon(icon);
+    // The team (and server) of a row from elsewhere: shown muted, and read
+    // as the row's description, so two "general"s sound different
+    // (gpuicn#133).
+    if let Some(note) = &place.note {
+        item = item.description(note.clone());
+    }
     // `keywords` replaces, so the words go in one call: "unread"; for a
     // direct message, the person's username, which finds the row whatever
     // the name format shows (#156); and the team a row of another is in.
@@ -465,31 +457,19 @@ mod tests {
         .map(|(group, value)| (group.into(), value.into()))
         .collect();
         assert_eq!(rows(&items), expected);
-        // Other teams' rows name their team; counts come along.
+        // Counts come along; other teams' rows name their team.
+        assert_eq!(trailing, vec![("critique".into(), 2)]);
+        let described: Vec<(&str, Option<&str>)> = items
+            .iter()
+            .filter(|item| item.description.is_some())
+            .map(|item| (item.value.as_ref(), item.description.as_deref()))
+            .collect();
         assert_eq!(
-            trailing,
-            vec![
-                (
-                    "critique".into(),
-                    Trailing {
-                        note: Some("Design Guild".into()),
-                        mentions: 2
-                    }
-                ),
-                (
-                    "motion".into(),
-                    Trailing {
-                        note: Some("Design Guild".into()),
-                        mentions: 0
-                    }
-                ),
-                (
-                    "general-design".into(),
-                    Trailing {
-                        note: Some("Design Guild".into()),
-                        mentions: 0
-                    }
-                ),
+            described,
+            [
+                ("critique", Some("Design Guild")),
+                ("motion", Some("Design Guild")),
+                ("general-design", Some("Design Guild")),
             ]
         );
     }
@@ -529,7 +509,7 @@ mod tests {
 
     #[test]
     fn searching_all_servers_adds_their_matching_channels() {
-        let (items, trailing) = super::items(&shown(), &elsewhere(), "gen", true);
+        let (items, _) = super::items(&shown(), &elsewhere(), "gen", true);
         assert_eq!(
             rows(&items),
             vec![
@@ -538,9 +518,12 @@ mod tests {
                 ("Acme Corp".into(), "~server:0:general-acme".into()),
             ]
         );
-        assert!(trailing.iter().any(|(value, trailing)| value.as_ref()
-            == "~server:0:general-acme"
-            && trailing.note.as_deref() == Some("Engineering")));
+        assert!(
+            items
+                .iter()
+                .any(|item| item.value.as_ref() == "~server:0:general-acme"
+                    && item.description.as_deref() == Some("Engineering"))
+        );
         // Nothing matching says so.
         let (items, _) = super::items(&shown(), &elsewhere(), "random", true);
         assert_eq!(

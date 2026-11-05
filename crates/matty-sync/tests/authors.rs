@@ -8,7 +8,7 @@ use matty_api::Client;
 use matty_store::Store;
 use matty_sync::{ChangeSet, Command};
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -59,4 +59,50 @@ async fn an_unknown_author_is_fetched_once_and_sent() {
         unreachable!()
     };
     assert_eq!(users[0].id, "ada");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn everyone_who_reacted_is_fetched_for_the_tooltip() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v4/users/{ME}/channels/c1/posts/unread")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "order": ["p1"],
+            "posts": {
+                "p1": {"id": "p1", "channel_id": "c1", "user_id": "ada", "create_at": 1, "update_at": 1, "message": "ship it",
+                    "metadata": {"reactions": [
+                        {"user_id": "bo", "post_id": "p1", "emoji_name": "rocket", "create_at": 2},
+                        {"user_id": "cy", "post_id": "p1", "emoji_name": "rocket", "create_at": 3}
+                    ]}}
+            }
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/users/ids"))
+        .and(body_json(json!(["ada", "bo", "cy"])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "ada", "username": "ada"},
+            {"id": "bo", "username": "bo"},
+            {"id": "cy", "username": "cy"}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::OpenChannel {
+        channel_id: "c1".into(),
+    });
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    let ChangeSet::Users(users) = next(&changes, |c| matches!(c, ChangeSet::Users(_))).await else {
+        unreachable!()
+    };
+    let mut ids: Vec<_> = users.iter().map(|user| user.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["ada", "bo", "cy"]);
 }

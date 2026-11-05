@@ -599,7 +599,14 @@ impl RightPaneView {
         crate::spelling::check(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
+        let composer_input = composer.read(cx).input().clone();
         let subscriptions = vec![
+            // Typed or set (a draft, a send, a cleared command): the slash
+            // command line's suggestions follow the text.
+            cx.observe(&composer_input, |this, input, cx| {
+                let text = input.read(cx).value().to_string();
+                this.slash_line(&text, cx);
+            }),
             scheduling,
             cx.subscribe_in(
                 &composer,
@@ -1352,6 +1359,14 @@ impl RightPaneView {
                         reaction.count += 1;
                         reaction.mine = true;
                     }
+                } else {
+                    // A new emoji on this post (#620).
+                    post.reactions.push(crate::channel::PostReaction {
+                        emoji: emoji.clone(),
+                        count: 1,
+                        mine: true,
+                        users: vec![],
+                    });
                 }
             },
             cx,
@@ -1927,6 +1942,28 @@ impl RightPaneView {
         });
     }
 
+    /// The quick reactions for a thread post, checked where they are
+    /// mine: the hover toolbar's menu and the right-click submenu (#620).
+    fn reaction_items(view: &gpui_kit::WeakEntity<Self>, post: &Post) -> Vec<MenuItem> {
+        QUICK_REACTIONS
+            .iter()
+            .map(|(emoji, name)| {
+                let (view, id) = (view.clone(), post.id.clone());
+                let emoji: SharedString = (*emoji).into();
+                MenuItem::new(
+                    gpui_kit::ElementId::Name(format!("thread.react.{name}").into()),
+                    format!("{emoji}  {name}"),
+                )
+                .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
+                .on_click(move |_, _, cx| {
+                    let (id, emoji) = (id.clone(), emoji.clone());
+                    view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                        .ok();
+                })
+            })
+            .collect()
+    }
+
     /// The right-click menu of a thread row: a reaction submenu and copy;
     /// on a reply the server does not have yet, copy, Retry if it failed,
     /// and the channel's Edit and Discard… while it waits to send (#195).
@@ -1937,20 +1974,7 @@ impl RightPaneView {
         reply: bool,
     ) -> Vec<MenuItem> {
         let body = post.body.clone();
-        let reactions = QUICK_REACTIONS.iter().map(|(emoji, name)| {
-            let (view, id) = (view.clone(), post.id.clone());
-            let emoji: SharedString = (*emoji).into();
-            MenuItem::new(
-                gpui_kit::ElementId::Name(format!("thread.context.react.{name}").into()),
-                format!("{emoji}  {name}"),
-            )
-            .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
-            .on_click(move |_, _, cx| {
-                let (id, emoji) = (id.clone(), emoji.clone());
-                view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
-                    .ok();
-            })
-        });
+        let reactions = Self::reaction_items(view, post);
         let markdown_body = post.body.clone();
         // The server does not have an unsent reply yet: nothing to react to.
         let mut items = if post.status == PostStatus::Sent {
@@ -2326,6 +2350,10 @@ impl RightPaneView {
         let (retry_view, retry_id) = (view.clone(), id.clone());
         let (delete_view, delete_id) = (view.clone(), id.clone());
         let (react_view, react_id) = (view.clone(), id.clone());
+        // Only the thread passes card menus; its sent posts can be reacted
+        // to from the hover toolbar, as in the channel (#620). Listings
+        // can't: their posts are not the pane's thread.
+        let reactable = menus.is_some() && post.status == PostStatus::Sent;
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
             .copy_prefix(crate::channel::copy_prefix(post, cx))
             .status(match post.status {
@@ -2363,6 +2391,9 @@ impl RightPaneView {
                 crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
+            .when(reactable, |row| {
+                row.actions(Self::hover_actions(view, post, away, !root, cx))
+            })
             .when(post.status == PostStatus::Ephemeral, |row| {
                 let (view, id) = (view.clone(), id.clone());
                 row.actions(
@@ -2466,10 +2497,24 @@ impl RightPaneView {
             }),
             cx,
         ));
+        if reactable && !post.reactions.is_empty() {
+            // The chip row gets an add button, as in the channel (#620).
+            let (add_view, items) = (view.clone(), Self::reaction_items(view, post));
+            row = row.on_add_reaction(move |event, window, cx| {
+                let items = items.clone();
+                add_view
+                    .update(cx, |this, cx| {
+                        this.open_menu(items, event.position(), window, cx)
+                    })
+                    .ok();
+            });
+        }
         // Right-click selects the row and opens its menu (design-42).
         let items = Self::thread_items_for(view, post, away, !root);
         let menu_view = view.clone();
+        let selector = format!("thread.{id}");
         div()
+            .debug_selector(move || selector.clone())
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 move |event: &gpui_kit::MouseDownEvent, window, cx| {
@@ -2483,6 +2528,72 @@ impl RightPaneView {
                 },
             )
             .child(row)
+    }
+
+    /// A sent thread post's hover toolbar (#620): add a reaction, and
+    /// More with the right-click menu's actions.
+    fn hover_actions(
+        view: &gpui_kit::WeakEntity<Self>,
+        post: &Post,
+        away: bool,
+        reply: bool,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        let id = post.id.clone();
+        // A tooltip would sit over the open menu.
+        let menu_open = view
+            .upgrade()
+            .is_some_and(|pane| pane.read(cx).menu.read(cx).is_open());
+        let (react_view, react_items) = (view.clone(), Self::reaction_items(view, post));
+        let react_selector = format!("thread.{id}.react");
+        let (more_view, more_items) = (
+            view.clone(),
+            Self::thread_items_for(view, post, away, reply),
+        );
+        message_actions(cx)
+            .child(
+                style::tipped_when(
+                    !menu_open,
+                    gpui_kit::ElementId::Name(format!("thread.{id}.react.tip").into()),
+                    "Add reaction",
+                    message_action(
+                        gpui_kit::ElementId::Name(format!("thread.{id}.react").into()),
+                        LucideIcon::FaceSlightlySmilingPlus,
+                        "Add reaction",
+                        cx,
+                    )
+                    .on_click(
+                        move |event: &gpui_kit::ClickEvent, window, cx| {
+                            let items = react_items.clone();
+                            react_view
+                                .update(cx, |this, cx| {
+                                    this.open_menu(items, event.position(), window, cx)
+                                })
+                                .ok();
+                        },
+                    ),
+                )
+                .debug_selector(move || react_selector.clone()),
+            )
+            .child(style::tipped_when(
+                !menu_open,
+                gpui_kit::ElementId::Name(format!("thread.{id}.more.tip").into()),
+                "More actions",
+                message_action(
+                    gpui_kit::ElementId::Name(format!("thread.{id}.more").into()),
+                    LucideIcon::Ellipsis,
+                    "More actions",
+                    cx,
+                )
+                .on_click(move |event: &gpui_kit::ClickEvent, window, cx| {
+                    let items = more_items.clone();
+                    more_view
+                        .update(cx, |this, cx| {
+                            this.open_menu(items, event.position(), window, cx)
+                        })
+                        .ok();
+                }),
+            ))
     }
 
     /// The cards under a thread post (#187), with an attachment's buttons
@@ -4145,6 +4256,61 @@ mod tests {
         assert_eq!(
             view.read_with(&cx, |pane, _| pane.presence_of("Ada")),
             Some(Presence::Online)
+        );
+    }
+
+    /// #620: a thread post shows the channel's hover toolbar, and its
+    /// add-reaction button opens the quick reactions.
+    #[gpui_kit::test]
+    fn a_thread_post_can_be_reacted_to_from_its_hover_toolbar(cx: &mut gpui_kit::TestAppContext) {
+        let (view, _, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..2, false, false), cx)
+            })
+        });
+        draw(&mut cx);
+        let row = cx.debug_bounds("thread.r1").expect("the reply is drawn");
+        cx.simulate_mouse_move(row.center(), None, Default::default());
+        draw(&mut cx);
+        let react = cx
+            .debug_bounds("thread.r1.react")
+            .expect("hovering shows the add-reaction button");
+        cx.simulate_click(react.center(), Default::default());
+        assert!(view.read_with(&cx, |pane, cx| pane.menu.read(cx).is_open()));
+    }
+
+    /// #620: a reaction a reply doesn't have yet shows at once and is
+    /// sent. Before, only an emoji already on the reply could be added.
+    #[gpui_kit::test]
+    fn a_new_reaction_on_a_reply_shows_and_is_sent(cx: &mut gpui_kit::TestAppContext) {
+        let (view, events, mut cx) = pane(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |pane, cx| {
+                pane.set_thread(thread(0..2, false, false), cx);
+                pane.toggle_reaction("r1".into(), "👍".into(), cx);
+            })
+        });
+        let reactions = view.read_with(&cx, |pane, _| {
+            pane.thread_post(&"r1".into())
+                .map(|post| post.reactions.clone())
+                .unwrap_or_default()
+        });
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(
+            (
+                reactions[0].emoji.as_ref(),
+                reactions[0].count,
+                reactions[0].mine
+            ),
+            ("👍", 1, true)
+        );
+        assert_eq!(
+            *events.borrow(),
+            [RightPaneEvent::ToggleReaction {
+                post: "r1".into(),
+                emoji: "👍".into()
+            }]
         );
     }
 

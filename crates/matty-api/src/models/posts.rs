@@ -272,10 +272,15 @@ pub struct Reaction {
 #[serde(default)]
 pub struct PostPriority {
     /// `""`, `important` or `urgent`.
+    #[serde(deserialize_with = "null_as_default")]
     pub priority: String,
-    /// Whether the author asked for acknowledgements.
+    /// Whether the author asked for acknowledgements. The server sends
+    /// `null` for a post that only has a label.
+    #[serde(deserialize_with = "null_as_default")]
     pub requested_ack: bool,
-    /// Whether mentioned users get repeated notifications.
+    /// Whether mentioned users get repeated notifications; `null` like
+    /// [`Self::requested_ack`].
+    #[serde(deserialize_with = "null_as_default")]
     pub persistent_notifications: bool,
 }
 

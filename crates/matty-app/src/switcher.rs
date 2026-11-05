@@ -6,7 +6,7 @@
 use gpui_icons::LucideIcon;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    SharedString, Styled as _, Subscription, Window, div,
 };
 
 use crate::sidebar::{ChannelKind, Presence, SidebarModel};
@@ -22,7 +22,7 @@ use crate::ui::{
 
 mod places;
 
-use places::{ALL_SERVERS, NO_SERVER_MATCH, SERVER_PREFIX, TEAM_PREFIX, Trailing};
+use places::{ALL_SERVERS, NO_SERVER_MATCH, SERVER_PREFIX, TEAM_PREFIX};
 pub use places::{Elsewhere, ServerChannels, TeamChannels};
 
 /// What the switcher asks the window to do.
@@ -293,12 +293,13 @@ impl Switcher {
         });
     }
 
-    /// Direct messages lead with the person's avatar; mention counts, and
-    /// the team of a row from another, sit at the trailing edge.
+    /// Direct messages lead with the person's avatar; mention counts sit
+    /// at the trailing edge, after the team a row from another names as its
+    /// description.
     fn install_slots(
         command: &Entity<CommandState>,
         model: &SidebarModel,
-        trailing: Vec<(SharedString, Trailing)>,
+        trailing: Vec<(SharedString, usize)>,
         cx: &mut App,
     ) {
         // Direct messages lead with the person's avatar and presence (#135).
@@ -333,7 +334,7 @@ impl Switcher {
                                 .fallback(initial)
                                 .aria_label(name.clone())
                                 .status(style::avatar_status(*presence, &style::Palette::read(cx)))
-                                .status_size(style::scaled(theme, 8.))
+                                .status_size(style::scaled(theme, 6.))
                                 .ring_color(theme.colors.popover)
                                 .w(slot)
                                 .h(slot)
@@ -347,30 +348,14 @@ impl Switcher {
             state.set_trailing(
                 move |item, _, cx| {
                     let theme = UiTheme::read(cx);
-                    let (_, trailing) = trailing.iter().find(|(value, _)| *value == item.value)?;
+                    let (_, mentions) = trailing.iter().find(|(value, _)| *value == item.value)?;
                     Some(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(theme.space(2.))
-                            .when_some(trailing.note.clone(), |row, note| {
-                                row.child(
-                                    div()
-                                        .text_size(theme.text(12.))
-                                        .text_color(theme.colors.muted_foreground)
-                                        .child(note),
-                                )
-                            })
-                            .when(trailing.mentions > 0, |row| {
-                                row.child(
-                                    Badge::count(trailing.mentions, 99)
-                                        .h(theme.space(4.5))
-                                        .min_w(theme.space(4.5))
-                                        .px(theme.space(1.5))
-                                        .text_size(theme.text(11.))
-                                        .line_height(theme.text(11.)),
-                                )
-                            })
+                        Badge::count(*mentions, 99)
+                            .h(theme.space(4.5))
+                            .min_w(theme.space(4.5))
+                            .px(theme.space(1.5))
+                            .text_size(theme.text(11.))
+                            .line_height(theme.text(11.))
                             .into_any_element(),
                     )
                 },

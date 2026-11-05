@@ -23,6 +23,8 @@ finish-args:
   # Notifications and the launcher badge.
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=com.canonical.Unity
+  # The tray icon for "Keep running when closed" (#634).
+  - --talk-name=org.kde.StatusNotifierWatcher
   # Saved sign-ins, through the Secret portal or the Secret Service.
   - --talk-name=org.freedesktop.secrets
   # Downloads land in the user's Downloads folder.

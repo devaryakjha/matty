@@ -6,6 +6,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     button::{Button, ButtonVariant},
@@ -57,7 +58,8 @@ impl EventEmitter<CategoryEvent> for CategoryDialogs {}
 
 impl CategoryDialogs {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Name your category"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("category-name-placeholder")));
         let subscriptions =
             vec![
                 cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
@@ -151,18 +153,18 @@ impl CategoryDialogs {
         let theme = UiTheme::read(cx).clone();
         let creating = matches!(self.naming, Some(Naming::Create { .. }));
         let (title, action) = if creating {
-            ("Create new category", "Create")
+            (t!("category-create-title"), t!("category-create"))
         } else {
-            ("Rename category", "Rename")
+            (t!("category-rename-title"), t!("category-rename"))
         };
         let usable = self.typed(cx).is_some();
-        let popup = dialog_popup("category.name.popup", title, cx)
+        let popup = dialog_popup("category.name.popup", title.clone(), cx)
             .child(dialog_title("category.name.title", cx).child(title))
             .child(
                 div().pt(theme.space(2.)).child(
                     Field::new("category.name.input", &self.input)
-                        .label("Name")
-                        .description(format!("Up to {MAX_NAME} characters.")),
+                        .label(t!("category-name"))
+                        .description(t!("category-name-limit", max = MAX_NAME)),
                 ),
             )
             .child(
@@ -174,7 +176,7 @@ impl CategoryDialogs {
                     .child(
                         Button::new("category.name.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("category-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.name.close(window, cx);
                             })),
@@ -203,12 +205,15 @@ impl CategoryDialogs {
             .as_ref()
             .map(|(_, name)| name.clone())
             .unwrap_or_default();
-        let popup = dialog_popup("category.delete.popup", "Delete category", cx)
-            .child(dialog_title("category.delete.title", cx).child(format!("Delete {name}?")))
-            .child(dialog_description("category.delete.description", cx).child(
-                "Its channels go back to Channels and Direct messages. \
-                     You stay in every channel.",
-            ))
+        let popup = dialog_popup("category.delete.popup", t!("category-delete-title"), cx)
+            .child(
+                dialog_title("category.delete.title", cx)
+                    .child(t!("category-delete-heading", name = name.to_string())),
+            )
+            .child(
+                dialog_description("category.delete.description", cx)
+                    .child(t!("category-delete-description")),
+            )
             .child(
                 div()
                     .flex()
@@ -218,12 +223,12 @@ impl CategoryDialogs {
                     .child(
                         alert_dialog_cancel("category.delete.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("category-cancel")),
                     )
                     .child(
                         alert_dialog_action("category.delete.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Delete"),
+                            .label(t!("category-delete")),
                     ),
             );
         let view = cx.entity().downgrade();

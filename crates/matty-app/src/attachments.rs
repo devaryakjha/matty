@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use crate::style::{self, TypeStyleExt as _, scaled};
+use crate::t;
 pub use crate::ui::attachment::AttachmentStatus;
 use crate::ui::{
     attachment::{Attachment, attachment_group},
@@ -22,7 +23,7 @@ use crate::ui::{
 };
 
 /// The name a pasted image gets; Mattermost uses the same.
-pub const PASTED_IMAGE: &str = "Pasted image.png";
+pub const PASTED_IMAGE: &str = "Pasted image.png"; // i18n-ignore: a file name
 
 /// Where an upload's bytes come from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,7 +53,7 @@ impl Upload {
         let name: SharedString = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "File".to_string())
+            .unwrap_or_else(|| t!("attachments-file").to_string())
             .into();
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         Self {
@@ -107,7 +108,7 @@ impl Upload {
     /// it waits for the connection.
     pub fn meta(&self) -> SharedString {
         let kind = if self.queued {
-            "Queued".to_owned()
+            t!("attachments-queued").to_string()
         } else {
             kind(&self.name)
         };
@@ -254,30 +255,34 @@ impl UploadTray {
         let limit = format_size(self.max_file_size);
         let size = match too_big.as_slice() {
             [] => None,
-            [file] => Some(format!(
-                "{} is {}. Files must be under {limit}.",
-                file.name,
-                format_size(file.size)
+            [file] => Some(t!(
+                "attachments-too-big-one",
+                name = file.name.to_string(),
+                size = format_size(file.size),
+                limit = limit.clone()
             )),
-            files => Some(format!(
-                "{} files were not added. Files must be under {limit}.",
-                files.len()
+            files => Some(t!(
+                "attachments-too-big-many",
+                count = files.len(),
+                limit = limit.clone()
             )),
         };
         let count = match too_many.as_slice() {
             [] => None,
-            [file] => Some(format!(
-                "{} was not added: a message can carry {MAX_FILE_COUNT} files.",
-                file.name
+            [file] => Some(t!(
+                "attachments-too-many-one",
+                name = file.name.to_string(),
+                max = MAX_FILE_COUNT
             )),
-            files => Some(format!(
-                "{} files were not added: a message can carry {MAX_FILE_COUNT} files.",
-                files.len()
+            files => Some(t!(
+                "attachments-too-many-many",
+                count = files.len(),
+                max = MAX_FILE_COUNT
             )),
         };
         self.notice = match (size, count) {
             (None, None) => None,
-            (Some(one), None) | (None, Some(one)) => Some(one.into()),
+            (Some(one), None) | (None, Some(one)) => Some(one),
             (Some(size), Some(count)) => Some(format!("{size} {count}").into()),
         };
         accepted
@@ -374,8 +379,7 @@ impl UploadTray {
             .any(|upload| upload.status == AttachmentStatus::Failed)
         {
             self.queued = false;
-            self.notice =
-                Some("Not sent: an upload failed. Retry it or remove it, then send.".into());
+            self.notice = Some(t!("attachments-upload-failed"));
             return false;
         }
         if self.uploads.iter().all(Upload::is_ready) {
@@ -496,13 +500,16 @@ impl FileDownload {
                 total: Some(total),
             } if *total > 0 => {
                 let percent = (received.saturating_mul(100) / total).min(100);
-                format!("Downloading… {percent}%").into()
+                t!("attachments-downloading-percent", percent = percent)
             }
             Self::Downloading { received, .. } => {
-                format!("Downloading… {}", format_size(*received)).into()
+                t!(
+                    "attachments-downloading-size",
+                    size = format_size(*received)
+                )
             }
-            Self::Saved(_) => format!("Downloaded · {}", file.meta()).into(),
-            Self::Failed => "Download failed · Click to retry".into(),
+            Self::Saved(_) => t!("attachments-downloaded", meta = file.meta().to_string()),
+            Self::Failed => t!("attachments-download-failed"),
         }
     }
 
@@ -673,10 +680,10 @@ pub fn upload_tray(
     let waiting = tray.is_queued().then(|| {
         line(
             Spinner::new(ElementId::Name(format!("{prefix}.waiting.spinner").into()))
-                .label("Waiting for uploads")
+                .label(t!("attachments-waiting"))
                 .size(gpui_kit::px(14.))
                 .into_any_element(),
-            "Sends when the uploads finish…".into(),
+            t!("attachments-sends-when-done"),
             theme.colors.muted_foreground,
         )
     });
@@ -686,7 +693,7 @@ pub fn upload_tray(
                 .size(scaled(&theme, 14.))
                 .text_color(theme.colors.muted_foreground)
                 .into_any_element(),
-            "Queued: files upload when you're back online. You can send now.".into(),
+            t!("attachments-queued-offline"),
             theme.colors.muted_foreground,
         )
     });
@@ -754,9 +761,13 @@ pub fn drop_overlay(
 /// "Drop to upload to #general", or to a conversation by its name.
 pub fn drop_title(channel: &str) -> String {
     if channel.contains(' ') {
-        format!("Drop to upload to {channel}")
+        t!(
+            "attachments-drop-conversation",
+            channel = channel.to_string()
+        )
+        .to_string()
     } else {
-        format!("Drop to upload to #{channel}")
+        t!("attachments-drop-channel", channel = channel.to_string()).to_string()
     }
 }
 
@@ -800,7 +811,7 @@ pub fn is_image(name: &str) -> bool {
 pub fn kind(name: &str) -> String {
     let ext = extension(name);
     if ext.is_empty() {
-        "File".to_string()
+        t!("attachments-file").to_string()
     } else {
         ext.to_ascii_uppercase()
     }
