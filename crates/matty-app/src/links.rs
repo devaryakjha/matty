@@ -7,6 +7,7 @@ use gpui_kit::{
     App, ElementId, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
 };
 
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     button::ButtonVariant,
@@ -205,17 +206,17 @@ pub fn join_dialog(
     cx: &mut App,
 ) -> impl IntoElement {
     let theme = UiTheme::read(cx).clone();
-    let name = offer.map_or_else(
-        || "this channel".to_owned(),
-        |offer| format!("#{}", offer.name),
+    let title = offer.map_or_else(
+        || t!("link-join-title-unknown"),
+        |offer| t!("link-join-title", name = offer.name.to_string()),
     );
     let what = if offer.is_some_and(|offer| offer.post.is_some()) {
-        "The link points to a message there. Join the channel to read it."
+        t!("link-join-post")
     } else {
-        "Join the channel to read it and get its new messages."
+        t!("link-join-channel")
     };
-    let popup = dialog_popup("link.join.popup", "Join channel", cx)
-        .child(dialog_title("link.join.title", cx).child(format!("You're not in {name}")))
+    let popup = dialog_popup("link.join.popup", t!("link-join"), cx)
+        .child(dialog_title("link.join.title", cx).child(title))
         .child(dialog_description("link.join.description", cx).child(what))
         .child(
             div()
@@ -226,9 +227,9 @@ pub fn join_dialog(
                 .child(
                     alert_dialog_cancel("link.join.cancel")
                         .variant(ButtonVariant::Outline)
-                        .label("Cancel"),
+                        .label(t!("link-join-cancel")),
                 )
-                .child(alert_dialog_action("link.join.confirm").label("Join channel")),
+                .child(alert_dialog_action("link.join.confirm").label(t!("link-join"))),
         );
     alert_dialog("link.join", handle, popup, window, cx).on_ok(move |_, window, cx| {
         on_join(window, cx);
