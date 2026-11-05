@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use crate::{
     ApiError, Client,
     models::{
-        ChannelUnreadAt, ChannelViewed, Draft, Post, PostActionResponse, PostList, Reaction,
-        SubmitDialogRequest, SubmitDialogResponse, UserThread, UserThreads,
+        ChannelUnreadAt, ChannelViewed, Draft, Post, PostAcknowledgement, PostActionResponse,
+        PostList, Reaction, ScheduledPost, SubmitDialogRequest, SubmitDialogResponse, UserThread, UserThreads,
     },
 };
 
@@ -243,6 +243,24 @@ pub struct NewPost {
     /// The outbox's id for this post (PLAN §6.5), echoed in the response
     /// and the `posted` event. Mattermost clients use `{user_id}:{millis}`.
     pub pending_post_id: String,
+    /// Message priority, sent as `metadata.priority` when set (#220).
+    #[serde(
+        rename = "metadata",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "priority_metadata"
+    )]
+    pub priority: Option<crate::models::PostPriority>,
+}
+
+/// Writes a priority as `{"priority": {...}}`, the post's `metadata`.
+fn priority_metadata<S: serde::Serializer>(
+    priority: &Option<crate::models::PostPriority>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap as _;
+    let mut map = serializer.serialize_map(Some(1))?;
+    map.serialize_entry("priority", priority)?;
+    map.end()
 }
 
 impl NewPost {
@@ -476,6 +494,63 @@ impl Client {
         ))
         .await
         .map(|_| ())
+    }
+
+    /// `POST users/{user_id}/posts/{post_id}/ack`: acknowledges a post that
+    /// asked for it (#220).
+    pub async fn acknowledge_post(
+        &self,
+        user_id: &str,
+        post_id: &str,
+    ) -> Result<PostAcknowledgement, ApiError> {
+        self.post(&format!("users/{user_id}/posts/{post_id}/ack"), &json!({}))
+            .await
+    }
+
+    /// `DELETE users/{user_id}/posts/{post_id}/ack`: takes an
+    /// acknowledgement back, which the server allows for a few minutes.
+    pub async fn unacknowledge_post(&self, user_id: &str, post_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("users/{user_id}/posts/{post_id}/ack"))
+            .await
+            .map(|_| ())
+    }
+
+    /// `POST posts/schedule`: sets a message to post at `scheduled_at`.
+    pub async fn schedule_post(&self, post: &ScheduledPost) -> Result<ScheduledPost, ApiError> {
+        self.post("posts/schedule", post).await
+    }
+
+    /// `PUT posts/schedule/{id}`: changes a scheduled message.
+    pub async fn update_scheduled_post(
+        &self,
+        post: &ScheduledPost,
+    ) -> Result<ScheduledPost, ApiError> {
+        self.put(&format!("posts/schedule/{}", post.id), post).await
+    }
+
+    /// `DELETE posts/schedule/{id}`.
+    pub async fn delete_scheduled_post(&self, id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("posts/schedule/{id}"))
+            .await
+            .map(|_| ())
+    }
+
+    /// `GET posts/scheduled/team/{team_id}?includeDirectChannels=true`: the
+    /// user's scheduled messages in a team and, with them, in direct and
+    /// group messages. The server answers a map of lists by team id, with
+    /// `directChannels` for the conversations.
+    pub async fn scheduled_posts(
+        &self,
+        team_id: &str,
+        direct_channels: bool,
+    ) -> Result<Vec<ScheduledPost>, ApiError> {
+        let lists: HashMap<String, Option<Vec<ScheduledPost>>> = self
+            .get_query(
+                &format!("posts/scheduled/team/{team_id}"),
+                &[("includeDirectChannels", direct_channels.to_string())],
+            )
+            .await?;
+        Ok(lists.into_values().flatten().flatten().collect())
     }
 
     /// `POST posts`.

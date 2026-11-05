@@ -12,7 +12,7 @@ use crate::{
     capabilities::OldFormat,
     models::{
         Channel, ChannelMember, Draft, Emoji, Post, PostAcknowledgement, Preference, Reaction,
-        SidebarCategory, Team, User, UserThread,
+        ScheduledPost, SidebarCategory, Team, User, UserThread,
     },
 };
 
@@ -317,6 +317,12 @@ pub enum WsEvent {
     DraftUpdated(Draft),
     /// `draft_deleted`.
     DraftDeleted(Draft),
+    /// `scheduled_post_created` (#220).
+    ScheduledPostCreated(ScheduledPost),
+    /// `scheduled_post_updated`.
+    ScheduledPostUpdated(ScheduledPost),
+    /// `scheduled_post_deleted`.
+    ScheduledPostDeleted(ScheduledPost),
     /// An event Matty does not know. Not an error: servers add events.
     Unknown(RawEvent),
     /// A known event whose data did not decode. The sync engine treats it
@@ -540,6 +546,15 @@ fn decode_known(raw: &RawEvent) -> Result<Option<WsEvent>, String> {
         "draft_created" => WsEvent::DraftCreated(required(data, "draft")?),
         "draft_updated" => WsEvent::DraftUpdated(required(data, "draft")?),
         "draft_deleted" => WsEvent::DraftDeleted(required(data, "draft")?),
+        "scheduled_post_created" => {
+            WsEvent::ScheduledPostCreated(required(data, "scheduledPost")?)
+        }
+        "scheduled_post_updated" => {
+            WsEvent::ScheduledPostUpdated(required(data, "scheduledPost")?)
+        }
+        "scheduled_post_deleted" => {
+            WsEvent::ScheduledPostDeleted(required(data, "scheduledPost")?)
+        }
         _ => return Ok(None),
     };
     Ok(Some(event))
