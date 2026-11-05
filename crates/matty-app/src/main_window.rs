@@ -2300,6 +2300,18 @@ impl MainWindow {
                 this.cancel_sso();
                 model.step = model.step.back_to_methods();
             }
+            LoginEvent::UseToken => {
+                this.cancel_sso();
+                model.step = model.step.back_to_methods();
+                return view.update(cx, |view, cx| {
+                    view.set_model(model, window, cx);
+                    view.show_token(window, cx);
+                });
+            }
+            LoginEvent::ClaimLinks => {
+                this.claim_links(view, window, cx);
+                return;
+            }
             LoginEvent::Cancel => {}
         }
         view.update(cx, |view, cx| view.set_model(model, window, cx));
@@ -2383,13 +2395,31 @@ impl MainWindow {
             LoginEvent::SignIn(sign_in) if sign_in.mfa_token.is_none() => {
                 model.sign_in_failed(crate::login::SignInFailure::MfaRequired);
             }
+            // The preview shows the official app holding mattermost://
+            // links and the token offer at once (#489).
             LoginEvent::Sso(provider) => {
                 model.step = model.step.to_browser(*provider);
                 model.error = None;
+                return view.update(cx, |view, cx| {
+                    view.set_model(model, window, cx);
+                    view.set_scheme_owner(Some("Mattermost".into()), cx); // i18n-ignore: product name
+                    view.offer_token(cx);
+                });
+            }
+            LoginEvent::ClaimLinks => {
+                return view.update(cx, |view, cx| view.set_scheme_owner(None, cx));
             }
             LoginEvent::CancelSso => {
                 model.step = model.step.back_to_methods();
                 model.error = None;
+            }
+            LoginEvent::UseToken => {
+                model.step = model.step.back_to_methods();
+                model.error = None;
+                return view.update(cx, |view, cx| {
+                    view.set_model(model, window, cx);
+                    view.show_token(window, cx);
+                });
             }
             LoginEvent::SignIn(_) | LoginEvent::Token(_) => {
                 model.error = Some("The preview does not sign in to a server.".into());

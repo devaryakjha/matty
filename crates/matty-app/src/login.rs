@@ -14,6 +14,7 @@ use crate::settings::{RecentServer, SettingsStore};
 use crate::style::{self, TypeStyleExt as _, scaled};
 use crate::t;
 use crate::ui::{
+    alert::{Alert, AlertVariant},
     button::{Button, ButtonSize, ButtonVariant},
     field::{Field, field_title},
     input::{InputEvent, InputState},
@@ -251,6 +252,11 @@ pub enum LoginEvent {
     Sso(SsoProvider),
     /// Stop waiting for the browser and go back to the methods.
     CancelSso,
+    /// Make Matty the app that opens `mattermost://` links, so the
+    /// browser's hand-off comes back here (#489).
+    ClaimLinks,
+    /// Stop waiting for the browser and show the access token field.
+    UseToken,
     /// Sign in with a personal access token.
     Token(String),
     /// Back to the server step.
@@ -302,6 +308,11 @@ pub struct LoginView {
     token: Entity<InputState>,
     code: Entity<OtpState>,
     show_token: bool,
+    /// Another app that opens `mattermost://` links, named while the
+    /// browser step waits, so the hand-off may never reach Matty (#489).
+    scheme_owner: Option<SharedString>,
+    /// The browser step has waited long enough to offer a token instead.
+    offer_token: bool,
     /// The person picked AD/LDAP where the server offers both.
     picked_ldap: bool,
     /// Servers whose check went through before, newest first.
@@ -385,6 +396,8 @@ impl LoginView {
             token,
             code,
             show_token: false,
+            scheme_owner: None,
+            offer_token: false,
             picked_ldap: false,
             recent,
             checking: None,
@@ -416,8 +429,31 @@ impl LoginView {
         }
         if step_changed {
             self.show_token = false;
+            self.scheme_owner = None;
+            self.offer_token = false;
             self.focus_step(window, cx);
         }
+        cx.notify();
+    }
+
+    /// Names another app that opens `mattermost://` links, or `None` once
+    /// Matty does; the browser step warns while one is set.
+    pub fn set_scheme_owner(&mut self, owner: Option<SharedString>, cx: &mut Context<Self>) {
+        self.scheme_owner = owner;
+        cx.notify();
+    }
+
+    /// Offers "Use a personal access token instead" on the browser step.
+    pub fn offer_token(&mut self, cx: &mut Context<Self>) {
+        self.offer_token = true;
+        cx.notify();
+    }
+
+    /// Opens the access token field on the methods step.
+    pub fn show_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_token = true;
+        let token = self.token.read(cx).focus_handle(cx);
+        window.on_next_frame(move |window, cx| window.focus(&token, cx));
         cx.notify();
     }
 
@@ -1024,6 +1060,7 @@ impl LoginView {
                     &theme,
                 )
             })
+            .children(self.scheme_notice(cx))
             .child(status_row)
             .children(self.error_line(cx))
             .child(
@@ -1032,8 +1069,60 @@ impl LoginView {
                     .flex_col()
                     .gap(theme.space(2.))
                     .when(failed, |col| col.child(retry))
-                    .child(cancel),
+                    .child(cancel)
+                    .when(self.offer_token, |col| {
+                        col.child(
+                            Button::new("login.browser.use-token")
+                                .variant(ButtonVariant::Ghost)
+                                .size(ButtonSize::Lg)
+                                .w_full()
+                                .disabled(self.model.busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.error = None;
+                                    cx.emit(LoginEvent::UseToken);
+                                }))
+                                .aria_label(t!("login-use-token"))
+                                .child(t!("login-use-token")),
+                        )
+                    }),
             )
+    }
+
+    /// The warning that another app opens `mattermost://` links, so the
+    /// browser may hand the sign-in to it, with the two ways on (#489).
+    fn scheme_notice(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let app = self.scheme_owner.clone()?;
+        let theme = UiTheme::read(cx).clone();
+        let claim = Button::new("login.browser.claim-links")
+            .variant(ButtonVariant::Default)
+            .size(ButtonSize::Sm)
+            .disabled(self.model.busy)
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(LoginEvent::ClaimLinks)))
+            .aria_label(t!("login-claim-links"))
+            .child(t!("login-claim-links"));
+        let dismiss = Button::new("login.browser.keep-links")
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::Sm)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.scheme_owner = None;
+                cx.notify();
+            }))
+            .aria_label(t!("login-continue-anyway"))
+            .child(t!("login-continue-anyway"));
+        Some(
+            Alert::new("login.browser.scheme")
+                .variant(AlertVariant::Info)
+                .title(t!("login-scheme-title", app = app.as_ref()))
+                .description(t!("login-scheme-hint", app = app.as_ref()))
+                .child(
+                    div()
+                        .pt(theme.space(2.))
+                        .flex()
+                        .gap(theme.space(2.))
+                        .child(claim)
+                        .child(dismiss),
+                ),
+        )
     }
 
     fn heading(
@@ -1398,6 +1487,95 @@ mod tests {
                 .update(|window, cx| view.update(cx, |view, cx| view.set_model(model, window, cx)));
             self.focus_step();
         }
+    }
+
+    impl Card {
+        /// Whether anything on screen is labelled `label`.
+        fn shows(&mut self, label: &str) -> bool {
+            self.redraw();
+            self.cx.update(|window, _| {
+                use gpui_kit::test::TestQueryExt as _;
+                window
+                    .elements()
+                    .into_iter()
+                    .any(|element| element.label().is_some_and(|l| l == label))
+            })
+        }
+
+        fn click(&mut self, label: &str) {
+            self.redraw();
+            let at = self.cx.update(|window, _| {
+                use gpui_kit::test::TestQueryExt as _;
+                window
+                    .elements()
+                    .into_iter()
+                    .find(|element| element.label().is_some_and(|l| l == label))
+                    .unwrap_or_else(|| panic!("nothing is labelled {label:?}"))
+                    .bounds()
+                    .center()
+            });
+            self.cx.simulate_click(at, gpui_kit::Modifiers::none());
+            self.redraw();
+        }
+    }
+
+    fn waiting_for_gitlab() -> LoginModel {
+        LoginModel {
+            step: LoginStep::Browser {
+                server_name: "chat.example.com".into(),
+                methods: SignInMethods {
+                    password: true,
+                    ldap: false,
+                    sso: vec![SsoProvider::GitLab],
+                },
+                provider: SsoProvider::GitLab,
+            },
+            busy: false,
+            error: None,
+            adding: false,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn another_app_holding_mattermost_links_is_named_with_a_way_out(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let mut card = Card::open(cx, waiting_for_gitlab());
+        assert!(!card.shows("Make Matty open them"), "no notice until asked");
+
+        let view = card.view.clone();
+        card.cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.set_scheme_owner(Some("Mattermost".into()), cx)
+            })
+        });
+        assert!(card.shows("Make Matty open them"));
+        card.click("Make Matty open them");
+        assert_eq!(card.sent(), [LoginEvent::ClaimLinks]);
+
+        card.click("Continue anyway");
+        assert!(
+            !card.shows("Make Matty open them"),
+            "Continue anyway hides it"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_long_wait_offers_an_access_token(cx: &mut gpui_kit::TestAppContext) {
+        let mut card = Card::open(cx, waiting_for_gitlab());
+        assert!(!card.shows("Use a personal access token instead"));
+        let view = card.view.clone();
+        card.cx
+            .update(|_, cx| view.update(cx, |view, cx| view.offer_token(cx)));
+        card.click("Use a personal access token instead");
+        assert_eq!(card.sent(), [LoginEvent::UseToken]);
+
+        // Leaving the step forgets the offer.
+        let mut methods = waiting_for_gitlab();
+        methods.step = methods.step.back_to_methods();
+        card.set_model(methods);
+        card.set_model(waiting_for_gitlab());
+        assert!(!card.shows("Use a personal access token instead"));
     }
 
     #[gpui_kit::test]
