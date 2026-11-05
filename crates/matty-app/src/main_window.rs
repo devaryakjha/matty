@@ -309,6 +309,8 @@ pub struct MainWindow {
     split: split::Split,
     /// The link sync is finding, with the permalink's post (#85, #103).
     link_asked: Option<(matty_sync::LinkQuery, Option<SharedString>)>,
+    /// A link to a server being added, opened once signed in (#206).
+    pending_page: Option<crate::server_links::PendingPage>,
     /// The join prompt for a link to a public channel the user is not in.
     link_join: DialogHandle,
     /// "Forward to …" with an optional comment, once the switcher picked
@@ -1166,6 +1168,7 @@ impl MainWindow {
             _persistent_task: None,
             kept_unread: None,
             link_asked: None,
+            pending_page: None,
             link_join: DialogHandle::new(false),
             forward,
             link_join_offer: None,
@@ -1922,6 +1925,7 @@ impl MainWindow {
             {
                 self.open_channel(first.id.clone(), window, cx);
             }
+            self.open_pending_page(window, cx);
         }
         match update.channel {
             Some(ChannelUpdate::Replace(model)) => self
