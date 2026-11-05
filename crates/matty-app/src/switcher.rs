@@ -11,6 +11,7 @@ use gpui_kit::{
 
 use crate::sidebar::{ChannelKind, Presence, SidebarModel};
 use crate::style::{self, TypeStyleExt as _};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     badge::Badge,
@@ -45,6 +46,11 @@ pub enum SwitcherEvent {
         post: SharedString,
         channel: SharedString,
     },
+    /// The user picked a channel to add `user` to (#212).
+    AddTo {
+        user: crate::profile::UserProfile,
+        channel: SharedString,
+    },
     /// The user pasted a link and chose "Open link" (#85).
     OpenLink(SharedString),
 }
@@ -53,7 +59,28 @@ pub enum SwitcherEvent {
 const SEARCH_PREFIX: &str = "~search:";
 /// The value of the open-link row; the link follows it.
 const LINK_PREFIX: &str = "~link:";
-const PLACEHOLDER: &str = "Jump to a channel, person or team\u{2026}";
+
+/// Keeps the rows of public and private channels: people join channels,
+/// not conversations (#212).
+fn only_channels(model: &SidebarModel, items: &mut Vec<CommandItem>) {
+    let channels: std::collections::HashSet<&SharedString> = model
+        .categories
+        .iter()
+        .flat_map(|category| category.rows.iter())
+        .filter(|row| matches!(row.kind, ChannelKind::Public | ChannelKind::Private))
+        .map(|row| &row.id)
+        .collect();
+    items.retain(|item| channels.contains(&item.value));
+}
+
+/// A channel the switcher picks for something other than opening it.
+#[derive(Clone, Debug)]
+enum Pick {
+    /// Where to forward this post (#213).
+    Forward(SharedString),
+    /// A channel to add this person to (#212): the team's channels only.
+    AddTo(crate::profile::UserProfile),
+}
 
 pub struct Switcher {
     handle: DialogHandle,
@@ -65,8 +92,8 @@ pub struct Switcher {
     /// "Search all servers" was chosen: other servers' channels list too.
     all_servers: bool,
     query: SharedString,
-    /// The post being forwarded, while the switcher picks its destination.
-    forwarding: Option<SharedString>,
+    /// What the switcher picks a channel for, instead of opening one.
+    forwarding: Option<Pick>,
     _subscription: Subscription,
 }
 
@@ -79,7 +106,7 @@ impl Switcher {
             let mut state = CommandState::new(Vec::new(), window, cx);
             // The switcher matches and ranks the rows itself.
             state.set_filter(false, cx);
-            state.set_placeholder(PLACEHOLDER, window, cx);
+            state.set_placeholder(t!("switcher-placeholder"), window, cx);
             state
         });
         let close = handle.clone();
@@ -128,11 +155,20 @@ impl Switcher {
 
     /// What picking the row `value` asks of the window.
     fn event_for(&mut self, value: &SharedString) -> Option<SwitcherEvent> {
-        if let Some(post) = self.forwarding.take() {
-            return Some(SwitcherEvent::Forward {
-                post,
-                channel: value.clone(),
-            });
+        match self.forwarding.take() {
+            Some(Pick::Forward(post)) => {
+                return Some(SwitcherEvent::Forward {
+                    post,
+                    channel: value.clone(),
+                });
+            }
+            Some(Pick::AddTo(user)) => {
+                return Some(SwitcherEvent::AddTo {
+                    user,
+                    channel: value.clone(),
+                });
+            }
+            None => {}
         }
         Some(if let Some(query) = value.strip_prefix(SEARCH_PREFIX) {
             SwitcherEvent::Search(query.into())
@@ -164,11 +200,14 @@ impl Switcher {
             &self.elsewhere
         };
         let (mut items, trailing) = places::items(&self.model, elsewhere, &query, self.all_servers);
+        if matches!(self.forwarding, Some(Pick::AddTo(_))) {
+            only_channels(&self.model, &mut items);
+        }
         if self.forwarding.is_none() && crate::links::looks_like_link(&query) {
             items.insert(
                 0,
-                CommandItem::new(format!("{LINK_PREFIX}{query}"), "Open link")
-                    .group("Link")
+                CommandItem::new(format!("{LINK_PREFIX}{query}"), t!("switcher-open-link"))
+                    .group(t!("switcher-group-link"))
                     .icon(LucideIcon::Link)
                     .keywords([query.clone()]),
             );
@@ -177,9 +216,9 @@ impl Switcher {
             items.push(
                 CommandItem::new(
                     format!("{SEARCH_PREFIX}{query}"),
-                    format!("Search messages for \u{201c}{query}\u{201d}"),
+                    t!("switcher-search-messages", query = query.to_string()),
                 )
-                .group("Messages")
+                .group(t!("switcher-group-messages"))
                 .icon(LucideIcon::Search)
                 .keywords([query]),
             );
@@ -218,10 +257,27 @@ impl Switcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.forwarding = Some(post);
+        self.forwarding = Some(Pick::Forward(post));
         self.refresh(cx);
         self.command.update(cx, |state, cx| {
-            state.set_placeholder("Forward to a channel or person\u{2026}", window, cx)
+            state.set_placeholder(t!("switcher-forward-placeholder"), window, cx)
+        });
+        self.open(window, cx);
+    }
+
+    /// Opens the switcher to pick a channel of the shown team to add
+    /// `user` to (#212).
+    pub fn open_add_to(
+        &mut self,
+        user: crate::profile::UserProfile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placeholder = format!("Add {} to a channel\u{2026}", user.display_name);
+        self.forwarding = Some(Pick::AddTo(user));
+        self.refresh(cx);
+        self.command.update(cx, |state, cx| {
+            state.set_placeholder(placeholder, window, cx)
         });
         self.open(window, cx);
     }
@@ -230,7 +286,7 @@ impl Switcher {
         self.all_servers = false;
         self.command.update(cx, |state, cx| {
             state.set_query("", window, cx);
-            state.set_placeholder(PLACEHOLDER, window, cx);
+            state.set_placeholder(t!("switcher-placeholder"), window, cx);
         });
     }
 
@@ -364,5 +420,29 @@ mod tests {
         );
         let (items, _) = places::items(&model, &Elsewhere::default(), "ada", false);
         assert_eq!(items[0].value.as_ref(), "d1");
+    }
+
+    #[test]
+    fn adding_someone_to_a_channel_lists_channels_only() {
+        let rows = vec![
+            ChannelRow::new("c1", "design", ChannelKind::Public),
+            ChannelRow::new("c2", "secret", ChannelKind::Private),
+            ChannelRow::new(
+                "d1",
+                "Ada Lovelace",
+                ChannelKind::Direct {
+                    presence: Presence::Online,
+                },
+            ),
+        ];
+        let model = SidebarModel {
+            categories: vec![Category::new("all", "Channels", rows)],
+            ..SidebarModel::default()
+        };
+        let (mut items, _) = places::items(&model, &Elsewhere::default(), "", false);
+        only_channels(&model, &mut items);
+        let values: Vec<_> = items.iter().map(|item| item.value.to_string()).collect();
+        assert_eq!(values.len(), 2, "{values:?}");
+        assert!(values.contains(&"c1".to_string()) && values.contains(&"c2".to_string()));
     }
 }

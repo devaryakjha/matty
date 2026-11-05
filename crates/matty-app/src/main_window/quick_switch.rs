@@ -83,8 +83,43 @@ impl MainWindow {
             SwitcherEvent::Forward { post, channel } => {
                 self.ask_forward(post.clone(), channel.clone(), window, cx)
             }
+            SwitcherEvent::AddTo { user, channel } => self.add_to_channel(user, channel, cx),
             SwitcherEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
         }
+    }
+
+    /// Adds `user` to `channel`, as the profile card's "Add to channel"
+    /// asked (#212), and says so in a toast.
+    fn add_to_channel(
+        &mut self,
+        user: &crate::profile::UserProfile,
+        channel: &SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(live) = &self.live {
+            live.send(matty_sync::Command::AddMembers {
+                channel_id: channel.to_string(),
+                user_ids: vec![user.user_id.to_string()],
+            });
+        }
+        let name = self
+            .sidebar
+            .read(cx)
+            .model()
+            .categories
+            .iter()
+            .flat_map(|category| category.rows.iter())
+            .find(|row| &row.id == channel)
+            .map(|row| row.name.clone())
+            .unwrap_or_else(|| "the channel".into());
+        self.toasts.update(cx, |toasts, cx| {
+            toasts.push(
+                format!("add-to.{}.{channel}", user.user_id),
+                crate::ui::toast::Notice::new(format!("Added {} to #{name}", user.display_name))
+                    .timeout(std::time::Duration::from_secs(4)),
+                cx,
+            );
+        });
     }
 
     /// Shows the server with rail key `server`, then its `channel`: at

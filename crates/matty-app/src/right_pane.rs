@@ -372,6 +372,8 @@ pub enum RightPaneEvent {
     OpenLink(SharedString),
     /// View profile on a member's profile card; the window shows it here.
     ViewProfile(UserProfile),
+    /// "Add to channel" on a profile card or the profile pane (#212).
+    AddToChannel(UserProfile),
     /// Message on a member's profile card.
     OpenDirect {
         user_id: SharedString,
@@ -2322,6 +2324,7 @@ impl RightPaneView {
         let (delete_view, delete_id) = (view.clone(), id.clone());
         let (react_view, react_id) = (view.clone(), id.clone());
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
+            .copy_prefix(crate::channel::copy_prefix(post, cx))
             .status(match post.status {
                 PostStatus::Sent | PostStatus::Ephemeral => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
@@ -3464,9 +3467,10 @@ impl RightPaneView {
                 )
             });
         let is_channel = kind_icon.is_some();
+        let manage_members = is_channel && channel.rights.members;
         let view = cx.entity().downgrade();
         let me = self.me.clone();
-        let can_manage = channel.can_manage;
+        let can_manage = channel.rights.roles;
         let members = div()
             .flex()
             .flex_col()
@@ -3478,7 +3482,7 @@ impl RightPaneView {
                     .justify_between()
                     .pb(theme.space(1.))
                     .child(label(format!("Members · {}", channel.members)))
-                    .when(is_channel, |row| {
+                    .when(manage_members, |row| {
                         row.child(
                             Button::new("info.members.add")
                                 .variant(ButtonVariant::Ghost)
@@ -3503,9 +3507,11 @@ impl RightPaneView {
                     }),
             )
             .children(channel.profiles.iter().map(|profile| {
-                let manageable = can_manage && profile.display_name != me;
                 let admin = channel.admins.contains(&profile.user_id);
-                Self::member_row(profile, admin, manageable, &view, cx)
+                let others = profile.display_name != me;
+                let roles = can_manage && others;
+                let removable = manage_members && others;
+                Self::member_row(profile, admin, roles, removable, &view, cx)
             }))
             .when(channel.profiles.len() < channel.members, |members| {
                 members.child(
@@ -3540,6 +3546,7 @@ impl RightPaneView {
         view: &gpui_kit::WeakEntity<Self>,
         profile: &UserProfile,
         admin: bool,
+        (roles, removable): (bool, bool),
     ) -> Vec<MenuItem> {
         let (role_view, role_user) = (view.clone(), profile.user_id.clone());
         let (view, user_id) = (view.clone(), profile.user_id.clone());
@@ -3548,29 +3555,41 @@ impl RightPaneView {
         } else {
             "Make channel admin"
         };
-        vec![
-            MenuItem::new("info.member.admin", role).on_click(move |_, _, cx| {
-                let event = RightPaneEvent::SetChannelAdmin {
-                    user_id: role_user.clone(),
-                    admin: !admin,
-                };
-                role_view.update(cx, |_, cx| cx.emit(event)).ok();
-            }),
-            MenuItem::new("info.member.remove", "Remove from channel").on_click(move |_, _, cx| {
-                let event = RightPaneEvent::RemoveMember {
-                    user_id: user_id.clone(),
-                };
-                view.update(cx, |_, cx| cx.emit(event)).ok();
-            }),
-        ]
+        let mut items = Vec::new();
+        if roles {
+            items.push(
+                MenuItem::new("info.member.admin", role).on_click(move |_, _, cx| {
+                    let event = RightPaneEvent::SetChannelAdmin {
+                        user_id: role_user.clone(),
+                        admin: !admin,
+                    };
+                    role_view.update(cx, |_, cx| cx.emit(event)).ok();
+                }),
+            );
+        }
+        if removable {
+            items.push(
+                MenuItem::new("info.member.remove", "Remove from channel").on_click(
+                    move |_, _, cx| {
+                        let event = RightPaneEvent::RemoveMember {
+                            user_id: user_id.clone(),
+                        };
+                        view.update(cx, |_, cx| cx.emit(event)).ok();
+                    },
+                ),
+            );
+        }
+        items
     }
 
-    /// One member, with an Admin badge for a channel admin; `manageable`
-    /// adds the right-click menu of [`Self::member_items`].
+    /// One member, with an Admin badge for a channel admin. `roles` (a
+    /// channel admin's) and `removable` (managing members) fill its
+    /// right-click menu, [`Self::member_items`].
     fn member_row(
         profile: &UserProfile,
         admin: bool,
-        manageable: bool,
+        roles: bool,
+        removable: bool,
         view: &gpui_kit::WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
@@ -3592,11 +3611,16 @@ impl RightPaneView {
                 .id(gpui_kit::ElementId::Name(
                     format!("info.member.{}", row_profile.username).into(),
                 ))
-                .when(manageable, |row| {
+                .when(roles || removable, |row| {
                     row.on_mouse_down(
                         gpui_kit::MouseButton::Right,
                         move |event: &gpui_kit::MouseDownEvent, window, cx| {
-                            let items = Self::member_items(&menu_view, &menu_profile, admin);
+                            let items = Self::member_items(
+                                &menu_view,
+                                &menu_profile,
+                                admin,
+                                (roles, removable),
+                            );
                             let at = event.position;
                             menu_view
                                 .update(cx, |this, cx| this.open_menu(items, at, window, cx))
@@ -3664,6 +3688,11 @@ impl RightPaneView {
             let (close_message, close_mention, close_view) =
                 (cx.entity(), cx.entity(), cx.entity());
             let (view_view, view_profile) = (mention_view.clone(), card_profile.clone());
+            let (add_view, add_profile, close_add) =
+                (mention_view.clone(), card_profile.clone(), cx.entity());
+            let own = add_view
+                .upgrade()
+                .is_some_and(|this| this.read(cx).me == card_profile.display_name);
             profile_card(
                 &username,
                 &card_profile,
@@ -3687,6 +3716,13 @@ impl RightPaneView {
                         let event = RightPaneEvent::ViewProfile(view_profile.clone());
                         view_view.update(cx, |_, cx| cx.emit(event)).ok();
                     })),
+                    on_add_to_channel: (!own).then(|| -> crate::profile::ProfileAction {
+                        Box::new(move |window, cx| {
+                            close_add.update(cx, |state, cx| state.dismiss(window, cx));
+                            let event = RightPaneEvent::AddToChannel(add_profile.clone());
+                            add_view.update(cx, |_, cx| cx.emit(event)).ok();
+                        })
+                    }),
                 },
                 cx,
             )
@@ -3889,6 +3925,16 @@ impl Render for RightPaneView {
                             let event = RightPaneEvent::Mention(username.clone());
                             mention_view.update(cx, |_, cx| cx.emit(event)).ok();
                         }),
+                        (profile.display_name != self.me).then(
+                            || -> crate::profile::ProfileAction {
+                                let (add_view, add_profile) =
+                                    (cx.entity().downgrade(), profile.clone());
+                                Box::new(move |_, cx| {
+                                    let event = RightPaneEvent::AddToChannel(add_profile.clone());
+                                    add_view.update(cx, |_, cx| cx.emit(event)).ok();
+                                })
+                            },
+                        ),
                         cx,
                     )),
                 )

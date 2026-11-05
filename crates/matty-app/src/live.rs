@@ -123,6 +123,14 @@ pub struct Live {
     /// Image files' thumbnails by file id, and those asked for.
     thumbnails: HashMap<String, Arc<gpui_kit::Image>>,
     asked_thumbnails: std::collections::HashSet<String>,
+    /// Roles' permissions as the server sent them, by role name, and the
+    /// names already asked for (#208).
+    roles: HashMap<String, Vec<String>>,
+    asked_roles: std::collections::HashSet<String>,
+    /// The user's team roles by team id, once loaded, and whether they
+    /// were asked for (#208).
+    team_roles: Option<HashMap<String, matty_api::models::TeamMember>>,
+    asked_team_roles: bool,
     /// Images from outside the server, in cards and inline, shared with
     /// the views (#159).
     remote_images: crate::remote_images::RemoteImages,
@@ -189,8 +197,8 @@ pub struct Details {
     pub purpose: Option<SharedString>,
     pub members: usize,
     pub pinned: usize,
-    /// See [`crate::channel::ChannelModel::can_manage`].
-    pub can_manage: bool,
+    /// See [`crate::channel::ChannelModel::rights`].
+    pub rights: crate::channel::ChannelRights,
     /// See [`crate::channel::ChannelModel::delete_others`].
     pub delete_others: bool,
     /// The bookmarks bar, where the server has bookmarks (#226).
@@ -637,6 +645,10 @@ impl Live {
                 uploads: HashMap::new(),
                 thumbnails: HashMap::new(),
                 asked_thumbnails: std::collections::HashSet::new(),
+                roles: HashMap::new(),
+                asked_roles: std::collections::HashSet::new(),
+                team_roles: None,
+                asked_team_roles: false,
                 remote_images,
                 full_images: HashMap::new(),
                 avatars,
@@ -1003,22 +1015,107 @@ impl Live {
                 .stats
                 .as_ref()
                 .map_or(pinned_loaded, |s| count(s.pinnedpost_count)),
-            can_manage: self.can_manage(),
+            rights: self.rights(),
             delete_others: self.is_system_admin(),
             bookmarks: self.bookmarks_model(),
             apps: self.channel_apps(),
         }
     }
 
-    /// Whether the user administers the open channel: its admin, or the
-    /// system's. Team admins pass on the server, but their role is not kept.
-    fn can_manage(&self) -> bool {
-        let has = |roles: &str, role: &str| roles.split_whitespace().any(|r| r == role);
-        let channel_admin = self
-            .member
-            .as_ref()
-            .is_some_and(|member| member.scheme_admin || has(&member.roles, "channel_admin"));
-        channel_admin || self.is_system_admin()
+    /// The roles that decide what the user may do in the open channel:
+    /// their channel roles, `channel_user` (and `channel_admin`) from the
+    /// scheme, their team roles likewise, and their system roles.
+    fn role_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut add = |name: &str| {
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        };
+        if let Some(member) = &self.member {
+            add("channel_user");
+            if member.scheme_admin {
+                add("channel_admin");
+            }
+            member.roles.split_whitespace().for_each(&mut add);
+        }
+        if let Some(team) = self.team_member() {
+            add("team_user");
+            if team.scheme_admin {
+                add("team_admin");
+            }
+            team.roles.split_whitespace().for_each(&mut add);
+        }
+        if let Some(me) = self.users.get(&self.me.0) {
+            me.roles.split_whitespace().for_each(&mut add);
+        }
+        names
+    }
+
+    /// The user's membership in the open channel's team, once known.
+    fn team_member(&self) -> Option<&matty_api::models::TeamMember> {
+        let team_id = &self.channel.as_ref()?.team_id;
+        self.team_roles.as_ref()?.get(team_id)
+    }
+
+    /// Asks for the permissions of roles not yet known, and once for the
+    /// user's team roles.
+    fn ask_roles(&mut self) {
+        if !self.asked_team_roles {
+            self.asked_team_roles = true;
+            self.send(Command::TeamRoles);
+        }
+        let names: Vec<String> = self
+            .role_names()
+            .into_iter()
+            .filter(|name| !self.roles.contains_key(name) && self.asked_roles.insert(name.clone()))
+            .collect();
+        if !names.is_empty() {
+            self.send(Command::Roles { names });
+        }
+    }
+
+    /// What the user may do to the open channel, as their roles say. A
+    /// system admin may do anything, conversations allow none of it, and
+    /// until the roles are known the server decides.
+    fn rights(&self) -> crate::channel::ChannelRights {
+        let public = match self.open.as_ref().map(|row| &row.kind) {
+            Some(ChannelKind::Public) => true,
+            Some(ChannelKind::Private) => false,
+            _ => return crate::channel::ChannelRights::NONE,
+        };
+        let names = self.role_names();
+        let known = !self.is_system_admin()
+            && self.team_roles.is_some()
+            && !names.is_empty()
+            && names.iter().all(|name| self.roles.contains_key(name));
+        let may = |permission: &str| {
+            !known
+                || names
+                    .iter()
+                    .filter_map(|name| self.roles.get(name))
+                    .any(|permissions| permissions.iter().any(|p| p == permission))
+        };
+        let either = |public_permission: &str, private_permission: &str| {
+            may(if public {
+                public_permission
+            } else {
+                private_permission
+            })
+        };
+        crate::channel::ChannelRights {
+            roles: may("manage_channel_roles"),
+            members: either(
+                "manage_public_channel_members",
+                "manage_private_channel_members",
+            ),
+            edit: either(
+                "manage_public_channel_properties",
+                "manage_private_channel_properties",
+            ),
+            archive: either("delete_public_channel", "delete_private_channel"),
+            convert: public && may("convert_public_channel_to_private"),
+        }
     }
 
     /// Whether the user is a system admin.
@@ -2262,6 +2359,18 @@ impl Live {
             ChangeSet::Failed(matty_sync::CommandError::Offline { action }) => {
                 update.offline_refused = Some(action);
             }
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "save your profile",
+                error,
+                ..
+            }) => {
+                // The server's words without its id and status, such as
+                // a wrong password for a new email (#212).
+                let said = error
+                    .rsplit_once(" (")
+                    .map_or(error.as_str(), |(said, _)| said);
+                update.refused = Some(crate::t!("profile-save-failed", error = said));
+            }
             ChangeSet::Channel { channel, member } if self.is_open(&channel.id) => {
                 self.channel = Some(channel.clone());
                 if let Some(member) = member {
@@ -2271,6 +2380,7 @@ impl Live {
                     }
                 }
                 // After the member: whether the user may manage it follows.
+                self.ask_roles();
                 update.details = self.shown_details();
             }
             ChangeSet::History {
@@ -2290,6 +2400,25 @@ impl Live {
                 }) {
                     self.load_members();
                 }
+            }
+            ChangeSet::Roles(roles) => {
+                for role in roles.iter() {
+                    self.roles
+                        .insert(role.name.clone(), role.permissions.clone());
+                }
+                update.details = self.shown_details();
+            }
+            ChangeSet::TeamMembers(members) => {
+                self.team_roles = Some(
+                    members
+                        .iter()
+                        .filter(|member| member.delete_at == 0)
+                        .map(|member| (member.team_id.clone(), member.clone()))
+                        .collect(),
+                );
+                // The team roles' permissions may not be known yet.
+                self.ask_roles();
+                update.details = self.shown_details();
             }
             ChangeSet::NonMembers { channel_id, users } if self.is_open(channel_id) => {
                 for user in users.iter() {
@@ -3510,6 +3639,21 @@ mod tests {
         }
     }
 
+    /// #212: a profile the server refused, such as a new email with the
+    /// wrong password, says why in a toast.
+    #[test]
+    fn a_refused_profile_save_says_why() {
+        let mut live = live();
+        let update = live.apply(&ChangeSet::Failed(matty_sync::CommandError::Server {
+            action: "save your profile",
+            target: "me".into(),
+            error: "Login failed because of invalid password. (api.user.check_user_password.invalid.app_error, HTTP 401)".into(),
+        }));
+        let said = update.refused.expect("a toast");
+        assert!(said.contains("invalid password."), "{said}");
+        assert!(!said.contains("HTTP 401"), "{said}");
+    }
+
     /// #163: an action that could not reach the server reaches the window
     /// by name, and a search or a mentions listing that could not run stops
     /// loading rather than spin.
@@ -3996,12 +4140,14 @@ mod tests {
     }
 
     #[test]
-    fn only_channel_and_system_admins_may_manage_the_channel() {
+    fn channel_rights_follow_the_channel_team_and_system_roles() {
+        use crate::channel::ChannelRights;
         let mut live = live();
-        opened(&mut live);
+        live.open(ChannelRow::new("c1", "secret", ChannelKind::Private));
         let member = |roles: &str, scheme_admin: bool| ChangeSet::Channel {
             channel: Arc::new(Channel {
                 id: "c1".into(),
+                team_id: "t1".into(),
                 ..Channel::default()
             }),
             member: Some(Arc::new(ChannelMember {
@@ -4012,27 +4158,95 @@ mod tests {
                 ..ChannelMember::default()
             })),
         };
-        let manage = |update: Update| update.details.map(|d| d.can_manage);
-        assert_eq!(
-            manage(live.apply(&member("channel_user", false))),
-            Some(false)
-        );
-        assert_eq!(
-            manage(live.apply(&member("channel_user channel_admin", false))),
-            Some(true)
-        );
-        assert_eq!(
-            manage(live.apply(&member("channel_user", true))),
-            Some(true)
-        );
+        let team = |roles: &str, scheme_admin: bool| {
+            ChangeSet::TeamMembers(Arc::from(vec![matty_api::models::TeamMember {
+                team_id: "t1".into(),
+                user_id: "me".into(),
+                roles: roles.into(),
+                scheme_admin,
+                ..Default::default()
+            }]))
+        };
+        let role = |name: &str, permissions: &[&str]| matty_api::models::Role {
+            name: name.into(),
+            permissions: permissions.iter().map(|p| p.to_string()).collect(),
+        };
+        let roles = |roles: Vec<matty_api::models::Role>| ChangeSet::Roles(Arc::from(roles));
         live.apply(&member("channel_user", false));
+        // Until the server says what the roles grant, it decides; only a
+        // public channel can be made private.
+        let unknown = ChannelRights {
+            convert: false,
+            ..ChannelRights::default()
+        };
+        assert_eq!(live.details(0).rights, unknown);
+        live.apply(&roles(vec![
+            role(
+                "channel_user",
+                &[
+                    "manage_private_channel_members",
+                    "manage_private_channel_properties",
+                    "delete_public_channel",
+                ],
+            ),
+            role("channel_admin", &["manage_channel_roles"]),
+            role("team_user", &[]),
+            role(
+                "team_admin",
+                &["manage_channel_roles", "convert_public_channel_to_private"],
+            ),
+        ]));
+        // The team roles are not in yet.
+        assert_eq!(live.details(0).rights, unknown);
+        live.apply(&team("team_user", false));
+        let member_rights = ChannelRights {
+            roles: false,
+            members: true,
+            edit: true,
+            archive: false,
+            convert: false,
+        };
+        assert_eq!(live.details(0).rights, member_rights);
+        live.apply(&member("channel_user", true));
+        assert_eq!(
+            live.details(0).rights,
+            ChannelRights {
+                roles: true,
+                ..member_rights
+            }
+        );
+        // A public channel: a team admin may make it private.
+        live.open(ChannelRow::new("c1", "town", ChannelKind::Public));
+        live.apply(&member("channel_user", false));
+        live.apply(&team("team_user", true));
+        assert_eq!(
+            live.details(0).rights,
+            ChannelRights {
+                roles: true,
+                members: false,
+                edit: false,
+                archive: true,
+                convert: true,
+            }
+        );
         live.apply(&ChangeSet::Users(Arc::from(vec![User {
             id: "me".into(),
             roles: "system_user system_admin".into(),
             ..User::default()
         }])));
-        assert!(live.details(0).can_manage);
+        assert_eq!(live.details(0).rights, ChannelRights::default());
         assert!(live.details(0).delete_others);
+    }
+
+    #[test]
+    fn conversations_have_no_channel_rights() {
+        let mut live = live();
+        live.open(ChannelRow::new(
+            "d1",
+            "Ada",
+            ChannelKind::Group { members: 3 },
+        ));
+        assert_eq!(live.details(0).rights, crate::channel::ChannelRights::NONE);
     }
 
     #[test]
@@ -4117,7 +4331,7 @@ mod tests {
                 purpose: None,
                 members: 0,
                 pinned: 1,
-                can_manage: false,
+                rights: crate::channel::ChannelRights::default(),
                 delete_others: false,
                 bookmarks: None,
                 apps: crate::apps::ChannelApps {

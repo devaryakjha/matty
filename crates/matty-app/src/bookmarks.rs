@@ -29,6 +29,7 @@ use crate::ui::{
     field::Field,
     input::{InputEvent, InputState},
     menu::{Menu, MenuItem, MenuState},
+    sortable::{Sortable, SortableGroup, SortableRow},
     theme::UiTheme,
 };
 
@@ -727,18 +728,35 @@ impl BookmarksBar {
     /// Moves a bookmark one place left (`-1`) or right (`1`), at once
     /// here and then on the server.
     pub fn shift(&mut self, id: &SharedString, by: isize, cx: &mut Context<Self>) {
+        let Some(from) = self.position(id) else {
+            return;
+        };
+        if let Some(to) = from.checked_add_signed(by) {
+            self.move_to(id, to, cx);
+        }
+    }
+
+    fn position(&self, id: &SharedString) -> Option<usize> {
+        self.model
+            .as_ref()?
+            .bookmarks
+            .iter()
+            .position(|b| &b.id == id)
+    }
+
+    /// Moves a bookmark to `to`, counted after it has left its place, at
+    /// once here and then on the server. A drag on the bar and the Move
+    /// left and right actions both end here.
+    pub fn move_to(&mut self, id: &SharedString, to: usize, cx: &mut Context<Self>) {
         let Some(model) = self.model.as_mut() else {
             return;
         };
         let Some(from) = model.bookmarks.iter().position(|b| &b.id == id) else {
             return;
         };
-        let Some(to) = from
-            .checked_add_signed(by)
-            .filter(|to| *to < model.bookmarks.len())
-        else {
+        if from == to || to >= model.bookmarks.len() {
             return;
-        };
+        }
         let moved = model.bookmarks.remove(from);
         model.bookmarks.insert(to, moved);
         let ask = BookmarkAsk::Move {
@@ -749,6 +767,49 @@ impl BookmarksBar {
         self.refresh_more(cx);
         cx.emit(BarEvent::Ask(ask));
         cx.notify();
+    }
+
+    /// The chips as a row that reorders by drag, or by Alt+Shift+Left and
+    /// Right on a focused chip (gpuicn#137).
+    fn sortable(&self, bookmarks: &[Bookmark], cx: &mut Context<Self>) -> Sortable {
+        let view = cx.entity();
+        let gap = UiTheme::read(cx).space(1.);
+        let rows = bookmarks.iter().enumerate().map(|(index, bookmark)| {
+            let (view, bookmark) = (view.clone(), bookmark.clone());
+            SortableRow::new(
+                gpui_kit::ElementId::Name(format!("bookmark.{}.drag", bookmark.id).into()),
+                bookmark.name.clone(),
+                move |_: &mut Window, cx: &mut gpui_kit::App| {
+                    let chip =
+                        view.update(cx, |this, cx| this.chip(&bookmark, cx).into_any_element());
+                    // The bar's own gap, inside the rows so a drag can land
+                    // between two chips.
+                    div().when(index > 0, |row| row.pl(gap)).child(chip)
+                },
+            )
+        });
+        let moved = view.downgrade();
+        Sortable::new("bookmarks.sortable", t!("bookmark-bar-label"))
+            .horizontal()
+            .group(
+                SortableGroup::new("bookmarks.sortable.group", t!("bookmark-bar-label"))
+                    .header(|_, _| div())
+                    .rows(rows.collect::<Vec<_>>()),
+            )
+            .on_reorder(move |movement, _, cx| {
+                moved
+                    .update(cx, |this, cx| {
+                        let id = this
+                            .model
+                            .as_ref()
+                            .and_then(|m| m.bookmarks.get(movement.from.index))
+                            .map(|b| b.id.clone());
+                        if let Some(id) = id {
+                            this.move_to(&id, movement.to.index, cx);
+                        }
+                    })
+                    .ok();
+            })
     }
 
     fn ask_delete(&mut self, bookmark: Bookmark, window: &mut Window, cx: &mut Context<Self>) {
@@ -1018,11 +1079,16 @@ impl Render for BookmarksBar {
             return div().id("bookmarks");
         };
         let full = model.bookmarks.len() >= matty_sync::MAX_BOOKMARKS;
-        let chips: Vec<_> = model
-            .bookmarks
-            .iter()
-            .map(|bookmark| self.chip(bookmark, cx).into_any_element())
-            .collect();
+        // Editors drag chips to reorder them; everyone else gets plain chips.
+        let chips: Vec<_> = if model.can_edit {
+            vec![self.sortable(&model.bookmarks, cx).into_any_element()]
+        } else {
+            model
+                .bookmarks
+                .iter()
+                .map(|bookmark| self.chip(bookmark, cx).into_any_element())
+                .collect()
+        };
         let empty = model.bookmarks.is_empty();
         div()
             .id("bookmarks")
@@ -1187,6 +1253,65 @@ mod tests {
         cx.simulate_click(bounds.center(), Default::default());
     }
 
+    fn order(cx: &gpui_kit::VisualTestContext, bar: &Entity<BookmarksBar>) -> Vec<String> {
+        bar.read_with(cx, |bar, _| {
+            bar.model()
+                .unwrap()
+                .bookmarks
+                .iter()
+                .map(|b| b.id.to_string())
+                .collect()
+        })
+    }
+
+    /// An editor drags a chip along the bar (gpuicn's horizontal Sortable):
+    /// dropping a on b's right half puts it after b, and the move goes out.
+    #[gpui_kit::test]
+    fn dragging_a_chip_reorders_the_bar(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{Modifiers, MouseButton, point, px};
+        let (mut cx, bar, events) = host(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let a = cx.debug_bounds("bookmark-a").expect("a is drawn");
+        let b = cx.debug_bounds("bookmark-b").expect("b is drawn");
+        let target = point(b.right() - px(4.), b.center().y);
+        cx.simulate_mouse_down(a.center(), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            a.center() + point(px(10.), px(0.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(order(&cx, &bar), ["b", "a"]);
+        assert_eq!(
+            events.borrow().last(),
+            Some(&BarEvent::Ask(BookmarkAsk::Move {
+                channel_id: "c".into(),
+                bookmark_id: "a".into(),
+                index: 1,
+            }))
+        );
+    }
+
+    /// Alt+Shift+Right on a focused chip moves it one place right.
+    #[gpui_kit::test]
+    fn alt_shift_right_moves_the_focused_chip(cx: &mut gpui_kit::TestAppContext) {
+        let (mut cx, bar, _) = host(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            window.draw(cx).clear(cx);
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.simulate_keystrokes("alt-shift-right");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(order(&cx, &bar), ["b", "a"]);
+    }
+
     /// Adding a link goes out as an add, and moving one shows at once and
     /// goes out as a move; clicking one opens it.
     #[gpui_kit::test]
@@ -1265,6 +1390,38 @@ mod tests {
         let before = events.borrow().len();
         bar.update(&mut cx, |bar, cx| bar.shift(&"b".into(), -1, cx));
         assert_eq!(events.borrow().len(), before);
+
+        // A drop on the bar (gpuicn's horizontal Sortable) lands through
+        // move_to: b goes back to the end.
+        bar.update(&mut cx, |bar, cx| bar.move_to(&"b".into(), 1, cx));
+        let order: Vec<String> = bar.read_with(&cx, |bar, _| {
+            bar.model()
+                .unwrap()
+                .bookmarks
+                .iter()
+                .map(|b| b.id.to_string())
+                .collect()
+        });
+        assert_eq!(order, ["a", "b"]);
+        assert_eq!(
+            events.borrow().last(),
+            Some(&BarEvent::Ask(BookmarkAsk::Move {
+                channel_id: "c".into(),
+                bookmark_id: "b".into(),
+                index: 1,
+            }))
+        );
+        // Past the end, or onto its own place: nothing moves.
+        let before = events.borrow().len();
+        bar.update(&mut cx, |bar, cx| bar.move_to(&"b".into(), 5, cx));
+        bar.update(&mut cx, |bar, cx| bar.move_to(&"b".into(), 1, cx));
+        assert_eq!(events.borrow().len(), before);
+        // The chips still draw and open inside the sortable row.
+        click(&mut cx, "bookmark-a");
+        assert_eq!(
+            events.borrow().last(),
+            Some(&BarEvent::OpenLink("https://example.com/a".into()))
+        );
     }
 
     #[test]

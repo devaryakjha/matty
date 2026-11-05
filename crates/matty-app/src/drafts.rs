@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     markdown::markdown,
@@ -115,7 +116,7 @@ impl DraftsView {
             let scheduled = scheduled.read(cx).rows().len();
             let view = cx.entity().downgrade();
             crate::ui::tabs::Tabs::new("drafts.tabs")
-                .aria_label("Drafts and scheduled messages")
+                .aria_label(t!("drafts-tabs"))
                 .selected(if self.scheduled_tab {
                     "scheduled"
                 } else {
@@ -125,16 +126,16 @@ impl DraftsView {
                     "drafts.tabs.drafts",
                     "drafts",
                     match count {
-                        0 => "Drafts".to_string(),
-                        n => format!("Drafts ({n})"),
+                        0 => t!("drafts-title"),
+                        n => t!("drafts-tab-count", count = n),
                     },
                 ))
                 .item(crate::ui::tabs::Tab::new(
                     "drafts.tabs.scheduled",
                     "scheduled",
                     match scheduled {
-                        0 => "Scheduled".to_string(),
-                        n => format!("Scheduled ({n})"),
+                        0 => t!("drafts-scheduled"),
+                        n => t!("drafts-scheduled-count", count = n),
                     },
                 ))
                 .on_change(move |value, _, cx| {
@@ -156,7 +157,7 @@ impl DraftsView {
                 div()
                     .type_style(style::TITLE, &theme)
                     .text_color(theme.colors.foreground)
-                    .child("Drafts"),
+                    .child(t!("drafts-title")),
             )
             .when(!tabbed, |header| {
                 header.child(
@@ -164,9 +165,8 @@ impl DraftsView {
                         .type_style(style::META, &theme)
                         .text_color(theme.colors.muted_foreground)
                         .child(match count {
-                            0 => String::new(),
-                            1 => "1 unsent message".to_string(),
-                            n => format!("{n} unsent messages"),
+                            0 => SharedString::default(),
+                            n => t!("drafts-unsent", count = n),
                         }),
                 )
             })
@@ -187,11 +187,11 @@ impl DraftsView {
             name => format!("#{name}"),
         };
         let place = if draft.thread_root.is_some() {
-            format!("Reply in {channel}")
+            t!("drafts-reply-in", channel = channel).to_string()
         } else {
             channel
         };
-        let action = |id: String, label: &'static str, variant: ButtonVariant| {
+        let action = |id: String, label: SharedString, variant: ButtonVariant| {
             Button::new(gpui_kit::ElementId::Name(id.into()))
                 .variant(variant)
                 .size(ButtonSize::Sm)
@@ -262,7 +262,7 @@ impl DraftsView {
                     .child(
                         action(
                             format!("drafts.{index}.delete"),
-                            "Delete",
+                            t!("drafts-delete"),
                             ButtonVariant::Ghost,
                         )
                         .text_color(theme.colors.destructive)
@@ -279,7 +279,7 @@ impl DraftsView {
                             .child(
                                 action(
                                     format!("drafts.{index}.open"),
-                                    "Open",
+                                    t!("drafts-open"),
                                     ButtonVariant::Outline,
                                 )
                                 .on_click(cx.listener(
@@ -289,7 +289,7 @@ impl DraftsView {
                             .child(
                                 action(
                                     format!("drafts.{index}.send"),
-                                    "Send",
+                                    t!("drafts-send"),
                                     ButtonVariant::Default,
                                 )
                                 .on_click(cx.listener(
@@ -306,8 +306,8 @@ impl DraftsView {
     fn empty(cx: &App) -> impl IntoElement + use<> {
         style::centered_empty(
             LucideIcon::FilePenLine,
-            "No drafts",
-            "Anything you type and leave unsent waits here.",
+            t!("drafts-empty"),
+            t!("drafts-empty-hint"),
             cx,
         )
     }

@@ -189,7 +189,10 @@ pub fn channel_model(
         posts: rows,
         first_unread: None,
         max_post_size: max_post_size.unwrap_or(DEFAULT_MAX_POST_SIZE),
-        can_manage: false,
+        rights: crate::channel::ChannelRights {
+            roles: false,
+            ..Default::default()
+        },
         delete_others: false,
         admins: Vec::new(),
         profiles: Vec::new(),

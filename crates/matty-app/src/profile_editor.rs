@@ -1,11 +1,11 @@
-//! "Edit profile" (#212): the user's own names, nickname, position and
-//! username, saved with `PUT users/{id}/patch`. Only changed fields are
-//! sent. The picture changes at once, apart from Save.
+//! "Edit profile" (#212): the user's own names, nickname, position,
+//! username and email, saved with `PUT users/{id}/patch`. Only changed
+//! fields are sent, and a new email goes with the current password. The picture changes at once, apart from Save.
 
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, Focusable as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Window,
-    div,
+    div, prelude::FluentBuilder as _,
 };
 use matty_api::ProfilePatch;
 
@@ -29,6 +29,10 @@ pub struct ProfileFields {
     pub nickname: String,
     pub position: String,
     pub username: String,
+    pub email: String,
+    /// Whether the user signs in with email and password, the only users
+    /// whose email Matty may change; SSO and LDAP keep it in sync.
+    pub email_editable: bool,
     /// Whose profile it is, for the picture.
     pub user_id: String,
     /// True when the user uploaded a picture, rather than the generated one.
@@ -46,6 +50,8 @@ impl ProfileFields {
             nickname: user.nickname.clone(),
             position: user.position.clone(),
             username: user.username.clone(),
+            email: user.email.clone(),
+            email_editable: user.auth_service.is_empty(),
         }
     }
 
@@ -61,8 +67,21 @@ impl ProfileFields {
             nickname: changed(&self.nickname, &before.nickname),
             position: changed(&self.position, &before.position),
             username: changed(&self.username, &before.username),
+            email: changed(&self.email, &before.email)
+                .filter(|_| before.email_editable)
+                .map(|email| email.to_lowercase()),
+            password: None,
         }
     }
+}
+
+/// Why `email` is not an address, or `None` when it looks like one.
+pub fn email_problem(email: &str) -> Option<SharedString> {
+    let email = email.trim();
+    let looks_right = email.split_once('@').is_some_and(|(name, domain)| {
+        !name.is_empty() && !domain.is_empty() && !domain.contains('@')
+    }) && !email.contains(char::is_whitespace);
+    (!looks_right).then(|| t!("profile-email-invalid"))
 }
 
 /// Mattermost's limits.
@@ -119,6 +138,9 @@ struct Inputs {
     nickname: Entity<InputState>,
     position: Entity<InputState>,
     username: Entity<InputState>,
+    email: Entity<InputState>,
+    /// The current password, asked for once the email changes.
+    password: Entity<InputState>,
 }
 
 pub struct ProfileEditor {
@@ -144,6 +166,8 @@ impl ProfileEditor {
             nickname: input(),
             position: input(),
             username: input(),
+            email: input(),
+            password: cx.new(|cx| InputState::new(window, cx).masked(true)),
         };
         let subscriptions = [
             &inputs.first_name,
@@ -151,6 +175,8 @@ impl ProfileEditor {
             &inputs.nickname,
             &inputs.position,
             &inputs.username,
+            &inputs.email,
+            &inputs.password,
         ]
         .into_iter()
         .map(|input| {
@@ -180,6 +206,8 @@ impl ProfileEditor {
             (&self.inputs.nickname, &fields.nickname),
             (&self.inputs.position, &fields.position),
             (&self.inputs.username, &fields.username),
+            (&self.inputs.email, &fields.email),
+            (&self.inputs.password, &String::new()),
         ] {
             input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         }
@@ -321,7 +349,15 @@ impl ProfileEditor {
             nickname: value(&self.inputs.nickname),
             position: value(&self.inputs.position),
             username: value(&self.inputs.username),
+            email: value(&self.inputs.email),
+            email_editable: self.before.email_editable,
         }
+    }
+
+    /// Whether the typed email differs from the saved one, so the
+    /// password is needed.
+    fn email_changed(&self, cx: &gpui_kit::App) -> bool {
+        self.before.email_editable && self.inputs.email.read(cx).value().trim() != self.before.email
     }
 
     /// The patch to send, when the typed fields are valid and change
@@ -335,7 +371,14 @@ impl ProfileEditor {
         if too_long || username_problem(&typed.username).is_some() {
             return None;
         }
-        let patch = typed.patch_from(&self.before);
+        let mut patch = typed.patch_from(&self.before);
+        if patch.email.is_some() {
+            let password = self.inputs.password.read(cx).value().to_string();
+            if email_problem(&typed.email).is_some() || password.is_empty() {
+                return None;
+            }
+            patch.password = Some(password);
+        }
         (!patch.is_empty()).then_some(patch)
     }
 
@@ -347,6 +390,10 @@ impl ProfileEditor {
             return;
         };
         self.dialog.close(window, cx);
+        // Not kept around once sent.
+        self.inputs
+            .password
+            .update(cx, |input, cx| input.set_value("", window, cx));
         cx.emit(ProfileSaved(patch));
     }
 
@@ -371,6 +418,13 @@ impl Render for ProfileEditor {
         let username_hint: SharedString =
             username_problem(&username).unwrap_or_else(|| t!("profile-username-hint"));
         let usable = self.patch(cx).is_some();
+        let email_changed = self.email_changed(cx);
+        let email = self.inputs.email.read(cx).value().to_string();
+        let email_hint: SharedString = if email_changed {
+            email_problem(&email).unwrap_or_else(|| t!("profile-email-confirm"))
+        } else {
+            t!("profile-email-hint")
+        };
         let picture = self.picture_row(cx);
         let popup = dialog_popup("profile.edit.popup", t!("profile-edit-title"), cx)
             .child(dialog_title("profile.edit.title", cx).child(t!("profile-edit-title")))
@@ -418,7 +472,23 @@ impl Render for ProfileEditor {
                         &self.inputs.username,
                         t!("profile-username"),
                         Some(username_hint),
-                    )),
+                    ))
+                    .when(self.before.email_editable, |fields| {
+                        fields.child(Self::field(
+                            "profile.edit.email",
+                            &self.inputs.email,
+                            t!("profile-email"),
+                            Some(email_hint),
+                        ))
+                    })
+                    .when(email_changed, |fields| {
+                        fields.child(Self::field(
+                            "profile.edit.password",
+                            &self.inputs.password,
+                            t!("profile-current-password"),
+                            None,
+                        ))
+                    }),
             )
             .child(
                 div()
@@ -484,6 +554,8 @@ mod tests {
             nickname: String::new(),
             position: String::new(),
             username: "ada".into(),
+            email: "ada@example.com".into(),
+            email_editable: true,
             ..Default::default()
         };
         let mut after = before.clone();
@@ -497,5 +569,47 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn a_new_email_is_sent_lowercase_and_only_where_matty_owns_it() {
+        let before = ProfileFields {
+            email: "ada@example.com".into(),
+            email_editable: true,
+            ..Default::default()
+        };
+        let mut after = before.clone();
+        after.email = " Ada@Lovelace.dev ".into();
+        assert_eq!(
+            after.patch_from(&before).email.as_deref(),
+            Some("ada@lovelace.dev")
+        );
+        let sso = ProfileFields {
+            email_editable: false,
+            ..before.clone()
+        };
+        let mut after = sso.clone();
+        after.email = "ada@lovelace.dev".into();
+        assert!(after.patch_from(&sso).is_empty());
+    }
+
+    #[test]
+    fn emails_need_a_name_and_a_domain() {
+        assert!(email_problem("ada@example.com").is_none());
+        assert!(email_problem("ada").is_some());
+        assert!(email_problem("@example.com").is_some());
+        assert!(email_problem("ada@").is_some());
+        assert!(email_problem("ada@x@y").is_some());
+        assert!(email_problem("ada lovelace@example.com").is_some());
+    }
+
+    #[test]
+    fn the_password_never_reaches_a_log() {
+        let patch = ProfilePatch {
+            email: Some("ada@lovelace.dev".into()),
+            password: Some("hunter2".into()),
+            ..Default::default()
+        };
+        assert!(!format!("{patch:?}").contains("hunter2"));
     }
 }
