@@ -3057,6 +3057,19 @@ impl MainWindow {
                     });
                 }
             }
+            RightPaneEvent::Schedule {
+                channel,
+                root,
+                text,
+                files,
+                at,
+            } => self.schedule_message(
+                channel.to_string(),
+                root.to_string(),
+                (text, files, *at),
+                None,
+                cx,
+            ),
             RightPaneEvent::Upload { id, name, source } => {
                 if let Some(channel) = self.live.as_ref().and_then(|live| live.thread_channel()) {
                     let job =

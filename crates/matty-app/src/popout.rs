@@ -1585,6 +1585,23 @@ impl PopOutView {
                     priority: None,
                 }
             }
+            RightPaneEvent::Schedule {
+                channel,
+                root,
+                text,
+                files,
+                at,
+            } => {
+                let (file_ids, _) = live.take_files(files);
+                matty_sync::Command::Schedule(Box::new(matty_api::models::ScheduledPost {
+                    channel_id: channel.to_string(),
+                    root_id: root.to_string(),
+                    message: text.to_string(),
+                    file_ids,
+                    scheduled_at: *at,
+                    ..Default::default()
+                }))
+            }
             RightPaneEvent::SuggestPeople(term) => matty_sync::Command::SuggestPeople {
                 term: term.to_string(),
                 team_id: live.team().map(str::to_string),
