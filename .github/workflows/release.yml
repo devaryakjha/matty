@@ -4,7 +4,8 @@ name: Release
 # or pull requests. A tag with a pre-release suffix (v0.1.0-beta.1) makes a
 # GitHub pre-release. Pushing the tag is the go: the release publishes as
 # soon as the build passes, with no approval step. Guard who can push `v*`
-# tags with a tag ruleset instead.
+# tags with a tag ruleset instead. Each release carries the signed macOS
+# DMG and zip and the unsigned Linux (#216) and Windows (#215) packages.
 #
 # Optional repository secrets. Without them the app is ad hoc signed and the
 # release notes say so:
@@ -161,9 +162,79 @@ jobs:
           path: target/dist/release/
           if-no-files-found: error
 
+  linux:
+    # The Linux packages (#216): tarball, .deb, .rpm and AppImage, unsigned.
+    name: linux x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GPUI's Linux libraries and the packaging tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
+            rpm desktop-file-utils appstream
+          curl -sSfL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  /usr/local/bin/appimagetool" | sha256sum -c
+          chmod +x /usr/local/bin/appimagetool
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Build the packages
+        env:
+          MATTY_VERSION: ${{ github.ref_name }}
+        run: |
+          export MATTY_VERSION="${MATTY_VERSION#v}"
+          scripts/linux-package "$MATTY_VERSION"
+      - name: The packages hold the app and it runs
+        run: |
+          cd target/dist/linux
+          ls -l
+          dpkg-deb --contents matty_*_amd64.deb | grep -q './usr/bin/matty'
+          rpm -qlp matty-*.rpm | grep -q '^/usr/bin/matty$'
+          APPIMAGE_EXTRACT_AND_RUN=1 ./Matty-*-x86_64.AppImage --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-release-linux
+          path: target/dist/linux/
+          if-no-files-found: error
+
+  windows:
+    # The Windows MSI and zip (#215), unsigned.
+    name: windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build the installer
+        env:
+          MATTY_VERSION: ${{ github.ref_name }}
+        run: |
+          export MATTY_VERSION="${MATTY_VERSION#v}"
+          scripts/windows-package "$MATTY_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-release-windows
+          path: target/dist/windows/
+          if-no-files-found: error
+
   publish:
     name: GitHub Release
-    needs: build
+    needs: [build, linux, windows]
+    # A failed Linux or Windows build leaves that platform out rather than
+    # holding back the release; macOS is the one the release needs.
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -176,11 +247,20 @@ jobs:
           sparse-checkout: scripts
       - uses: actions/download-artifact@v4
         with:
-          name: matty-release
-          path: release
-      - name: The checksums match
-        working-directory: release
-        run: sha256sum --check SHA256SUMS
+          pattern: matty-release*
+          path: artifacts
+      - name: The checksums match, then gather one release folder
+        run: |
+          mkdir release
+          for dir in artifacts/*/; do
+            (cd "$dir" && sha256sum --check SHA256SUMS)
+            cat "$dir/SHA256SUMS" >>release/SHA256SUMS.all
+            rm "$dir/SHA256SUMS"
+            mv "$dir"* release/
+          done
+          sort -k2 release/SHA256SUMS.all >release/SHA256SUMS
+          rm release/SHA256SUMS.all
+          cat release/SHA256SUMS
       - name: Sign the update manifest
         env:
           MATTY_UPDATE_SIGNING_KEY: ${{ secrets.MATTY_UPDATE_SIGNING_KEY }}
@@ -208,13 +288,25 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           NOTARIZED: ${{ needs.build.outputs.notarized }}
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
         run: |
           args=(--verify-tag --title "Matty $VERSION" --generate-notes)
           [[ "$PRERELEASE" != true ]] || args+=(--prerelease)
           if [[ "$NOTARIZED" == true ]]; then
-            notes="Download the DMG, open it and drag Matty to Applications."
+            notes="**macOS:** download the DMG, open it and drag Matty to Applications."
           else
-            notes="This build is not signed with a Developer ID or notarized. macOS will refuse to open it at first: right-click Matty.app, choose Open, then confirm, or run \`xattr -dr com.apple.quarantine /Applications/Matty.app\`."
+            notes="**macOS:** this build is not signed with a Developer ID or notarized. macOS will refuse to open it at first: right-click Matty.app, choose Open, then confirm, or run \`xattr -dr com.apple.quarantine /Applications/Matty.app\`."
+          fi
+          if [[ "$LINUX" == success ]]; then
+            notes+=$'\n\n'"**Linux:** the .deb, the .rpm, the AppImage or the tarball."
+          else
+            echo "::warning::the Linux packages did not build; this release has none"
+          fi
+          if [[ "$WINDOWS" == success ]]; then
+            notes+=$'\n\n'"**Windows:** the MSI installs Matty for you alone, with no administrator prompt. It is not code signed yet, so SmartScreen may warn: choose More info, then Run anyway."
+          else
+            echo "::warning::the Windows installer did not build; this release has none"
           fi
           gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
 
