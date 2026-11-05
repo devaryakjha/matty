@@ -4,7 +4,8 @@
 //!
 //! The prompt never appears while a composer holds unsent text and has
 //! focus: it waits until no composer has, for [`IDLE`] in a row
-//! ([`Deferral`]). "Later" puts it off until the next check. The feed,
+//! ([`Deferral`]). "Later", or closing it, puts it off until the next
+//! check, and a check never shows it twice. The feed,
 //! signature and download checks live in `matty-update`.
 
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ use web_time::Instant;
 use crate::settings::{SettingsChanged, SettingsStore};
 use crate::ui::{
     composer::ComposerState,
-    toast::{Notice, ToastState},
+    toast::{Notice, NoticeDismissal, ToastState},
 };
 
 /// How long the composers must stay free before the prompt shows.
@@ -98,6 +99,9 @@ pub(crate) struct UpdatePrompt {
     toasts: Entity<ToastState>,
     ready: Option<Ready>,
     prompted: bool,
+    /// The prompt left the screen without updating, such as by "Later" or
+    /// its close button, so the next check offers it again.
+    snoozed: bool,
     deferral: Deferral,
     channel: crate::settings::UpdateChannel,
     _checks: Option<Task<()>>,
@@ -110,6 +114,7 @@ impl UpdatePrompt {
             toasts,
             ready: None,
             prompted: false,
+            snoozed: false,
             deferral: Deferral::default(),
             channel: SettingsStore::global(cx).read(cx).get().update_channel,
             _checks: None,
@@ -227,8 +232,7 @@ impl UpdatePrompt {
                     }
                 };
                 let alive = this.update_in(cx, |this, window, cx| match ready {
-                    // Already staged: offer it again after "Later".
-                    Some(None) => this.rearm(window, cx),
+                    Some(None) => this.checked_again(window, cx),
                     Some(Some(ready)) => this.set_ready(ready, window, cx),
                     None => {}
                 });
@@ -248,12 +252,21 @@ impl UpdatePrompt {
         self.rearm(window, cx);
     }
 
+    /// A check found the update already staged: offer it again if the
+    /// prompt was put off, and leave it be if it is still on screen.
+    fn checked_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.snoozed {
+            self.rearm(window, cx);
+        }
+    }
+
     /// Offers the ready update again once the composers are free.
     fn rearm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ready.is_none() {
             return;
         }
         self.prompted = false;
+        self.snoozed = false;
         self.deferral = Deferral::default();
         self._poll = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -280,7 +293,12 @@ impl UpdatePrompt {
             return true;
         }
         self.prompted = true;
+        if self.toasts.read(cx).contains(TOAST) {
+            // Still on screen from an earlier offer.
+            return false;
+        }
         let this = cx.weak_entity();
+        let dismissed = this.clone();
         let notice = Notice::new("Update ready")
             .description(format!(
                 "Matty {} has downloaded. Restart to finish updating.",
@@ -290,10 +308,22 @@ impl UpdatePrompt {
                 this.update(cx, |this, cx| this.restart(cx)).ok();
             })
             .cancel("Later")
+            .on_dismiss(move |reason, cx| {
+                dismissed.update(cx, |this, _| this.dismissed(reason)).ok();
+            })
             .persistent();
         self.toasts
             .update(cx, |toasts, cx| toasts.push(TOAST, notice, cx));
         false
+    }
+
+    /// The prompt left the screen. Anything but a newer offer in its place
+    /// leaves the update to offer again at the next check: "Later", the
+    /// close button, or a restart that failed to install.
+    fn dismissed(&mut self, reason: NoticeDismissal) {
+        if !matches!(reason, NoticeDismissal::Replaced) {
+            self.snoozed = true;
+        }
     }
 
     fn restart(&mut self, cx: &mut Context<Self>) {
@@ -413,5 +443,83 @@ mod tests {
         cx.update(|_, cx| assert!(!toasts.read(cx).is_empty()));
         // Shown once.
         assert!(!tick(cx, 60));
+    }
+
+    #[gpui_kit::test]
+    fn later_or_closing_puts_the_prompt_off_until_the_next_check(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            SettingsStore::init(None, cx);
+        });
+        let (toasts, cx) = cx.add_window_view(|_, cx| ToastState::new(cx));
+        let prompt = cx.update(|_, cx| {
+            cx.new(|cx| {
+                let mut prompt = UpdatePrompt::new(toasts.clone(), cx);
+                prompt.ready = Some(Ready {
+                    version: Version::new(0, 2, 0),
+                    staged: None,
+                });
+                prompt
+            })
+        });
+        let start = Instant::now();
+        let show = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                prompt.update(cx, |prompt, cx| {
+                    prompt.tick(start, window, cx);
+                    prompt.tick(start + IDLE, window, cx);
+                })
+            });
+            cx.run_until_parked();
+        };
+        let check = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                prompt.update(cx, |prompt, cx| prompt.checked_again(window, cx))
+            });
+            show(cx);
+        };
+        let showing = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|_, cx| toasts.read(cx).contains(TOAST))
+        };
+        let press = |cx: &mut gpui_kit::VisualTestContext, label: &str| {
+            // Past the entrance animation.
+            cx.executor().advance_clock(Duration::from_secs(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let at = cx.update(|window, _| {
+                use gpui_kit::test::TestQueryExt as _;
+                window
+                    .elements()
+                    .into_iter()
+                    .find(|element| element.label().is_some_and(|l| l == label))
+                    .unwrap_or_else(|| panic!("nothing is labelled {label:?}"))
+                    .bounds()
+                    .center()
+            });
+            cx.simulate_click(at, gpui_kit::Modifiers::none());
+            cx.run_until_parked();
+        };
+
+        show(cx);
+        assert!(showing(cx));
+        // A check while it is on screen leaves it there, untouched.
+        check(cx);
+        assert!(showing(cx));
+        assert!(!prompt.read_with(cx, |prompt, _| prompt.snoozed));
+
+        // "Later" hides it until the next check, which offers it again.
+        press(cx, "Later");
+        assert!(!showing(cx));
+        assert!(prompt.read_with(cx, |prompt, _| prompt.snoozed));
+        show(cx);
+        assert!(!showing(cx), "not before the next check");
+        check(cx);
+        assert!(showing(cx), "the next check offers it again");
+
+        // The close button does the same.
+        press(cx, "Close notification");
+        assert!(!showing(cx));
+        check(cx);
+        assert!(showing(cx));
     }
 }

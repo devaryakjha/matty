@@ -279,6 +279,9 @@ pub struct Settings {
     pub clock: ClockFormat,
     /// Enter sends by default; Ctrl+Enter for people who write in paragraphs.
     pub send_on: SendKey,
+    /// The composer shows its formatting row: strikethrough, link,
+    /// heading, quote and lists (#219).
+    pub format_bar: bool,
     pub display: MessageDisplay,
     /// How people's names read in messages, threads and profiles.
     pub name_format: NameFormat,
@@ -335,6 +338,7 @@ impl Default for Settings {
             load_remote_images: RemoteImages::Always,
             clock: ClockFormat::TwentyFourHour,
             send_on: SendKey::Enter,
+            format_bar: false,
             display: MessageDisplay::Standard,
             name_format: NameFormat::NicknameFullName,
             reduce_motion: false,

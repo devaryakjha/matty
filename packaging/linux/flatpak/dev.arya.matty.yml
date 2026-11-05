@@ -1,0 +1,46 @@
+# Flatpak manifest for Matty (#216). It packages a release binary built
+# outside the sandbox, as `scripts/linux-package` does:
+#
+#   scripts/linux-package 0.0.1
+#   flatpak-builder --user --install --force-clean target/flatpak \
+#     packaging/linux/flatpak/dev.arya.matty.yml
+#
+# A Flathub submission builds from source instead, with the crates
+# vendored by flatpak-cargo-generator; that manifest lives in the Flathub
+# repository once the listing is set up.
+id: dev.arya.matty
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+command: matty
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio
+  # Notifications and the launcher badge.
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=com.canonical.Unity
+  # Saved sign-ins, through the Secret portal or the Secret Service.
+  - --talk-name=org.freedesktop.secrets
+  # Downloads land in the user's Downloads folder.
+  - --filesystem=xdg-download
+modules:
+  - name: matty
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 matty /app/bin/matty
+      - install -Dm644 dev.arya.matty.desktop /app/share/applications/dev.arya.matty.desktop
+      - install -Dm644 dev.arya.matty.svg /app/share/icons/hicolor/scalable/apps/dev.arya.matty.svg
+      - install -Dm644 dev.arya.matty.metainfo.xml /app/share/metainfo/dev.arya.matty.metainfo.xml
+    sources:
+      - type: file
+        path: ../../../target/release/matty
+      - type: file
+        path: ../dev.arya.matty.desktop
+      - type: file
+        path: ../dev.arya.matty.svg
+      - type: file
+        path: ../dev.arya.matty.metainfo.xml
