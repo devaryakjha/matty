@@ -67,6 +67,7 @@ mod updater;
 pub mod watch;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;
+pub mod webhooks;
 
 use std::borrow::Cow;
 

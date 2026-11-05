@@ -762,6 +762,7 @@ impl RightPaneView {
             &[std::slice::from_ref(&thread.root), &thread.replies[..]].concat(),
         );
         let reply = Post {
+            webhook: None,
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
             author_id: own,
@@ -2155,6 +2156,10 @@ impl RightPaneView {
         initial: String,
         cx: &App,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("thread.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
                 format!("thread.{id}.avatar").into(),
@@ -3556,6 +3561,7 @@ mod tests {
 
     fn post(id: &str) -> Post {
         Post {
+            webhook: None,
             id: id.to_string().into(),
             author: "Ada".into(),
             author_id: SharedString::default(),

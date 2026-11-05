@@ -3232,6 +3232,7 @@ mod tests {
 
     fn shown(id: &str, body: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),

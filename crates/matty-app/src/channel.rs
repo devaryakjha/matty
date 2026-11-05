@@ -453,6 +453,8 @@ pub struct Post {
     pub embeds: Vec<crate::embeds::Embed>,
     /// Its priority label and acknowledgements (#220).
     pub priority: Option<crate::priority::Shown>,
+    /// The webhook it came from, whose icon it shows.
+    pub webhook: Option<crate::webhooks::Webhook>,
 }
 
 /// When "Remind me" brings a post back, as the webapp offers it.
@@ -2571,6 +2573,7 @@ impl ChannelView {
         self.pending_seq += 1;
         let last = model.posts.last();
         let post = Post {
+            webhook: None,
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
             author_id: own_id(&model.posts),
@@ -3872,6 +3875,10 @@ impl ChannelView {
         card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("post.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let initial: String = post.author.chars().take(1).collect();
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
@@ -5554,6 +5561,7 @@ mod tests {
 
     fn post(id: &str, day: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),
