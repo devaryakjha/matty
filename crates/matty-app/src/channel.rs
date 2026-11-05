@@ -1449,7 +1449,14 @@ impl ChannelView {
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let (schedule_dialog, scheduling) = outgoing::schedule_dialog(window, cx);
         let bookmarks = cx.new(|cx| crate::bookmarks::BookmarksBar::new(window, cx));
+        let composer_input = composer.read(cx).input().clone();
         let subscriptions = vec![
+            // Typed or set (a draft, a send, a cleared command): the slash
+            // command line's suggestions follow the text.
+            cx.observe(&composer_input, |this, input, cx| {
+                let text = input.read(cx).value().to_string();
+                this.slash_line(&text, cx);
+            }),
             scheduling,
             cx.subscribe(
                 &bookmarks,
