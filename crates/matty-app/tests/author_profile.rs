@@ -36,8 +36,7 @@ fn center(cx: &mut VisualTestContext, label: &str) -> gpui_kit::Point<gpui_kit::
         window
             .elements()
             .into_iter()
-            .filter(|element| element.label().is_some_and(|l| l == label))
-            .last()
+            .rfind(|element| element.label().is_some_and(|l| l == label))
             .unwrap_or_else(|| panic!("nothing is labelled {label:?}"))
             .bounds()
             .center()
