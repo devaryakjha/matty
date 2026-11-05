@@ -57,6 +57,8 @@ pub mod servers;
 pub mod settings;
 pub mod sidebar;
 pub mod slash;
+#[cfg(not(target_family = "wasm"))]
+mod spelling;
 pub mod style;
 pub mod switcher;
 pub mod threads;
@@ -67,6 +69,7 @@ mod updater;
 #[cfg(target_family = "wasm")]
 #[path = "updater_web.rs"]
 mod updater;
+pub mod url_handler;
 pub mod watch;
 #[cfg(target_family = "wasm")]
 pub mod web_storage;

@@ -37,9 +37,17 @@ fluent-bundle.workspace = true
 unic-langid.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+matty-spell.workspace = true
 tracing-appender.workspace = true
 sys-locale.workspace = true
 keyring.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Who opens mattermost:// links, and asking to take them over (#489).
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "block2"] }
+objc2-foundation = { workspace = true, features = ["NSURL"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 rustix.workspace = true
