@@ -201,6 +201,26 @@ impl Client {
         self.put(&format!("users/{user_id}/status"), &body).await
     }
 
+    /// `PUT users/{user_id}/status/custom`: sets the user's custom status.
+    pub async fn set_custom_status(
+        &self,
+        user_id: &str,
+        status: &crate::models::CustomStatus,
+    ) -> Result<(), ApiError> {
+        let _: serde_json::Value = self
+            .put(&format!("users/{user_id}/status/custom"), status)
+            .await?;
+        Ok(())
+    }
+
+    /// `DELETE users/{user_id}/status/custom`: clears the custom status.
+    pub async fn clear_custom_status(&self, user_id: &str) -> Result<(), ApiError> {
+        let _: serde_json::Value = self
+            .delete(&format!("users/{user_id}/status/custom"))
+            .await?;
+        Ok(())
+    }
+
     /// `PUT users/{user_id}/patch` with the whole `notify_props` map: the
     /// server replaces the map, so it carries every key, changed or not.
     pub async fn patch_notify_props(

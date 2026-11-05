@@ -562,6 +562,9 @@ pub struct ChannelModel {
     pub muted: bool,
     /// The channel purpose, shown in the empty state.
     pub purpose: Option<SharedString>,
+    /// A direct message's other person: the header shows their custom
+    /// status and local time (#221).
+    pub person: Option<Box<crate::profile::UserProfile>>,
     /// True while the first page of posts is on its way: skeleton rows
     /// instead of the empty state (PLAN §4.5).
     pub loading: bool,
@@ -3788,6 +3791,12 @@ impl ChannelView {
                                     }),
                             ),
                     ))
+                    .children(
+                        channel
+                            .person
+                            .as_ref()
+                            .and_then(|person| person_details(person, cx)),
+                    )
                     .children(channel.header.clone().map(|text| {
                         div()
                             .min_w_0()
@@ -5195,6 +5204,57 @@ impl Render for ChannelView {
 
 /// The picker's popover surface: gpuicn's popover colors and shadow around
 /// the borderless picker.
+/// A direct message's header beside the name: the other person's custom
+/// status and the time where they are (#221); `None` when neither is known.
+fn person_details(person: &crate::profile::UserProfile, cx: &App) -> Option<gpui_kit::Div> {
+    let theme = UiTheme::read(cx).clone();
+    let muted = theme.colors.muted_foreground;
+    let time = person.time_zone.as_ref().and_then(|zone| {
+        crate::profile::local_time(zone, crate::settings::ClockFormat::current(cx))
+    });
+    if person.status.is_none() && time.is_none() {
+        return None;
+    }
+    Some(
+        div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(theme.space(3.))
+            .pl(theme.space(2.))
+            .border_l(style::hairline())
+            .border_color(theme.colors.border)
+            .type_style(style::UI, &theme)
+            .text_color(muted)
+            .children(person.status.as_ref().map(|status| {
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.5))
+                    .child(crate::custom_status::emoji(
+                        &status.emoji,
+                        scaled(&theme, metrics::ICON_SMALL),
+                        cx,
+                    ))
+                    .child(div().min_w_0().truncate().child(status.text.clone()))
+            }))
+            .children(time.map(|time| {
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(1.))
+                    .child(
+                        lucide(LucideIcon::Clock)
+                            .size(scaled(&theme, metrics::ICON_SMALL))
+                            .text_color(muted),
+                    )
+                    .child(format!("{time} local time"))
+            })),
+    )
+}
+
 fn emoji_popup(picker: EmojiPicker, cx: &App) -> impl IntoElement + use<> {
     let theme = UiTheme::read(cx);
     div()
@@ -5547,7 +5607,7 @@ mod tests {
             display_name: crate::transcript::display_name_as(&user, format).into(),
             position: None,
             presence: crate::sidebar::Presence::Offline,
-            status_text: None,
+            status: None,
             time_zone: None,
         };
         let shown = |format, query: &str| {
@@ -5686,11 +5746,12 @@ mod tests {
             display_name: name.to_owned().into(),
             position: None,
             presence: crate::sidebar::Presence::Offline,
-            status_text: None,
+            status: None,
             time_zone: None,
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5759,6 +5820,7 @@ mod tests {
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: true,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5866,6 +5928,7 @@ mod tests {
         };
         let model = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -5947,6 +6010,7 @@ mod tests {
         let channel = ChannelModel {
             offline: false,
             purpose: None,
+            person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,
@@ -5988,6 +6052,7 @@ mod tests {
     fn removing_a_post_changes_only_its_rows() {
         let mut channel = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -6036,6 +6101,7 @@ mod tests {
         };
         let channel = ChannelModel {
             purpose: None,
+            person: None,
             offline: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
@@ -6093,6 +6159,7 @@ mod tests {
         let mut channel = ChannelModel {
             offline: false,
             purpose: None,
+            person: None,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             can_manage: false,

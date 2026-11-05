@@ -41,6 +41,44 @@ pub struct User {
     /// Notification preferences such as `desktop` and `mention_keys`;
     /// the server sends them only for the signed-in user.
     pub notify_props: std::collections::HashMap<String, String>,
+    /// Free-form properties. `customStatus` holds the custom status as
+    /// JSON, and for the signed-in user `recentCustomStatuses` the last
+    /// few they set. Some endpoints send `null`.
+    #[serde(deserialize_with = "null_as_default")]
+    pub props: std::collections::HashMap<String, String>,
+}
+
+impl User {
+    /// The custom status the user set, expired or not; `None` when they
+    /// set none or it is cleared.
+    pub fn custom_status(&self) -> Option<CustomStatus> {
+        let status: CustomStatus = serde_json::from_str(self.props.get("customStatus")?).ok()?;
+        (!status.emoji.is_empty() || !status.text.is_empty()).then_some(status)
+    }
+
+    /// The custom statuses the user set lately, newest first.
+    pub fn recent_custom_statuses(&self) -> Vec<CustomStatus> {
+        self.props
+            .get("recentCustomStatuses")
+            .and_then(|recent| serde_json::from_str(recent).ok())
+            .unwrap_or_default()
+    }
+}
+
+/// A custom status: an emoji and a line of text, and when it clears, as
+/// `users/{id}/status/custom` takes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CustomStatus {
+    /// An emoji name, such as `calendar`, without colons.
+    pub emoji: String,
+    /// The text, up to 100 characters.
+    pub text: String,
+    /// The preset it clears after: `dont_clear`, `thirty_minutes`,
+    /// `one_hour`, `four_hours`, `today`, `this_week` or `date_and_time`.
+    pub duration: String,
+    /// When it clears, as RFC 3339; empty when it does not.
+    pub expires_at: String,
 }
 
 /// A session, as `users/{id}/sessions` returns it.
