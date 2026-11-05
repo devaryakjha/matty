@@ -78,7 +78,7 @@ pub fn channel_model(
 ) -> ChannelModel {
     let today = viewer.now.to_zoned(viewer.zone.clone()).date();
     let mut rows: Vec<Post> = Vec::new();
-    let mut previous: Option<(&str, i64, SharedString)> = None;
+    let mut previous: Option<((&str, Option<&str>), i64, SharedString)> = None;
     // Joins and leaves since the last other row, combined into one row.
     let mut activity: Vec<Activity> = Vec::new();
     let mention = viewer.keys;
@@ -96,8 +96,13 @@ pub fn channel_model(
             continue;
         }
         // Collapsed threads keep replies in their thread; sync leaves
-        // them out, and any that slip through stay out too.
-        if viewer.collapsed_threads && post.is_reply() {
+        // them out, and any that slip through stay out too. An ephemeral
+        // reply is the answer to what the user just did here, such as an
+        // integration's to a button under the root, so it shows here too.
+        if viewer.collapsed_threads
+            && post.is_reply()
+            && !crate::interactive::is_ephemeral(post)
+        {
             continue;
         }
         let stamp = when(post.create_at, viewer.zone, today);
@@ -153,12 +158,15 @@ pub fn channel_model(
         // A reply under its own "Commented on" line starts a new run, and
         // an ephemeral message always shows who it is from and that only
         // the viewer sees it.
+        // A webhook posts in the name of whoever made it, but under a name
+        // of its own, so its posts and theirs do not run together.
+        let who = (post.user_id.as_str(), webhook_name(post));
         let continues = reply_to.is_none()
             && !ephemeral
             && previous.as_ref().is_some_and(|(user, at, last_day)| {
-                *user == post.user_id && post.create_at - at < GROUP_MS && *last_day == day
+                *user == who && post.create_at - at < GROUP_MS && *last_day == day
             });
-        previous = (!ephemeral).then(|| (post.user_id.as_str(), post.create_at, day.clone()));
+        previous = (!ephemeral).then(|| (who, post.create_at, day.clone()));
         let mut shown = display_post(post, users, viewer, mention, stamp, continues);
         shown.reply_to = reply_to;
         if viewer.collapsed_threads && post.reply_count > 0 {
@@ -240,6 +248,18 @@ fn reply_summary(
     }
 }
 
+/// The name a webhook or a slash command's integration posts under
+/// (`override_username`), as the server keeps it only where it allows
+/// integrations to choose one.
+fn webhook_name(post: &ApiPost) -> Option<&str> {
+    let text = |key: &str| post.props.get(key).and_then(serde_json::Value::as_str);
+    (text("from_webhook") == Some("true"))
+        .then(|| text("override_username"))
+        .flatten()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
 /// One post as the views draw it.
 fn display_post(
     post: &ApiPost,
@@ -255,10 +275,11 @@ fn display_post(
     // come in the viewer's name; they read as from the system, as in the
     // web app. An integration's come from its bot.
     let from_system = ephemeral && (known.is_none() || post.user_id == viewer.user_id);
-    let author = match known {
+    let author = match (known, webhook_name(post)) {
         _ if from_system => "System".into(),
-        Some(user) => display_name_as(user, viewer.names),
-        None => "Someone".into(),
+        (_, Some(name)) => name.to_owned(),
+        (Some(user), None) => display_name_as(user, viewer.names),
+        (None, None) => "Someone".into(),
     };
     let kind = if is_regular(&post.kind) || ephemeral {
         PostKind::Regular
@@ -1270,10 +1291,17 @@ mod tests {
             is_following: Some(true),
             ..post("root", "sam", NOON, "Lunch at 12?")
         };
+        // The server threads an integration's ephemeral answer to a button
+        // under the post with the button.
+        let answer = ApiPost {
+            kind: "system_ephemeral".into(),
+            ..reply_to("e1", "ada", NOON + 3, "root")
+        };
         let posts = [
             root,
             reply_to("r1", "lena", NOON + 1, "root"),
             post("plain", "ada", NOON + 2, "No replies here"),
+            answer,
         ];
         let viewer = Viewer {
             collapsed_threads: true,
@@ -1281,7 +1309,7 @@ mod tests {
         };
         let model = channel_model(&row, Some(&posts), &people(), &viewer, None, &[]);
         let ids: Vec<_> = model.posts.iter().map(|p| p.id.as_ref()).collect();
-        assert_eq!(ids, ["root", "plain"]);
+        assert_eq!(ids, ["root", "plain", "e1"]);
         let footer = model.posts[0].replies.as_ref().expect("a footer");
         assert_eq!(footer.count, 3);
         assert_eq!(footer.participants, ["Sam", "Jonas", "Lena"]);
@@ -1292,6 +1320,45 @@ mod tests {
         );
         assert!(footer.following);
         assert!(model.posts[1].replies.is_none());
+    }
+
+    /// A webhook's post carries the name the integration chose, and does
+    /// not run on from its creator's own posts.
+    #[test]
+    fn webhook_posts_show_the_name_the_integration_chose() {
+        let zone = TimeZone::UTC;
+        let row = ChannelRow::new("c1", "town", ChannelKind::Public);
+        let hooked = |id: &str, at: i64, name: &str| {
+            let mut post = post(id, "ada", at, "Deploy finished");
+            post.props.insert("from_webhook".into(), "true".into());
+            post.props.insert("override_username".into(), name.into());
+            post
+        };
+        let mut forged = post("forged", "ada", NOON + 3, "Not a webhook");
+        forged
+            .props
+            .insert("override_username".into(), "ci-bot".into());
+        let posts = [
+            post("own", "ada", NOON, "Morning"),
+            hooked("hook", NOON + 1, "ci-bot"),
+            hooked("hook2", NOON + 2, "ci-bot"),
+            forged,
+        ];
+        let model = channel_model(&row, Some(&posts), &people(), &viewer(&zone), None, &[]);
+        let shown: Vec<_> = model
+            .posts
+            .iter()
+            .map(|p| (p.author.as_ref(), p.continues))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Ada", false),
+                ("ci-bot", false),
+                ("ci-bot", true),
+                ("Ada", false)
+            ]
+        );
     }
 
     #[test]
