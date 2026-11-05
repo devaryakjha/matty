@@ -436,7 +436,10 @@ impl AccountView {
             MenuItem::new("account.sign-out", t!("account-sign-out-item"))
                 .on_click(move |_, window, cx| sign_out.open(window, cx)),
         );
-        self.menu.update(cx, |menu, cx| menu.set_items(items, cx));
+        // A menu item's click runs while the menu itself is being updated,
+        // so rebuilding it then would lease it twice and panic (#613).
+        let menu = self.menu.clone();
+        cx.defer(move |cx| menu.update(cx, |menu, cx| menu.set_items(items, cx)));
     }
 
     /// Do not disturb opens its durations; the label carries the end.
@@ -455,13 +458,8 @@ impl AccountView {
                     gpui_kit::ElementId::Name(format!("account.dnd.{name}").into()),
                     duration.label(),
                 )
-                // Submenu items run while the menu is being updated, so the
-                // change that rebuilds its items waits until after.
                 .on_click(move |_, _, cx| {
-                    let view = view.clone();
-                    cx.defer(move |cx| {
-                        view.update(cx, |this, cx| this.set_dnd(duration, cx)).ok();
-                    });
+                    view.update(cx, |this, cx| this.set_dnd(duration, cx)).ok();
                 })
             })
             .collect();
@@ -846,6 +844,30 @@ impl Render for AccountView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A menu item's click runs inside the menu's own update; choosing a
+    /// presence from it must not panic (#613).
+    #[gpui_kit::test]
+    fn choosing_a_presence_from_the_menu_does_not_crash(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let window =
+            cx.add_window(|window, cx| AccountView::new(shown(Presence::Online, None), window, cx));
+        let view = window.root(cx).unwrap();
+        cx.run_until_parked();
+        for presence in [Presence::Away, Presence::Offline, Presence::Online] {
+            cx.update(|cx| {
+                let menu = view.read(cx).menu.clone();
+                menu.update(cx, |_, cx| {
+                    view.update(cx, |this, cx| this.set_presence(presence, None, cx));
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|cx| assert_eq!(view.read(cx).account.presence, presence));
+        }
+    }
 
     fn shown(presence: Presence, dnd_end: Option<i64>) -> Account {
         Account {

@@ -27,6 +27,13 @@ use crate::ui::{
 /// How many digits an authenticator code has.
 pub const MFA_CODE_LEN: usize = 6;
 
+/// The code in pasted text: exactly [`MFA_CODE_LEN`] digits once spaces,
+/// dashes and other separators are dropped (#616).
+fn pasted_code(text: &str) -> Option<String> {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    (digits.len() == MFA_CODE_LEN).then_some(digits)
+}
+
 /// A single sign-on provider the server has enabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SsoProvider {
@@ -539,6 +546,22 @@ impl LoginView {
         self.server.read(cx).value().to_string()
     }
 
+    /// Fills the code from the clipboard's digits, ignoring spaces and
+    /// dashes, and submits it once complete, as typing the last digit does.
+    fn paste_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let Some(code) = pasted_code(&text) else {
+            return;
+        };
+        self.code.update(cx, |state, cx| {
+            state.set_value(code, window, cx);
+            cx.emit(OtpEvent::Change);
+            cx.emit(OtpEvent::Complete);
+        });
+    }
+
     fn submit(&mut self, submit: Submit, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.busy {
             return;
@@ -935,9 +958,25 @@ impl LoginView {
                         server = server_name.to_string()
                     )))
                     .child(
-                        OtpField::new(&self.code)
-                            .aria_label(t!("login-mfa-code"))
-                            .disabled(self.model.busy),
+                        // The field takes typed digits only; a pasted code
+                        // fills it here (#616, until gpuicn#147).
+                        div()
+                            .when(!self.model.busy, |this| {
+                                this.on_key_down(cx.listener(
+                                    |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                                        let keys = &event.keystroke;
+                                        if keys.key == "v" && keys.modifiers.secondary(cx) {
+                                            this.paste_code(window, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                            })
+                            .child(
+                                OtpField::new(&self.code)
+                                    .aria_label(t!("login-mfa-code"))
+                                    .disabled(self.model.busy),
+                            ),
                     ),
             )
             .children(self.error_line(cx))
@@ -1264,6 +1303,15 @@ impl Render for LoginView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasted_code_keeps_its_digits() {
+        assert_eq!(pasted_code("123456").as_deref(), Some("123456"));
+        assert_eq!(pasted_code(" 123 456\n").as_deref(), Some("123456"));
+        assert_eq!(pasted_code("123-456").as_deref(), Some("123456"));
+        assert_eq!(pasted_code("12345"), None);
+        assert_eq!(pasted_code("hello"), None);
+    }
 
     fn methods(password: bool, ldap: bool) -> SignInMethods {
         SignInMethods {
