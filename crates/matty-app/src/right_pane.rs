@@ -2899,7 +2899,7 @@ impl RightPaneView {
                         div()
                             .type_style(style::META, &theme)
                             .text_color(muted)
-                            .child("from:name  in:channel  \u{201c}exact phrase\u{201d}"),
+                            .child("from:name  in:channel  on:date  -word  \u{201c}exact phrase\u{201d}"),
                     ),
             )
             .child(body)
