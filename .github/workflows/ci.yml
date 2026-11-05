@@ -345,7 +345,8 @@ jobs:
         run: |
           app=target/dist/Matty.app
           file "$app/Contents/MacOS/matty"
-          lipo "$app/Contents/MacOS/matty" -verify_arch arm64 x86_64
+          archs=" $(lipo -archs "$app/Contents/MacOS/matty") "
+          [[ "$archs" == *" arm64 "* && "$archs" == *" x86_64 "* ]]
           codesign --verify --strict --verbose=2 "$app"
           plutil -p "$app/Contents/Info.plist"
           "$app/Contents/MacOS/matty" --version

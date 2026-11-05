@@ -41,7 +41,14 @@ mkdir -p "$dist"
 universal="$dist/matty"
 lipo -create -output "$universal" \
 	"$arm64" "$x86_64"
-lipo "$universal" -verify_arch arm64 x86_64
+# `lipo -verify_arch` parses its arguments differently across Xcode
+# versions (newer ones fail with "requires exactly one input file"), so
+# read the architectures and check them instead.
+archs=" $(lipo -archs "$universal") "
+[[ "$archs" == *" arm64 "* && "$archs" == *" x86_64 "* ]] || {
+	echo "$universal is not universal:$archs" >&2
+	exit 1
+}
 lipo -info "$universal" >&2
 
 args=(--name Matty --id dev.arya.matty
