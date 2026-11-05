@@ -423,31 +423,20 @@ impl ThreadsView {
                             .items_center()
                             .gap(theme.space(2.))
                             .pt(theme.space(0.5))
-                            .child(div().flex().items_center().children(
-                                row.summary.participants.iter().take(3).enumerate().map(
-                                    |(index, name)| {
-                                        let initial: String = name.chars().take(1).collect();
-                                        let user_id = row
-                                            .summary
+                            .child(
+                                crate::avatars::group(
+                                    &format!("threads.{}.people", row.id()),
+                                    row.summary.participants.iter().zip(
+                                        row.summary
                                             .participant_ids
-                                            .get(index)
+                                            .iter()
                                             .map(SharedString::as_ref)
-                                            .unwrap_or_default();
-                                        div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                            crate::avatars::with_picture(
-                                                Avatar::new(gpui_kit::ElementId::Name(
-                                                    format!("threads.{}.p{index}", row.id()).into(),
-                                                ))
-                                                .size(AvatarSize::Sm)
-                                                .fallback(initial)
-                                                .aria_label(name.clone()),
-                                                user_id,
-                                                cx,
-                                            ),
-                                        )
-                                    },
-                                ),
-                            ))
+                                            .chain(std::iter::repeat("")),
+                                    ),
+                                    cx,
+                                )
+                                .max(3),
+                            )
                             .child(
                                 div()
                                     .type_style(
