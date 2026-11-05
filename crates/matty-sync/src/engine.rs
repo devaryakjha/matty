@@ -578,6 +578,14 @@ pub enum Command {
         /// The person.
         user_id: String,
     },
+    /// Loads a channel's files for Channel files (#208);
+    /// [`ChangeSet::ChannelFiles`](crate::ChangeSet::ChannelFiles) answers.
+    ChannelFiles {
+        /// The channel's team, whose file search finds them.
+        team_id: String,
+        /// The channel.
+        channel_id: String,
+    },
     /// Loads a channel's people and its admins (#208);
     /// [`ChangeSet::ChannelMembers`](crate::ChangeSet::ChannelMembers)
     /// answers.
@@ -1043,6 +1051,14 @@ impl std::fmt::Debug for Command {
                 .debug_struct("RemoveMember")
                 .field("channel_id", channel_id)
                 .field("user_id", user_id)
+                .finish(),
+            Self::ChannelFiles {
+                team_id,
+                channel_id,
+            } => f
+                .debug_struct("ChannelFiles")
+                .field("team_id", team_id)
+                .field("channel_id", channel_id)
                 .finish(),
             Self::ChannelMembers { channel_id } => f
                 .debug_struct("ChannelMembers")
@@ -2036,6 +2052,13 @@ impl Engine {
                 }) => writes.push(Write::RemoveMember {
                     channel_id,
                     user_id,
+                }),
+                Message::Command(Command::ChannelFiles {
+                    team_id,
+                    channel_id,
+                }) => writes.push(Write::ChannelFiles {
+                    team_id,
+                    channel_id,
                 }),
                 Message::Command(Command::ChannelMembers { channel_id }) => {
                     writes.push(Write::ChannelMembers { channel_id });
@@ -3454,6 +3477,12 @@ impl Engine {
                     users: Arc::from(users),
                 });
             }
+            Loaded::ChannelFiles { channel_id, files } => {
+                dirty.direct.push(ChangeSet::ChannelFiles {
+                    channel_id,
+                    files: Arc::from(files),
+                });
+            }
             Loaded::ChannelMembers {
                 channel_id,
                 users,
@@ -4045,6 +4074,9 @@ impl Engine {
                 ChangeSet::Search { posts, files, .. } => {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
                     ids.extend(posts.iter().flat_map(quoted_authors));
+                    ids.extend(files.iter().map(|file| file.user_id.clone()));
+                }
+                ChangeSet::ChannelFiles { files, .. } => {
                     ids.extend(files.iter().map(|file| file.user_id.clone()));
                 }
                 // The Threads view names each root's author and who replied.

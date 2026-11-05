@@ -1905,6 +1905,18 @@ impl MainWindow {
                 .update(cx, |view, cx| view.set_profiles(people, cx));
         }
         // Only while the pane still shows that kind of listing.
+        if let Some(files) = update.channel_files
+            && self.right_pane_open
+            && let Some(RightPaneContent::ChannelFiles { channel_name, .. }) =
+                self.right_pane.read(cx).content()
+        {
+            let content = RightPaneContent::ChannelFiles {
+                channel_name: channel_name.clone(),
+                files: Some(files),
+            };
+            self.right_pane
+                .update(cx, |pane, cx| pane.set_content(Some(content), cx));
+        }
         if let Some(listing) = update.listing
             && self.right_pane_open
             && self.right_pane.read(cx).content().is_some_and(|shown| {
@@ -3027,6 +3039,7 @@ impl MainWindow {
             }
             RightPaneEvent::OpenLink(url) => self.open_message_link(url.clone(), window, cx),
             RightPaneEvent::OpenPinned => self.show_pinned(cx),
+            RightPaneEvent::OpenChannelFiles => self.show_channel_files(cx),
             RightPaneEvent::RemoveMember { user_id } => {
                 if let Some((profiles, admins)) = self
                     .live
@@ -3220,6 +3233,7 @@ impl MainWindow {
         if let Some(live) = &mut self.live {
             live.close_thread();
             live.close_listing();
+            live.close_channel_files();
         }
     }
 
@@ -3313,6 +3327,24 @@ impl MainWindow {
             live.show_pinned(&channel.id);
             self.right_pane
                 .update(cx, |pane, cx| pane.set_loading(true, cx));
+        }
+    }
+
+    /// Lists the open channel's files in the right pane (#208).
+    fn show_channel_files(&mut self, cx: &mut Context<Self>) {
+        let Some(channel) = self.channel.read(cx).model().cloned() else {
+            return;
+        };
+        let files = crate::preview::enabled().then(|| crate::preview::channel_files(&channel));
+        self.show_listing(
+            RightPaneContent::ChannelFiles {
+                channel_name: channel.name.clone(),
+                files,
+            },
+            cx,
+        );
+        if let Some(live) = self.live.as_mut() {
+            live.show_channel_files();
         }
     }
 
