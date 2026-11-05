@@ -273,6 +273,7 @@ impl ChannelView {
                 .child(crate::links::message_body(
                     "composer.preview.body",
                     &text,
+                    &[],
                     |url, _, cx| cx.open_url(url),
                     cx,
                 )),
