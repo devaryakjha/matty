@@ -8,6 +8,7 @@ use gpui_kit::{
 
 use crate::channel::{ChannelNotifications, NotifyLevel};
 use crate::style::{self, TypeStyleExt as _};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonVariant},
     dialog::{DialogHandle, dialog_description, dialog_title},
@@ -27,27 +28,27 @@ pub enum ChannelField {
 }
 
 impl ChannelField {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> SharedString {
         match self {
-            Self::Name => "Rename channel",
-            Self::Header => "Edit header",
-            Self::Purpose => "Edit purpose",
+            Self::Name => t!("channel-edit-name-title"),
+            Self::Header => t!("channel-edit-header-title"),
+            Self::Purpose => t!("channel-edit-purpose-title"),
         }
     }
 
-    fn description(self) -> &'static str {
+    fn description(self) -> SharedString {
         match self {
-            Self::Name => "Everyone sees the new name; the address stays the same.",
-            Self::Header => "Shown next to the channel name, for a topic or useful links.",
-            Self::Purpose => "Shown in Browse channels and when the channel is empty.",
+            Self::Name => t!("channel-edit-name-description"),
+            Self::Header => t!("channel-edit-header-description"),
+            Self::Purpose => t!("channel-edit-purpose-description"),
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Name => "Name",
-            Self::Header => "Header",
-            Self::Purpose => "Purpose",
+            Self::Name => t!("channel-edit-name-label"),
+            Self::Header => t!("channel-edit-header-label"),
+            Self::Purpose => t!("channel-edit-purpose-label"),
         }
     }
 
@@ -60,11 +61,11 @@ impl ChannelField {
         }
     }
 
-    fn placeholder(self) -> &'static str {
+    fn placeholder(self) -> SharedString {
         match self {
-            Self::Name => "Channel name",
-            Self::Header => "What is going on this week",
-            Self::Purpose => "What this channel is for",
+            Self::Name => t!("channel-edit-name-placeholder"),
+            Self::Header => t!("channel-edit-header-placeholder"),
+            Self::Purpose => t!("channel-edit-purpose-placeholder"),
         }
     }
 }
@@ -170,10 +171,10 @@ impl Render for ChannelEditView {
         let field = self.field;
         let len = self.value(cx).chars().count();
         let over = len > field.max_len();
-        let count = format!("{len} / {}", field.max_len());
+        let count = t!("channel-edit-count", len = len, max = field.max_len());
         let mut input = Field::new("channel.edit.input", &self.input).label(field.label());
         if over {
-            input = input.error(format!("At most {} characters.", field.max_len()));
+            input = input.error(t!("channel-edit-too-long", max = field.max_len()));
         } else {
             input = input.description(count);
         }
@@ -203,7 +204,7 @@ impl Render for ChannelEditView {
                         div()
                             .type_style(style::META, &theme)
                             .text_color(theme.colors.muted_foreground)
-                            .child("Enter to save"),
+                            .child(t!("channel-edit-enter-hint")),
                     )
                     .child(
                         div()
@@ -212,7 +213,7 @@ impl Render for ChannelEditView {
                             .child(
                                 Button::new("channel.edit.cancel")
                                     .variant(ButtonVariant::Outline)
-                                    .label("Cancel")
+                                    .label(t!("channel-settings-cancel"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.handle.close(window, cx);
                                     })),
@@ -221,7 +222,7 @@ impl Render for ChannelEditView {
                                 Button::new("channel.edit.save")
                                     .variant(ButtonVariant::Default)
                                     .disabled(!self.can_save(cx))
-                                    .label("Save")
+                                    .label(t!("channel-settings-save"))
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.save(window, cx)),
                                     ),
@@ -296,14 +297,16 @@ impl NotificationsView {
     fn level_group(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         value: NotifyLevel,
         write: fn(&mut ChannelNotifications, NotifyLevel),
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let view = cx.weak_entity();
-        let mut group = RadioGroup::new(id).aria_label(label).value(value.id());
+        let mut group = RadioGroup::new(id)
+            .aria_label(label.clone())
+            .value(value.id());
         for level in NotifyLevel::ALL {
             group = group.item(
                 RadioItem::new(
@@ -335,8 +338,8 @@ impl NotificationsView {
     fn switch_row(
         &self,
         id: &'static str,
-        title: &'static str,
-        detail: &'static str,
+        title: SharedString,
+        detail: SharedString,
         checked: bool,
         write: fn(&mut Self, bool),
         cx: &mut Context<Self>,
@@ -359,7 +362,7 @@ impl NotificationsView {
                         div()
                             .type_style(style::UI, &theme)
                             .text_color(theme.colors.foreground)
-                            .child(title),
+                            .child(title.clone()),
                     )
                     .child(
                         div()
@@ -398,49 +401,49 @@ impl Render for NotificationsView {
                     .gap(theme.space(1.))
                     .child(
                         dialog_title("channel.notifications.title", cx)
-                            .child("Notification preferences"),
+                            .child(t!("channel-notifications-title")),
                     )
                     .child(
-                        dialog_description("channel.notifications.description", cx).child(format!(
-                            "For #{} only; Preferences sets the defaults.",
-                            self.channel
+                        dialog_description("channel.notifications.description", cx).child(t!(
+                            "channel-notifications-description",
+                            channel = self.channel.to_string()
                         )),
                     ),
             )
             .child(self.switch_row(
                 "channel.notifications.mute",
-                "Mute channel",
-                "No notifications, and it fades in the sidebar.",
+                t!("channel-notifications-mute"),
+                t!("channel-notifications-mute-detail"),
                 self.muted,
                 |this, next| this.muted = next,
                 cx,
             ))
             .child(self.level_group(
                 "channel.notifications.desktop",
-                "Desktop notifications",
+                t!("channel-notifications-desktop"),
                 prefs.desktop,
                 |prefs, level| prefs.desktop = level,
                 cx,
             ))
             .child(self.level_group(
                 "channel.notifications.mobile",
-                "Mobile notifications",
+                t!("channel-notifications-mobile"),
                 prefs.mobile,
                 |prefs, level| prefs.mobile = level,
                 cx,
             ))
             .child(self.switch_row(
                 "channel.notifications.ignore-channel-mentions",
-                "Ignore @channel, @here and @all",
-                "Mentions of everyone do not count as mentions here.",
+                t!("channel-notifications-ignore-everyone"),
+                t!("channel-notifications-ignore-everyone-detail"),
                 prefs.ignore_channel_mentions,
                 |this, next| this.prefs.ignore_channel_mentions = next,
                 cx,
             ))
             .child(self.switch_row(
                 "channel.notifications.mentions-only",
-                "Mark unread for mentions only",
-                "New messages do not bold the channel unless they mention you.",
+                t!("channel-notifications-mentions-only"),
+                t!("channel-notifications-mentions-only-detail"),
                 prefs.mark_unread_mentions_only,
                 |this, next| this.prefs.mark_unread_mentions_only = next,
                 cx,
@@ -454,7 +457,7 @@ impl Render for NotificationsView {
                     .child(
                         Button::new("channel.notifications.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("channel-settings-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -462,7 +465,7 @@ impl Render for NotificationsView {
                     .child(
                         Button::new("channel.notifications.save")
                             .variant(ButtonVariant::Default)
-                            .label("Save")
+                            .label(t!("channel-settings-save"))
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
             )
