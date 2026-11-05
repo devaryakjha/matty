@@ -232,6 +232,9 @@ jobs:
   publish:
     name: GitHub Release
     needs: [build, linux, windows]
+    # A failed Linux or Windows build leaves that platform out rather than
+    # holding back the release; macOS is the one the release needs.
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -285,6 +288,8 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           NOTARIZED: ${{ needs.build.outputs.notarized }}
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
         run: |
           args=(--verify-tag --title "Matty $VERSION" --generate-notes)
           [[ "$PRERELEASE" != true ]] || args+=(--prerelease)
@@ -293,8 +298,16 @@ jobs:
           else
             notes="**macOS:** this build is not signed with a Developer ID or notarized. macOS will refuse to open it at first: right-click Matty.app, choose Open, then confirm, or run \`xattr -dr com.apple.quarantine /Applications/Matty.app\`."
           fi
-          notes+=$'\n\n'"**Linux:** the .deb, the .rpm, the AppImage or the tarball."
-          notes+=$'\n\n'"**Windows:** the MSI installs Matty for you alone, with no administrator prompt. It is not code signed yet, so SmartScreen may warn: choose More info, then Run anyway."
+          if [[ "$LINUX" == success ]]; then
+            notes+=$'\n\n'"**Linux:** the .deb, the .rpm, the AppImage or the tarball."
+          else
+            echo "::warning::the Linux packages did not build; this release has none"
+          fi
+          if [[ "$WINDOWS" == success ]]; then
+            notes+=$'\n\n'"**Windows:** the MSI installs Matty for you alone, with no administrator prompt. It is not code signed yet, so SmartScreen may warn: choose More info, then Run anyway."
+          else
+            echo "::warning::the Windows installer did not build; this release has none"
+          fi
           gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
 
   homebrew:
