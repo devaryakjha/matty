@@ -247,6 +247,25 @@ impl SidebarModel {
         Some(order[next].clone())
     }
 
+    /// The nearest unread row past the selection in `step`'s direction,
+    /// without wrapping at the ends; from no selection, the first (or
+    /// last) unread row. Muted channels never count as unread.
+    pub fn unread_ahead(&self, step: Step) -> Option<SharedString> {
+        let order: Vec<&ChannelRow> = self.rows().collect();
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|id| order.iter().position(|row| &row.id == id));
+        let unread = |row: &&&ChannelRow| row.unread && !row.muted;
+        match (at, step) {
+            (None, Step::Next) => order.iter().find(unread),
+            (None, Step::Previous) => order.iter().rev().find(unread),
+            (Some(at), Step::Next) => order[at + 1..].iter().find(unread),
+            (Some(at), Step::Previous) => order[..at].iter().rev().find(unread),
+        }
+        .map(|row| row.id.clone())
+    }
+
     /// What the Unreads filter shows (PLAN §4.4): rows with unread posts
     /// (muted ones only for a mention) and the open channel, in their
     /// categories; categories left empty drop out.
@@ -1676,6 +1695,19 @@ mod tests {
         read.mark_all_read();
         assert_eq!(read.neighbor(Step::Next, true), None);
         assert_eq!(read.neighbor(Step::Next, false).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn unread_ahead_stops_at_the_ends() {
+        // b and e are unread; the others are read or muted.
+        assert_eq!(model("a").unread_ahead(Step::Next).as_deref(), Some("b"));
+        assert_eq!(model("b").unread_ahead(Step::Next).as_deref(), Some("e"));
+        assert_eq!(model("e").unread_ahead(Step::Next), None);
+        assert_eq!(model("b").unread_ahead(Step::Previous), None);
+        let mut fresh = model("a");
+        fresh.selected = None;
+        assert_eq!(fresh.unread_ahead(Step::Next).as_deref(), Some("b"));
+        assert_eq!(fresh.unread_ahead(Step::Previous).as_deref(), Some("e"));
     }
 
     /// #124: the Threads entry shows its mentions as channel rows do,

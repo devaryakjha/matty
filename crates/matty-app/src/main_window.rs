@@ -188,6 +188,7 @@ mod sounds;
 mod split;
 mod sso;
 mod teams;
+mod triage;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
@@ -296,6 +297,9 @@ pub struct MainWindow {
     /// The open channel the user marked unread: it is not viewed again
     /// until they switch away and back (#146).
     kept_unread: Option<gpui_kit::SharedString>,
+    /// The channel Alt+Shift+Up/Down last reached: while it is open,
+    /// Escape reads it and moves on to the next unread (#223).
+    triaging: Option<gpui_kit::SharedString>,
     /// The server the sign-in card checked, for its next step.
     login_server: Option<String>,
     /// The browser sign-in the card waits on (#75).
@@ -1133,6 +1137,7 @@ impl MainWindow {
             _typing_task: None,
             _view_task: None,
             kept_unread: None,
+            triaging: None,
             link_asked: None,
             link_join: DialogHandle::new(false),
             forward,
@@ -3803,22 +3808,24 @@ impl MainWindow {
     /// Escape in the channel (#147): closes the right pane when one is
     /// open, else views the open channel on the server and clears its
     /// unread mark.
-    fn mark_channel_read(&mut self, cx: &mut Context<Self>) {
+    /// Returns whether it read the channel.
+    fn mark_channel_read(&mut self, cx: &mut Context<Self>) -> bool {
         if self.right_pane_open {
             self.right_pane_open = false;
             cx.notify();
-            return;
+            return false;
         }
         if self.threads_open || self.drafts_open {
-            return;
+            return false;
         }
         let Some(id) = self.selected_channel.clone() else {
-            return;
+            return false;
         };
         self.kept_unread = None;
         self.view_channels(std::slice::from_ref(&id));
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.mark_read(&id, cx));
+        true
     }
 
     /// Shift+Escape (#147): views every unread channel in the team on the
@@ -4369,10 +4376,10 @@ impl Render for MainWindow {
                 this.step_channel(Step::Next, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &PreviousUnreadChannel, window, cx| {
-                this.step_channel(Step::Previous, true, window, cx)
+                this.step_unread(Step::Previous, window, cx)
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChannel, window, cx| {
-                this.step_channel(Step::Next, true, window, cx)
+                this.step_unread(Step::Next, window, cx)
             }))
             // File > Upload files with focus outside both composers goes
             // to the channel's; each composer answers it first itself.
@@ -4384,7 +4391,12 @@ impl Render for MainWindow {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.toggle_unreads(cx))
             }))
-            .on_action(cx.listener(|this, _: &MarkChannelRead, _, cx| this.mark_channel_read(cx)))
+            .on_action(cx.listener(|this, _: &MarkChannelRead, window, cx| {
+                let triaging = this.triaging.is_some() && this.triaging == this.selected_channel;
+                if this.mark_channel_read(cx) && triaging {
+                    this.step_unread(Step::Next, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &MarkAllRead, _, cx| this.mark_all_read(cx)))
             .on_action(move |_: &OpenPreferences, window, cx| preferences.open(window, cx))
             .on_action(
