@@ -21,7 +21,7 @@ use matty_api::models::{BookmarkKind, ChannelBookmark};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
-    button::{Button, ButtonSize, ButtonVariant},
+    button::{Button, ButtonSize, ButtonVariant, style_button},
     dialog::{DialogHandle, dialog, dialog_description, dialog_popup, dialog_title},
     field::Field,
     input::{InputEvent, InputState},
@@ -906,11 +906,24 @@ impl Render for BookmarksBar {
                 bar.child(style::tipped(
                     "bookmarks.more.tip",
                     "Bookmark actions",
-                    Menu::new(&self.more, "Bookmark actions").trigger(
-                        lucide(LucideIcon::Ellipsis)
-                            .size(scaled(&theme, metrics::ICON_SMALL))
-                            .text_color(theme.colors.muted_foreground),
-                    ),
+                    Menu::new(&self.more, "Bookmark actions")
+                        .trigger(
+                            lucide(LucideIcon::Ellipsis)
+                                .size(scaled(&theme, metrics::ICON_SMALL))
+                                .text_color(theme.colors.muted_foreground),
+                        )
+                        .trigger_style_with({
+                            let theme = theme.clone();
+                            move |button| {
+                                style_button(
+                                    button.aria_label("Bookmark actions"),
+                                    false,
+                                    ButtonVariant::Ghost,
+                                    ButtonSize::IconSm,
+                                    &theme,
+                                )
+                            }
+                        }),
                 ))
             })
             .child(
