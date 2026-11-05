@@ -23,7 +23,13 @@ pub const PSEUDO: &str = "en-XA";
 
 /// Files whose UI strings all go through [`t!`](crate::t). An area joins
 /// the list once its strings are extracted; the test below keeps it so.
-pub const LOCALIZED: &[&str] = &["emoji_manager.rs", "login.rs"];
+pub const LOCALIZED: &[&str] = &[
+    "account.rs",
+    "custom_status.rs",
+    "dnd.rs",
+    "emoji_manager.rs",
+    "login.rs",
+];
 
 struct Strings {
     english: FluentBundle<FluentResource>,

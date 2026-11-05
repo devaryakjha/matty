@@ -1169,7 +1169,7 @@ impl MainWindow {
         let (view, account) = (cx.entity().downgrade(), self.account.clone());
         labelled_row(
             "Do not disturb".into(),
-            detail.into(),
+            detail,
             Switch::new("preferences.dnd")
                 .checked(on)
                 .aria_label("Do not disturb")

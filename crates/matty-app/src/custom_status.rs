@@ -6,6 +6,8 @@
 use gpui_kit::{App, IntoElement, ParentElement as _, SharedString, Styled as _, div, img};
 use matty_api::models::CustomStatus;
 
+use crate::t;
+
 /// A custom status as the views show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusLine {
@@ -67,17 +69,25 @@ impl StatusLine {
         &self,
         now: &jiff::Zoned,
         clock: crate::settings::ClockFormat,
-    ) -> Option<String> {
+    ) -> Option<SharedString> {
         let until = jiff::Timestamp::from_second(self.until?)
             .ok()?
             .to_zoned(now.time_zone().clone());
         let time = clock.format(until.hour() as u16 * 60 + until.minute() as u16);
         let days = (until.date() - now.date()).get_days();
         Some(match days {
-            0 => format!("Until {time}"),
-            1 => format!("Until tomorrow {time}"),
-            2..=6 => format!("Until {} {time}", until.strftime("%a")),
-            _ => format!("Until {} {time}", until.strftime("%b %-d")),
+            0 => t!("until-today", time = time),
+            1 => t!("until-tomorrow", time = time),
+            2..=6 => t!(
+                "until-day-short",
+                day = until.strftime("%a").to_string(),
+                time = time
+            ),
+            _ => t!(
+                "until-day-short",
+                day = until.strftime("%b %-d").to_string(),
+                time = time
+            ),
         })
     }
 }
@@ -122,14 +132,14 @@ impl Duration {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::DontClear => "Don't clear",
-            Self::ThirtyMinutes => "30 minutes",
-            Self::OneHour => "1 hour",
-            Self::FourHours => "4 hours",
-            Self::Today => "Today",
-            Self::ThisWeek => "This week",
+            Self::DontClear => t!("status-never"),
+            Self::ThirtyMinutes => t!("status-30m"),
+            Self::OneHour => t!("status-1h"),
+            Self::FourHours => t!("status-4h"),
+            Self::Today => t!("status-today"),
+            Self::ThisWeek => t!("status-this-week"),
         }
     }
 
@@ -178,13 +188,15 @@ pub fn to_server(emoji: &str, text: &str, duration: Duration, now: &jiff::Zoned)
 
 /// The statuses the dialog offers before the user types, as Mattermost's
 /// web app does: emoji, text and preset.
-pub const SUGGESTIONS: [(&str, &str, Duration); 5] = [
-    ("calendar", "In a meeting", Duration::OneHour),
-    ("hamburger", "Out for lunch", Duration::ThirtyMinutes),
-    ("sneezing_face", "Out sick", Duration::Today),
-    ("house", "Working from home", Duration::Today),
-    ("palm_tree", "On a vacation", Duration::ThisWeek),
-];
+pub fn suggestions() -> [(&'static str, SharedString, Duration); 5] {
+    [
+        ("calendar", t!("status-meeting"), Duration::OneHour),
+        ("hamburger", t!("status-lunch"), Duration::ThirtyMinutes),
+        ("sneezing_face", t!("status-sick"), Duration::Today),
+        ("house", t!("status-home"), Duration::Today),
+        ("palm_tree", t!("status-vacation"), Duration::ThisWeek),
+    ]
+}
 
 /// The status emoji at `size`: its glyph, a server's custom emoji image,
 /// or `:name:` until that image arrives.
