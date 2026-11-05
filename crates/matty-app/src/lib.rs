@@ -26,6 +26,7 @@ pub mod draft_link;
 pub mod drafts;
 pub mod embeds;
 pub mod emoji;
+pub mod emoji_manager;
 pub mod fd_limit;
 pub mod forward;
 pub mod instance;

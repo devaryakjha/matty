@@ -144,6 +144,35 @@ impl Client {
         .await
     }
 
+    /// `POST emoji`: adds a custom emoji called `name` from an image file
+    /// (#209). The server wants the image before the description.
+    pub async fn create_emoji(
+        &self,
+        creator_id: &str,
+        name: &str,
+        bytes: Vec<u8>,
+        file_name: String,
+    ) -> Result<Emoji, ApiError> {
+        let emoji = serde_json::json!({ "creator_id": creator_id, "name": name });
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "image",
+                reqwest::multipart::Part::bytes(bytes).file_name(file_name),
+            )
+            .text("emoji", emoji.to_string());
+        let response = self.send_multipart("emoji", form).await?;
+        let body = response.bytes().await.map_err(ApiError::from_transport)?;
+        serde_json::from_slice(&body).map_err(|e| ApiError::Decode(e.to_string()))
+    }
+
+    /// `DELETE emoji/{emoji_id}`: removes a custom emoji, the user's own or,
+    /// for admins, anyone's.
+    pub async fn delete_emoji(&self, emoji_id: &str) -> Result<(), ApiError> {
+        self.delete::<serde_json::Value>(&format!("emoji/{emoji_id}"))
+            .await
+            .map(|_| ())
+    }
+
     /// Every custom emoji, paging until the server returns a short page.
     pub async fn all_emoji(&self) -> Result<Vec<Emoji>, ApiError> {
         collect_pages(|page| self.emoji_page(page)).await

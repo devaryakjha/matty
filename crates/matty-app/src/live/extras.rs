@@ -182,6 +182,13 @@ impl Live {
                         Some(SharedString::from(format!("Couldn't {action}: {error}")));
                 }
             }
+            ChangeSet::Failed(CommandError::Server { action, error, .. })
+                if matches!(*action, "add emoji" | "delete emoji") =>
+            {
+                // From the Custom emoji dialog (#209): the server's reason,
+                // such as a name taken meanwhile or custom emoji turned off.
+                update.refused = Some(SharedString::from(format!("Couldn't {action}: {error}")));
+            }
             _ => return false,
         }
         true
@@ -191,6 +198,22 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_failures_say_why() {
+        let mut live = super::super::tests::live();
+        let mut update = Update::default();
+        let failed = ChangeSet::Failed(CommandError::Server {
+            action: "add emoji",
+            target: "party".into(),
+            error: "A custom emoji with that name already exists.".into(),
+        });
+        assert!(live.apply_extra(&failed, &mut update));
+        assert_eq!(
+            update.refused.as_deref(),
+            Some("Couldn't add emoji: A custom emoji with that name already exists.")
+        );
+    }
     use matty_api::models::AppCall;
     use serde_json::json;
 
