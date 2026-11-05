@@ -137,7 +137,8 @@ jobs:
         run: |
           app=target/dist/Matty.app
           file "$app/Contents/MacOS/matty"
-          lipo "$app/Contents/MacOS/matty" -verify_arch arm64 x86_64
+          archs=" $(lipo -archs "$app/Contents/MacOS/matty") "
+          [[ "$archs" == *" arm64 "* && "$archs" == *" x86_64 "* ]]
           codesign --verify --strict --verbose=2 "$app"
           codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Signature)=' || true
           "$app/Contents/MacOS/matty" --version
