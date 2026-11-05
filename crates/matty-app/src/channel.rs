@@ -32,6 +32,7 @@ use crate::profile::{ProfileActions, UserProfile, profile_card};
 use crate::settings::{ClockFormat, MessageDisplay, SendKey, SettingsChanged, SettingsStore};
 use crate::sidebar::{ChannelKind, ChannelRow};
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     attachment::Attachment,
@@ -75,25 +76,28 @@ impl PostReaction {
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.mine {
-            parts.push("You".to_string());
+            parts.push(t!("chan-reaction-you").to_string());
         }
         parts.extend(self.users.iter().map(|user| user.to_string()));
         let unnamed = self.count.saturating_sub(parts.len());
         if unnamed > 0 {
-            parts.push(match unnamed {
-                1 => "1 other".to_string(),
-                n => format!("{n} others"),
-            });
+            parts.push(t!("chan-reaction-others", count = unnamed).to_string());
         }
         let who = match parts.len() {
-            0 => "Nobody".to_string(),
+            0 => t!("chan-reaction-nobody").to_string(),
             1 => parts.remove(0),
             _ => {
                 let last = parts.pop().unwrap_or_default();
-                format!("{} and {last}", parts.join(", "))
+                let rest = parts.join(&*t!("chan-list-separator"));
+                t!("chan-list-and", rest = rest, last = last).to_string()
             }
         };
-        format!("{who} reacted with {}", self.emoji)
+        t!(
+            "chan-reacted-with",
+            who = who,
+            emoji = self.emoji.to_string()
+        )
+        .to_string()
     }
 }
 
@@ -104,7 +108,7 @@ impl PostReaction {
 /// a nested row would sit low.
 pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
     let muted = theme.colors.muted_foreground;
-    let label = |text: &'static str| {
+    let label = |text: SharedString| {
         div()
             .type_style(style::META, theme)
             .text_color(muted)
@@ -119,16 +123,16 @@ pub fn post_markers(post: &Post, theme: &UiTheme) -> Vec<gpui_kit::AnyElement> {
     };
     let mut markers = Vec::new();
     if post.status == PostStatus::Ephemeral {
-        markers.extend([icon(LucideIcon::EyeOff), label("Only visible to you")]);
+        markers.extend([icon(LucideIcon::EyeOff), label(t!("chan-only-you"))]);
     }
     if post.pinned {
-        markers.extend([icon(LucideIcon::Pin), label("Pinned")]);
+        markers.extend([icon(LucideIcon::Pin), label(t!("chan-pinned"))]);
     }
     if post.saved {
-        markers.extend([icon(LucideIcon::Bookmark), label("Saved")]);
+        markers.extend([icon(LucideIcon::Bookmark), label(t!("chan-saved"))]);
     }
     if post.edited {
-        markers.push(label("(edited)"));
+        markers.push(label(t!("chan-edited")));
     }
     markers
 }
@@ -186,9 +190,9 @@ pub(crate) fn post_time(post: &Post, away: bool, cx: &App) -> SharedString {
         PostStatus::Sent | PostStatus::Ephemeral => {
             ClockFormat::current(cx).format(post.time).into()
         }
-        PostStatus::Pending if away => "Will send when back online".into(),
-        PostStatus::Pending => "Sending…".into(),
-        PostStatus::Failed => "Not sent".into(),
+        PostStatus::Pending if away => t!("chan-pending-offline"),
+        PostStatus::Pending => t!("chan-sending"),
+        PostStatus::Failed => t!("chan-not-sent"),
     }
 }
 
@@ -208,12 +212,12 @@ pub(crate) fn waiting_items(
         MenuItem::separator(),
         MenuItem::new(
             gpui_kit::ElementId::Name(format!("{prefix}.edit").into()),
-            "Edit",
+            t!("chan-edit"),
         )
         .on_click(move |_, window, cx| edit(window, cx)),
         MenuItem::new(
             gpui_kit::ElementId::Name(format!("{prefix}.discard").into()),
-            "Discard…",
+            t!("chan-discard-menu"),
         )
         .on_click(move |_, window, cx| discard(window, cx)),
     ]
@@ -287,20 +291,20 @@ pub(crate) fn post_editor(
                         .flex_1()
                         .type_style(style::META, &theme)
                         .text_color(theme.colors.muted_foreground)
-                        .child("Enter to save · Escape to cancel"),
+                        .child(t!("chan-edit-hint")),
                 )
                 .child(
                     Button::new(gpui_kit::ElementId::Name(format!("{prefix}.cancel").into()))
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .label("Cancel")
+                        .label(t!("chan-cancel"))
                         .on_click(move |_, window, cx| cancel(window, cx)),
                 )
                 .child(
                     Button::new(gpui_kit::ElementId::Name(format!("{prefix}.save").into()))
                         .variant(ButtonVariant::Default)
                         .size(ButtonSize::Sm)
-                        .label("Save")
+                        .label(t!("chan-save-edit"))
                         .on_click(move |_, window, cx| {
                             let value = text.read(cx).value(cx);
                             save(value, window, cx)
@@ -314,16 +318,12 @@ pub(crate) fn post_editor(
 /// the ids.
 /// What deleting a sent post does: gone for everyone in `place`, and a
 /// root takes its `replies` with it, as on the server (#118).
-fn delete_description(place: &str, replies: usize) -> String {
-    match replies {
-        0 => format!("It is removed for everyone in {place}. This cannot be undone."),
-        1 => format!(
-            "It is removed for everyone in {place}, along with its reply. This cannot be undone."
-        ),
-        n => format!(
-            "It is removed for everyone in {place}, along with its {n} replies. This cannot be undone."
-        ),
-    }
+fn delete_description(place: &str, replies: usize) -> SharedString {
+    t!(
+        "chan-delete-description",
+        place = place.to_string(),
+        replies = replies
+    )
 }
 
 pub(crate) fn delete_popup(
@@ -337,17 +337,17 @@ pub(crate) fn delete_popup(
     let id = |part: &str| gpui_kit::ElementId::Name(format!("{prefix}.{part}").into());
     let (label, title, description, action): (_, _, SharedString, _) = if unsent {
         (
-            "Discard message",
-            "Discard this message?",
-            "It has not been sent, so nobody else has seen it. This cannot be undone.".into(),
-            "Discard",
+            t!("chan-discard-label"),
+            t!("chan-discard-title"),
+            t!("chan-discard-description"),
+            t!("chan-discard"),
         )
     } else {
         (
-            "Delete message",
-            "Delete this message?",
-            delete_description(place, replies).into(),
-            "Delete",
+            t!("chan-delete-label"),
+            t!("chan-delete-title"),
+            delete_description(place, replies),
+            t!("chan-delete"),
         )
     };
     dialog_popup(id("popup"), label, cx)
@@ -362,7 +362,7 @@ pub(crate) fn delete_popup(
                 .child(
                     alert_dialog_cancel(id("cancel"))
                         .variant(ButtonVariant::Outline)
-                        .label("Cancel"),
+                        .label(t!("chan-cancel")),
                 )
                 .child(
                     alert_dialog_action(id("confirm"))
@@ -382,7 +382,14 @@ pub fn reaction_tooltip(
             .iter()
             .find(|r| r.emoji == reaction.emoji)
             .map(PostReaction::summary)
-            .unwrap_or_else(|| format!("{} reacted with {}", reaction.count, reaction.emoji));
+            .unwrap_or_else(|| {
+                t!(
+                    "chan-reacted-with",
+                    who = reaction.count.to_string(),
+                    emoji = reaction.emoji.to_string()
+                )
+                .to_string()
+            });
         text_tooltip(text.into(), cx)
     }
 }
@@ -491,12 +498,12 @@ impl RemindAt {
         Self::Tomorrow,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Self::In30Minutes => "In 30 minutes",
-            Self::In1Hour => "In 1 hour",
-            Self::In2Hours => "In 2 hours",
-            Self::Tomorrow => "Tomorrow at 9:00",
+            Self::In30Minutes => t!("chan-remind-30-minutes"),
+            Self::In1Hour => t!("chan-remind-1-hour"),
+            Self::In2Hours => t!("chan-remind-2-hours"),
+            Self::Tomorrow => t!("chan-remind-tomorrow"),
         }
     }
 
@@ -850,7 +857,7 @@ impl ReplySummary {
 
     /// "08:13" for a reply from today, otherwise its day.
     pub fn last_reply_label(&self, clock: ClockFormat) -> SharedString {
-        if self.last_day.as_ref() == "Today" {
+        if self.last_day.as_ref() == TODAY {
             clock.format(self.last_time).into()
         } else {
             self.last_day.clone()
@@ -1154,14 +1161,24 @@ type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<Channel
 
 /// The reactions one click away, as Mattermost's recent-emoji row. The full
 /// picker arrives with the emoji data from sync.
+/// Each one's English name stays the key for its ids; [`reaction_name`] is
+/// what people read.
 pub(crate) const QUICK_REACTIONS: [(&str, &str); 6] = [
-    ("👍", "Thumbs up"),
-    ("❤️", "Heart"),
-    ("😂", "Joy"),
-    ("🎉", "Tada"),
-    ("👀", "Eyes"),
-    ("🚀", "Rocket"),
+    ("👍", "Thumbs up"), // i18n-ignore: a key; see reaction_name
+    ("❤️", "Heart"),     // i18n-ignore: a key; see reaction_name
+    ("😂", "Joy"),       // i18n-ignore: a key; see reaction_name
+    ("🎉", "Tada"),      // i18n-ignore: a key; see reaction_name
+    ("👀", "Eyes"),      // i18n-ignore: a key; see reaction_name
+    ("🚀", "Rocket"),    // i18n-ignore: a key; see reaction_name
 ];
+
+/// A [`QUICK_REACTIONS`] name in the user's language.
+pub(crate) fn reaction_name(name: &str) -> SharedString {
+    crate::i18n::text(
+        &format!("chan-reaction-{}", name.to_lowercase().replace(' ', "-")),
+        &[],
+    )
+}
 
 /// What is behind an image in the lightbox, for its actions.
 #[derive(Clone, Debug, PartialEq)]
@@ -1683,11 +1700,11 @@ impl ChannelView {
         let placeholder: SharedString = match &model {
             Some(channel) => match channel.kind {
                 ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
-                    format!("Message {}", channel.name).into()
+                    t!("chan-placeholder-direct", name = channel.name.to_string())
                 }
-                _ => format!("Message #{}", channel.name).into(),
+                _ => t!("chan-placeholder-channel", name = channel.name.to_string()),
             },
-            None => "Write a message…".into(),
+            None => t!("chan-placeholder-none"),
         };
         self.composer.update(cx, |composer, cx| {
             composer.set_placeholder(placeholder, window, cx);
@@ -1938,18 +1955,18 @@ impl ChannelView {
         if self.history.loading_newer {
             row.child(
                 Spinner::new("channel.newer.spinner")
-                    .label("Loading newer messages")
+                    .label(t!("chan-loading-newer"))
                     .size(gpui_kit::px(14.)),
             )
-            .child("Loading newer messages…")
+            .child(t!("chan-loading-newer-text"))
             .into_any_element()
         } else if self.history.failed_newer {
-            row.child("Couldn't load newer messages.")
+            row.child(t!("chan-newer-failed"))
                 .child(
                     Button::new("channel.newer.retry")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .label("Retry")
+                        .label(t!("chan-retry"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.history.failed_newer = false;
                             this.request_newer(cx);
@@ -2001,18 +2018,18 @@ impl ChannelView {
         if self.history.loading {
             row.child(
                 Spinner::new("channel.history.spinner")
-                    .label("Loading older messages")
+                    .label(t!("chan-loading-older"))
                     .size(gpui_kit::px(14.)),
             )
-            .child("Loading older messages…")
+            .child(t!("chan-loading-older-text"))
             .into_any_element()
         } else if self.history.failed {
-            row.child("Couldn't load older messages.")
+            row.child(t!("chan-older-failed"))
                 .child(
                     Button::new("channel.history.retry")
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
-                        .label("Retry")
+                        .label(t!("chan-retry"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.history.failed = false;
                             this.request_older(cx);
@@ -2023,13 +2040,13 @@ impl ChannelView {
             let name: SharedString = match self.model.as_ref() {
                 Some(channel) => match channel.kind {
                     ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
-                        "this conversation".into()
+                        t!("chan-this-conversation")
                     }
                     _ => format!("#{}", channel.name).into(),
                 },
-                None => "the channel".into(),
+                None => t!("chan-the-channel"),
             };
-            row.child(format!("This is the start of {name}."))
+            row.child(t!("chan-start-of", name = name.to_string()))
                 .into_any_element()
         } else {
             // Nothing to show yet; the request goes out as the row renders.
@@ -2493,7 +2510,7 @@ impl ChannelView {
                 Button::new("channel.lightbox.open")
                     .size(ButtonSize::Icon)
                     .variant(ButtonVariant::Ghost)
-                    .aria_label("Download")
+                    .aria_label(t!("chan-download"))
                     .child(icon(LucideIcon::Download))
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(ChannelEvent::OpenFile(id.clone()));
@@ -2507,7 +2524,7 @@ impl ChannelView {
                         Button::new("channel.lightbox.copy-link")
                             .size(ButtonSize::Icon)
                             .variant(ButtonVariant::Ghost)
-                            .aria_label("Copy link")
+                            .aria_label(t!("chan-copy-link"))
                             .child(icon(LucideIcon::Link))
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
@@ -2520,7 +2537,7 @@ impl ChannelView {
                         Button::new("channel.lightbox.browser")
                             .size(ButtonSize::Icon)
                             .variant(ButtonVariant::Ghost)
-                            .aria_label("Open in browser")
+                            .aria_label(t!("chan-open-in-browser"))
                             .child(icon(LucideIcon::ExternalLink))
                             .on_click(move |_, _, cx| cx.open_url(&url)),
                     ),
@@ -2663,7 +2680,7 @@ impl ChannelView {
             author_id: own_id(&model.posts),
             kind: PostKind::Regular,
             time: last.map_or(0, |post| post.time),
-            day: last.map_or_else(|| "Today".into(), |post| post.day.clone()),
+            day: last.map_or_else(|| TODAY.into(), |post| post.day.clone()),
             date: SharedString::default(),
             body: body.clone(),
             reactions: vec![],
@@ -2982,9 +2999,9 @@ impl ChannelView {
         });
         if self.refused_offline(
             if mine {
-                "remove reaction"
+                "remove reaction" // i18n-ignore: an offline key
             } else {
-                "add reaction"
+                "add reaction" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -3048,9 +3065,9 @@ impl ChannelView {
         let saved = self.shown_post(&id).is_some_and(|post| post.saved);
         if self.refused_offline(
             if saved {
-                "unsave message"
+                "unsave message" // i18n-ignore: an offline key
             } else {
-                "save message"
+                "save message" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -3065,9 +3082,9 @@ impl ChannelView {
         let pinned = self.shown_post(&id).is_some_and(|post| post.pinned);
         if self.refused_offline(
             if pinned {
-                "unpin message"
+                "unpin message" // i18n-ignore: an offline key
             } else {
-                "pin message"
+                "pin message" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -3137,7 +3154,7 @@ impl ChannelView {
         let id = post.id.clone();
         let more_view = view.clone();
         let more_id = id.clone();
-        let more = MenuItem::new("react.more", "More emoji…").on_click(move |_, _, cx| {
+        let more = MenuItem::new("react.more", t!("chan-more-emoji")).on_click(move |_, _, cx| {
             let id = more_id.clone();
             more_view
                 .update(cx, |this, cx| this.open_picker(Some(id), cx))
@@ -3149,7 +3166,7 @@ impl ChannelView {
                 let view = view.clone();
                 let id = id.clone();
                 let emoji: SharedString = (*emoji).into();
-                let label: SharedString = format!("{emoji}  {name}").into();
+                let label: SharedString = format!("{emoji}  {}", reaction_name(name)).into();
                 MenuItem::new(
                     gpui_kit::ElementId::Name(format!("react.{name}").into()),
                     label,
@@ -3190,14 +3207,14 @@ impl ChannelView {
         let copy_items = [
             act(
                 "copy",
-                "Copy text".into(),
+                t!("chan-copy-text"),
                 Box::new(move |_, _, cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
                 }),
             ),
             act(
                 "copy-markdown",
-                "Copy as Markdown".into(),
+                t!("chan-copy-markdown"),
                 Box::new(move |_, _, cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                         markdown_body.to_string(),
@@ -3211,7 +3228,7 @@ impl ChannelView {
             let mut items = copy_items.to_vec();
             items.push(MenuItem::separator());
             items.push(
-                MenuItem::new("post.menu.dismiss", "Dismiss message").on_click(
+                MenuItem::new("post.menu.dismiss", t!("chan-dismiss")).on_click(
                     move |_, window, cx| {
                         let id = dismiss_id.clone();
                         dismiss_view
@@ -3250,7 +3267,7 @@ impl ChannelView {
         let forward_id = id.clone();
         let mut items = vec![act(
             "forward",
-            "Forward\u{2026}".into(),
+            t!("chan-forward"),
             Box::new(move |_, _, cx| cx.emit(ChannelEvent::Forward(forward_id.clone()))),
         )];
         if let Some(replies) = &post.replies {
@@ -3258,9 +3275,9 @@ impl ChannelView {
             items.push(act(
                 "follow",
                 if replies.following {
-                    "Unfollow thread".into()
+                    t!("chan-unfollow-thread")
                 } else {
-                    "Follow thread".into()
+                    t!("chan-follow-thread")
                 },
                 Box::new(move |this, _, cx| this.toggle_follow(follow_id.clone(), cx)),
             ));
@@ -3268,12 +3285,12 @@ impl ChannelView {
         let unread_id = id.clone();
         items.push(act(
             "unread",
-            "Mark as unread".into(),
+            t!("chan-mark-unread"),
             Box::new(move |_, _, cx| cx.emit(ChannelEvent::MarkUnread(unread_id.clone()))),
         ));
         items.push(MenuItem::submenu(
             gpui_kit::ElementId::Name("post.menu.remind".into()),
-            "Remind me",
+            t!("chan-remind"),
             RemindAt::ALL.map(|at| {
                 let id = id.clone();
                 let view = view.clone();
@@ -3296,9 +3313,9 @@ impl ChannelView {
                 act(
                     "save",
                     if post.saved {
-                        "Unsave".into()
+                        t!("chan-unsave")
                     } else {
-                        "Save".into()
+                        t!("chan-save")
                     },
                     Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
                 )
@@ -3308,9 +3325,9 @@ impl ChannelView {
                 act(
                     "pin",
                     if post.pinned {
-                        "Unpin from channel".into()
+                        t!("chan-unpin")
                     } else {
-                        "Pin to channel".into()
+                        t!("chan-pin")
                     },
                     Box::new(move |this, _, cx| this.toggle_pin(id.clone(), cx)),
                 )
@@ -3319,7 +3336,7 @@ impl ChannelView {
                 let id = id.clone();
                 act(
                     "copy-link",
-                    "Copy link".into(),
+                    t!("chan-copy-link"),
                     Box::new(move |_, _, cx| cx.emit(ChannelEvent::CopyLink(id.clone()))),
                 )
             },
@@ -3337,7 +3354,7 @@ impl ChannelView {
             let edit_id = id.clone();
             items.push(act(
                 "edit",
-                "Edit".into(),
+                t!("chan-edit"),
                 Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
             ));
         }
@@ -3346,7 +3363,7 @@ impl ChannelView {
             let delete_id = id.clone();
             items.push(act(
                 "delete",
-                "Delete…".into(),
+                t!("chan-delete-menu"),
                 Box::new(move |this, window, cx| this.ask_delete(delete_id.clone(), window, cx)),
             ));
         }
@@ -3367,7 +3384,7 @@ impl ChannelView {
         }
         let view = cx.entity().downgrade();
         let id = post.id.clone();
-        let act = |name: &'static str, label: &'static str, run: MenuAction| {
+        let act = |name: &'static str, label: SharedString, run: MenuAction| {
             let view = view.clone();
             MenuItem::new(
                 gpui_kit::ElementId::Name(format!("post.context.{name}").into()),
@@ -3383,19 +3400,19 @@ impl ChannelView {
         let mut items = vec![
             act(
                 "reply",
-                "Reply in thread",
+                t!("chan-reply-in-thread"),
                 Box::new(move |_, _, cx| cx.emit(ChannelEvent::OpenThread(reply_id.clone()))),
             ),
             act(
                 "thread-window",
-                "Open thread in new window",
+                t!("chan-thread-window"),
                 Box::new(move |_, _, cx| {
                     cx.emit(ChannelEvent::OpenThreadWindow(window_id.clone()))
                 }),
             ),
             act(
                 "react",
-                "Add reaction…",
+                t!("chan-add-reaction-menu"),
                 Box::new(move |this, _, cx| this.open_picker(Some(react_id.clone()), cx)),
             ),
             MenuItem::separator(),
@@ -3424,11 +3441,11 @@ impl ChannelView {
         let channel: SharedString = match self.model.as_ref() {
             Some(channel) => match channel.kind {
                 ChannelKind::Direct { .. } | ChannelKind::Group { .. } => {
-                    "this conversation".into()
+                    t!("chan-this-conversation")
                 }
                 _ => format!("#{}", channel.name).into(),
             },
-            None => "the channel".into(),
+            None => t!("chan-the-channel"),
         };
         // A post the server never got is discarded, not deleted (#195).
         let unsent = self.deleting.as_ref().is_some_and(|id| {
@@ -3470,7 +3487,7 @@ impl ChannelView {
     /// people cannot be renamed or left.
     fn refresh_header_menu(&mut self, model: Option<&ChannelModel>, cx: &mut Context<Self>) {
         let view = cx.weak_entity();
-        let edit = |id: &'static str, label: &'static str, field: ChannelField| {
+        let edit = |id: &'static str, label: SharedString, field: ChannelField| {
             let view = view.clone();
             MenuItem::new(id, label).on_click(move |_, window, cx| {
                 view.update(cx, |this, cx| this.edit_channel(field, window, cx))
@@ -3482,7 +3499,7 @@ impl ChannelView {
         let rights = model.map(|m| m.rights).unwrap_or_default();
         let notify_view = view.clone();
         let mut items = vec![
-            MenuItem::new("channel.menu.notifications", "Notification preferences…").on_click(
+            MenuItem::new("channel.menu.notifications", t!("chan-menu-notifications")).on_click(
                 move |_, window, cx| {
                     notify_view
                         .update(cx, |this, cx| this.open_notifications(window, cx))
@@ -3495,7 +3512,7 @@ impl ChannelView {
         if !is_channel || rights.edit {
             items.push(edit(
                 "channel.menu.header",
-                "Edit header…",
+                t!("chan-menu-header"),
                 ChannelField::Header,
             ));
         }
@@ -3503,12 +3520,12 @@ impl ChannelView {
             if rights.edit {
                 items.push(edit(
                     "channel.menu.purpose",
-                    "Edit purpose…",
+                    t!("chan-menu-purpose"),
                     ChannelField::Purpose,
                 ));
                 items.push(edit(
                     "channel.menu.rename",
-                    "Rename channel…",
+                    t!("chan-menu-rename"),
                     ChannelField::Name,
                 ));
                 items.push(MenuItem::separator());
@@ -3516,18 +3533,17 @@ impl ChannelView {
             if rights.members {
                 let members_view = view.clone();
                 items.push(
-                    MenuItem::new("channel.menu.add-members", "Add members…").on_click(
-                        move |_, window, cx| {
+                    MenuItem::new("channel.menu.add-members", t!("chan-menu-add-members"))
+                        .on_click(move |_, window, cx| {
                             members_view
                                 .update(cx, |this, cx| this.open_add_members(window, cx))
                                 .ok();
-                        },
-                    ),
+                        }),
                 );
             }
             let leave = self.leave.clone();
             items.push(
-                MenuItem::new("channel.menu.leave", "Leave channel…")
+                MenuItem::new("channel.menu.leave", t!("chan-menu-leave"))
                     .on_click(move |_, window, cx| leave.open(window, cx)),
             );
             let convert = rights.convert && model.is_some_and(|m| m.kind == ChannelKind::Public);
@@ -3537,14 +3553,14 @@ impl ChannelView {
             if convert {
                 let convert = self.convert.clone();
                 items.push(
-                    MenuItem::new("channel.menu.convert", "Convert to private channel…")
+                    MenuItem::new("channel.menu.convert", t!("chan-menu-convert"))
                         .on_click(move |_, window, cx| convert.open(window, cx)),
                 );
             }
             if rights.archive {
                 let archive = self.archive.clone();
                 items.push(
-                    MenuItem::new("channel.menu.archive", "Archive channel…")
+                    MenuItem::new("channel.menu.archive", t!("chan-menu-archive"))
                         .on_click(move |_, window, cx| archive.open(window, cx)),
                 );
             }
@@ -3603,7 +3619,7 @@ impl ChannelView {
 
     fn add_members_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let handle = self.add_members.read(cx).handle().clone();
-        let popup = dialog_popup("channel.add-members.popup", "Add members", cx)
+        let popup = dialog_popup("channel.add-members.popup", t!("chan-add-members"), cx)
             .child(self.add_members.clone());
         dialog("channel.add-members", &handle, popup, window, cx)
     }
@@ -3623,13 +3639,9 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let handle = self.notifications.read(cx).handle().clone();
-        let popup = dialog_popup(
-            "channel.notifications.popup",
-            "Notification preferences",
-            cx,
-        )
-        .max_h(UiTheme::read(cx).space(170.))
-        .child(self.notifications.clone());
+        let popup = dialog_popup("channel.notifications.popup", t!("chan-notifications"), cx)
+            .max_h(UiTheme::read(cx).space(170.))
+            .child(self.notifications.clone());
         dialog("channel.notifications", &handle, popup, window, cx)
     }
 
@@ -3680,9 +3692,9 @@ impl ChannelView {
         &self,
         id: &'static str,
         handle: &DialogHandle,
-        title: String,
-        description: &'static str,
-        action: &'static str,
+        title: SharedString,
+        description: SharedString,
+        action: SharedString,
         event: ChannelEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3701,7 +3713,7 @@ impl ChannelView {
                     .child(
                         alert_dialog_cancel(element_id("cancel"))
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("chan-cancel")),
                     )
                     .child(
                         alert_dialog_action(element_id("confirm"))
@@ -3721,10 +3733,9 @@ impl ChannelView {
         self.confirm_dialog(
             "channel.archive",
             &self.archive.clone(),
-            format!("Archive {name}?"),
-            "Nobody can post in it any more and it leaves everyone's sidebar. \
-             Its messages and files stay on the server.",
-            "Archive",
+            t!("chan-archive-title", name = name.to_string()),
+            t!("chan-archive-description"),
+            t!("chan-archive"),
             ChannelEvent::Archive,
             window,
             cx,
@@ -3736,10 +3747,9 @@ impl ChannelView {
         self.confirm_dialog(
             "channel.convert",
             &self.convert.clone(),
-            format!("Make {name} private?"),
-            "Only its members will see it, and people join by invitation. \
-             Its history stays. This can't be undone from Matty.",
-            "Make private",
+            t!("chan-convert-title", name = name.to_string()),
+            t!("chan-convert-description"),
+            t!("chan-convert"),
             ChannelEvent::ConvertToPrivate,
             window,
             cx,
@@ -3750,7 +3760,7 @@ impl ChannelView {
     fn channel_label(&self) -> SharedString {
         match self.model.as_ref() {
             Some(channel) => format!("#{}", channel.name).into(),
-            None => "this channel".into(),
+            None => t!("chan-this-channel"),
         }
     }
 
@@ -3758,14 +3768,16 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let name: SharedString = match self.model.as_ref() {
             Some(channel) => format!("#{}", channel.name).into(),
-            None => "this channel".into(),
+            None => t!("chan-this-channel"),
         };
-        let popup = dialog_popup("channel.leave.popup", "Leave channel", cx)
-            .child(dialog_title("channel.leave.title", cx).child(format!("Leave {name}?")))
+        let popup = dialog_popup("channel.leave.popup", t!("chan-leave-label"), cx)
             .child(
-                dialog_description("channel.leave.description", cx).child(
-                    "You stop receiving its messages and it leaves your sidebar. You can join again later.",
-                ),
+                dialog_title("channel.leave.title", cx)
+                    .child(t!("chan-leave-title", name = name.to_string())),
+            )
+            .child(
+                dialog_description("channel.leave.description", cx)
+                    .child(t!("chan-leave-description")),
             )
             .child(
                 div()
@@ -3776,12 +3788,12 @@ impl ChannelView {
                     .child(
                         alert_dialog_cancel("channel.leave.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("chan-cancel")),
                     )
                     .child(
                         alert_dialog_action("channel.leave.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Leave"),
+                            .label(t!("chan-leave")),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -3799,7 +3811,7 @@ impl ChannelView {
                 .size(scaled(&theme, metrics::ICON))
                 .text_color(muted)
         };
-        let action = |id: &'static str, label: &'static str, glyph: LucideIcon| {
+        let action = |id: &'static str, label: SharedString, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
@@ -3807,9 +3819,9 @@ impl ChannelView {
                 .child(icon(glyph))
         };
         let favorite_label = if channel.favorite {
-            "Remove from favorites"
+            t!("chan-remove-favorite")
         } else {
-            "Add to favorites"
+            t!("chan-add-favorite")
         };
         let kind_icon = match channel.kind {
             ChannelKind::Public => Some(LucideIcon::Hash),
@@ -3844,7 +3856,7 @@ impl ChannelView {
                     .min_w_0()
                     .gap(theme.space(1.))
                     .child(
-                        Menu::new(&self.header_menu, "Channel menu")
+                        Menu::new(&self.header_menu, t!("chan-menu"))
                             .trigger(
                                 div()
                                     .flex()
@@ -3868,7 +3880,7 @@ impl ChannelView {
                                 let theme = theme.clone();
                                 move |button| {
                                     style_button(
-                                        button.aria_label("Channel menu").px(theme.space(2.)),
+                                        button.aria_label(t!("chan-menu")).px(theme.space(2.)),
                                         false,
                                         ButtonVariant::Ghost,
                                         ButtonSize::Sm,
@@ -3879,7 +3891,7 @@ impl ChannelView {
                     )
                     .child(style::tipped(
                         "channel.star.tip",
-                        favorite_label,
+                        favorite_label.clone(),
                         Button::new("channel.star")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::IconSm)
@@ -3928,14 +3940,14 @@ impl ChannelView {
                         |row| {
                             row.child(style::tipped(
                                 "channel.apps.tip",
-                                "Apps",
-                                Menu::new(&self.apps_menu, "Apps")
+                                t!("chan-apps"),
+                                Menu::new(&self.apps_menu, t!("chan-apps"))
                                     .trigger(icon(LucideIcon::Blocks))
                                     .trigger_style_with({
                                         let theme = theme.clone();
                                         move |button| {
                                             style_button(
-                                                button.aria_label("Apps"),
+                                                button.aria_label(t!("chan-apps")),
                                                 false,
                                                 ButtonVariant::Ghost,
                                                 ButtonSize::IconSm,
@@ -3948,10 +3960,10 @@ impl ChannelView {
                     )
                     .child(style::tipped(
                         "channel.members.tip",
-                        actions::tooltip_text("Members", "Channel info"),
+                        actions::tooltip_text(&t!("chan-members-tip"), "Channel info"),
                         count(
                             "channel.members",
-                            format!("{} members", channel.members),
+                            t!("chan-members-count", count = channel.members).to_string(),
                             LucideIcon::Users,
                             channel.members,
                         )
@@ -3959,10 +3971,10 @@ impl ChannelView {
                     ))
                     .child(style::tipped(
                         "channel.pinned.tip",
-                        "Pinned messages",
+                        t!("chan-pinned-tip"),
                         count(
                             "channel.pinned",
-                            format!("{} pinned messages", channel.pinned),
+                            t!("chan-pinned-count", count = channel.pinned).to_string(),
                             LucideIcon::Pin,
                             channel.pinned,
                         )
@@ -3970,27 +3982,28 @@ impl ChannelView {
                     ))
                     .child(style::tipped(
                         "channel.info.tip",
-                        actions::tooltip_text("Channel info", "Channel info"),
-                        action("channel.info", "Channel info", LucideIcon::Info)
+                        actions::tooltip_text(&t!("chan-info"), "Channel info"),
+                        action("channel.info", t!("chan-info"), LucideIcon::Info)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::OpenInfo))),
                     ))
                     .when(self.split_controls, |row| {
                         row.child(style::tipped(
                             "channel.swap-panes.tip",
-                            actions::tooltip_text("Swap panes", "Swap panes"),
+                            actions::tooltip_text(&t!("chan-swap-panes"), "Swap panes"),
                             action(
                                 "channel.swap-panes",
-                                "Swap panes",
+                                t!("chan-swap-panes"),
                                 LucideIcon::ArrowLeftRight,
                             )
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::SwapPanes))),
                         ))
                         .child(style::tipped(
                             "channel.close-pane.tip",
-                            actions::tooltip_text("Close pane", "Close pane"),
-                            action("channel.close-pane", "Close pane", LucideIcon::X).on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::ClosePane)),
-                            ),
+                            actions::tooltip_text(&t!("chan-close-pane"), "Close pane"),
+                            action("channel.close-pane", t!("chan-close-pane"), LucideIcon::X)
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(ChannelEvent::ClosePane)),
+                                ),
                         ))
                     }),
             )
@@ -4185,11 +4198,11 @@ impl ChannelView {
                 actions.child(style::tipped_when(
                     !menu_open,
                     gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
-                    "Dismiss message",
+                    t!("chan-dismiss"),
                     message_action(
                         gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
                         LucideIcon::X,
-                        "Dismiss message",
+                        t!("chan-dismiss"),
                         cx,
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -4202,11 +4215,11 @@ impl ChannelView {
                     .child(style::tipped_when(
                         !menu_open,
                         gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
-                        "Add reaction",
+                        t!("chan-add-reaction"),
                         message_action(
                             gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
                             LucideIcon::FaceSlightlySmilingPlus,
-                            "Add reaction",
+                            t!("chan-add-reaction"),
                             cx,
                         )
                         .on_click(cx.listener(
@@ -4218,11 +4231,11 @@ impl ChannelView {
                     .child(style::tipped_when(
                         !menu_open,
                         gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
-                        "Reply in thread",
+                        t!("chan-reply-in-thread"),
                         message_action(
                             gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
                             LucideIcon::MessageSquareReply,
-                            "Reply in thread",
+                            t!("chan-reply-in-thread"),
                             cx,
                         )
                         .on_click(cx.listener(move |_, _, _, cx| {
@@ -4232,7 +4245,11 @@ impl ChannelView {
                     .child(style::tipped_when(
                         !menu_open,
                         gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                        if post.saved { "Unsave" } else { "Save" },
+                        if post.saved {
+                            t!("chan-unsave")
+                        } else {
+                            t!("chan-save")
+                        },
                         message_action(
                             gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
                             if post.saved {
@@ -4240,7 +4257,11 @@ impl ChannelView {
                             } else {
                                 LucideIcon::Bookmark
                             },
-                            if post.saved { "Unsave" } else { "Save" },
+                            if post.saved {
+                                t!("chan-unsave")
+                            } else {
+                                t!("chan-save")
+                            },
                             cx,
                         )
                         .on_click(
@@ -4253,11 +4274,11 @@ impl ChannelView {
             .child(style::tipped_when(
                 !menu_open,
                 gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
-                "More actions",
+                t!("chan-more-actions"),
                 message_action(
                     gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
                     LucideIcon::Ellipsis,
-                    "More actions",
+                    t!("chan-more-actions"),
                     cx,
                 )
                 .on_click(cx.listener(
@@ -4281,7 +4302,13 @@ impl ChannelView {
             .when(
                 matches!(post.status, PostStatus::Sent | PostStatus::Ephemeral)
                     && !post.date.is_empty(),
-                |row| row.timestamp_tooltip(format!("{} at {time}", post.date)),
+                |row| {
+                    row.timestamp_tooltip(t!(
+                        "chan-sent-at",
+                        date = post.date.to_string(),
+                        time = time.to_string()
+                    ))
+                },
             )
             .on_gutter_click({
                 let (view, id) = (cx.entity().downgrade(), id.clone());
@@ -4480,7 +4507,11 @@ impl ChannelView {
         .timestamp(time.clone())
         .gutter_time(time.clone())
         .when(!post.date.is_empty(), |row| {
-            row.timestamp_tooltip(format!("{} at {time}", post.date))
+            row.timestamp_tooltip(t!(
+                "chan-sent-at",
+                date = post.date.to_string(),
+                time = time.to_string()
+            ))
         })
         .density(message_density(cx))
         .px(scaled(&theme, metrics::GUTTER))
@@ -4550,7 +4581,7 @@ impl ChannelView {
                 .child(
                     div()
                         .text_color(theme.colors.muted_foreground)
-                        .child("This message type isn't supported yet."),
+                        .child(t!("chan-unsupported")),
                 )
                 .child(
                     Button::new(gpui_kit::ElementId::Name(
@@ -4558,7 +4589,7 @@ impl ChannelView {
                     ))
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Sm)
-                    .label("Open in browser")
+                    .label(t!("chan-open-in-browser"))
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(ChannelEvent::OpenInBrowser(open.clone()))
                     })),
@@ -4577,15 +4608,16 @@ impl ChannelView {
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let root = post.thread_root();
-        let whose = format!("{}'s", context.author);
+        let whose = t!("chan-replying-whose", name = context.author.to_string());
         div()
             .id(gpui_kit::ElementId::Name(
                 format!("post.{}.replying", post.id).into(),
             ))
             .role(gpui_kit::Role::Button)
-            .aria_label(format!(
-                "Open thread: commented on {whose} message: {}",
-                context.excerpt
+            .aria_label(t!(
+                "chan-replying-label",
+                name = context.author.to_string(),
+                excerpt = context.excerpt.to_string(),
             ))
             .w_full()
             .min_w_0()
@@ -4605,14 +4637,14 @@ impl ChannelView {
                     .flex_shrink_0()
                     .size(scaled(&theme, metrics::ICON_TINY)),
             )
-            .child(div().flex_shrink_0().child("Commented on"))
+            .child(div().flex_shrink_0().child(t!("chan-replying-before")))
             .child(
                 div()
                     .flex_shrink_0()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .child(whose),
             )
-            .child(div().flex_shrink_0().child("message:"))
+            .child(div().flex_shrink_0().child(t!("chan-replying-after")))
             .child(
                 div()
                     .flex_1()
@@ -4628,10 +4660,7 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let label = match summary.count {
-            1 => "1 reply".to_string(),
-            n => format!("{n} replies"),
-        };
+        let label = t!("chan-replies", count = summary.count);
         let open_id = id.clone();
         let follow_id = id.clone();
         div()
@@ -4639,7 +4668,7 @@ impl ChannelView {
                 format!("post.{id}.thread").into(),
             ))
             .role(gpui_kit::Role::Button)
-            .aria_label(format!("Open thread, {label}"))
+            .aria_label(t!("chan-open-thread", replies = label.to_string()))
             .mt(theme.space(1.))
             .ml(px(-6.))
             .px(theme.space(1.5))
@@ -4686,9 +4715,11 @@ impl ChannelView {
                 div()
                     .type_style(style::META, &theme)
                     .text_color(theme.colors.muted_foreground)
-                    .child(format!(
-                        "Last reply {}",
-                        summary.last_reply_label(ClockFormat::current(cx))
+                    .child(t!(
+                        "chan-last-reply",
+                        when = summary
+                            .last_reply_label(ClockFormat::current(cx))
+                            .to_string()
                     )),
             )
             .child(
@@ -4698,9 +4729,9 @@ impl ChannelView {
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::Xs)
                 .label(if summary.following {
-                    "Following"
+                    t!("chan-following")
                 } else {
-                    "Follow"
+                    t!("chan-follow")
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_follow(follow_id.clone(), cx);
@@ -4716,9 +4747,9 @@ impl ChannelView {
             .is_some_and(|summary| summary.following);
         if self.refused_offline(
             if following_now {
-                "unfollow thread"
+                "unfollow thread" // i18n-ignore: an offline key
             } else {
-                "follow thread"
+                "follow thread" // i18n-ignore: an offline key
             },
             cx,
         ) {
@@ -4772,7 +4803,8 @@ impl ChannelView {
                 )
                 .into_any_element(),
                 Some(Row::NewMessages) => {
-                    new_messages_divider("new-messages", "New messages", cx).into_any_element()
+                    new_messages_divider("new-messages", t!("chan-new-messages"), cx)
+                        .into_any_element()
                 }
                 Some(Row::System(post)) => {
                     let post = posts[*post].clone();
@@ -4966,7 +4998,7 @@ impl ChannelView {
 
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let tool = |id: &'static str, label: &'static str, glyph: LucideIcon| {
+        let tool = |id: &'static str, label: SharedString, glyph: LucideIcon| {
             Button::new(id)
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
@@ -4994,13 +5026,22 @@ impl ChannelView {
         });
         let picker = self.picker.clone();
         let picker_open = self.picker_open;
-        let emoji_tool = tool("composer.emoji", "Emoji", LucideIcon::FaceSlightlySmiling);
+        let emoji_tool = tool(
+            "composer.emoji",
+            t!("chan-emoji"),
+            LucideIcon::FaceSlightlySmiling,
+        );
         let emoji_popover = popover("composer.emoji.popover")
             .open(picker_open)
             .offset(px(6.))
             .trigger_with(move |_, _, _| {
-                style::tipped_when(!picker_open, "composer.emoji.tip", "Emoji", emoji_tool)
-                    .into_any_element()
+                style::tipped_when(
+                    !picker_open,
+                    "composer.emoji.tip",
+                    t!("chan-emoji"),
+                    emoji_tool,
+                )
+                .into_any_element()
             })
             .on_open_change(cx.listener(|this, open: &bool, window, cx| {
                 if *open {
@@ -5029,7 +5070,7 @@ impl ChannelView {
             .collect();
         let tray = crate::attachments::upload_tray("composer", &self.tray, chips, cx);
         let mut key = gpui_kit::KeyContext::new_with_defaults(cx.platform_info().os);
-        key.add("Composer");
+        key.add("Composer"); // i18n-ignore: a key context
         if self.draft_len == 0 {
             key.add("empty");
         }
@@ -5073,45 +5114,45 @@ impl ChannelView {
                     .rounded(theme.radius.lg)
                     .child(style::tipped(
                         "composer.attach.tip",
-                        actions::tooltip_text("Attach files", "Upload files"),
-                        tool("composer.attach", "Attach files", LucideIcon::Plus).on_click(
+                        actions::tooltip_text(&t!("chan-attach"), "Upload files"),
+                        tool("composer.attach", t!("chan-attach"), LucideIcon::Plus).on_click(
                             |_, window, cx| window.dispatch_action(Box::new(UploadFiles), cx),
                         ),
                     ))
                     .child(style::tipped(
                         "composer.bold.tip",
-                        actions::tooltip_text("Bold", "Bold"),
-                        tool("composer.bold", "Bold", LucideIcon::Bold).on_click(
+                        actions::tooltip_text(&t!("chan-bold"), "Bold"),
+                        tool("composer.bold", t!("chan-bold"), LucideIcon::Bold).on_click(
                             cx.listener(|this, _, window, cx| this.wrap("**", "**", window, cx)),
                         ),
                     ))
                     .child(style::tipped(
                         "composer.italic.tip",
-                        actions::tooltip_text("Italic", "Italic"),
-                        tool("composer.italic", "Italic", LucideIcon::Italic).on_click(
+                        actions::tooltip_text(&t!("chan-italic"), "Italic"),
+                        tool("composer.italic", t!("chan-italic"), LucideIcon::Italic).on_click(
                             cx.listener(|this, _, window, cx| this.wrap("_", "_", window, cx)),
                         ),
                     ))
                     .child(style::tipped(
                         "composer.code.tip",
-                        actions::tooltip_text("Code", "Inline code"),
-                        tool("composer.code", "Code", LucideIcon::Code).on_click(
+                        actions::tooltip_text(&t!("chan-code"), "Inline code"),
+                        tool("composer.code", t!("chan-code"), LucideIcon::Code).on_click(
                             cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
                         ),
                     ))
                     .child(style::tipped(
                         "composer.formatting.tip",
                         if format_bar {
-                            "Hide formatting"
+                            t!("chan-hide-formatting")
                         } else {
-                            "Show formatting"
+                            t!("chan-show-formatting")
                         },
                         tool(
                             "composer.formatting",
                             if format_bar {
-                                "Hide formatting"
+                                t!("chan-hide-formatting")
                             } else {
-                                "Show formatting"
+                                t!("chan-show-formatting")
                             },
                             LucideIcon::Type,
                         )
@@ -5124,8 +5165,8 @@ impl ChannelView {
                     ))
                     .child(style::tipped(
                         "composer.preview.tip",
-                        actions::tooltip_text("Preview", "Preview message"),
-                        tool("composer.preview", "Preview", LucideIcon::Eye)
+                        actions::tooltip_text(&t!("chan-preview"), "Preview message"),
+                        tool("composer.preview", t!("chan-preview"), LucideIcon::Eye)
                             .variant(if self.previewing {
                                 ButtonVariant::Secondary
                             } else {
@@ -5138,8 +5179,8 @@ impl ChannelView {
                     .child(emoji_popover)
                     .child(style::tipped(
                         "composer.mention.tip",
-                        "Mention someone",
-                        tool("composer.mention", "Mention someone", LucideIcon::AtSign).on_click(
+                        t!("chan-mention"),
+                        tool("composer.mention", t!("chan-mention"), LucideIcon::AtSign).on_click(
                             cx.listener(|this, _, window, cx| {
                                 this.composer.update(cx, |composer, cx| {
                                     composer.insert("@", window, cx);
@@ -5154,11 +5195,11 @@ impl ChannelView {
                     .children(self.schedule_button(cx))
                     .child(style::tipped(
                         "composer.send.tip",
-                        actions::send_tooltip("Send", send_on),
+                        actions::send_tooltip(&t!("chan-send"), send_on),
                         Button::new("composer.send")
                             .variant(ButtonVariant::Default)
                             .size(ButtonSize::IconSm)
-                            .aria_label("Send")
+                            .aria_label(t!("chan-send"))
                             .disabled(!self.can_send())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let text = this.composer.read(cx).value(cx);
@@ -5236,15 +5277,15 @@ impl ChannelView {
     fn offline_channel(channel: &ChannelModel, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let place: SharedString = match channel.kind {
-            ChannelKind::Direct { .. } => format!("your conversation with {}", channel.name).into(),
+            ChannelKind::Direct { .. } => {
+                t!("chan-offline-place-direct", name = channel.name.to_string())
+            }
             _ => format!("#{}", channel.name).into(),
         };
         let empty = style::empty_state(
             LucideIcon::WifiOff,
-            "You're offline",
-            format!(
-                "Matty hasn't saved {place} on this computer yet. Its messages load when you're back online."
-            ),
+            t!("chan-offline-title"),
+            t!("chan-offline-description", place = place.to_string()),
             cx,
         );
         div()
@@ -5266,24 +5307,17 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let direct = matches!(channel.kind, ChannelKind::Direct { .. });
         let title: SharedString = if direct {
-            format!(
-                "This is the start of your conversation with {}",
-                channel.name
-            )
-            .into()
+            t!("chan-start-direct", name = channel.name.to_string())
         } else {
-            format!("Welcome to #{}", channel.name).into()
+            t!("chan-welcome", name = channel.name.to_string())
         };
-        let description: SharedString = channel
-            .purpose
-            .clone()
-            .unwrap_or_else(|| {
-                if direct {
-                    "Messages here stay between the two of you.".into()
-                } else {
-                    "Nothing has been posted yet. Say hello, or set a purpose so people know what belongs here.".into()
-                }
-            });
+        let description: SharedString = channel.purpose.clone().unwrap_or_else(|| {
+            if direct {
+                t!("chan-empty-direct")
+            } else {
+                t!("chan-empty-channel")
+            }
+        });
         let glyph = if direct {
             LucideIcon::MessageSquare
         } else {
@@ -5296,7 +5330,7 @@ impl ChannelView {
                     Button::new("channel.empty.add-members")
                         .variant(ButtonVariant::Outline)
                         .size(ButtonSize::Sm)
-                        .aria_label("Add members")
+                        .aria_label(t!("chan-add-members"))
                         .on_click(
                             cx.listener(|this, _, window, cx| this.open_add_members(window, cx)),
                         )
@@ -5305,7 +5339,7 @@ impl ChannelView {
                                 .size(scaled(&theme, metrics::ICON_SMALL))
                                 .text_color(theme.colors.muted_foreground),
                         )
-                        .child("Add members"),
+                        .child(t!("chan-add-members")),
                 ),
             );
         }
@@ -5341,7 +5375,7 @@ impl ChannelView {
                     .size(scaled(&theme, metrics::ICON))
                     .text_color(theme.colors.muted_foreground),
             )
-            .child("No channel open");
+            .child(t!("chan-no-channel"));
         div().size_full().flex().flex_col().child(header).child({
             let (title, text) = empty_text(connected);
             style::centered_empty(LucideIcon::MessagesSquare, title, text, cx)
@@ -5351,17 +5385,11 @@ impl ChannelView {
 
 /// What the view says with no channel open: that none is picked once a
 /// server's sidebar is up, else that Matty is not connected yet.
-fn empty_text(connected: bool) -> (&'static str, &'static str) {
+fn empty_text(connected: bool) -> (SharedString, SharedString) {
     if connected {
-        (
-            "No channel open",
-            "Pick a channel or a conversation in the sidebar.",
-        )
+        (t!("chan-no-channel"), t!("chan-no-channel-detail"))
     } else {
-        (
-            "Not connected yet",
-            "Your channels appear here once Matty is connected to a Mattermost server.",
-        )
+        (t!("chan-not-connected"), t!("chan-not-connected-detail"))
     }
 }
 
@@ -5416,7 +5444,7 @@ impl Render for ChannelView {
         let overlay = crate::attachments::drop_overlay(
             "channel.drop",
             crate::attachments::drop_title(&channel.name),
-            "Files go into the message you are writing.",
+            t!("chan-drop"),
             crate::attachments::preview_drop(),
             cx,
         );
@@ -5435,7 +5463,7 @@ impl Render for ChannelView {
             // Zero-size host for the shared post menu; it opens at the pointer.
             // Disabled so the empty host is not a tab stop.
             .child(
-                Menu::new(&self.menu, "Message actions")
+                Menu::new(&self.menu, t!("chan-message-actions"))
                     .context_area(div())
                     .disabled(true),
             )
@@ -5499,7 +5527,7 @@ fn person_details(person: &crate::profile::UserProfile, cx: &App) -> Option<gpui
                             .size(scaled(&theme, metrics::ICON_SMALL))
                             .text_color(muted),
                     )
-                    .child(format!("{time} local time"))
+                    .child(t!("chan-local-time", time = time.to_string()))
             })),
     )
 }
@@ -5522,9 +5550,9 @@ pub(crate) fn typing_text(names: &[SharedString]) -> String {
     let first = |name: &SharedString| name.split(' ').next().unwrap_or(name).to_string();
     match names {
         [] => String::new(),
-        [one] => format!("{} is typing\u{2026}", first(one)),
-        [one, two] => format!("{} and {} are typing\u{2026}", first(one), first(two)),
-        _ => "Several people are typing\u{2026}".to_string(),
+        [one] => t!("chan-typing-one", name = first(one)).to_string(),
+        [one, two] => t!("chan-typing-two", first = first(one), second = first(two)).to_string(),
+        _ => t!("chan-typing-many").to_string(),
     }
 }
 
@@ -5548,18 +5576,18 @@ pub(crate) fn typing_line(names: &[SharedString], cx: &App) -> gpui_kit::Div {
 /// `@here`, `@channel` and `@all`, after the people, as the webapp offers
 /// them in a channel.
 fn group_mentions(query: &str, limit: usize) -> Vec<ComposerSuggestion> {
-    const GROUPS: [(&str, &str); 3] = [
-        ("here", "Everyone online here"),
-        ("channel", "Everyone in the channel"),
-        ("all", "Everyone in the channel"),
+    let groups = [
+        ("here", t!("chan-mention-here")),
+        ("channel", t!("chan-mention-channel")),
+        ("all", t!("chan-mention-channel")),
     ];
-    GROUPS
+    groups
         .iter()
         .filter(|(name, _)| name.starts_with(query))
         .take(limit)
         .map(|(name, what)| {
             ComposerSuggestion::new(format!("@{name}"), format!("@{name}"))
-                .description(*what)
+                .description(what.clone())
                 .icon(LucideIcon::Users)
         })
         .collect()
@@ -5701,19 +5729,33 @@ fn people_suggestions<'a>(
         .collect()
 }
 
+/// The day key sync sends for today's posts.
+const TODAY: &str = "Today"; // i18n-ignore: a key, not shown as is
+
+// What the server's system lines say, matched to style and pick an icon
+// for them; the lines themselves come from the server.
+const JOINED: &str = " joined the "; // i18n-ignore
+const LEFT: &str = " left the "; // i18n-ignore
+const ADDED: &str = " added to the "; // i18n-ignore
+const REMOVED: &str = " removed from the "; // i18n-ignore
+const ARCHIVED: &str = " archived the channel"; // i18n-ignore
+const UNARCHIVED: &str = " unarchived the channel"; // i18n-ignore
+const CHANGED: &str = " the channel "; // i18n-ignore
+const BY: &str = " by "; // i18n-ignore
+
 /// The words that end the people at the start of a system line and begin
 /// what happened to them.
 const SYSTEM_VERBS: [&str; 10] = [
-    " joined the ",
-    " left the ",
-    " added to the ",
-    " was removed from the ",
-    " were removed from the ",
-    " updated the channel ",
-    " removed the channel ",
-    " archived the channel",
-    " unarchived the channel",
-    " was added to the ",
+    " joined the ",            // i18n-ignore: matched in the server's text
+    " left the ",              // i18n-ignore: matched in the server's text
+    " added to the ",          // i18n-ignore: matched in the server's text
+    " was removed from the ",  // i18n-ignore: matched in the server's text
+    " were removed from the ", // i18n-ignore: matched in the server's text
+    " updated the channel ",   // i18n-ignore: matched in the server's text
+    " removed the channel ",   // i18n-ignore: matched in the server's text
+    " archived the channel",   // i18n-ignore: matched in the server's text
+    " unarchived the channel", // i18n-ignore: matched in the server's text
+    " was added to the ",      // i18n-ignore: matched in the server's text
 ];
 
 /// A system line in spans, `true` for the people: the names before the
@@ -5725,10 +5767,7 @@ fn system_spans(line: &str) -> Vec<(String, bool)> {
     };
     let mut spans = vec![(line[..at].to_owned(), true)];
     let rest = &line[at..];
-    let by = rest
-        .contains(" added to the ")
-        .then(|| rest.rfind(" by "))
-        .flatten();
+    let by = rest.contains(ADDED).then(|| rest.rfind(BY)).flatten();
     match by {
         Some(by) => {
             let actor = rest[by + 4..].trim_end_matches('.');
@@ -5747,15 +5786,15 @@ fn system_spans(line: &str) -> Vec<(String, bool)> {
 /// channel changed, or a mix.
 fn system_icon(lines: &[&str]) -> LucideIcon {
     let kind = |line: &&str| {
-        if line.contains(" joined the ") || line.contains(" added to the ") {
+        if line.contains(JOINED) || line.contains(ADDED) {
             LucideIcon::UserPlus
-        } else if line.contains(" left the ") || line.contains(" removed from the ") {
+        } else if line.contains(LEFT) || line.contains(REMOVED) {
             LucideIcon::UserMinus
-        } else if line.contains(" unarchived the channel") {
+        } else if line.contains(UNARCHIVED) {
             LucideIcon::ArchiveRestore
-        } else if line.contains(" archived the channel") {
+        } else if line.contains(ARCHIVED) {
             LucideIcon::Archive
-        } else if line.contains(" the channel ") {
+        } else if line.contains(CHANGED) {
             LucideIcon::Pencil
         } else {
             LucideIcon::Info
@@ -5772,6 +5811,16 @@ fn system_icon(lines: &[&str]) -> LucideIcon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_quick_reaction_has_a_translatable_name() {
+        for (_, name) in QUICK_REACTIONS {
+            assert!(
+                !reaction_name(name).starts_with("chan-"),
+                "channel.ftl lacks {name:?}"
+            );
+        }
+    }
 
     /// A copy across messages reads one line per message (#108).
     #[test]

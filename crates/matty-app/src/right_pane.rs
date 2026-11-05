@@ -1952,7 +1952,7 @@ impl RightPaneView {
                 let emoji: SharedString = (*emoji).into();
                 MenuItem::new(
                     gpui_kit::ElementId::Name(format!("thread.react.{name}").into()),
-                    format!("{emoji}  {name}"),
+                    format!("{emoji}  {}", crate::channel::reaction_name(name)),
                 )
                 .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
                 .on_click(move |_, _, cx| {
@@ -2044,7 +2044,7 @@ impl RightPaneView {
                     crate::channel::RemindAt::ALL.map(|at| {
                         emit(
                             &format!("remind.{at:?}"),
-                            at.label().into(),
+                            at.label(),
                             RightPaneEvent::Remind {
                                 post: id.clone(),
                                 at,
