@@ -11,6 +11,7 @@ use gpui_kit::{
 use crate::profile::UserProfile;
 use crate::sidebar::Presence;
 use crate::style::{self, Palette, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     avatar::{Avatar, AvatarSize},
     button::{Button, ButtonSize, ButtonVariant},
@@ -69,7 +70,8 @@ impl BrowseView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search channels"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("directory-search-channels")));
         let subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         Self {
             channels: Vec::new(),
@@ -130,17 +132,14 @@ impl BrowseView {
         let id = channel.id.clone();
         let (row_id, button_id) = (id.clone(), id.clone());
         let joined = channel.joined;
-        let members = match channel.members {
-            1 => "1 member".to_string(),
-            n => format!("{n} members"),
-        };
+        let members = t!("browse-members", count = channel.members);
         let button = if joined {
             Button::new(gpui_kit::ElementId::Name(
                 format!("browse.{id}.view").into(),
             ))
             .variant(ButtonVariant::Outline)
             .size(ButtonSize::Sm)
-            .label("View")
+            .label(t!("browse-view"))
             .w(theme.space(16.))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_channel(button_id.clone(), window, cx)
@@ -151,7 +150,7 @@ impl BrowseView {
             ))
             .variant(ButtonVariant::Default)
             .size(ButtonSize::Sm)
-            .label("Join")
+            .label(t!("browse-join"))
             .w(theme.space(16.))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.join(button_id.clone(), window, cx)),
@@ -161,9 +160,9 @@ impl BrowseView {
             .id(gpui_kit::ElementId::Name(format!("browse.{id}").into()))
             .role(gpui_kit::Role::Button)
             .aria_label(if joined {
-                format!("Open {}", channel.name)
+                t!("browse-open-channel", channel = channel.name.to_string())
             } else {
-                format!("Join {}", channel.name)
+                t!("browse-join-channel", channel = channel.name.to_string())
             })
             .px(theme.space(2.))
             .py(theme.space(1.5))
@@ -261,13 +260,14 @@ impl Render for BrowseView {
                     .flex()
                     .flex_col()
                     .gap(theme.space(1.))
-                    .child(dialog_title("browse.title", cx).child("Browse channels"))
-                    .child(
-                        dialog_description("browse.description", cx)
-                            .child(format!("{public} public channels in {}", self.team_name)),
-                    ),
+                    .child(dialog_title("browse.title", cx).child(t!("browse-title")))
+                    .child(dialog_description("browse.description", cx).child(t!(
+                        "browse-description",
+                        count = public,
+                        team = self.team_name.to_string()
+                    ))),
             )
-            .child(Input::new(&self.search).aria_label("Search channels"))
+            .child(Input::new(&self.search).aria_label(t!("directory-search-channels")))
             .child(
                 div()
                     .id("browse.list")
@@ -284,7 +284,7 @@ impl Render for BrowseView {
                                 .justify_center()
                                 .type_style(style::UI, &theme)
                                 .text_color(theme.colors.muted_foreground)
-                                .child(format!("No channels match “{query}”")),
+                                .child(t!("browse-no-match", query = query.to_string())),
                         )
                     })
                     .children(rows),
@@ -305,7 +305,8 @@ impl EventEmitter<DirectoryEvent> for NewMessageView {}
 
 impl NewMessageView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search people"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("directory-search-people")));
         let subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         Self {
             profiles: Vec::new(),
@@ -355,7 +356,10 @@ impl NewMessageView {
                 format!("new-message.{username}").into(),
             ))
             .role(gpui_kit::Role::Button)
-            .aria_label(format!("Message {}", profile.display_name))
+            .aria_label(t!(
+                "new-message-person",
+                name = profile.display_name.to_string()
+            ))
             .h(scaled(&theme, metrics::ROW_HEIGHT + 8.))
             .px(theme.space(2.))
             .mx(theme.space(-2.))
@@ -449,14 +453,13 @@ impl Render for NewMessageView {
                     .flex()
                     .flex_col()
                     .gap(theme.space(1.))
-                    .child(dialog_title("new-message.title", cx).child("New message"))
+                    .child(dialog_title("new-message.title", cx).child(t!("new-message-title")))
                     .child(
-                        dialog_description("new-message.description", cx).child(
-                            "Pick someone to message. Existing conversations open in place.",
-                        ),
+                        dialog_description("new-message.description", cx)
+                            .child(t!("new-message-description")),
                     ),
             )
-            .child(Input::new(&self.search).aria_label("Search people"))
+            .child(Input::new(&self.search).aria_label(t!("directory-search-people")))
             .child(
                 div()
                     .id("new-message.list")
@@ -473,7 +476,7 @@ impl Render for NewMessageView {
                                 .justify_center()
                                 .type_style(style::UI, &theme)
                                 .text_color(theme.colors.muted_foreground)
-                                .child(format!("Nobody matches “{query}”")),
+                                .child(t!("directory-nobody-matches", query = query.to_string())),
                         )
                     })
                     .children(rows),
@@ -515,8 +518,9 @@ impl EventEmitter<DirectoryEvent> for CreateChannelView {}
 impl CreateChannelView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. design-reviews"));
-        let purpose =
-            cx.new(|cx| InputState::new(window, cx).placeholder("What is this channel for?"));
+        let purpose = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("create-channel-purpose-placeholder"))
+        });
         let subscriptions = vec![
             cx.subscribe(&name, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&purpose, |_, _, _: &InputEvent, cx| cx.notify()),
@@ -577,9 +581,9 @@ impl Render for CreateChannelView {
         }
         let handle = self.handle_text(cx);
         let description = if handle.is_empty() {
-            "Lowercase letters, numbers and dashes; the URL follows the name.".to_string()
+            t!("create-channel-name-hint")
         } else {
-            format!("Address: ~{handle}")
+            t!("create-channel-address", handle = handle.to_string())
         };
         let can_create = handle.len() >= 2;
         let view = cx.weak_entity();
@@ -592,22 +596,24 @@ impl Render for CreateChannelView {
                     .flex()
                     .flex_col()
                     .gap(theme.space(1.))
-                    .child(dialog_title("create-channel.title", cx).child("Create channel"))
+                    .child(
+                        dialog_title("create-channel.title", cx).child(t!("create-channel-title")),
+                    )
                     .child(
                         dialog_description("create-channel.description", cx)
-                            .child("Channels are where the team talks about one thing."),
+                            .child(t!("create-channel-description")),
                     ),
             )
             .child(
                 Field::new("create-channel.name", &self.name)
-                    .label("Name")
+                    .label(t!("create-channel-name"))
                     .required(true)
                     .description(description),
             )
             .child(
                 Field::new("create-channel.purpose", &self.purpose)
-                    .label("Purpose")
-                    .description("Optional. Shown in Browse channels and the empty state."),
+                    .label(t!("create-channel-purpose"))
+                    .description(t!("create-channel-purpose-hint")),
             )
             .child(
                 div()
@@ -618,19 +624,19 @@ impl Render for CreateChannelView {
                         div()
                             .type_style(style::UI_STRONG, &theme)
                             .text_color(theme.colors.foreground)
-                            .child("Visibility"),
+                            .child(t!("create-channel-visibility")),
                     )
                     .child(
                         RadioGroup::new("create-channel.visibility")
-                            .aria_label("Visibility")
+                            .aria_label(t!("create-channel-visibility"))
                             .value(if self.private { "private" } else { "public" })
                             .item(
                                 RadioItem::new("create-channel.public", "public")
-                                    .label("Public: anyone in the team can find and join it"),
+                                    .label(t!("create-channel-public")),
                             )
                             .item(
                                 RadioItem::new("create-channel.private", "private")
-                                    .label("Private: only people you add can see it"),
+                                    .label(t!("create-channel-private")),
                             )
                             .on_change(move |value, _, cx| {
                                 view.update(cx, |this, cx| {
@@ -650,7 +656,7 @@ impl Render for CreateChannelView {
                     .child(
                         Button::new("create-channel.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("directory-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -659,23 +665,10 @@ impl Render for CreateChannelView {
                         Button::new("create-channel.create")
                             .variant(ButtonVariant::Default)
                             .disabled(!can_create)
-                            .label("Create")
+                            .label(t!("create-channel-create"))
                             .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
                     ),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::channel_handle;
-
-    #[test]
-    fn handles_follow_mattermost_rules() {
-        assert_eq!(channel_handle("Design Reviews"), "design-reviews");
-        assert_eq!(channel_handle("  release -- 2026  "), "release-2026");
-        assert_eq!(channel_handle("ok_name!"), "ok_name");
-        assert_eq!(channel_handle("-"), "");
     }
 }
 
@@ -703,7 +696,8 @@ impl EventEmitter<AddMembersEvent> for AddMembersView {}
 
 impl AddMembersView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search people"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("directory-search-people")));
         let subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         Self {
             channel: SharedString::default(),
@@ -854,11 +848,7 @@ impl Render for AddMembersView {
             .map(|profile| self.row(profile, cx).into_any_element())
             .collect();
         let count = self.selected.len();
-        let add_label = match count {
-            0 => "Add".to_string(),
-            1 => "Add 1 person".to_string(),
-            n => format!("Add {n} people"),
-        };
+        let add_label = t!("add-members-add", count = count);
         div()
             .flex()
             .flex_col()
@@ -868,13 +858,13 @@ impl Render for AddMembersView {
                     .flex()
                     .flex_col()
                     .gap(theme.space(1.))
-                    .child(dialog_title("add-members.title", cx).child("Add members"))
-                    .child(
-                        dialog_description("add-members.description", cx)
-                            .child(format!("They join #{} and see its history.", self.channel)),
-                    ),
+                    .child(dialog_title("add-members.title", cx).child(t!("add-members-title")))
+                    .child(dialog_description("add-members.description", cx).child(t!(
+                        "add-members-description",
+                        channel = self.channel.to_string()
+                    ))),
             )
-            .child(Input::new(&self.search).aria_label("Search people"))
+            .child(Input::new(&self.search).aria_label(t!("directory-search-people")))
             .child(
                 div()
                     .id("add-members.list")
@@ -892,11 +882,11 @@ impl Render for AddMembersView {
                                 .type_style(style::UI, &theme)
                                 .text_color(theme.colors.muted_foreground)
                                 .child(if self.loading {
-                                    "Loading\u{2026}".to_string()
+                                    t!("add-members-loading")
                                 } else if query.is_empty() {
-                                    "Everyone on the team is already here".to_string()
+                                    t!("add-members-everyone-here")
                                 } else {
-                                    format!("Nobody matches “{query}”")
+                                    t!("directory-nobody-matches", query = query.to_string())
                                 }),
                         )
                     })
@@ -910,7 +900,7 @@ impl Render for AddMembersView {
                     .child(
                         Button::new("add-members.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("directory-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -923,5 +913,29 @@ impl Render for AddMembersView {
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     ),
             )
+    }
+}
+
+// The tests sit at the end so the check for hard-coded strings reads the
+// whole file above them.
+#[cfg(test)]
+mod tests {
+    use super::channel_handle;
+    use crate::t;
+
+    #[test]
+    fn handles_follow_mattermost_rules() {
+        assert_eq!(channel_handle("Design Reviews"), "design-reviews");
+        assert_eq!(channel_handle("  release -- 2026  "), "release-2026");
+        assert_eq!(channel_handle("ok_name!"), "ok_name");
+        assert_eq!(channel_handle("-"), "");
+    }
+
+    #[test]
+    fn the_add_button_counts_who_it_adds() {
+        assert_eq!(t!("add-members-add", count = 0), "Add");
+        assert_eq!(t!("add-members-add", count = 1), "Add 1 person");
+        assert_eq!(t!("add-members-add", count = 3), "Add 3 people");
+        assert_eq!(t!("browse-members", count = 1), "1 member");
     }
 }
