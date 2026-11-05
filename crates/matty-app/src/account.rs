@@ -148,11 +148,12 @@ impl AccountView {
                 window,
                 |this, _, event: &EmojiPickerEvent, window, cx| match event {
                     EmojiPickerEvent::Pick(name) => {
+                        crate::emoji::record_pick(name, cx);
                         this.status_emoji = name.clone();
                         this.close_status_picker(window, cx);
                     }
                     EmojiPickerEvent::Cancel => this.close_status_picker(window, cx),
-                    EmojiPickerEvent::SkinTone(_) => {}
+                    EmojiPickerEvent::SkinTone(tone) => crate::emoji::save_skin_tone(*tone, cx),
                 },
             ),
             // The suggestions show while the field is empty.
@@ -607,6 +608,7 @@ impl AccountView {
             })
             .on_open_change(cx.listener(|this, open: &bool, window, cx| {
                 if *open {
+                    this.status_picker.update(cx, crate::emoji::prepare_picker);
                     this.status_picker_open = true;
                     cx.notify();
                 } else {
