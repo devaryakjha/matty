@@ -176,7 +176,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
             rpm desktop-file-utils appstream
-          curl -sSfL -o /usr/local/bin/appimagetool \
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o /usr/local/bin/appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
           echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  /usr/local/bin/appimagetool" | sha256sum -c
           chmod +x /usr/local/bin/appimagetool
