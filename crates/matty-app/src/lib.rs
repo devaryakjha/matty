@@ -226,7 +226,24 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     actions::bind(cx);
     #[cfg(not(target_family = "wasm"))]
     menu::init(cx);
-    cx.set_global(deeplink::Incoming(links));
+    // A link, or a later launch asking Matty to come forward, opens the
+    // main window again when it was closed (macOS keeps Matty running);
+    // the window then takes the link (#614).
+    let (to_window, incoming) = async_channel::unbounded::<String>();
+    cx.set_global(deeplink::Incoming(incoming));
+    cx.spawn(async move |cx| {
+        while let Ok(link) = links.recv().await {
+            cx.update(|cx| {
+                if cx.windows().is_empty() {
+                    open_main_window(cx);
+                }
+            });
+            if to_window.send(link).await.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
     open_main_window(cx);
     cx.activate(true);
 }
