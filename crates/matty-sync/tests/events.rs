@@ -819,3 +819,19 @@ async fn scheduled_post_events_publish_the_list() {
         ("s1", "much later")
     );
 }
+
+#[tokio::test]
+async fn an_added_emoji_is_published_at_once() {
+    let emoji = matty_api::models::Emoji {
+        id: "e1".into(),
+        name: "shipit".into(),
+        creator_id: "u2".into(),
+        update_at: 5,
+        ..Default::default()
+    };
+    let (seen, _store, _dir) = run(vec![event(WsEvent::EmojiAdded(emoji))]).await;
+    assert!(seen.iter().any(|change| matches!(
+        change,
+        ChangeSet::CustomEmoji(emoji) if emoji.iter().any(|one| one.name == "shipit")
+    )));
+}

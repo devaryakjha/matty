@@ -161,12 +161,13 @@ pub fn save_skin_tone(tone: Option<usize>, cx: &mut App) {
     });
 }
 
-/// Brings a picker up to date as it opens: the saved skin tone and the
-/// most used emoji first.
+/// Brings a picker up to date as it opens: the saved skin tone, the most
+/// used emoji first and the server's custom emoji.
 pub fn prepare_picker(picker: &mut EmojiPickerState, cx: &mut Context<EmojiPickerState>) {
     let tone = SettingsStore::global(cx).read(cx).get().skin_tone;
     picker.set_skin_tone(tone, cx);
     picker.set_recents(frequent(cx), cx);
+    custom_tab(picker, cx);
 }
 
 /// `name` in the default tone: `+1_medium_skin_tone` counts as `+1`.
@@ -199,6 +200,13 @@ impl CustomEmoji {
         self.0.borrow().get(name).cloned()
     }
 
+    /// Every custom emoji's name, A to Z.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.0.borrow().keys().cloned().collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Whether `name` is one of the server's custom emoji.
     pub fn contains(&self, name: &str) -> bool {
         self.0.borrow().contains_key(name)
@@ -211,6 +219,31 @@ impl CustomEmoji {
 pub fn custom_image(name: &str, cx: &App) -> Option<Arc<Image>> {
     let id = cx.try_global::<CustomEmoji>()?.id(name)?;
     cx.try_global::<EmojiImages>()?.image(&id)
+}
+
+/// The custom emoji called `name` as a source that draws once its image
+/// lands, for the picker's grid, which is built before the images are.
+pub fn lazy_source(name: &str) -> ImageSource {
+    let name = name.to_owned();
+    ImageSource::Custom(Arc::new(move |window, cx| {
+        custom_image(&name, cx)?
+            .use_render_image(window, cx)
+            .map(Ok)
+    }))
+}
+
+/// Puts the server's custom emoji in `picker`'s Custom tab (#209).
+pub fn custom_tab(picker: &mut EmojiPickerState, cx: &mut Context<EmojiPickerState>) {
+    let names = cx
+        .try_global::<CustomEmoji>()
+        .map(CustomEmoji::names)
+        .unwrap_or_default();
+    picker.set_custom(
+        names
+            .into_iter()
+            .map(|name| (SharedString::from(name.clone()), lazy_source(&name))),
+        cx,
+    );
 }
 
 /// [`custom_image`] as a source for gpuicn's views.

@@ -289,7 +289,11 @@ pub(crate) fn apply(
                 dirty.thread_lists.insert(team_id);
             }
         }
-        WsEvent::EmojiAdded(emoji) => sidebar::upsert_emoji(conn, std::slice::from_ref(&emoji))?,
+        WsEvent::EmojiAdded(emoji) => {
+            sidebar::upsert_emoji(conn, std::slice::from_ref(&emoji))?;
+            // Usable at once in messages, reactions and the picker (#209).
+            dirty.emoji = true;
+        }
         WsEvent::ConfigChanged(_) | WsEvent::LicenseChanged(_) => {
             fetches.push(Fetch::Capabilities);
         }
