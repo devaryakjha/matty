@@ -2,6 +2,7 @@
 //! view draws a [`ChannelModel`] that sync will fill; until then it shows
 //! the empty state, or the preview fixtures with `MATTY_PREVIEW=1`.
 
+pub(crate) mod format_bar;
 mod outgoing;
 mod slash;
 
@@ -758,24 +759,7 @@ pub(crate) fn apply_format(
     let composer = composer.clone();
     window.defer(cx, move |window, cx| {
         composer.update(cx, |composer, cx| {
-            let value = composer.value(cx);
-            if let Some((wrapped, selection)) =
-                unwrap_selection(&value, composer.selection(cx), before, after)
-            {
-                let inside =
-                    value[wrapped.start + before.len()..wrapped.end - after.len()].to_string();
-                composer.input().update(cx, |input, cx| {
-                    input.set_selected_range(wrapped, cx);
-                    input.replace(inside, window, cx);
-                    input.set_selected_range(selection, cx);
-                });
-                return;
-            }
-            composer.wrap_selection(before, after, window, cx);
-            if after == "](url)" {
-                let end = composer.selection(cx).end;
-                composer.set_selection(end + 2..end + 5, cx);
-            }
+            format_bar::toggle_format(composer, before, after, window, cx)
         });
     });
     true
@@ -2639,10 +2623,11 @@ impl ChannelView {
         }
     }
 
-    /// Wraps the selection in Markdown from a toolbar button.
+    /// Wraps the selection in Markdown from a toolbar button, or takes it
+    /// off, exactly as the shortcut does (#219).
     fn wrap(&mut self, before: &str, after: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| {
-            composer.wrap_selection(before, after, window, cx);
+            format_bar::toggle_format(composer, before, after, window, cx);
             composer.focus(window, cx);
         });
     }
@@ -4772,6 +4757,7 @@ impl ChannelView {
                 )
         };
         let send_on = SettingsStore::global(cx).read(cx).get().send_on;
+        let format_bar = SettingsStore::global(cx).read(cx).get().format_bar;
         let max = self.max_post_size();
         let over = self.draft_len > max;
         // The counter appears in the last tenth and stays while over.
@@ -4849,6 +4835,7 @@ impl ChannelView {
             .children(self.priority_tag(cx))
             .children(link_preview)
             .children(tray)
+            .children(self.format_bar(cx))
             .children(crate::slash::error_line(
                 "composer.command-error",
                 self.slash.error(),
@@ -4885,6 +4872,29 @@ impl ChannelView {
                         tool("composer.code", "Code", LucideIcon::Code).on_click(
                             cx.listener(|this, _, window, cx| this.wrap("`", "`", window, cx)),
                         ),
+                    ))
+                    .child(style::tipped(
+                        "composer.formatting.tip",
+                        if format_bar {
+                            "Hide formatting"
+                        } else {
+                            "Show formatting"
+                        },
+                        tool(
+                            "composer.formatting",
+                            if format_bar {
+                                "Hide formatting"
+                            } else {
+                                "Show formatting"
+                            },
+                            LucideIcon::Type,
+                        )
+                        .variant(if format_bar {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .on_click(|_, _, cx| format_bar::toggle_format_bar(cx)),
                     ))
                     .child(emoji_popover)
                     .child(style::tipped(
