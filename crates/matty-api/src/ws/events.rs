@@ -12,7 +12,8 @@ use crate::{
     capabilities::OldFormat,
     models::{
         BookmarkUpdate, Channel, ChannelBookmark, ChannelMember, Draft, Emoji, Post,
-        PostAcknowledgement, Preference, Reaction, SidebarCategory, Team, User, UserThread,
+        PostAcknowledgement, Preference, Reaction, ScheduledPost, SidebarCategory, Team, User,
+        UserThread,
     },
 };
 
@@ -317,6 +318,12 @@ pub enum WsEvent {
     DraftUpdated(Draft),
     /// `draft_deleted`.
     DraftDeleted(Draft),
+    /// `scheduled_post_created` (#220).
+    ScheduledPostCreated(ScheduledPost),
+    /// `scheduled_post_updated`.
+    ScheduledPostUpdated(ScheduledPost),
+    /// `scheduled_post_deleted`.
+    ScheduledPostDeleted(ScheduledPost),
     /// `channel_bookmark_created` (#226).
     ChannelBookmarkCreated {
         /// The channel.
@@ -574,6 +581,9 @@ fn decode_known(raw: &RawEvent) -> Result<Option<WsEvent>, String> {
         "draft_created" => WsEvent::DraftCreated(required(data, "draft")?),
         "draft_updated" => WsEvent::DraftUpdated(required(data, "draft")?),
         "draft_deleted" => WsEvent::DraftDeleted(required(data, "draft")?),
+        "scheduled_post_created" => WsEvent::ScheduledPostCreated(required(data, "scheduledPost")?),
+        "scheduled_post_updated" => WsEvent::ScheduledPostUpdated(required(data, "scheduledPost")?),
+        "scheduled_post_deleted" => WsEvent::ScheduledPostDeleted(required(data, "scheduledPost")?),
         "channel_bookmark_created" => {
             let bookmark: Box<ChannelBookmark> = required(data, "bookmark")?;
             WsEvent::ChannelBookmarkCreated {

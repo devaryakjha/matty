@@ -24,6 +24,7 @@ mod load;
 mod netwatch;
 mod outbox;
 mod presence;
+mod priority;
 mod typing;
 #[cfg(not(target_family = "wasm"))]
 mod wake;

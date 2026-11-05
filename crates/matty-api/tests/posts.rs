@@ -609,3 +609,144 @@ async fn dialogs_submit_their_values_and_read_the_integrations_errors() {
     };
     assert!(client.submit_dialog(&quiet).await.unwrap().accepted());
 }
+
+#[tokio::test]
+async fn priority_goes_under_metadata_and_only_when_set() {
+    use matty_api::models::PostPriority;
+    let plain = serde_json::to_value(NewPost::new("c1", "hi", "u1:1")).unwrap();
+    assert!(plain.get("metadata").is_none(), "{plain}");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts"))
+        .and(body_partial_json(json!({
+            "message": "deploy now",
+            "metadata": {"priority": {
+                "priority": "urgent",
+                "requested_ack": true,
+                "persistent_notifications": true,
+            }},
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "p1", "channel_id": "c1", "message": "deploy now",
+            "metadata": {
+                "priority": {"priority": "urgent", "requested_ack": true},
+                "acknowledgements": [{"user_id": "u2", "post_id": "p1", "acknowledged_at": 5}],
+            },
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let post = client
+        .create_post(&NewPost {
+            priority: Some(PostPriority {
+                priority: PostPriority::URGENT.into(),
+                requested_ack: true,
+                persistent_notifications: true,
+            }),
+            ..NewPost::new("c1", "deploy now", "u1:1")
+        })
+        .await
+        .unwrap();
+    let priority = post.metadata.priority.unwrap();
+    assert!(priority.is_urgent() && priority.requested_ack);
+    assert_eq!(post.metadata.acknowledgements[0].user_id, "u2");
+}
+
+#[tokio::test]
+async fn acknowledgements_post_and_delete_for_the_user() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/users/u1/posts/p1/ack"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "user_id": "u1", "post_id": "p1", "acknowledged_at": 1_700_000_000_000_i64,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/users/u1/posts/p1/ack"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "OK"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let ack = client.acknowledge_post("u1", "p1").await.unwrap();
+    assert_eq!(ack.acknowledged_at, 1_700_000_000_000);
+    client.unacknowledge_post("u1", "p1").await.unwrap();
+}
+
+#[tokio::test]
+async fn scheduled_posts_are_created_listed_changed_and_deleted() {
+    use matty_api::models::{PostPriority, ScheduledMetadata, ScheduledPost};
+    let server = MockServer::start().await;
+    let stored = json!({
+        "id": "s1", "user_id": "u1", "channel_id": "c1", "root_id": "",
+        "message": "later", "props": {}, "file_ids": null,
+        "metadata": {"priority": {"priority": "important"}},
+        "scheduled_at": 1_800_000_000_000_i64, "processed_at": 0, "error_code": "",
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/v4/posts/schedule"))
+        .and(body_partial_json(json!({
+            "channel_id": "c1", "message": "later", "scheduled_at": 1_800_000_000_000_i64,
+            "metadata": {"priority": {"priority": "important"}},
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(stored.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/posts/scheduled/team/t1"))
+        .and(query_param("includeDirectChannels", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "t1": [stored.clone()],
+            "directChannels": [{"id": "s2", "channel_id": "d1", "message": "dm later"}],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v4/posts/schedule/s1"))
+        .and(body_partial_json(json!({"id": "s1", "message": "sooner"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stored))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v4/posts/schedule/s1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "s1"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri()).unwrap().with_token("t");
+    let created = client
+        .schedule_post(&ScheduledPost {
+            channel_id: "c1".into(),
+            message: "later".into(),
+            scheduled_at: 1_800_000_000_000,
+            metadata: ScheduledMetadata {
+                priority: Some(PostPriority {
+                    priority: PostPriority::IMPORTANT.into(),
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.id, "s1");
+    let mut listed = client.scheduled_posts("t1", true).await.unwrap();
+    listed.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1].channel_id, "d1");
+    client
+        .update_scheduled_post(&ScheduledPost {
+            message: "sooner".into(),
+            ..created
+        })
+        .await
+        .unwrap();
+    client.delete_scheduled_post("s1").await.unwrap();
+}

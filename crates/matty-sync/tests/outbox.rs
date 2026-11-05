@@ -23,6 +23,7 @@ fn send() -> Command {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: Default::default(),
+        priority: None,
     }
 }
 
@@ -291,6 +292,7 @@ fn post_in(channel: &str, id: &str, message: &str) -> Command {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: Default::default(),
+        priority: None,
     }
 }
 
@@ -371,6 +373,7 @@ async fn sends_in_a_channel_go_one_at_a_time_in_order() {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: Default::default(),
+        priority: None,
     });
     // While the first is on its way, the second waits.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -423,6 +426,7 @@ async fn a_posts_properties_reach_the_server() {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: [("remove_link_preview".to_owned(), "true".into())].into(),
+        priority: None,
     });
     next(
         &changes,
@@ -555,5 +559,6 @@ fn send_with(id: &str, local_files: Vec<std::path::PathBuf>) -> Command {
         file_ids: Vec::new(),
         local_files,
         props: Default::default(),
+        priority: None,
     }
 }

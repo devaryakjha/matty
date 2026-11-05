@@ -103,6 +103,9 @@ pub struct PostMetadata {
     pub reactions: Vec<Reaction>,
     /// Message priority, when set (licensed servers).
     pub priority: Option<PostPriority>,
+    /// Who acknowledged the post, when it asked for acknowledgements.
+    #[serde(deserialize_with = "null_as_default")]
+    pub acknowledgements: Vec<PostAcknowledgement>,
 }
 
 /// A preview the server made for a post.
@@ -246,7 +249,7 @@ pub struct Reaction {
 }
 
 /// Message priority (licensed servers).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PostPriority {
     /// `""`, `important` or `urgent`.
@@ -557,4 +560,70 @@ pub struct PostAcknowledgement {
     pub post_id: String,
     /// Milliseconds since the epoch; 0 once removed.
     pub acknowledged_at: i64,
+}
+
+impl PostPriority {
+    /// `important`.
+    pub const IMPORTANT: &'static str = "important";
+    /// `urgent`.
+    pub const URGENT: &'static str = "urgent";
+
+    /// Whether the post is urgent.
+    pub fn is_urgent(&self) -> bool {
+        self.priority == Self::URGENT
+    }
+
+    /// Whether anything is set: a label, an acknowledgement request or
+    /// persistent notifications. An empty priority is not sent.
+    pub fn is_set(&self) -> bool {
+        !self.priority.is_empty() || self.requested_ack || self.persistent_notifications
+    }
+}
+
+/// A message set to post later (`posts/schedule`, Mattermost 10.3+ with a
+/// license).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ScheduledPost {
+    /// Its id; empty for one not created yet.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// Milliseconds since the epoch.
+    pub create_at: i64,
+    /// Milliseconds since the epoch.
+    pub update_at: i64,
+    /// Author.
+    pub user_id: String,
+    /// Channel.
+    pub channel_id: String,
+    /// Thread root, for a reply.
+    pub root_id: String,
+    /// Message text.
+    pub message: String,
+    /// Properties.
+    #[serde(deserialize_with = "null_as_default")]
+    pub props: HashMap<String, Value>,
+    /// Attached file ids.
+    #[serde(deserialize_with = "null_as_default")]
+    pub file_ids: Vec<String>,
+    /// Priority, under `metadata`, as on a post.
+    #[serde(deserialize_with = "null_as_default")]
+    pub metadata: ScheduledMetadata,
+    /// When it posts, in milliseconds since the epoch.
+    pub scheduled_at: i64,
+    /// When the server tried to post it; 0 until then.
+    pub processed_at: i64,
+    /// Why the server could not post it, such as `channel_archived`;
+    /// empty when it has not failed.
+    #[serde(deserialize_with = "null_as_default")]
+    pub error_code: String,
+}
+
+/// What a scheduled post carries under `metadata`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ScheduledMetadata {
+    /// Its priority, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<PostPriority>,
 }
