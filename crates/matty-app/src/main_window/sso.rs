@@ -5,14 +5,24 @@
 
 use std::time::Duration;
 
-use gpui_kit::{Context, Entity, Task, Window};
+use gpui_kit::{AppContext as _, Context, Entity, SharedString, Task, WeakEntity, Window};
 
 use super::MainWindow;
 use crate::deeplink::{self, DeepLink};
 use crate::login::{LoginStep, LoginView, SsoProvider};
+use crate::url_handler;
 
 /// How long the server's token lives, so how long the card waits.
 pub(super) const SSO_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+
+/// How long the server waits before it hands the token to the browser's
+/// `mattermost://` link; after that the card offers a token instead.
+const HAND_OFF_WAIT: Duration = Duration::from_secs(10);
+
+/// How often, and how many times, the card checks again after asking to
+/// open `mattermost://` links, since macOS asks the person first.
+const CLAIM_CHECK: Duration = Duration::from_secs(2);
+const CLAIM_CHECKS: usize = 30;
 
 /// A browser sign-in Matty is waiting on.
 pub(super) struct PendingSso {
@@ -101,7 +111,19 @@ impl MainWindow {
         cx.open_url(&deeplink::sso_login_url(&server, provider, &client_token));
         tracing::info!(provider = provider.label(), "opened the browser for SSO");
         let view = view.downgrade();
+        self.check_scheme_owner(view.clone(), 1, Duration::ZERO, window, cx);
         let token = client_token.clone();
+        let offer_view = view.clone();
+        let offer_token = token.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(HAND_OFF_WAIT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sso.as_ref().map(|p| &p.client_token) == Some(&offer_token) {
+                    let _ = offer_view.update(cx, |view, cx| view.offer_token(cx));
+                }
+            });
+        })
+        .detach();
         let timeout = cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SSO_TIMEOUT).await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -128,6 +150,56 @@ impl MainWindow {
             server,
             _timeout: timeout,
         });
+    }
+
+    /// Asks the system who opens `mattermost://` links, up to `checks`
+    /// times `every` apart, and tells the card about any other app; it
+    /// stops once Matty holds them or the sign-in ends (#489).
+    fn check_scheme_owner(
+        &self,
+        view: WeakEntity<LoginView>,
+        checks: usize,
+        every: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            for _ in 0..checks {
+                cx.background_executor().timer(every).await;
+                let owner = cx.background_spawn(async { url_handler::owner() }).await;
+                let other = match owner {
+                    url_handler::Owner::Other(app) => Some(SharedString::from(app)),
+                    url_handler::Owner::Matty | url_handler::Owner::Nobody => None,
+                };
+                let done = other.is_none();
+                let waiting = this
+                    .update(cx, |this, cx| {
+                        let waiting = this.sso.is_some();
+                        if waiting {
+                            let _ = view.update(cx, |view, cx| view.set_scheme_owner(other, cx));
+                        }
+                        waiting
+                    })
+                    .unwrap_or(false);
+                if done || !waiting {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Asks to make Matty the app that opens `mattermost://` links, then
+    /// watches for the change: macOS shows its own confirmation first.
+    pub(super) fn claim_links(
+        &mut self,
+        view: &Entity<LoginView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        tracing::info!("asking to open mattermost:// links");
+        cx.background_spawn(async { url_handler::claim() }).detach();
+        self.check_scheme_owner(view.downgrade(), CLAIM_CHECKS, CLAIM_CHECK, window, cx);
     }
 
     /// Stops waiting: a later hand-off is ignored.
