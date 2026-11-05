@@ -333,7 +333,7 @@ impl Switcher {
                                 .fallback(initial)
                                 .aria_label(name.clone())
                                 .status(style::avatar_status(*presence, &style::Palette::read(cx)))
-                                .status_size(style::scaled(theme, 8.))
+                                .status_size(style::scaled(theme, 6.))
                                 .ring_color(theme.colors.popover)
                                 .w(slot)
                                 .h(slot)
