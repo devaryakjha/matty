@@ -636,7 +636,7 @@ impl MainWindow {
                             file_ids,
                             local_files,
                             props: crate::embeds::send_props(*unfurl),
-                            priority: priority.clone(),
+                            priority: priority.clone().map(Box::new),
                         });
                     }
                 }

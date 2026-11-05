@@ -70,11 +70,11 @@ async fn an_urgent_post_asking_for_acknowledgement_is_sent_with_its_priority() {
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: Default::default(),
-        priority: Some(PostPriority {
+        priority: Some(Box::new(PostPriority {
             priority: PostPriority::URGENT.into(),
             requested_ack: true,
             persistent_notifications: false,
-        }),
+        })),
     });
     // The optimistic row shows the label at once, before the server answers.
     let ChangeSet::Posts { posts, .. } = next(

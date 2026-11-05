@@ -318,7 +318,7 @@ pub(crate) fn apply(
         }
         WsEvent::ScheduledPostCreated(post) | WsEvent::ScheduledPostUpdated(post) => dirty
             .scheduled
-            .push(crate::priority::ScheduledChange::Upsert(post)),
+            .push(crate::priority::ScheduledChange::Upsert(Box::new(post))),
         WsEvent::ScheduledPostDeleted(post) => dirty
             .scheduled
             .push(crate::priority::ScheduledChange::Remove(post.id)),

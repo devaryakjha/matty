@@ -189,8 +189,8 @@ pub enum Command {
         /// removed the link preview while composing (#188).
         props: std::collections::HashMap<String, serde_json::Value>,
         /// Message priority, for a root post on a server that has it
-        /// (#220); `None` for a standard post.
-        priority: Option<matty_api::models::PostPriority>,
+        /// (#220); `None` for a standard post. Boxed: few posts have one.
+        priority: Option<Box<matty_api::models::PostPriority>>,
     },
     /// Sends a failed post again.
     Retry {
@@ -1537,7 +1537,7 @@ impl Engine {
                             .collect(),
                         props,
                         created_at: now,
-                        priority,
+                        priority: priority.map(|priority| *priority),
                         ..Outgoing::default()
                     };
                     outbox::queue(&tx, &outgoing, &me, dirty)?;

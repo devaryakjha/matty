@@ -457,7 +457,7 @@ pub(crate) async fn run(
                     client.update_scheduled_post(&post).await?
                 };
                 Some(Loaded::Scheduled(crate::priority::ScheduledChange::Upsert(
-                    saved,
+                    Box::new(saved),
                 )))
             }
             Write::DeleteScheduled { id } => {

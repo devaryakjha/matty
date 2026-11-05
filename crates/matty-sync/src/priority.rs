@@ -18,7 +18,7 @@ pub(crate) enum ScheduledChange {
     /// Every scheduled message, as the server listed them.
     Replace(Vec<ScheduledPost>),
     /// One was created or changed.
-    Upsert(ScheduledPost),
+    Upsert(Box<ScheduledPost>),
     /// One was sent or deleted.
     Remove(String),
 }
@@ -43,7 +43,7 @@ impl Scheduled {
                         .collect();
                 }
                 ScheduledChange::Upsert(post) => {
-                    self.posts.insert(post.id.clone(), post);
+                    self.posts.insert(post.id.clone(), *post);
                 }
                 ScheduledChange::Remove(id) => {
                     self.posts.remove(&id);
@@ -115,10 +115,10 @@ mod tests {
             scheduled("b", 20),
             scheduled("a", 30),
         ])]));
-        assert!(list.apply(vec![ScheduledChange::Upsert(scheduled("c", 10))]));
+        assert!(list.apply(vec![ScheduledChange::Upsert(Box::new(scheduled("c", 10)))]));
         let ids: Vec<String> = list.snapshot().iter().map(|post| post.id.clone()).collect();
         assert_eq!(ids, ["c", "b", "a"]);
-        assert!(!list.apply(vec![ScheduledChange::Upsert(scheduled("c", 10))]));
+        assert!(!list.apply(vec![ScheduledChange::Upsert(Box::new(scheduled("c", 10)))]));
         assert!(list.apply(vec![ScheduledChange::Remove("b".into())]));
         assert!(list.get("b").is_none() && list.get("a").is_some());
         assert!(!list.apply(vec![ScheduledChange::Remove("b".into())]));
