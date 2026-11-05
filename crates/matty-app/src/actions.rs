@@ -321,6 +321,24 @@ pub fn tooltip_text(label: &str, binding: &str) -> gpui_kit::SharedString {
 }
 
 /// Key contexts set by views.
+/// Single keys on a selected message (Shift+Tab from the composer, then
+/// Up and Down), for the shortcut sheet (#213). The channel and the thread
+/// pane handle them in their `selection_key`.
+pub const MESSAGE_KEYS: [(&str, &str); 12] = [
+    ("R", "Reply in thread"),
+    ("E", "Edit your message"),
+    ("Delete", "Delete your message"),
+    ("+", "Add reaction"),
+    ("F", "Forward"),
+    ("T", "Follow or unfollow thread"),
+    ("U", "Mark as unread"),
+    ("S", "Save or unsave"),
+    ("P", "Pin or unpin"),
+    ("C", "Copy text"),
+    ("L", "Copy link"),
+    ("Enter", "View images"),
+];
+
 pub const MAIN_WINDOW: &str = "MainWindow";
 /// A reorderable list: the sidebar's, or the rail's servers (#206). With
 /// focus in it, Alt+Shift+Up and Down move the focused row or category

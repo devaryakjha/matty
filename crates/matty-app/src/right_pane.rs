@@ -1813,7 +1813,8 @@ impl RightPaneView {
 
     /// Single keys on the selected row, as in the channel (#107): R
     /// replies, E edits and Delete removes the user's own reply, P pins, S
-    /// saves and U marks unread.
+    /// saves, U marks unread, F forwards, T follows the thread, C copies
+    /// the text and L the link.
     fn selection_key(
         &mut self,
         keystroke: &gpui_kit::Keystroke,
@@ -1853,6 +1854,12 @@ impl RightPaneView {
                 saved: !post.saved,
             }),
             "u" if sent => cx.emit(RightPaneEvent::MarkUnread(id)),
+            "f" if sent => cx.emit(RightPaneEvent::Forward(id)),
+            "t" => self.toggle_follow(cx),
+            "c" => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&post.body)))
+            }
+            "l" if sent => cx.emit(RightPaneEvent::CopyLink(id)),
             _ => return false,
         }
         cx.notify();
@@ -1939,7 +1946,7 @@ impl RightPaneView {
         } else {
             Vec::new()
         };
-        items.extend([
+        let copy_items = [
             MenuItem::new("thread.context.copy", "Copy text").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&body)))
             }),
@@ -1950,7 +1957,13 @@ impl RightPaneView {
                     ))
                 },
             ),
-        ]);
+        ];
+        let sent = post.status == PostStatus::Sent;
+        // A sent post puts copying with the owner's changes, as the
+        // channel's menu does (#213); others start with it.
+        if !sent {
+            items.extend(copy_items.iter().cloned());
+        }
         if post.status == PostStatus::Ephemeral {
             let (view, id) = (view.clone(), post.id.clone());
             items.push(
@@ -1962,7 +1975,7 @@ impl RightPaneView {
                 ),
             );
         }
-        if post.status == PostStatus::Sent {
+        if sent {
             let emit = |name: &str, label: SharedString, event: RightPaneEvent| {
                 let view = view.clone();
                 MenuItem::new(
@@ -1976,35 +1989,6 @@ impl RightPaneView {
             };
             let id = post.id.clone();
             items.extend([
-                emit(
-                    "copy-link",
-                    "Copy link".into(),
-                    RightPaneEvent::CopyLink(id.clone()),
-                ),
-                emit(
-                    "pin",
-                    if post.pinned {
-                        "Unpin from channel".into()
-                    } else {
-                        "Pin to channel".into()
-                    },
-                    RightPaneEvent::SetPinned {
-                        post: id.clone(),
-                        pinned: !post.pinned,
-                    },
-                ),
-                emit(
-                    "save",
-                    if post.saved {
-                        "Unsave".into()
-                    } else {
-                        "Save".into()
-                    },
-                    RightPaneEvent::SetSaved {
-                        post: id.clone(),
-                        saved: !post.saved,
-                    },
-                ),
                 emit(
                     "forward",
                     "Forward\u{2026}".into(),
@@ -2029,6 +2013,36 @@ impl RightPaneView {
                         )
                     }),
                 ),
+                emit(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    RightPaneEvent::SetSaved {
+                        post: id.clone(),
+                        saved: !post.saved,
+                    },
+                ),
+                emit(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    RightPaneEvent::SetPinned {
+                        post: id.clone(),
+                        pinned: !post.pinned,
+                    },
+                ),
+                emit(
+                    "copy-link",
+                    "Copy link".into(),
+                    RightPaneEvent::CopyLink(id.clone()),
+                ),
+                MenuItem::separator(),
             ]);
         }
         if post.status == PostStatus::Failed {
@@ -2043,10 +2057,10 @@ impl RightPaneView {
         }
         // The user's own sent replies are edited and deleted here, as in
         // the channel (#117, #118); the root is the channel's to change.
-        if reply && post.mine && post.kind == PostKind::Regular && post.status == PostStatus::Sent {
+        let own_sent =
+            reply && post.mine && post.kind == PostKind::Regular && post.status == PostStatus::Sent;
+        if own_sent {
             let (edit_view, edit_id) = (view.clone(), post.id.clone());
-            let (delete_view, delete_id) = (view.clone(), post.id.clone());
-            items.push(MenuItem::separator());
             items.push(MenuItem::new("thread.context.edit", "Edit").on_click(
                 move |_, window, cx| {
                     edit_view
@@ -2054,6 +2068,12 @@ impl RightPaneView {
                         .ok();
                 },
             ));
+        }
+        if sent {
+            items.extend(copy_items);
+        }
+        if own_sent {
+            let (delete_view, delete_id) = (view.clone(), post.id.clone());
             items.push(
                 MenuItem::new("thread.context.delete", "Delete\u{2026}").on_click(
                     move |_, window, cx| {

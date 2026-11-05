@@ -3950,6 +3950,21 @@ impl MainWindow {
                     .child("Every shortcut works anywhere in the window unless it names a view."),
             )
             .child(div().flex().flex_col().children(rows))
+            .child(
+                div()
+                    .pt(theme.space(3.))
+                    .pb(theme.space(1.))
+                    .type_style(style::META, &theme)
+                    .text_color(theme.colors.muted_foreground)
+                    .child("On a selected message (Shift+Tab from the composer, then Up and Down)"),
+            )
+            .child(
+                div().flex().flex_col().children(
+                    actions::MESSAGE_KEYS
+                        .into_iter()
+                        .map(|(key, label)| sheet_row(label, Kbd::new(key))),
+                ),
+            )
             .child(dialog_close("shortcuts.close", cx).label("Close"));
         dialog("shortcuts", &self.shortcuts, popup, window, cx)
     }
