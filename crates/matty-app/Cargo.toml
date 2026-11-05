@@ -37,6 +37,7 @@ fluent-bundle.workspace = true
 unic-langid.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+matty-spell.workspace = true
 tracing-appender.workspace = true
 sys-locale.workspace = true
 keyring.workspace = true
