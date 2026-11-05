@@ -315,6 +315,10 @@ fn load_fonts(cx: &mut App) {
         .expect("load bundled Geist fonts");
 }
 
+/// The app's id: the macOS bundle id, and on Linux the Wayland app id and
+/// X11 class that desktops match to `packaging/linux/dev.arya.matty.desktop`.
+pub const APP_ID: &str = "dev.arya.matty";
+
 fn window_options(cx: &App) -> WindowOptions {
     let saved = SettingsStore::global(cx).read(cx).get().window;
     let bounds = match saved {
@@ -341,7 +345,7 @@ fn window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(bounds),
         window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
-        app_id: Some("app.matty.Matty".into()),
+        app_id: Some(APP_ID.into()),
         ..title_bar_window_options()
     }
 }

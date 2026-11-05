@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Packages a Linux release build of Matty (#216): a tarball, a .deb, an
+# .rpm when rpmbuild is installed, and an AppImage, with SHA256SUMS, in
+# target/dist/linux. The Flatpak builds from the same binary with
+# packaging/linux/flatpak/dev.arya.matty.yml. Nothing is signed or
+# published here.
+#
+#   scripts/linux-package 0.0.1            # builds target/release/matty first
+#   scripts/linux-package 0.0.1 path/to/matty
+#
+# The AppImage needs appimagetool on PATH, or MATTY_APPIMAGETOOL pointing at
+# it; without one it is skipped with a note.
+set -euo pipefail
+
+version="${1:?usage: scripts/linux-package VERSION [BINARY]}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+binary="${2:-}"
+if [[ -z "$binary" ]]; then
+	cargo build --release --locked --bin matty
+	binary="target/release/matty"
+fi
+[[ -x "$binary" ]] || { echo "no binary at $binary" >&2; exit 1; }
+
+case "$(uname -m)" in
+	x86_64) arch=x86_64 deb_arch=amd64 ;;
+	aarch64) arch=aarch64 deb_arch=arm64 ;;
+	*) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+id="dev.arya.matty"
+linux="packaging/linux"
+out="target/dist/linux"
+rm -rf "$out"
+mkdir -p "$out"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# The installed tree, under /usr, shared by every format.
+tree="$work/tree"
+install -Dm755 "$binary" "$tree/usr/bin/matty"
+install -Dm644 "$linux/$id.desktop" "$tree/usr/share/applications/$id.desktop"
+install -Dm644 "$linux/$id.svg" "$tree/usr/share/icons/hicolor/scalable/apps/$id.svg"
+install -Dm644 "$linux/$id.metainfo.xml" "$tree/usr/share/metainfo/$id.metainfo.xml"
+install -Dm644 LICENSE "$tree/usr/share/doc/matty/copyright"
+
+tarball="$out/Matty-$version-linux-$arch.tar.gz"
+tar -C "$tree" -czf "$tarball" usr
+
+# The libraries GPUI links or opens at run time.
+deb_depends="libc6 (>= 2.35), libxcb1, libxkbcommon0, libxkbcommon-x11-0, libx11-xcb1, libwayland-client0, libfontconfig1, libvulkan1"
+rpm_requires="libxcb, libxkbcommon, libxkbcommon-x11, libX11-xcb, libwayland-client, fontconfig, vulkan-loader"
+
+deb="$work/deb"
+cp -a "$tree" "$deb"
+mkdir -p "$deb/DEBIAN"
+cat >"$deb/DEBIAN/control" <<EOF
+Package: matty
+Version: $version
+Architecture: $deb_arch
+Maintainer: Matty <https://github.com/devaryakjha/matty>
+Depends: $deb_depends
+Section: net
+Priority: optional
+Homepage: https://github.com/devaryakjha/matty
+Description: Unofficial native desktop client for Mattermost
+ Matty keeps your Mattermost channels readable offline, opens fast and
+ works from the keyboard.
+EOF
+dpkg-deb --root-owner-group -Zxz --build "$deb" "$out/matty_${version}_${deb_arch}.deb" >/dev/null
+
+if command -v rpmbuild >/dev/null; then
+	rpm_version="${version//-/\~}"
+	rpmtop="$work/rpm"
+	mkdir -p "$rpmtop/SPECS"
+	cat >"$rpmtop/SPECS/matty.spec" <<EOF
+Name: matty
+Version: $rpm_version
+Release: 1
+Summary: Unofficial native desktop client for Mattermost
+License: MIT
+URL: https://github.com/devaryakjha/matty
+Requires: $rpm_requires
+AutoReqProv: no
+
+%description
+Matty keeps your Mattermost channels readable offline, opens fast and
+works from the keyboard.
+
+%install
+cp -a $tree/usr %{buildroot}/
+
+%files
+/usr/bin/matty
+/usr/share/applications/$id.desktop
+/usr/share/icons/hicolor/scalable/apps/$id.svg
+/usr/share/metainfo/$id.metainfo.xml
+/usr/share/doc/matty/copyright
+EOF
+	rpmbuild --quiet --define "_topdir $rpmtop" --define "_build_id_links none" \
+		--target "$arch" -bb "$rpmtop/SPECS/matty.spec"
+	cp "$rpmtop"/RPMS/*/*.rpm "$out/"
+else
+	echo "rpmbuild not found: no .rpm" >&2
+fi
+
+appimagetool="${MATTY_APPIMAGETOOL:-$(command -v appimagetool || true)}"
+if [[ -n "$appimagetool" ]]; then
+	appdir="$work/Matty.AppDir"
+	cp -a "$tree" "$appdir"
+	cp "$linux/$id.desktop" "$appdir/$id.desktop"
+	cp "$linux/$id.svg" "$appdir/$id.svg"
+	cat >"$appdir/AppRun" <<'EOF'
+#!/bin/sh
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/matty" "$@"
+EOF
+	chmod +x "$appdir/AppRun"
+	# Extracting instead of mounting, so it runs without FUSE, as on CI.
+	APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$arch" "$appimagetool" --no-appstream \
+		"$appdir" "$out/Matty-$version-$arch.AppImage" >/dev/null
+else
+	echo "appimagetool not found: no AppImage" >&2
+fi
+
+(cd "$out" && sha256sum -- * >SHA256SUMS)
+cat "$out/SHA256SUMS"

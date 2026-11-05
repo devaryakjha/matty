@@ -1139,7 +1139,13 @@ impl MainWindow {
             highlight_keys: crate::preview::enabled(),
             log_level,
             sound,
-            notifier: matty_notify::backend::platform(clicked_tx),
+            // The preview's fixtures, in screenshots and tests, never reach
+            // the desktop's notifications.
+            notifier: if crate::preview::enabled() {
+                Box::new(matty_notify::backend::Logged)
+            } else {
+                matty_notify::backend::platform(clicked_tx)
+            },
             badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
             collapsed_threads: crate::preview::enabled().then_some((true, true)),
