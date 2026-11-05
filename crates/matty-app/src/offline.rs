@@ -9,96 +9,75 @@
 
 use gpui_kit::SharedString;
 
-/// The toast's title for every refusal.
-pub const TITLE: &str = "You're offline";
-
-/// What every refusal adds: nothing was lost, and when it can work again.
-pub const AGAIN: &str = "Try again when you're back online.";
+use crate::t;
 
 /// The toast's first sentence for a refused action, named as sync names
 /// it (`CommandError::Offline::action`), or `None` for one the user did not
 /// ask for: background writes such as marking a channel viewed or saving a
 /// draft, and loads whose pane already says it is offline.
-pub fn refusal(action: &str) -> Option<&'static str> {
+pub fn refusal(action: &str) -> Option<SharedString> {
     Some(match action {
-        "add reaction" => "Couldn't add the reaction.",
-        "remove reaction" => "Couldn't remove the reaction.",
-        "edit" => "Couldn't save your edit.",
-        "delete" => "Couldn't delete the message.",
-        "save message" => "Couldn't save the message.",
-        "unsave message" => "Couldn't remove the message from Saved.",
-        "pin message" => "Couldn't pin the message.",
-        "unpin message" => "Couldn't unpin the message.",
-        "mark unread" => "Couldn't mark the message unread.",
-        "set reminder" => "Couldn't set the reminder.",
-        "acknowledge" => "Couldn't acknowledge the message.",
-        "remove acknowledgement" => "Couldn't remove your acknowledgement.",
-        "schedule message" => "Couldn't schedule the message.",
-        "change scheduled message" => "Couldn't change the scheduled message.",
-        "delete scheduled message" => "Couldn't delete the scheduled message.",
-        "run action" => "Couldn't send your choice to the integration.",
-        "run command" => "Couldn't run the command.",
-        "follow thread" => "Couldn't follow the thread.",
-        "unfollow thread" => "Couldn't unfollow the thread.",
-        "open direct message" => "Couldn't open the conversation.",
-        "join channel" => "Couldn't join the channel.",
-        "leave channel" => "Couldn't leave the channel.",
-        "archive channel" => "Couldn't archive the channel.",
-        "create channel" => "Couldn't create the channel.",
-        "change channel" => "Couldn't change the channel.",
-        "change channel privacy" => "Couldn't make the channel private.",
-        "change notifications" => "Couldn't change the channel's notifications.",
-        "add members" => "Couldn't add the members.",
-        "remove member" => "Couldn't remove the member.",
-        "set status" => "Couldn't change your status.",
-        "save your profile" => "Couldn't save your profile.",
-        "change your picture" => "Couldn't change your picture.",
-        "remove your picture" => "Couldn't remove your picture.",
+        "add reaction" => t!("offline-add-reaction"),
+        "remove reaction" => t!("offline-remove-reaction"),
+        "edit" => t!("offline-edit"),
+        "delete" => t!("offline-delete"),
+        "save message" => t!("offline-save-message"),
+        "unsave message" => t!("offline-unsave-message"),
+        "pin message" => t!("offline-pin-message"),
+        "unpin message" => t!("offline-unpin-message"),
+        "mark unread" => t!("offline-mark-unread"),
+        "set reminder" => t!("offline-set-reminder"),
+        "acknowledge" => t!("offline-acknowledge"),
+        "remove acknowledgement" => t!("offline-remove-acknowledgement"),
+        "schedule message" => t!("offline-schedule-message"),
+        "change scheduled message" => t!("offline-change-scheduled-message"),
+        "delete scheduled message" => t!("offline-delete-scheduled-message"),
+        "run action" => t!("offline-run-action"),
+        "run command" => t!("offline-run-command"),
+        "follow thread" => t!("offline-follow-thread"),
+        "unfollow thread" => t!("offline-unfollow-thread"),
+        "open direct message" => t!("offline-open-direct-message"),
+        "join channel" => t!("offline-join-channel"),
+        "leave channel" => t!("offline-leave-channel"),
+        "archive channel" => t!("offline-archive-channel"),
+        "create channel" => t!("offline-create-channel"),
+        "change channel" => t!("offline-change-channel"),
+        "change channel privacy" => t!("offline-change-channel-privacy"),
+        "change notifications" => t!("offline-change-notifications"),
+        "add members" => t!("offline-add-members"),
+        "remove member" => t!("offline-remove-member"),
+        "set status" => t!("offline-set-status"),
+        "save your profile" => t!("offline-save-your-profile"),
+        "change your picture" => t!("offline-change-your-picture"),
+        "remove your picture" => t!("offline-remove-your-picture"),
         _ => return None,
     })
 }
 
-/// The toast for a refused action: [`TITLE`], then what did not happen
-/// and [`AGAIN`].
+/// The toast for a refused action: "You're offline", then what did not
+/// happen and when it can work again.
 pub fn notice(action: &str) -> Option<(SharedString, SharedString)> {
     let refused = refusal(action)?;
-    Some((TITLE.into(), format!("{refused} {AGAIN}").into()))
+    Some((
+        t!("offline-title"),
+        t!("offline-notice", refused = refused.to_string()),
+    ))
 }
 
 /// The right pane's empty state while offline, by what it lists: a
 /// listing that may hold more than this computer saved says so rather than
 /// "nothing here".
-pub fn pane_empty(listing: &str) -> (&'static str, &'static str) {
-    match listing {
-        "search" => (
-            TITLE,
-            "Search runs on the server. Try again when you're back online.",
-        ),
-        "mentions" => (
-            TITLE,
-            "Recent mentions load from the server when you're back online.",
-        ),
-        "unreads" => (
-            TITLE,
-            "Unread messages load from the server when you're back online.",
-        ),
-        "saved" => (
-            TITLE,
-            "None of your saved messages are on this computer yet. They load when you're back online.",
-        ),
-        "files" => (
-            TITLE,
-            "A channel's files load from the server when you're back online.",
-        ),
-        "pinned" => (
-            TITLE,
-            "None of this channel's pinned messages are on this computer yet. They load when you're back online.",
-        ),
-        _ => (
-            TITLE,
-            "Matty hasn't saved this thread on this computer yet. Its replies load when you're back online.",
-        ),
-    }
+pub fn pane_empty(listing: &str) -> (SharedString, SharedString) {
+    let text = match listing {
+        "search" => t!("offline-empty-search"),
+        "mentions" => t!("offline-empty-mentions"),
+        "unreads" => t!("offline-empty-unreads"),
+        "saved" => t!("offline-empty-saved"),
+        "files" => t!("offline-empty-files"),
+        "pinned" => t!("offline-empty-pinned"),
+        _ => t!("offline-empty-thread"),
+    };
+    (t!("offline-title"), text)
 }
 
 #[cfg(test)]
@@ -128,7 +107,8 @@ mod tests {
         ] {
             let (_, text) = notice(action).unwrap();
             assert!(
-                text.starts_with("Couldn't ") && text.ends_with(AGAIN),
+                text.starts_with("Couldn't ")
+                    && text.ends_with("Try again when you're back online."),
                 "{action}"
             );
         }
