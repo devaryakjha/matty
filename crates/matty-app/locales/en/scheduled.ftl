@@ -13,8 +13,7 @@ schedule-when = { $day ->
 }
 schedule-edit-title = Edit scheduled message
 schedule-description = It posts at the time you pick, in your time zone, even while Matty is closed.
-schedule-day = Day
-schedule-time = Time
+schedule-posts-at = Posts at
 schedule-time-passed = Pick a time that is still ahead.
 schedule-cancel = Cancel
 schedule-save = Save

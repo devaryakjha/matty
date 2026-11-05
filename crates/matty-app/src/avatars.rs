@@ -20,9 +20,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{App, Global, Image};
+use gpui_kit::{App, ElementId, Global, Image, SharedString};
 
 use crate::ui::avatar::Avatar;
+use crate::ui::avatar_group::AvatarGroup;
 
 /// Sends sync the request for one picture: the version the app knows of,
 /// or `None` to let sync use the one it has stored.
@@ -232,6 +233,25 @@ pub fn with_picture(avatar: Avatar, user_id: &str, cx: &App) -> Avatar {
         Some(picture) => avatar.image(picture),
         None => avatar,
     }
+}
+
+/// A stack of people's faces, each with their picture once it has loaded.
+/// `people` are names and user ids; ids name each face after the group's.
+pub fn group<'a>(
+    id: &str,
+    people: impl IntoIterator<Item = (&'a SharedString, &'a str)>,
+    cx: &App,
+) -> AvatarGroup {
+    people.into_iter().enumerate().fold(
+        AvatarGroup::new(ElementId::Name(id.to_owned().into())),
+        |group, (index, (name, user_id))| {
+            let initial: String = name.chars().take(1).collect();
+            let face = Avatar::new(ElementId::Name(format!("{id}.{index}").into()))
+                .fallback(initial)
+                .aria_label(name.clone());
+            group.person(name.clone(), with_picture(face, user_id, cx))
+        },
+    )
 }
 
 /// An image from a picture's bytes, or `None` when they are not an image
