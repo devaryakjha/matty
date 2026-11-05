@@ -1093,7 +1093,9 @@ impl MainWindow {
         let preview_props = crate::preview::enabled().then(crate::preview::notify_props);
         let keyword_input =
             |list: matty_notify::KeywordList, window: &mut Window, cx: &mut Context<Self>| {
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Add a keyword"));
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(crate::t!("prefs-keyword-placeholder"))
+                });
                 cx.subscribe_in(
                     &input,
                     window,

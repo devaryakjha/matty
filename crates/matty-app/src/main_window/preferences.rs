@@ -26,6 +26,7 @@ use crate::settings::{
 };
 use crate::sidebar::Presence;
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     drawer::{Drawer, DrawerContent, DrawerSide, drawer_description, drawer_title},
@@ -69,13 +70,13 @@ impl Section {
         Self::Advanced,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> SharedString {
         match self {
-            Self::General => "General",
-            Self::Appearance => "Appearance",
-            Self::Messages => "Messages",
-            Self::Notifications => "Notifications",
-            Self::Advanced => "Advanced",
+            Self::General => t!("prefs-section-general"),
+            Self::Appearance => t!("prefs-section-appearance"),
+            Self::Messages => t!("prefs-section-messages"),
+            Self::Notifications => t!("prefs-section-notifications"),
+            Self::Advanced => t!("prefs-section-advanced"),
         }
     }
 
@@ -109,7 +110,7 @@ pub(crate) fn section_list(
 ) -> Sidebar {
     let theme = UiTheme::read(cx);
     let on_select = std::rc::Rc::new(on_select);
-    let mut list = Sidebar::new("preferences.sections", "Preferences sections").roving_focus(true);
+    let mut list = Sidebar::new("preferences.sections", t!("prefs-sections")).roving_focus(true);
     for section in Section::ALL {
         let on_select = on_select.clone();
         list = list.child(
@@ -399,7 +400,7 @@ impl MainWindow {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Choose".into()),
+            prompt: Some(t!("prefs-download-folder-choose")),
         });
         let settings = self.settings.clone();
         cx.spawn(async move |_, cx| {
@@ -455,17 +456,17 @@ impl MainWindow {
                     .flex()
                     .flex_col()
                     .gap(theme.space(1.5))
-                    .child(drawer_title("preferences.title", cx).child("Preferences"))
+                    .child(drawer_title("preferences.title", cx).child(t!("prefs-title")))
                     .child(
                         drawer_description("preferences.description", cx)
-                            .child("Changes apply right away and are saved for next time."),
+                            .child(t!("prefs-description")),
                     ),
             )
             .child(
                 Button::new("preferences.close")
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Sm)
-                    .label("Done")
+                    .label(t!("prefs-done"))
                     .on_click(move |_, window, cx| handle.close(window, cx)),
             );
         let body = div()
@@ -512,7 +513,7 @@ impl MainWindow {
         Drawer::new("preferences", &self.preferences)
             .direction(DrawerSide::Right)
             .content(
-                DrawerContent::new("preferences.panel", "Preferences")
+                DrawerContent::new("preferences.panel", t!("prefs-title"))
                     .w(width)
                     .child(header)
                     .child(body),
@@ -527,7 +528,7 @@ impl MainWindow {
             .clone()
             .or_else(dirs::download_dir)
             .map(|path| SharedString::from(path.display().to_string()))
-            .unwrap_or_else(|| "Your Downloads folder".into());
+            .unwrap_or_else(|| t!("prefs-download-folder-default"));
         let folder = div()
             .flex()
             .items_center()
@@ -551,7 +552,7 @@ impl MainWindow {
                         div()
                             .type_style(style::UI, &theme)
                             .text_color(theme.colors.foreground)
-                            .child("Download folder"),
+                            .child(t!("prefs-download-folder")),
                     )
                     .child(
                         div()
@@ -565,21 +566,21 @@ impl MainWindow {
                 Button::new("preferences.download-folder")
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Sm)
-                    .aria_label("Change download folder")
-                    .label("Change…")
+                    .aria_label(t!("prefs-download-folder-change-label"))
+                    .label(t!("prefs-download-folder-change"))
                     .on_click(cx.listener(|this, _, _, cx| this.choose_download_folder(cx))),
             );
         page(&theme)
             .child(group(
-                "Window",
+                t!("prefs-window"),
                 stack(&theme)
                     // macOS keeps Matty in the dock when its window closes,
                     // so only Linux and Windows have a tray to keep it in.
                     .when(!cfg!(target_os = "macos"), |stack| {
                         stack.child(self.switch_row(
                             "preferences.close-to-tray",
-                            "Keep running when closed",
-                            "Closing the window leaves Matty in the tray.",
+                            t!("prefs-close-to-tray"),
+                            t!("prefs-close-to-tray-detail"),
                             settings.close_to_tray,
                             |s, v| s.close_to_tray = v,
                             cx,
@@ -587,8 +588,8 @@ impl MainWindow {
                     })
                     .child(self.switch_row(
                         "preferences.launch-at-login",
-                        "Open at login",
-                        "Start Matty when you sign in.",
+                        t!("prefs-launch-at-login"),
+                        t!("prefs-launch-at-login-detail"),
                         settings.launch_at_login,
                         |s, v| s.launch_at_login = v,
                         cx,
@@ -596,7 +597,7 @@ impl MainWindow {
                 false,
                 &theme,
             ))
-            .child(group("Files", folder, false, &theme))
+            .child(group(t!("prefs-files"), folder, false, &theme))
             .into_any_element()
     }
 
@@ -610,22 +611,23 @@ impl MainWindow {
             ThemeChoice::Dark => "dark",
         }
         .into();
-        let theme_item = |id: &'static str, value: &'static str, glyph: LucideIcon, text: &str| {
-            ToggleGroupItem::new(id, value)
-                .aria_label(text.to_string())
-                .flex_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(theme.space(1.5))
-                        .child(lucide(glyph).size(scaled(&theme, metrics::ICON_SMALL)))
-                        .child(text.to_string()),
-                )
-        };
+        let theme_item =
+            |id: &'static str, value: &'static str, glyph: LucideIcon, text: SharedString| {
+                ToggleGroupItem::new(id, value)
+                    .aria_label(text.clone())
+                    .flex_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(theme.space(1.5))
+                            .child(lucide(glyph).size(scaled(&theme, metrics::ICON_SMALL)))
+                            .child(text),
+                    )
+            };
         let theme_store = store.clone();
         let theme_group = ToggleGroup::new("preferences.theme")
-            .aria_label("Theme")
+            .aria_label(t!("prefs-theme"))
             .joined(true)
             .w_full()
             .value([theme_value])
@@ -633,19 +635,19 @@ impl MainWindow {
                 "preferences.theme.system",
                 "system",
                 LucideIcon::Monitor,
-                "System",
+                t!("prefs-theme-system"),
             ))
             .item(theme_item(
                 "preferences.theme.light",
                 "light",
                 LucideIcon::Sun,
-                "Light",
+                t!("prefs-theme-light"),
             ))
             .item(theme_item(
                 "preferences.theme.dark",
                 "dark",
                 LucideIcon::Moon,
-                "Dark",
+                t!("prefs-theme-dark"),
             ))
             .on_change(move |next, _, cx| {
                 let choice = match next.first().map(|v| v.as_ref()) {
@@ -658,12 +660,15 @@ impl MainWindow {
         let source_store = store.clone();
         let colors_group = choices(
             "preferences.colors",
-            "Colors",
+            t!("prefs-colors"),
             match settings.theme_source {
                 ThemeSource::Matty => "matty",
                 ThemeSource::Mattermost => "mattermost",
             },
-            &[("matty", "Matty"), ("mattermost", "My Mattermost theme")],
+            &[
+                ("matty", t!("prefs-colors-matty")),
+                ("mattermost", t!("prefs-colors-mattermost")),
+            ],
             move |value, cx| {
                 let source = match value {
                     "mattermost" => ThemeSource::Mattermost,
@@ -677,16 +682,14 @@ impl MainWindow {
         let imported = crate::mattermost_theme::shown(&settings, cx);
         let use_imported = settings.theme_source == ThemeSource::Mattermost;
         let colors_hint: SharedString = match (&imported, use_imported) {
-            (_, false) => "Matty's own colors, light or dark as chosen above.".into(),
-            (Some(imported), true) => format!(
-                "{} from your Mattermost account, for the team on screen. \
-                 It sets light or dark itself.",
-                imported.name()
-            )
-            .into(),
-            (None, true) => {
-                "Your Mattermost theme shows once Matty connects to your server.".into()
+            (_, false) => t!("prefs-colors-matty-hint"),
+            (Some(imported), true) => {
+                t!(
+                    "prefs-colors-imported-hint",
+                    name = imported.name().to_string()
+                )
             }
+            (None, true) => t!("prefs-colors-waiting-hint"),
         };
         let failing = imported
             .filter(|_| use_imported)
@@ -697,11 +700,7 @@ impl MainWindow {
                 colors.child(contrast_warning(&failing, &theme))
             });
         let theme_group = if use_imported {
-            hinted(
-                theme_group,
-                "Your Mattermost theme decides light or dark.",
-                &theme,
-            )
+            hinted(theme_group, t!("prefs-theme-from-mattermost"), &theme)
         } else {
             div().child(theme_group)
         };
@@ -717,7 +716,7 @@ impl MainWindow {
             .into();
         let size_store = store.clone();
         let mut size_group = ToggleGroup::new("preferences.text-size")
-            .aria_label("Text size")
+            .aria_label(t!("prefs-text-size"))
             .joined(true)
             .w_full()
             .value([size_value]);
@@ -728,7 +727,7 @@ impl MainWindow {
                     gpui_kit::ElementId::Name(format!("preferences.text-size.{name}").into()),
                     *name,
                 )
-                .aria_label(format!("Text size {text}"))
+                .aria_label(t!("prefs-text-size-option", size = text.clone()))
                 .flex_1()
                 .child(text),
             );
@@ -744,12 +743,15 @@ impl MainWindow {
         let view = cx.entity().downgrade();
         let display_group = choices(
             "preferences.display",
-            "Message display",
+            t!("prefs-display"),
             match settings.display {
                 MessageDisplay::Standard => "standard",
                 MessageDisplay::Compact => "compact",
             },
-            &[("standard", "Standard"), ("compact", "Compact")],
+            &[
+                ("standard", t!("prefs-display-standard")),
+                ("compact", t!("prefs-display-compact")),
+            ],
             {
                 let view = view.clone();
                 move |value, cx| {
@@ -769,17 +771,17 @@ impl MainWindow {
             },
         );
         let display_hint = match settings.display {
-            MessageDisplay::Standard => "Avatars and a name line above each message.",
-            MessageDisplay::Compact => "One line per message, with the time in the margin.",
+            MessageDisplay::Standard => t!("prefs-display-standard-hint"),
+            MessageDisplay::Compact => t!("prefs-display-compact-hint"),
         };
         let clock_group = choices(
             "preferences.clock",
-            "Clock",
+            t!("prefs-clock"),
             match settings.clock {
                 ClockFormat::TwelveHour => "12",
                 ClockFormat::TwentyFourHour => "24",
             },
-            &[("12", "12-hour"), ("24", "24-hour")],
+            &[("12", t!("prefs-clock-12")), ("24", t!("prefs-clock-24"))],
             {
                 let view = view.clone();
                 move |value, cx| {
@@ -796,16 +798,16 @@ impl MainWindow {
         );
         let names_group = choices(
             "preferences.names",
-            "Show names as",
+            t!("prefs-names-label"),
             match settings.name_format {
                 NameFormat::NicknameFullName => "nickname",
                 NameFormat::FullName => "full",
                 NameFormat::Username => "username",
             },
             &[
-                ("nickname", "Nickname"),
-                ("full", "Full name"),
-                ("username", "Username"),
+                ("nickname", t!("prefs-names-nickname")),
+                ("full", t!("prefs-names-full")),
+                ("username", t!("prefs-names-username")),
             ],
             move |value, cx| {
                 let format = match value {
@@ -824,33 +826,33 @@ impl MainWindow {
             },
         );
         let names_hint = match settings.name_format {
-            NameFormat::NicknameFullName => "The nickname, else the full name, else the username.",
-            NameFormat::FullName => "The full name, else the username.",
-            NameFormat::Username => "Usernames only.",
+            NameFormat::NicknameFullName => t!("prefs-names-nickname-hint"),
+            NameFormat::FullName => t!("prefs-names-full-hint"),
+            NameFormat::Username => t!("prefs-names-username-hint"),
         };
         page(&theme)
-            .child(group("Theme", theme_group, false, &theme))
-            .child(group("Colors", colors, false, &theme))
-            .child(group("Text size", size_group, false, &theme))
+            .child(group(t!("prefs-theme"), theme_group, false, &theme))
+            .child(group(t!("prefs-colors"), colors, false, &theme))
+            .child(group(t!("prefs-text-size"), size_group, false, &theme))
             .child(group(
-                "Message display",
+                t!("prefs-display"),
                 hinted(display_group, display_hint, &theme),
                 true,
                 &theme,
             ))
-            .child(group("Clock", clock_group, true, &theme))
+            .child(group(t!("prefs-clock"), clock_group, true, &theme))
             .child(group(
-                "Names",
+                t!("prefs-names"),
                 hinted(names_group, names_hint, &theme),
                 true,
                 &theme,
             ))
             .child(group(
-                "Motion",
+                t!("prefs-motion"),
                 self.switch_row(
                     "preferences.reduce-motion",
-                    "Reduce motion",
-                    "Panes and banners change without sliding.",
+                    t!("prefs-reduce-motion"),
+                    t!("prefs-reduce-motion-detail"),
                     settings.reduce_motion,
                     |s, v| s.reduce_motion = v,
                     cx,
@@ -865,22 +867,22 @@ impl MainWindow {
         let theme = UiTheme::read(cx).clone();
         let settings = self.settings.read(cx).get().clone();
         let mod_enter = match Platform::current() {
-            Platform::MacOs => "Cmd+Enter",
-            Platform::Other => "Ctrl+Enter",
+            Platform::MacOs => t!("prefs-send-cmd-enter"),
+            Platform::Other => t!("prefs-send-ctrl-enter"),
         };
         let view = cx.entity().downgrade();
         let send_group = choices(
             "preferences.send",
-            "Send messages with",
+            t!("prefs-send"),
             match settings.send_on {
                 SendKey::Enter => "enter",
                 SendKey::ModEnter => "mod-enter",
                 SendKey::CodeBlocks => "code-blocks",
             },
             &[
-                ("enter", "Enter"),
-                ("mod-enter", mod_enter),
-                ("code-blocks", "Enter, but not in code"),
+                ("enter", t!("prefs-send-enter")),
+                ("mod-enter", mod_enter.clone()),
+                ("code-blocks", t!("prefs-send-code-blocks")),
             ],
             {
                 let view = view.clone();
@@ -902,23 +904,20 @@ impl MainWindow {
             },
         );
         let send_hint: SharedString = match settings.send_on {
-            SendKey::Enter => "Shift+Enter starts a new line.".into(),
-            SendKey::ModEnter => "Enter starts a new line.".into(),
-            SendKey::CodeBlocks => format!(
-                "In a code block opened with ```, Enter starts a new line and {mod_enter} sends."
-            )
-            .into(),
+            SendKey::Enter => t!("prefs-send-enter-hint"),
+            SendKey::ModEnter => t!("prefs-send-mod-enter-hint"),
+            SendKey::CodeBlocks => t!("prefs-send-code-blocks-hint", key = mod_enter.to_string()),
         };
         let previews = {
             let view = view.clone();
             group(
-                "Link previews",
+                t!("prefs-link-previews"),
                 labelled_row(
-                    "Collapse link previews".into(),
-                    "Previews start closed. Each message's toggle still opens them.".into(),
+                    t!("prefs-collapse-previews"),
+                    t!("prefs-collapse-previews-detail"),
                     Switch::new("preferences.collapse-previews")
                         .checked(settings.collapse_previews)
-                        .aria_label("Collapse link previews")
+                        .aria_label(t!("prefs-collapse-previews"))
                         .on_change(move |next, _, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.set_synced(
@@ -941,12 +940,15 @@ impl MainWindow {
             let store = self.settings.clone();
             choices(
                 "preferences.remote-images",
-                "Load remote images",
+                t!("prefs-remote-images"),
                 match settings.load_remote_images {
                     RemoteImages::Always => "always",
                     RemoteImages::Ask => "ask",
                 },
-                &[("always", "Always"), ("ask", "Ask first")],
+                &[
+                    ("always", t!("prefs-remote-images-always")),
+                    ("ask", t!("prefs-remote-images-ask")),
+                ],
                 move |value, cx| {
                     let choice = match value {
                         "ask" => RemoteImages::Ask,
@@ -959,24 +961,21 @@ impl MainWindow {
             )
         };
         let images_hint = match settings.load_remote_images {
-            RemoteImages::Always => {
-                "Images from other sites show in messages and previews, \
-                 through your server's image proxy when it has one."
-            }
-            RemoteImages::Ask => "Images from other sites wait until you click them.",
+            RemoteImages::Always => t!("prefs-remote-images-always-hint"),
+            RemoteImages::Ask => t!("prefs-remote-images-ask-hint"),
         };
         let threads = self
             .collapsed_threads
             .filter(|(choice, _)| *choice)
             .map(|(_, on)| {
                 group(
-                    "Threads",
+                    t!("prefs-threads"),
                     labelled_row(
-                        "Collapsed reply threads".into(),
-                        "Replies stay in their thread instead of the channel.".into(),
+                        t!("prefs-collapsed-threads"),
+                        t!("prefs-collapsed-threads-detail"),
                         Switch::new("preferences.collapsed-threads")
                             .checked(on)
-                            .aria_label("Collapsed reply threads")
+                            .aria_label(t!("prefs-collapsed-threads"))
                             .on_change(move |next, _, _, cx| {
                                 view.update(cx, |this, cx| this.set_collapsed_threads(next, cx))
                                     .ok();
@@ -990,14 +989,14 @@ impl MainWindow {
             });
         page(&theme)
             .child(group(
-                "Send messages with",
+                t!("prefs-send"),
                 hinted(send_group, send_hint, &theme),
                 true,
                 &theme,
             ))
             .child(previews)
             .child(group(
-                "Load remote images",
+                t!("prefs-remote-images"),
                 hinted(images_group, images_hint, &theme),
                 false,
                 &theme,
@@ -1014,7 +1013,7 @@ impl MainWindow {
             return div()
                 .type_style(style::META, &theme)
                 .text_color(theme.colors.muted_foreground)
-                .child("Notification settings show once Matty is connected to your server.")
+                .child(t!("prefs-notifications-offline"))
                 .into_any_element();
         };
         let user = matty_notify::UserPrefs::from_props(&self.username(cx), "", props);
@@ -1025,20 +1024,32 @@ impl MainWindow {
         }
         .into();
         let view = cx.entity().downgrade();
-        let item = |id: &'static str, value: &'static str, text: &'static str| {
+        let item = |id: &'static str, value: &'static str, text: SharedString| {
             ToggleGroupItem::new(id, value)
-                .aria_label(text)
+                .aria_label(text.clone())
                 .flex_1()
                 .child(text)
         };
         let desktop = ToggleGroup::new("preferences.desktop")
-            .aria_label("Notify me about")
+            .aria_label(t!("prefs-desktop-label"))
             .joined(true)
             .w_full()
             .value([level])
-            .item(item("preferences.desktop.all", "all", "All messages"))
-            .item(item("preferences.desktop.mention", "mention", "Mentions"))
-            .item(item("preferences.desktop.none", "none", "Nothing"))
+            .item(item(
+                "preferences.desktop.all",
+                "all",
+                t!("prefs-desktop-all"),
+            ))
+            .item(item(
+                "preferences.desktop.mention",
+                "mention",
+                t!("prefs-desktop-mention"),
+            ))
+            .item(item(
+                "preferences.desktop.none",
+                "none",
+                t!("prefs-desktop-none"),
+            ))
             .on_change({
                 let view = view.clone();
                 move |next, _, cx| {
@@ -1051,14 +1062,14 @@ impl MainWindow {
             });
         let on = |key: &str, default: bool| props.get(key).map_or(default, |v| v == "true");
         let switch = |id: &'static str,
-                      title: &'static str,
+                      title: SharedString,
                       detail: SharedString,
                       checked: bool,
                       key: &'static str,
                       values: (&'static str, &'static str)| {
             let view = view.clone();
             labelled_row(
-                title.into(),
+                title.clone(),
                 detail,
                 Switch::new(id)
                     .checked(checked)
@@ -1079,41 +1090,41 @@ impl MainWindow {
             .unwrap_or("")
             .to_owned();
         let first_name_detail: SharedString = if first_name.is_empty() {
-            "Your first name counts as a mention.".into()
+            t!("prefs-first-name-detail")
         } else {
-            format!("\u{201c}{first_name}\u{201d} counts as a mention.").into()
+            t!("prefs-first-name-named", name = first_name)
         };
         page(&theme)
-            .child(group("Status", self.dnd_row(cx), true, &theme))
+            .child(group(t!("prefs-status"), self.dnd_row(cx), true, &theme))
             .child(group(
-                "Desktop notifications",
+                t!("prefs-desktop"),
                 stack(&theme)
                     .child(desktop)
                     .child(switch(
                         "preferences.desktop-threads",
-                        "Replies in threads I follow",
-                        "Notify for every reply, not only mentions.".into(),
+                        t!("prefs-desktop-threads"),
+                        t!("prefs-desktop-threads-detail"),
                         user.desktop_threads == matty_notify::Level::All,
                         "desktop_threads",
                         ("all", "mention"),
                     ))
                     .child(switch(
                         "preferences.desktop-sound",
-                        "Sound",
-                        "Play a sound with each notification.".into(),
+                        t!("prefs-sound"),
+                        t!("prefs-sound-detail"),
                         user.desktop_sound,
                         "desktop_sound",
                         ("true", "false"),
                     ))
                     .child(labelled_row(
-                        "Notification sound".into(),
-                        "Choosing one plays it.".into(),
+                        t!("prefs-notification-sound"),
+                        t!("prefs-notification-sound-detail"),
                         div()
                             .flex_shrink_0()
                             .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
                             .child(
                                 Select::new(&self.sound)
-                                    .aria_label("Notification sound")
+                                    .aria_label(t!("prefs-notification-sound"))
                                     .disabled(!user.desktop_sound),
                             )
                             .into_any_element(),
@@ -1123,11 +1134,11 @@ impl MainWindow {
                 &theme,
             ))
             .child(group(
-                "Mentions",
+                t!("prefs-mentions"),
                 stack(&theme)
                     .child(switch(
                         "preferences.first-name",
-                        "First name",
+                        t!("prefs-first-name"),
                         first_name_detail,
                         on("first_name", false),
                         "first_name",
@@ -1135,8 +1146,8 @@ impl MainWindow {
                     ))
                     .child(switch(
                         "preferences.channel-wide",
-                        "@channel, @all and @here",
-                        "Messages to the whole channel count as mentions.".into(),
+                        t!("prefs-channel-wide"),
+                        t!("prefs-channel-wide-detail"),
                         on("channel", true),
                         "channel",
                         ("true", "false"),
@@ -1147,7 +1158,7 @@ impl MainWindow {
             ))
             .when(self.highlight_keys, |page| {
                 page.child(group(
-                    "Highlights",
+                    t!("prefs-highlights"),
                     stack(&theme).child(self.keyword_editor(
                         matty_notify::KeywordList::Highlight,
                         props,
@@ -1172,11 +1183,11 @@ impl MainWindow {
         let detail = dnd::preferences_detail(dnd, account.dnd_end, &now, ClockFormat::current(cx));
         let (view, account) = (cx.entity().downgrade(), self.account.clone());
         labelled_row(
-            "Do not disturb".into(),
+            t!("prefs-dnd"),
             detail,
             Switch::new("preferences.dnd")
                 .checked(on)
-                .aria_label("Do not disturb")
+                .aria_label(t!("prefs-dnd"))
                 .on_change(move |next, _, _, cx| {
                     let presence = if next {
                         Presence::Dnd
@@ -1203,15 +1214,14 @@ impl MainWindow {
         let (id, label, description, input) = match list {
             matty_notify::KeywordList::Mention => (
                 "preferences.keywords",
-                "Keywords",
-                "Words that count as mentioning you and notify. Press Enter to add; \
-                 commas add several. @username always counts.",
+                t!("prefs-keywords"),
+                t!("prefs-keywords-detail"),
                 &self.keywords,
             ),
             matty_notify::KeywordList::Highlight => (
                 "preferences.highlight-keywords",
-                "Highlight keywords",
-                "Words that highlight a message without notifying you.",
+                t!("prefs-highlight-keywords"),
+                t!("prefs-highlight-keywords-detail"),
                 &self.highlight_keywords,
             ),
         };
@@ -1238,12 +1248,15 @@ impl MainWindow {
         // The updater reads the channel at each check (#180).
         let channel_group = choices(
             "preferences.update-channel",
-            "Update channel",
+            t!("prefs-update-channel"),
             match self.settings.read(cx).get().update_channel {
                 UpdateChannel::Stable => "stable",
                 UpdateChannel::Beta => "beta",
             },
-            &[("stable", "Stable"), ("beta", "Beta")],
+            &[
+                ("stable", t!("prefs-update-stable")),
+                ("beta", t!("prefs-update-beta")),
+            ],
             move |value, cx| {
                 let channel = match value {
                     "beta" => UpdateChannel::Beta,
@@ -1255,30 +1268,30 @@ impl MainWindow {
             },
         );
         let channel_hint = match self.settings.read(cx).get().update_channel {
-            UpdateChannel::Stable => "Releases only.",
-            UpdateChannel::Beta => "Betas and alphas too, before they're released.",
+            UpdateChannel::Stable => t!("prefs-update-stable-hint"),
+            UpdateChannel::Beta => t!("prefs-update-beta-hint"),
         };
         let logs = group(
-            "Logs",
+            t!("prefs-logs"),
             stack(&theme)
                 .child(labelled_row(
-                    "Log detail".into(),
-                    "How much goes into the logs.".into(),
+                    t!("prefs-log-detail"),
+                    t!("prefs-log-detail-hint"),
                     div()
                         .flex_shrink_0()
                         .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                        .child(Select::new(&self.log_level).aria_label("Log detail"))
+                        .child(Select::new(&self.log_level).aria_label(t!("prefs-log-detail")))
                         .into_any_element(),
                     &theme,
                 ))
                 .child(labelled_row(
-                    "Logs".into(),
-                    "Attach them when you report a problem.".into(),
+                    t!("prefs-logs"),
+                    t!("prefs-logs-detail"),
                     Button::new("preferences.open-logs")
                         .variant(ButtonVariant::Outline)
                         .size(ButtonSize::Sm)
-                        .aria_label("Open logs folder")
-                        .label("Open folder")
+                        .aria_label(t!("prefs-open-logs-label"))
+                        .label(t!("prefs-open-logs"))
                         .on_click(|_, _, cx| {
                             if let Some(dir) = crate::logging::default_dir() {
                                 let _ = std::fs::create_dir_all(&dir);
@@ -1292,13 +1305,13 @@ impl MainWindow {
             &theme,
         );
         let sign_out = labelled_row(
-            "Sign out".into(),
-            "Removes Matty's copy of your messages and files from this computer.".into(),
+            t!("prefs-sign-out"),
+            t!("prefs-sign-out-detail"),
             Button::new("preferences.sign-out")
                 .variant(ButtonVariant::Destructive)
                 .size(ButtonSize::Sm)
-                .aria_label("Sign out")
-                .label("Sign out…")
+                .aria_label(t!("prefs-sign-out"))
+                .label(t!("prefs-sign-out-button"))
                 .on_click(cx.listener(|this, _, window, cx| {
                     // The confirmation is the account menu's own, over the
                     // window rather than over this sheet.
@@ -1311,13 +1324,13 @@ impl MainWindow {
         );
         page(&theme)
             .child(group(
-                "Updates",
+                t!("prefs-updates"),
                 hinted(channel_group, channel_hint, &theme),
                 false,
                 &theme,
             ))
             .child(logs.into_any_element())
-            .child(group("Account", sign_out, false, &theme))
+            .child(group(t!("prefs-account"), sign_out, false, &theme))
             .into_any_element()
     }
 
@@ -1325,8 +1338,8 @@ impl MainWindow {
     fn switch_row(
         &self,
         id: &'static str,
-        title: &'static str,
-        detail: &'static str,
+        title: SharedString,
+        detail: SharedString,
         checked: bool,
         write: fn(&mut Settings, bool),
         cx: &mut Context<Self>,
@@ -1334,8 +1347,8 @@ impl MainWindow {
         let theme = UiTheme::read(cx).clone();
         let store = self.settings.clone();
         labelled_row(
-            title.into(),
-            detail.into(),
+            title.clone(),
+            detail,
             Switch::new(id)
                 .checked(checked)
                 .aria_label(title)
@@ -1356,8 +1369,8 @@ const SHEET_WIDTH: f32 = 760.;
 /// What a keyword editor says about its list.
 struct KeywordEditor {
     id: &'static str,
-    label: &'static str,
-    description: &'static str,
+    label: SharedString,
+    description: SharedString,
 }
 
 /// A keyword list as removable tags under the field that adds more
@@ -1408,7 +1421,7 @@ fn page(theme: &UiTheme) -> Div {
 
 /// A titled group of controls; `synced` adds the line saying the account
 /// keeps the setting.
-fn group(title: &'static str, control: impl IntoElement, synced: bool, theme: &UiTheme) -> Div {
+fn group(title: SharedString, control: impl IntoElement, synced: bool, theme: &UiTheme) -> Div {
     div()
         .flex()
         .flex_col()
@@ -1436,7 +1449,7 @@ fn synced_hint(theme: &UiTheme) -> Div {
                 .size(scaled(theme, metrics::ICON_TINY))
                 .text_color(theme.colors.muted_foreground),
         )
-        .child("Synced with your Mattermost account")
+        .child(t!("prefs-synced"))
 }
 
 /// A control with one muted line under it.
@@ -1463,16 +1476,24 @@ fn contrast_warning(failing: &[crate::contrast::Pair], theme: &UiTheme) -> Div {
     let named: Vec<String> = worst
         .iter()
         .take(3)
-        .map(|pair| format!("{} ({:.1}:1)", pair.name.to_lowercase(), pair.ratio()))
+        .map(|pair| {
+            t!(
+                "prefs-contrast-pair",
+                name = pair.name.to_lowercase(),
+                ratio = format!("{:.1}", pair.ratio()),
+            )
+            .to_string()
+        })
         .collect();
     let examples = match named.as_slice() {
         [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [rest @ .., last] => t!(
+            "prefs-list-and",
+            rest = rest.join(&*t!("prefs-list-separator")),
+            last = last.clone(),
+        )
+        .to_string(),
         [] => String::new(),
-    };
-    let count = match failing.len() {
-        1 => "One color pair in this theme falls".to_owned(),
-        n => format!("{n} color pairs in this theme fall"),
     };
     div()
         .flex()
@@ -1480,7 +1501,7 @@ fn contrast_warning(failing: &[crate::contrast::Pair], theme: &UiTheme) -> Div {
         .items_start()
         .gap(theme.space(1.5))
         .child(
-            Tag::new("preferences.colors.contrast", "Hard to read")
+            Tag::new("preferences.colors.contrast", t!("prefs-contrast-tag"))
                 .variant(TagVariant::Destructive)
                 .icon(LucideIcon::TriangleAlert),
         )
@@ -1488,9 +1509,10 @@ fn contrast_warning(failing: &[crate::contrast::Pair], theme: &UiTheme) -> Div {
             div()
                 .type_style(style::META, theme)
                 .text_color(theme.colors.muted_foreground)
-                .child(format!(
-                    "{count} below WCAG AA contrast (4.5:1 for \
-                     text, 3:1 for other UI), such as {examples}."
+                .child(t!(
+                    "prefs-contrast-warning",
+                    count = failing.len(),
+                    examples = examples,
                 )),
         )
 }
@@ -1534,9 +1556,9 @@ fn labelled_row(
 /// `change` gets the value picked.
 fn choices(
     id: &'static str,
-    label: &'static str,
+    label: SharedString,
     value: &'static str,
-    options: &[(&'static str, &'static str)],
+    options: &[(&'static str, SharedString)],
     change: impl Fn(&str, &mut App) + 'static,
 ) -> ToggleGroup {
     let mut group = ToggleGroup::new(id)
@@ -1550,9 +1572,9 @@ fn choices(
                 gpui_kit::ElementId::Name(format!("{id}.{option}").into()),
                 *option,
             )
-            .aria_label(*text)
+            .aria_label(text.clone())
             .flex_1()
-            .child(*text),
+            .child(text.clone()),
         );
     }
     group.on_change(move |next, _, cx| {
@@ -1806,8 +1828,8 @@ mod tests {
             div().w(gpui_kit::px(600.)).child(keyword_editor(
                 KeywordEditor {
                     id: "preferences.keywords",
-                    label: "Keywords",
-                    description: "Words that count as mentioning you.",
+                    label: "Keywords".into(),
+                    description: "Words that count as mentioning you.".into(),
                 },
                 &self.input,
                 self.keywords.clone(),
