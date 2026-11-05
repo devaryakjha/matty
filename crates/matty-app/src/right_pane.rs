@@ -3,6 +3,7 @@
 //! height, separates from the channel with a hairline, and closes on
 //! Escape.
 
+mod schedule;
 mod slash;
 
 use gpui_icons::{LucideIcon, lucide};
@@ -230,6 +231,16 @@ pub enum RightPaneEvent {
         /// False when the user removed the link's preview while replying.
         unfurl: bool,
     },
+    /// The user scheduled the reply composer's text and these uploads for
+    /// `at` (ms since the epoch) under `root` in `channel` (#220); the
+    /// composer is already clear.
+    Schedule {
+        channel: SharedString,
+        root: SharedString,
+        text: SharedString,
+        files: Vec<SharedString>,
+        at: i64,
+    },
     /// A file went into the reply tray; sync uploads it to the thread's
     /// channel and reports back through `set_upload_status`.
     Upload {
@@ -409,6 +420,8 @@ pub struct RightPaneView {
     action_menus: std::rc::Rc<std::cell::RefCell<crate::interactive::Menus>>,
     /// Slash commands typed in the reply composer (#210).
     slash: crate::slash::Slash,
+    /// Picks a custom time for "Schedule message" (#220).
+    schedule_dialog: Entity<crate::scheduled::ScheduleDialog>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -510,7 +523,9 @@ impl RightPaneView {
         });
         crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
+        let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
         let subscriptions = vec![
+            scheduling,
             cx.subscribe_in(
                 &composer,
                 window,
@@ -612,6 +627,7 @@ impl RightPaneView {
             popped_out: false,
             action_menus: Default::default(),
             slash: Default::default(),
+            schedule_dialog,
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -749,6 +765,7 @@ impl RightPaneView {
             &[std::slice::from_ref(&thread.root), &thread.replies[..]].concat(),
         );
         let reply = Post {
+            webhook: None,
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
             author_id: own,
@@ -2142,6 +2159,10 @@ impl RightPaneView {
         initial: String,
         cx: &App,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("thread.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
                 format!("thread.{id}.avatar").into(),
@@ -2634,6 +2655,7 @@ impl RightPaneView {
                                     })),
                             ))
                             .child(div().flex_1())
+                            .children(self.schedule_button(cx))
                             .child(style::tipped(
                                 "right-pane.send.tip",
                                 actions::send_tooltip("Reply", send_on),
@@ -3360,6 +3382,7 @@ impl Render for RightPaneView {
             .child(self.lightbox(window, cx))
             .child(self.leave_dialog(window, cx))
             .child(self.discard_dialog(window, cx))
+            .child(self.schedule_dialog.clone())
             .child(
                 Menu::new(&self.menu, "Message actions")
                     .context_area(div())
@@ -3554,6 +3577,7 @@ mod tests {
 
     fn post(id: &str) -> Post {
         Post {
+            webhook: None,
             id: id.to_string().into(),
             author: "Ada".into(),
             author_id: SharedString::default(),

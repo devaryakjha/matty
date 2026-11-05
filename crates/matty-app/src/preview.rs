@@ -683,6 +683,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         .flat_map(|category| category.rows)
         .find(|row| row.id.as_ref() == id)?;
     let post = |id: &str, author: &str, time: &str, day: &str, body: &str| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
@@ -794,6 +795,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     actions: preview_actions(),
                 },
             )],
+            webhook: Some(crate::webhooks::Webhook::default()),
             ..post("p3b", "Build Bot", "09:20", "Yesterday", "")
         },
         // Build Bot's answer to Approve, which only the viewer sees (#211).
@@ -1337,6 +1339,7 @@ pub fn incoming(channel_id: &str) -> Vec<Post> {
         return vec![];
     }
     let post = |id: &str, author: &str, time: &str, body: &str| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: id.into(),
         author: author.into(),
@@ -1522,6 +1525,18 @@ pub fn uploads() -> Vec<Upload> {
         uploads.into_iter().map(Upload::queued).collect()
     } else {
         uploads
+    }
+}
+
+/// The file "Add a file…" picks in the preview's bookmarks bar (#226).
+pub fn bookmark_file() -> Upload {
+    Upload {
+        id: "bookmark-file".into(),
+        name: "Q4 planning.pdf".into(),
+        size: 1_258_291,
+        source: UploadSource::Path("Q4 planning.pdf".into()),
+        status: AttachmentStatus::Ready,
+        queued: false,
     }
 }
 
@@ -1823,6 +1838,7 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
         .find(|post| post.id.as_ref() == post_id)?
         .clone();
     let reply = |id: &str, author: &str, time: &str, body: &str, continues: bool| Post {
+        webhook: None,
         kind: crate::channel::PostKind::Regular,
         id: format!("{}-{id}", root.id).into(),
         author: author.into(),
@@ -1879,6 +1895,9 @@ pub fn thread(channel_id: &str, post_id: &str) -> Option<ThreadModel> {
                             actions: thread_actions(),
                         },
                     )],
+                    // Posted through the deploy webhook: its glyph, not
+                    // its creator's picture.
+                    webhook: Some(crate::webhooks::Webhook::default()),
                     ..reply(
                         "r2",
                         "Build Bot",

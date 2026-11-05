@@ -453,6 +453,8 @@ pub struct Post {
     pub embeds: Vec<crate::embeds::Embed>,
     /// Its priority label and acknowledgements (#220).
     pub priority: Option<crate::priority::Shown>,
+    /// The webhook it came from, whose icon it shows.
+    pub webhook: Option<crate::webhooks::Webhook>,
 }
 
 /// When "Remind me" brings a post back, as the webapp offers it.
@@ -1203,6 +1205,9 @@ pub struct ChannelView {
     /// The banner says the user is offline: actions that need the server
     /// are refused before the transcript changes (#163).
     offline: bool,
+    /// A server's sidebar is up, so with no channel open the view says
+    /// none is picked rather than that Matty is not connected.
+    connected: bool,
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
@@ -1523,6 +1528,7 @@ impl ChannelView {
             composer_cap: px(320.),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
+            connected: crate::preview::enabled(),
             profile_cards: 0,
             split_controls: false,
             action_menus: Default::default(),
@@ -1786,6 +1792,14 @@ impl ChannelView {
     }
 
     /// The banner went to or from "You're offline" (#163).
+    /// Whether a server's sidebar is up; see [`ChannelView::empty`].
+    pub fn set_connected(&mut self, connected: bool, cx: &mut Context<Self>) {
+        if self.connected != connected {
+            self.connected = connected;
+            cx.notify();
+        }
+    }
+
     pub fn set_offline(&mut self, offline: bool) {
         self.offline = offline;
     }
@@ -2571,6 +2585,7 @@ impl ChannelView {
         self.pending_seq += 1;
         let last = model.posts.last();
         let post = Post {
+            webhook: None,
             id: format!("pending-{}", self.pending_seq).into(),
             author: self.me.clone(),
             author_id: own_id(&model.posts),
@@ -3872,6 +3887,10 @@ impl ChannelView {
         card: usize,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        if let Some(webhook) = &post.webhook {
+            let id = format!("post.{id}.avatar").into();
+            return crate::webhooks::avatar(id, webhook, &post.author, cx);
+        }
         let initial: String = post.author.chars().take(1).collect();
         let avatar = crate::avatars::with_picture(
             Avatar::new(gpui_kit::ElementId::Name(
@@ -5046,7 +5065,7 @@ impl ChannelView {
             )
     }
 
-    fn empty(cx: &App) -> impl IntoElement + use<> {
+    fn empty(connected: bool, cx: &App) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let header = div()
             .flex_shrink_0()
@@ -5065,17 +5084,26 @@ impl ChannelView {
                     .text_color(theme.colors.muted_foreground),
             )
             .child("No channel open");
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(style::centered_empty(
-                LucideIcon::MessagesSquare,
-                "Not connected yet",
-                "Your channels appear here once Matty is connected to a Mattermost server.",
-                cx,
-            ))
+        div().size_full().flex().flex_col().child(header).child({
+            let (title, text) = empty_text(connected);
+            style::centered_empty(LucideIcon::MessagesSquare, title, text, cx)
+        })
+    }
+}
+
+/// What the view says with no channel open: that none is picked once a
+/// server's sidebar is up, else that Matty is not connected yet.
+fn empty_text(connected: bool) -> (&'static str, &'static str) {
+    if connected {
+        (
+            "No channel open",
+            "Pick a channel or a conversation in the sidebar.",
+        )
+    } else {
+        (
+            "Not connected yet",
+            "Your channels appear here once Matty is connected to a Mattermost server.",
+        )
     }
 }
 
@@ -5111,7 +5139,7 @@ impl Render for ChannelView {
                 cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
             );
         let Some(channel) = self.model.clone() else {
-            return root.child(Self::empty(cx));
+            return root.child(Self::empty(self.connected, cx));
         };
         // Back at the end, everything has been seen.
         if self.unseen > 0 && !self.list.read(cx).is_scrolled_up() {
@@ -5367,6 +5395,26 @@ fn people_suggestions<'a>(
 mod tests {
     use super::*;
 
+    /// Connected with nothing open, the view no longer says Matty is not
+    /// connected; it asks for a channel.
+    #[gpui_kit::test]
+    fn an_empty_view_says_whether_matty_is_connected(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        assert_eq!(empty_text(false).0, "Not connected yet");
+        assert_eq!(empty_text(true).0, "No channel open");
+        let (view, cx) = cx.add_window_view(|window, cx| ChannelView::new(None, "me", window, cx));
+        cx.update(|window, cx| {
+            assert!(!view.read(cx).connected);
+            window.draw(cx).clear(cx);
+            view.update(cx, |view, cx| view.set_connected(true, cx));
+            assert!(view.read(cx).connected);
+            window.draw(cx).clear(cx);
+        });
+    }
+
     #[test]
     fn reminders_land_at_the_offered_times() {
         let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
@@ -5554,6 +5602,7 @@ mod tests {
 
     fn post(id: &str, day: &str) -> Post {
         Post {
+            webhook: None,
             id: id.into(),
             author: "a".into(),
             author_id: SharedString::default(),

@@ -33,6 +33,9 @@ use crate::load::Loaded;
 /// with this, followed by the App's id.
 pub const DIALOG_URL: &str = "matty-apps:";
 
+/// The `data_source` of a dialog select whose options an App looks up.
+pub const DYNAMIC: &str = "app_lookup";
+
 /// How long a server's missing Apps plugin is remembered.
 const MISSING_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -63,6 +66,20 @@ pub enum AppCommand {
         binding: Box<AppBinding>,
         /// Where it was chosen, with its full location.
         context: Box<AppContext>,
+    },
+    /// A dynamic select on an App's form wants options for what the user
+    /// typed; [`ChangeSet::AppLookup`] answers.
+    Lookup {
+        /// The form's dialog callback id, echoed in the answer.
+        callback_id: String,
+        /// The form's dialog state, which carries its call and context.
+        state: String,
+        /// The field.
+        field: String,
+        /// What the user typed.
+        query: String,
+        /// The form's other values so far, by field name.
+        values: HashMap<String, Value>,
     },
 }
 
@@ -146,7 +163,76 @@ pub(crate) fn command(
                 answer: AppAnswer::Failed("This App action has nothing to do.".into()),
             }),
         },
+        AppCommand::Lookup {
+            callback_id,
+            state,
+            field,
+            query,
+            values,
+        } => {
+            let request = lookup_call(&state, &field, &query, &values);
+            matty_api::rt::spawn(async move {
+                let options = match request {
+                    Some(request) => match client.app_call(&request).await {
+                        Ok(response) if response.kind == AppResponseKind::Ok => {
+                            response.lookup_items()
+                        }
+                        Ok(response) => {
+                            tracing::warn!(text = %response.text, "an App lookup was refused");
+                            Vec::new()
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "an App lookup failed");
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                let _ = results.send(Loaded::Changes(vec![ChangeSet::AppLookup {
+                    callback_id,
+                    field,
+                    query,
+                    options,
+                }]));
+            });
+        }
     }
+}
+
+/// The lookup call for `field` of the form whose dialog state is `state`:
+/// the field's own lookup call, or the form's submit call at its path plus
+/// `/lookup`, with the form's values, the field and the query. `None` when
+/// the state is not an App form's or has no such field.
+fn lookup_call(
+    state: &str,
+    field: &str,
+    query: &str,
+    values: &HashMap<String, Value>,
+) -> Option<AppCallRequest> {
+    let state: Value = serde_json::from_str(state).ok()?;
+    let context: AppContext = serde_json::from_value(state.get("context")?.clone()).ok()?;
+    let spec = state
+        .get("fields")?
+        .as_array()?
+        .iter()
+        .find(|spec| spec.get("name").and_then(Value::as_str) == Some(field))?;
+    let call = match spec.get("lookup").filter(|lookup| !lookup.is_null()) {
+        Some(lookup) => serde_json::from_value::<AppCall>(lookup.clone()).ok()?,
+        None => {
+            let mut call: AppCall = serde_json::from_value(state.get("call")?.clone()).ok()?;
+            call.path = format!("{}/lookup", call.path.trim_end_matches('/'));
+            call
+        }
+    };
+    let mut request = AppCallRequest::new(&call, context);
+    request.values = values
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    request.selected_field = field.to_owned();
+    request.query = query.to_owned();
+    Some(request)
 }
 
 async fn bindings(
@@ -354,6 +440,7 @@ pub fn form_dialog(
                 "options": field.options,
                 "readonly": field.readonly,
                 "value": field.value,
+                "lookup": field.lookup,
             })
         })
         .collect();
@@ -399,8 +486,8 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-/// A dialog field for an App field. Dynamic selects have no lookups here,
-/// so they take typed text.
+/// A dialog field for an App field. A dynamic select is a select whose
+/// options come from [`AppCommand::Lookup`] as the user types.
 fn element(field: &AppField) -> DialogElement {
     let label = if field.modal_label.is_empty() {
         if field.label.is_empty() {
@@ -424,6 +511,7 @@ fn element(field: &AppField) -> DialogElement {
         "radio" => ("radio", "", ""),
         "user" => ("select", "", "users"),
         "channel" => ("select", "", "channels"),
+        "dynamic_select" => ("select", "", DYNAMIC),
         "bool" => ("bool", "", ""),
         _ => match field.subtype.as_str() {
             "textarea" => ("textarea", "", ""),
@@ -448,16 +536,21 @@ fn element(field: &AppField) -> DialogElement {
 }
 
 /// A submitted value as the App reads it: options as `{label, value}`,
-/// bools as bools, everything else as text.
+/// bools as bools, everything else as text. A dynamic select's choice
+/// comes as `{label, value}` already, since only the dialog knows its
+/// label.
 fn app_value(kind: &str, options: &[AppSelectOption], value: &Value) -> Option<Value> {
     let text = match value {
         Value::Null => return None,
+        Value::Object(option) if kind == "dynamic_select" => {
+            return Some(Value::Object(option.clone()));
+        }
         Value::Bool(checked) => return Some(Value::Bool(*checked)),
         Value::String(text) => text.clone(),
         other => other.to_string(),
     };
     Some(match kind {
-        "static_select" | "radio" | "user" | "channel" => {
+        "static_select" | "radio" | "user" | "channel" | "dynamic_select" => {
             let label = options
                 .iter()
                 .find(|option| option.value == text)
@@ -654,6 +747,74 @@ mod tests {
         assert_eq!(call.values["loud"], json!(false));
         assert_eq!(call.values["fixed"], json!("kept"));
         assert!(!call.values.contains_key("notes"));
+    }
+
+    /// A dynamic select becomes a looked-up select; its lookup goes to the
+    /// field's own call, or the submit call's path plus `/lookup`, with the
+    /// query, and its chosen `{label, value}` goes back as it is.
+    #[test]
+    fn a_dynamic_select_looks_its_options_up() {
+        let mut form = form();
+        form.fields.push(
+            serde_json::from_value(json!({
+                "name": "issue", "type": "dynamic_select", "label": "Issue",
+                "lookup": {"path": "/issues/lookup", "expand": {"user": "summary"}}
+            }))
+            .unwrap(),
+        );
+        form.fields.push(
+            serde_json::from_value(json!({"name": "project", "type": "dynamic_select"})).unwrap(),
+        );
+        let request = form_dialog(&form, form.submit.as_ref().unwrap(), &context(), "1", "");
+        let issue = request
+            .dialog
+            .elements
+            .iter()
+            .find(|e| e.name == "issue")
+            .unwrap();
+        assert_eq!(
+            (issue.kind.as_str(), issue.data_source.as_str()),
+            ("select", DYNAMIC)
+        );
+
+        let values = HashMap::from([
+            ("text".to_owned(), json!("hi")),
+            ("notes".to_owned(), Value::Null),
+        ]);
+        let own = lookup_call(&request.dialog.state, "issue", "MM-1", &values).unwrap();
+        assert_eq!(own.path, "/issues/lookup");
+        assert_eq!(own.expand, Some(json!({"user": "summary"})));
+        assert_eq!(
+            (own.selected_field.as_str(), own.query.as_str()),
+            ("issue", "MM-1")
+        );
+        assert_eq!(own.context, context());
+        assert_eq!(
+            own.values,
+            HashMap::from([("text".to_owned(), json!("hi"))])
+        );
+        let body = serde_json::to_value(&own).unwrap();
+        assert_eq!(body["selected_field"], "issue");
+        assert_eq!(body["query"], "MM-1");
+
+        let fallback = lookup_call(&request.dialog.state, "project", "", &values).unwrap();
+        assert_eq!(fallback.path, "/send/lookup");
+        assert!(lookup_call(&request.dialog.state, "nope", "", &values).is_none());
+        assert!(lookup_call("not json", "issue", "", &values).is_none());
+
+        let submit = SubmitDialogRequest {
+            state: request.dialog.state.clone(),
+            submission: HashMap::from([(
+                "issue".to_owned(),
+                json!({"label": "MM-1 Crash", "value": "MM-1"}),
+            )]),
+            ..SubmitDialogRequest::default()
+        };
+        let (_, call) = submission_call(&submit).unwrap();
+        assert_eq!(
+            call.values["issue"],
+            json!({"label": "MM-1 Crash", "value": "MM-1"})
+        );
     }
 
     #[test]
