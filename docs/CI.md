@@ -45,7 +45,8 @@ GitHub's runners while they are unset. Setup, labels and upkeep are in
 always run on GitHub's runners.
 
 `changes`, `deny` and `ci` always stay on GitHub's Ubuntu runners: they take
-seconds to a minute, and `changes` decides where the rest run.
+seconds to a minute, and `changes` decides where the rest run. `integration`
+stays there too (see self-hosted-runners.md).
 
 There is no self-hosted Windows machine, and Windows minutes cost double,
 so the two Windows jobs no longer run on every merge: master runs them when
