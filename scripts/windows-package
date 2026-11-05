@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Packages a Windows release build of Matty (#215): an MSI and a zip of
+# matty.exe, with SHA256SUMS, in target/dist/windows. Runs in Git Bash on
+# Windows with WiX 5 (`dotnet tool install --global wix --version 5.0.2`).
+# Nothing is signed or published here.
+#
+#   scripts/windows-package 0.0.1            # builds target/release/matty.exe first
+#   scripts/windows-package 0.0.1 path/to/matty.exe
+set -euo pipefail
+
+version="${1:?usage: scripts/windows-package VERSION [BINARY]}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+binary="${2:-}"
+if [[ -z "$binary" ]]; then
+	cargo build --release --locked --bin matty
+	binary="target/release/matty.exe"
+fi
+[[ -f "$binary" ]] || { echo "no binary at $binary" >&2; exit 1; }
+
+out="target/dist/windows"
+rm -rf "$out"
+mkdir -p "$out"
+
+# An MSI version is three numbers, so a pre-release suffix is dropped.
+msi_version="${version%%-*}"
+wix build packaging/windows/matty.wxs \
+	-d "Version=$msi_version" -d "Binary=$binary" \
+	-o "$out/Matty-$version-x86_64.msi"
+
+cp "$binary" "$out/matty.exe"
+(cd "$out" && 7z a -bd -bso0 "Matty-$version-windows-x86_64.zip" matty.exe && rm matty.exe)
+
+(cd "$out" && rm -f ./*.wixpdb && sha256sum -- * >SHA256SUMS)
+cat "$out/SHA256SUMS"

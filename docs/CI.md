@@ -10,6 +10,8 @@
 | `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
 | `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
 | `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | only when `packaging/linux/` or `scripts/linux-package` change, or with the `linux` label | always, plus the artifact |
+| `windows`: clippy, tests (#215) | only when platform code changes, or with the `windows` label | always, plus the release build, `matty.exe --version` and the artifact |
+| `windows installer`: release build, MSI and zip, installed and uninstalled (#215) | only when `packaging/windows/` or `scripts/windows-package` change, or with the `windows` label | always, plus the artifact |
 | `ci` | the one check to wait on | |
 
 Why: macOS runners are scarce (a handful at a time per account), and three
