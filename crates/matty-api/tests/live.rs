@@ -885,6 +885,39 @@ async fn interactive_message_actions_and_dialogs() {
     connection.close();
 }
 
+/// Signs in as a new user in the tester's first team, for a test that
+/// changes what the seeded users have.
+async fn fresh_user(prefix: &str) -> (Client, matty_api::models::User) {
+    let (url, _, password) = server().unwrap();
+    let (tester, _) = sign_in_tester().await.unwrap();
+    let team = tester.my_teams().await.unwrap().remove(0);
+    let username = format!("live-{prefix}-{}", web_time_millis());
+    let user = as_admin(
+        reqwest::Method::POST,
+        "users",
+        Some(serde_json::json!({
+            "username": username,
+            "email": format!("{username}@example.com"),
+            "password": password,
+        })),
+    )
+    .await;
+    let user_id = user["id"].as_str().unwrap();
+    as_admin(
+        reqwest::Method::POST,
+        &format!("teams/{}/members", team.id),
+        Some(serde_json::json!({ "team_id": team.id, "user_id": user_id })),
+    )
+    .await;
+    let credentials = Credentials {
+        login_id: username,
+        password,
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    (signed_in.client, signed_in.user)
+}
+
 /// Calls the REST API as the seed's admin, for setup the client has no
 /// method for (Matty never manages integrations).
 async fn as_admin(
@@ -1193,21 +1226,13 @@ async fn custom_emoji_upload_and_delete() {
 /// roles, Add members' candidates, admins, Channel files and removal.
 #[tokio::test]
 async fn channel_members_admins_and_files_round_trip() {
-    let Some((url, tester, password)) = server() else {
+    let Some((_, tester, _)) = server() else {
         eprintln!("MATTY_TEST_SERVER not set; skipping");
         return;
     };
-    // Another seeded user than the tester, whose channel lists the other
-    // tests count while this one creates and leaves channels.
-    let login = std::env::var("MATTY_TEST_MANAGER").unwrap_or_else(|_| "ada.lovelace".into());
-    let credentials = Credentials {
-        login_id: login,
-        password,
-        device_id: "live-channel-members".into(),
-        ..Default::default()
-    };
-    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
-    let (client, me) = (signed_in.client, signed_in.user);
+    // A user of its own rather than the tester, whose channel lists the
+    // other tests count while this one creates and leaves channels.
+    let (client, me) = fresh_user("members").await;
     let team = client.my_teams().await.unwrap().remove(0);
     let name = format!("live-members-{}", web_time_millis());
     let channel = client
