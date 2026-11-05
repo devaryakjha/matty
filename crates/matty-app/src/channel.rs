@@ -3922,16 +3922,55 @@ impl ChannelView {
                 &crate::style::Palette::read(cx),
             ))
             .ring_color(theme.colors.background);
+        let label = crate::style::presence_name(&post.author, profile.presence);
+        Self::profile_popover(&id, "profile", label, avatar, profile, card, cx)
+    }
+
+    /// The author's name as a trigger for the same profile card as the
+    /// avatar (#212), reachable with Tab, or `None` when the author is not
+    /// a known person.
+    fn author_name(
+        id: &SharedString,
+        post: &Post,
+        profile: Option<&UserProfile>,
+        card: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        if post.webhook.is_some() {
+            return None;
+        }
+        let profile = profile.cloned()?;
+        let name = post.author.clone();
+        Some(Self::profile_popover(
+            id,
+            "author",
+            name.clone(),
+            name,
+            profile,
+            card,
+            cx,
+        ))
+    }
+
+    /// `trigger` wrapped in the author's profile card: resting on it opens
+    /// the card, and a click or Enter pins it (gpuicn's hover popover,
+    /// #118). `slot` keeps the avatar's card and the name's apart.
+    fn profile_popover(
+        id: &SharedString,
+        slot: &str,
+        label: impl Into<SharedString>,
+        trigger: impl IntoElement,
+        profile: UserProfile,
+        card: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
         let view = cx.entity().downgrade();
         let card_id = id.clone();
-        let label = crate::style::presence_name(&post.author, profile.presence);
-        // Resting on the avatar opens the card; a click or Enter pins it
-        // (gpuicn's hover popover, #118).
         hover_popover(
-            gpui_kit::ElementId::Name(format!("post.{id}.profile.{card}").into()),
+            gpui_kit::ElementId::Name(format!("post.{id}.{slot}.{card}").into()),
             label,
         )
-        .trigger(avatar)
+        .trigger(trigger)
         .content(move |_, cx| {
             let (message_view, mention_view, view_view) =
                 (view.clone(), view.clone(), view.clone());
@@ -4005,6 +4044,7 @@ impl ChannelView {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
+        let author_name = Self::author_name(&id, post, profile, profile_card, cx);
         let thread_id = post.thread_root();
         let react_items = Self::reaction_items_for(post, cx);
         let add_items = react_items.clone();
@@ -4108,6 +4148,7 @@ impl ChannelView {
         let time = post_time(post, away, cx);
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("post.{id}").into()))
             .author(post.author.clone())
+            .when_some(author_name, |row, name| row.author_element(name))
             .timestamp(time.clone())
             .gutter_time(time.clone())
             .when(
