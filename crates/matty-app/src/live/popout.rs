@@ -102,6 +102,7 @@ impl Live {
             threads_choice: self.threads_choice,
             threads_on: self.threads_on,
             link_previews: self.link_previews,
+            dm_limit: self.dm_limit,
             names: self.names,
             offline: self.offline,
             zone: self.zone.clone(),
