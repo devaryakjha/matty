@@ -758,7 +758,12 @@ async fn interactive_message_actions_and_dialogs() {
     assert_eq!(told.status, "OK");
     let ephemeral = next_event(&mut events, "ephemeral_message", |_| true).await;
     match WsEvent::decode(&ephemeral) {
-        WsEvent::EphemeralMessage(post) => assert_eq!(post.message, "only you see this"),
+        // The server threads the answer under the post with the button.
+        WsEvent::EphemeralMessage(answer) => {
+            assert_eq!(answer.message, "only you see this");
+            assert_eq!(answer.root_id, post.id);
+            assert_eq!(answer.kind, "system_ephemeral");
+        }
         other => panic!("{other:?}"),
     }
 
