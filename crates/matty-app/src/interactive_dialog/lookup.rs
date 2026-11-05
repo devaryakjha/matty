@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use gpui_kit::{App, AppContext as _, Context, Entity, Focusable as _, SharedString, Window};
+use gpui_kit::{App, AppContext as _, Context, Entity, SharedString, Window};
 use matty_api::models::DialogElement;
 use serde_json::Value;
 
@@ -163,6 +163,9 @@ impl InteractiveDialogView {
         };
         lookup.asked = Some(query.clone());
         lookup._ask = None;
+        lookup
+            .state
+            .update(cx, |state, cx| state.set_loading(true, cx));
         cx.emit(InteractiveDialogEvent::Lookup(DialogLookup {
             callback_id,
             state,
@@ -184,15 +187,15 @@ impl InteractiveDialogView {
     }
 
     /// The App's options for `field` and `query`. Only the answer to the
-    /// query last asked shows; the combobox keeps its text, its choice and
-    /// its focus, and lists the options.
+    /// query last asked shows. The options replace the combobox's in place
+    /// (gpuicn#141), so its text, its choice, its highlight and its focus
+    /// stay as they are.
     pub(super) fn lookup_options(
         &mut self,
         callback_id: &str,
         field: &str,
         query: &str,
         options: Vec<(SharedString, SharedString)>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -208,35 +211,15 @@ impl InteractiveDialogView {
         if lookup.asked.as_deref() != Some(query) {
             return;
         }
-        let old = lookup.state.clone();
-        let chosen = old.read(cx).value().cloned();
-        let input = old.read(cx).input().clone();
-        let focused = input.read(cx).focus_handle(cx).is_focused(window);
-        let mut items = options.clone();
-        if let Some(value) = &chosen
-            && !items.iter().any(|(option, _)| option == value)
-        {
-            let label = lookup.labels.get(value).cloned().unwrap_or(value.clone());
-            items.insert(0, (value.clone(), label));
-        }
+        let items: Vec<SelectItem> = options
+            .iter()
+            .map(|(value, label)| SelectItem::new(value.clone(), label.clone()))
+            .collect();
         lookup.labels.extend(options);
-        let (state, typing) = combobox(field, items, chosen, window, cx);
-        let Some(lookup) = self.lookup_mut(field) else {
-            return;
-        };
-        lookup.state = state.clone();
-        lookup._typing = typing;
-        if focused {
-            let input = state.read(cx).input().clone();
-            input.update(cx, |input, cx| {
-                input.focus(window, cx);
-                // Typing again opens the list on the options; the same
-                // query is not asked twice.
-                if !query.is_empty() {
-                    input.replace_all(query.to_owned(), window, cx);
-                }
-            });
-        }
+        lookup.state.update(cx, |state, cx| {
+            state.set_items(items, cx);
+            state.set_loading(false, cx);
+        });
         cx.notify();
     }
 }
@@ -387,6 +370,10 @@ mod tests {
             .unwrap()
         };
         let before = state(&mut cx);
+        assert!(
+            before.read_with(&cx, |state, _| state.is_loading()),
+            "the list says it is loading while the App is asked"
+        );
         cx.update(|window, cx| {
             dialog.update(cx, |dialog, cx| {
                 dialog.apply(
@@ -398,7 +385,10 @@ mod tests {
                 )
             })
         });
-        assert_eq!(state(&mut cx), before, "a stale answer changes nothing");
+        assert!(
+            before.read_with(&cx, |state, _| state.items().is_empty()),
+            "a stale answer changes nothing"
+        );
         cx.update(|window, cx| {
             dialog.update(cx, |dialog, cx| {
                 dialog.apply(change("cra", options), true, Default::default, window, cx)
@@ -406,7 +396,11 @@ mod tests {
         });
         cx.run_until_parked();
         let after = state(&mut cx);
-        assert_ne!(after, before, "the options came");
+        assert_eq!(after, before, "the options replace the list in place");
+        after.read_with(&cx, |state, _| {
+            assert_eq!(state.items().len(), 2, "the options came");
+            assert!(!state.is_loading());
+        });
         cx.update(|window, cx| {
             let input = after.read(cx).input().clone();
             assert_eq!(input.read(cx).value().as_ref(), "cra", "the text stays");

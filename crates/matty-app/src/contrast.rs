@@ -83,12 +83,13 @@ pub fn pairs(mode: ThemeMode) -> Vec<Pair> {
 /// imported Mattermost theme's (#214).
 pub fn pairs_of(c: &UiColors, p: &Palette) -> Vec<Pair> {
     let c = *c;
-    // gpuicn's Message: mention rows tint primary at 6%, hover is muted at
-    // 50%. Matty's offline banner tints destructive at 8%.
-    let mention = over(c.primary.opacity(0.06), c.background);
+    // gpuicn's Message: mention rows tint the mention highlight at 6%,
+    // hover is muted at 50%; chips tint the link color at 10%. Matty's
+    // offline banner tints destructive at 8%.
+    let mention = over(c.mention_highlight().opacity(0.06), c.background);
     let hover = over(c.muted.opacity(0.5), c.background);
     let error = over(c.destructive.opacity(0.08), c.background);
-    let chip = over(c.primary.opacity(0.1), c.background);
+    let chip = over(c.link().opacity(0.1), c.background);
     let text = |name, fg, bg| Pair {
         name,
         kind: Kind::Text,
@@ -111,12 +112,23 @@ pub fn pairs_of(c: &UiColors, p: &Palette) -> Vec<Pair> {
         text("Message text on a mention row", c.foreground, mention),
         text("Timestamps on a mention row", c.muted_foreground, mention),
         text("Timestamps on a hovered row", c.muted_foreground, hover),
-        text("Mention chip", c.primary, chip),
-        text("Links and primary text", c.primary, c.background),
+        text("Mention chip", c.link(), chip),
+        text(
+            "Mention of you",
+            c.mention_highlight_foreground(),
+            c.mention_highlight(),
+        ),
+        text("Links", c.link(), c.background),
+        text("Primary text", c.primary, c.background),
+        text("New messages line", c.new_messages(), c.background),
         text("Errors", c.destructive, c.background),
         text("Error banner", c.destructive, error),
         text("Sidebar text", c.sidebar_foreground, c.sidebar),
-        text("Sidebar muted text", p.sidebar_muted, c.sidebar),
+        text(
+            "Sidebar muted text",
+            c.sidebar_muted_foreground(),
+            c.sidebar,
+        ),
         text(
             "Selected sidebar row",
             c.sidebar_accent_foreground,
@@ -143,14 +155,14 @@ pub fn pairs_of(c: &UiColors, p: &Palette) -> Vec<Pair> {
         ui("Focus ring in popovers", c.ring, c.popover),
         text(
             "Mention count on the sidebar",
-            p.mention_foreground,
-            p.mention,
+            c.sidebar_badge_foreground(),
+            c.sidebar_badge(),
         ),
-        ui("Unread badge on the sidebar", p.mention, c.sidebar),
+        ui("Unread badge on the sidebar", c.sidebar_badge(), c.sidebar),
         ui("Online dot", p.online, c.sidebar),
         ui("Away dot", p.away, c.sidebar),
         ui("Do not disturb dot", p.dnd, c.sidebar),
-        ui("Offline ring", p.sidebar_muted, c.sidebar),
+        ui("Offline ring", c.sidebar_muted_foreground(), c.sidebar),
         ui("Online dot on messages", p.online, c.background),
         ui("Away dot on messages", p.away, c.background),
         ui("Do not disturb dot on messages", p.dnd, c.background),

@@ -4,9 +4,8 @@
 //! channel's composer. Hidden while the server does not allow scheduling
 //! ([`crate::priority::Features::scheduled`]).
 //!
-//! gpuicn has no date or time picker yet, so the custom time is a day and a
-//! half-hour slot from two gpuicn selects, as Do not disturb's custom end
-//! picks them (#190).
+//! The custom time comes from gpuicn's date and time picker, kept to times
+//! still ahead ([`crate::when`]).
 
 use std::sync::Arc;
 
@@ -29,7 +28,6 @@ use crate::ui::{
     input::{Textarea, TextareaState},
     markdown::markdown,
     menu::MenuItem,
-    select::{Select, SelectEvent, SelectItem, SelectState},
     tag::{Tag, TagVariant},
     theme::UiTheme,
 };
@@ -240,13 +238,11 @@ pub enum ScheduleDialogEvent {
     },
 }
 
-/// Picks when a message posts: a day and a half-hour slot ahead of now,
-/// and for an edit the message too.
+/// Picks when a message posts, a time still ahead, and for an edit the
+/// message too.
 pub struct ScheduleDialog {
     handle: DialogHandle,
-    day: Entity<SelectState>,
-    time: Entity<SelectState>,
-    days: Vec<jiff::civil::Date>,
+    when: Entity<crate::ui::date_time_picker::DateTimeState>,
     /// The message, when editing a scheduled one.
     message: Option<Entity<TextareaState>>,
     _subscriptions: Vec<gpui_kit::Subscription>,
@@ -255,22 +251,15 @@ pub struct ScheduleDialog {
 impl EventEmitter<ScheduleDialogEvent> for ScheduleDialog {}
 
 impl ScheduleDialog {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let clock = ClockFormat::current(cx);
-        let times = (0..24 * 60)
-            .step_by(dnd::STEP_MINUTES as usize)
-            .map(|minutes: u16| SelectItem::new(minutes.to_string(), clock.format(minutes)));
-        let time = cx.new(|cx| SelectState::new(times, window, cx));
-        let day = cx.new(|cx| SelectState::new([], window, cx));
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let when = crate::when::state(cx);
         Self {
             handle: DialogHandle::new(false),
-            _subscriptions: vec![
-                cx.subscribe(&time, |_, _, _: &SelectEvent, cx| cx.notify()),
-                cx.subscribe(&day, |_, _, _: &SelectEvent, cx| cx.notify()),
-            ],
-            day,
-            time,
-            days: Vec::new(),
+            _subscriptions: vec![cx.subscribe(
+                &when,
+                |_, _, _: &crate::ui::date_time_picker::DateTimeEvent, cx| cx.notify(),
+            )],
+            when,
             message: None,
         }
     }
@@ -289,36 +278,11 @@ impl ScheduleDialog {
         cx: &mut Context<Self>,
     ) {
         let now = Zoned::now();
-        let days = dnd::custom_days(&now);
-        let items: Vec<SelectItem> = days
-            .iter()
-            .enumerate()
-            .map(|(index, (_, label))| SelectItem::new(index.to_string(), label.clone()))
-            .collect();
-        // The days are relative to today, so the list is made afresh.
-        self.day = cx.new(|cx| SelectState::new(items, window, cx));
-        self._subscriptions
-            .push(cx.subscribe(&self.day, |_, _, _: &SelectEvent, cx| cx.notify()));
-        self.days = days.into_iter().map(|(date, _)| date).collect();
-        let picked = at
+        let at = at
             .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
-            .map(|at| at.to_zoned(now.time_zone().clone()))
-            .and_then(|at| {
-                let day = self.days.iter().position(|date| *date == at.date())?;
-                let minutes = at.hour() as u16 * 60 + at.minute() as u16;
-                Some((day, minutes - minutes % dnd::STEP_MINUTES))
-            });
-        let (day, minutes) =
-            picked.unwrap_or_else(|| match dnd::custom_times(now.date(), &now).first() {
-                Some(minutes) => (0, *minutes),
-                None => (1, 0),
-            });
-        self.day.update(cx, |select, cx| {
-            select.set_value(Some(day.to_string().into()), window, cx)
-        });
-        self.time.update(cx, |select, cx| {
-            select.set_value(Some(minutes.to_string().into()), window, cx)
-        });
+            .map(|at| at.to_zoned(now.time_zone().clone()));
+        let clock = ClockFormat::current(cx);
+        crate::when::reset(&self.when, at.as_ref(), &now, clock, cx);
         self.message = message.map(|text| {
             cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -332,13 +296,7 @@ impl ScheduleDialog {
 
     /// The pick in ms since the epoch, if it is still ahead.
     fn picked(&self, cx: &App) -> Option<i64> {
-        let day: usize = self.day.read(cx).value()?.parse().ok()?;
-        let minutes: u16 = self.time.read(cx).value()?.parse().ok()?;
-        let date = *self.days.get(day)?;
-        let now = Zoned::now();
-        dnd::local_end(date, minutes, now.time_zone())
-            .filter(|at| *at > now.timestamp().as_second())
-            .map(|at| at * 1000)
+        crate::when::picked(&self.when, &Zoned::now(), cx).map(|at| at * 1000)
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -378,20 +336,10 @@ impl Render for ScheduleDialog {
                 )
             }))
             .child(
-                div()
-                    .flex()
-                    .gap(theme.space(2.))
-                    .pt(theme.space(2.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Select::new(&self.day).aria_label("Day")),
-                    )
-                    .child(
-                        div()
-                            .w(scaled(&theme, metrics::FIELD_NARROW_WIDTH))
-                            .child(Select::new(&self.time).aria_label("Time")),
-                    ),
+                div().pt(theme.space(2.)).child(
+                    crate::ui::date_time_picker::DateTimePicker::new("schedule.when", &self.when)
+                        .aria_label("Posts at"),
+                ),
             )
             .when(picked.is_none(), |popup| {
                 popup.child(
