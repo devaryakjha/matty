@@ -32,6 +32,7 @@ jobs:
       bundle: ${{ steps.filter.outputs.bundle }}
       windows: ${{ steps.filter.outputs.windows }}
       linux-package: ${{ steps.filter.outputs.linux-package }}
+      windows-package: ${{ steps.filter.outputs.windows-package }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -89,6 +90,9 @@ jobs:
             linux-package:
               - 'packaging/linux/**'
               - 'scripts/linux-package'
+            windows-package:
+              - 'packaging/windows/**'
+              - 'scripts/windows-package'
 
   # fmt, clippy and the unit tests of the whole workspace on Linux. This is
   # the check every pull request waits for.
@@ -176,7 +180,7 @@ jobs:
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'macos-master' || format('macos-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 40
     permissions:
@@ -238,7 +242,7 @@ jobs:
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'macos-universal-master' || format('macos-universal-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 60
     steps:
@@ -287,7 +291,7 @@ jobs:
       needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'windows-master' || format('windows-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 60
     steps:
@@ -327,7 +331,7 @@ jobs:
       needs.changes.outputs.linux-package == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      group: ${{ github.event_name == 'push' && 'linux-package-master' || format('linux-package-{0}', github.run_id) }}
       cancel-in-progress: false
     timeout-minutes: 40
     steps:
@@ -368,6 +372,57 @@ jobs:
         with:
           name: matty-linux-x86_64
           path: target/dist/linux
+          if-no-files-found: error
+
+  # The Windows installer (#215): a release build packaged as an MSI and a
+  # zip, then installed and uninstalled to check the MSI works. Nothing is
+  # signed or published. Pull requests run it only when the packaging
+  # changes or with the `windows` label; master runs it on every merge.
+  windows-package:
+    name: windows installer
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'windows') ||
+      needs.changes.outputs.windows-package == 'true'
+    runs-on: windows-latest
+    concurrency:
+      group: ${{ github.event_name == 'push' && 'windows-package-master' || format('windows-package-{0}', github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build the installer
+        run: scripts/windows-package "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "matty") | .version')"
+      - name: The installer installs, runs and uninstalls
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem target/dist/windows/*.msi | Select-Object -First 1
+          Start-Process msiexec -ArgumentList "/i `"$($msi.FullName)`" /qn /l*v install.log" -Wait -NoNewWindow
+          $exe = "$env:LOCALAPPDATA\Programs\Matty\matty.exe"
+          if (-not (Test-Path $exe)) { Get-Content install.log -Tail 40; throw "matty.exe was not installed" }
+          & $exe --version
+          if (-not (Test-Path "HKCU:\Software\Classes\mattermost\shell\open\command")) { throw "mattermost:// is not registered" }
+          $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Filter Matty.lnk -Recurse
+          if (-not $lnk) { throw "no Start menu shortcut" }
+          Start-Process msiexec -ArgumentList "/x `"$($msi.FullName)`" /qn" -Wait -NoNewWindow
+          if (Test-Path $exe) { throw "matty.exe is still there after uninstalling" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-windows-x86_64-installer
+          path: target/dist/windows
           if-no-files-found: error
 
   integration:
@@ -434,7 +489,7 @@ jobs:
   # were skipped on purpose.
   ci:
     if: ${{ !cancelled() }}
-    needs: [changes, linux, web, deny, macos, macos-universal, windows, linux-package, integration]
+    needs: [changes, linux, web, deny, macos, macos-universal, windows, linux-package, windows-package, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -443,7 +498,7 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
           # A master macOS job dropped from the queue for a newer merge is
           # cancelled, and the newer run checks it instead.
-          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }} ${{ needs.linux-package.result }}
+          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }} ${{ needs.linux-package.result }} ${{ needs.windows-package.result }}
           PUSH: ${{ github.event_name == 'push' }}
         run: |
           echo "$RESULTS"
