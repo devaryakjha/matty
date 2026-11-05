@@ -57,6 +57,8 @@ pub mod servers;
 pub mod settings;
 pub mod sidebar;
 pub mod slash;
+#[cfg(not(target_family = "wasm"))]
+mod spelling;
 pub mod style;
 pub mod switcher;
 pub mod threads;
