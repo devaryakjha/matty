@@ -1137,3 +1137,54 @@ async fn bookmarks_round_trip_where_the_license_allows() {
         assert!(deleted.delete_at > 0);
     }
 }
+
+#[tokio::test]
+async fn custom_emoji_upload_and_delete() {
+    let Some((client, me)) = sign_in_tester().await else {
+        eprintln!("MATTY_TEST_SERVER not set; skipping");
+        return;
+    };
+    if !client.capabilities().await.unwrap().custom_emoji {
+        return;
+    }
+    // A 1×1 PNG.
+    let png = vec![
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let name = format!(
+        "live-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let emoji = client
+        .create_emoji(&me.id, &name, png, "dot.png".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        (emoji.name.as_str(), emoji.creator_id.as_str()),
+        (name.as_str(), me.id.as_str())
+    );
+    assert!(
+        client
+            .all_emoji()
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.id == emoji.id)
+    );
+    client.delete_emoji(&emoji.id).await.unwrap();
+    assert!(
+        !client
+            .all_emoji()
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.id == emoji.id)
+    );
+}
