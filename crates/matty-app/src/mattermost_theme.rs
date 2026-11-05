@@ -180,10 +180,11 @@ impl Theme {
     }
 
     /// The name Preferences shows: a built-in's, else "Custom theme".
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> String {
         match BUILT_IN.iter().find(|(name, _)| *name == self.kind) {
-            Some((name, _)) => name,
-            None => "Custom theme",
+            // Mattermost's theme names are names, the same in every language.
+            Some((name, _)) => (*name).to_owned(),
+            None => crate::t!("prefs-colors-custom").to_string(),
         }
     }
 
