@@ -13,7 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_media.sql"),
     include_str!("../migrations/0003_post_threads.sql"),
     include_str!("../migrations/0004_outbox_local_files.sql"),
-    include_str!("../migrations/0005_outbox_priority.sql"),
+    include_str!("../migrations/0006_outbox_priority.sql"),
 ];
 
 /// The schema version a fresh database migrates to.

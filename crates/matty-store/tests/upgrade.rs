@@ -79,10 +79,10 @@ fn every_fixture_migrates_to_the_latest_version() {
             &[]
         };
         assert_eq!(queued.local_files, local, "fixture v{version}");
-        // A queued send's priority is kept from v5 (#220).
+        // A queued send's priority is kept from v6 (#220).
         assert_eq!(
             queued.priority.is_some_and(|priority| priority.is_urgent()),
-            version >= 5,
+            version >= 6,
             "fixture v{version}"
         );
         let window = posts::posts_window(conn, "town", Window::Latest, 10, true).unwrap();
