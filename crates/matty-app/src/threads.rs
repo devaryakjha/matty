@@ -3,7 +3,7 @@
 //! list. It replaces the channel view when the sidebar's Threads row is
 //! chosen and never opens the right pane.
 
-use gpui_icons::LucideIcon;
+use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
@@ -321,13 +321,23 @@ impl ThreadsView {
                     ),
             )
             .when(unread > 0, |this| {
-                this.child(
+                // An icon, so the header fits beside a thread in longer
+                // languages (#568); the words are in its tooltip and name.
+                let label = t!("threads-mark-all-read");
+                this.child(style::tipped(
+                    "threads.mark-all-read.tip",
+                    label.clone(),
                     Button::new("threads.mark-all-read")
                         .variant(ButtonVariant::Ghost)
-                        .size(ButtonSize::Sm)
-                        .label(t!("threads-mark-all-read"))
+                        .size(ButtonSize::Icon)
+                        .aria_label(label)
+                        .child(
+                            lucide(LucideIcon::CheckCheck)
+                                .size(scaled(&theme, metrics::ICON))
+                                .text_color(theme.colors.muted_foreground),
+                        )
                         .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
-                )
+                ))
             })
     }
 

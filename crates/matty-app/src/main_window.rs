@@ -924,10 +924,7 @@ impl MainWindow {
                 }
                 ChannelEvent::Remind { post, at } => this.remind(post, *at, cx),
                 ChannelEvent::OpenPermalink { channel, post } => {
-                    this.open_channel(channel.clone(), window, cx);
-                    let post = post.clone();
-                    this.channel
-                        .update(cx, |channel, cx| channel.jump_to(post, cx));
+                    this.open_permalink(channel.clone(), post.clone(), window, cx);
                 }
                 ChannelEvent::Slash(request) => this.slash(request, window, cx),
                 ChannelEvent::PostAction(choice) => {
@@ -3133,10 +3130,7 @@ impl MainWindow {
                     .update(cx, |channel, cx| channel.set_muted(muted, cx));
             }
             RightPaneEvent::Jump { channel, post } => {
-                self.open_channel(channel.clone(), window, cx);
-                let post = post.clone();
-                self.channel
-                    .update(cx, |channel, cx| channel.jump_to(post, cx));
+                self.open_permalink(channel.clone(), post.clone(), window, cx);
             }
             RightPaneEvent::Leave(channel) => self.leave_channel(channel.clone(), window, cx),
             RightPaneEvent::OpenFile(id) => self.download_file(id, cx),
@@ -4372,6 +4366,31 @@ impl MainWindow {
                 let query = matty_sync::LinkQuery::User { username };
                 self.resolve_link(query, None, window, cx);
             }
+        }
+    }
+
+    /// Jump on a permalink embed. A channel the person isn't in goes the
+    /// way of the link itself, which offers to join it (#645).
+    fn open_permalink(
+        &mut self,
+        channel: SharedString,
+        post: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let member = self
+            .live
+            .as_ref()
+            .is_none_or(|live| live.team_of(&channel).is_some());
+        if member {
+            self.open_channel(channel, window, cx);
+            self.channel
+                .update(cx, |channel, cx| channel.jump_to(post, cx));
+        } else {
+            let query = matty_sync::LinkQuery::Post {
+                post_id: post.to_string(),
+            };
+            self.resolve_link(query, Some(post), window, cx);
         }
     }
 
