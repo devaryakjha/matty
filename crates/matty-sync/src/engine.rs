@@ -584,6 +584,9 @@ pub enum Command {
         /// Role names, such as `channel_user`.
         names: Vec<String>,
     },
+    /// Loads the user's team memberships for their team roles (#208);
+    /// [`ChangeSet::TeamMembers`](crate::ChangeSet::TeamMembers) answers.
+    TeamRoles,
     /// Finds the team's people who are not in a channel, for Add members
     /// (#208); [`ChangeSet::NonMembers`](crate::ChangeSet::NonMembers)
     /// answers.
@@ -1068,6 +1071,7 @@ impl std::fmt::Debug for Command {
                 .field("user_id", user_id)
                 .finish(),
             Self::Roles { names } => f.debug_struct("Roles").field("names", names).finish(),
+            Self::TeamRoles => f.write_str("TeamRoles"),
             Self::NonMembers {
                 team_id,
                 channel_id,
@@ -2080,6 +2084,7 @@ impl Engine {
                 Message::Command(Command::Roles { names }) => {
                     writes.push(Write::Roles { names });
                 }
+                Message::Command(Command::TeamRoles) => writes.push(Write::TeamRoles),
                 Message::Command(Command::NonMembers {
                     team_id,
                     channel_id,
@@ -3512,6 +3517,11 @@ impl Engine {
                 });
             }
             Loaded::Roles(roles) => dirty.direct.push(ChangeSet::Roles(Arc::from(roles))),
+            Loaded::TeamMembers(members) => {
+                dirty
+                    .direct
+                    .push(ChangeSet::TeamMembers(Arc::from(members)));
+            }
             Loaded::NonMembers { channel_id, users } => {
                 sidebar::upsert_users(self.store.conn(), &users)?;
                 dirty.direct.push(ChangeSet::NonMembers {
