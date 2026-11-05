@@ -121,6 +121,7 @@ fn server_target(url: &str, server: &str, teams: Option<&[&str]>) -> Option<Link
 pub fn message_body(
     id: impl Into<ElementId>,
     body: &str,
+    image_sizes: &[(SharedString, u32, u32)],
     on_link: impl Fn(&SharedString, &mut Window, &mut App) + Clone + Send + Sync + 'static,
     cx: &App,
 ) -> MarkdownView {
@@ -137,18 +138,14 @@ pub fn message_body(
             crate::emoji::custom_source(name, cx)
         }))
         // Inline images come from outside the server through sync and
-        // the media cache (#159). Clicking one still waiting under "Load
-        // remote images: Ask" loads it; a loaded one opens its link.
+        // the media cache (#159), in the box the server measured. One
+        // still waiting under "Load remote images: Ask" shows a
+        // click-to-load placeholder; a loaded one opens its link.
         .plugin(
-            MarkdownImages::new(|url, _, cx| crate::remote_images::source(url, cx)).on_click(
-                move |url, window, cx| {
-                    if crate::remote_images::loaded(url, cx) {
-                        image_link(url, window, cx);
-                    } else {
-                        crate::remote_images::load(url, cx);
-                    }
-                },
-            ),
+            MarkdownImages::new(|url, _, cx| crate::remote_images::source(url, cx))
+                .image_sizes(image_sizes.iter().cloned())
+                .placeholder(|url, _, cx| crate::remote_images::placeholder(url, cx))
+                .on_click(move |url, window, cx| image_link(url, window, cx)),
         )
         .plugin(
             EntityLinks::new("matty").on_click(move |target, window, cx| {
@@ -388,5 +385,56 @@ mod tests {
         assert!(!looks_like_link("design"));
         assert!(!looks_like_link("https://a.com b"));
         assert!(!looks_like_link("ftp://a.com"));
+    }
+
+    /// A message body drawing one Markdown image, for the tests below.
+    struct Body;
+
+    impl gpui_kit::Render for Body {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            use gpui_kit::{ParentElement as _, Styled as _};
+            gpui_kit::div().w(gpui_kit::px(800.)).child(message_body(
+                "body",
+                "![chart](https://cdn.example.com/chart.png)",
+                &[("https://cdn.example.com/chart.png".into(), 1200, 600)],
+                |_, _, _| {},
+                cx,
+            ))
+        }
+    }
+
+    /// #159: under "Load remote images: Ask" an inline image is a
+    /// click-to-load placeholder in the box the server measured, and a
+    /// click loads it.
+    #[gpui_kit::test]
+    fn an_inline_image_waits_in_its_own_box(cx: &mut gpui_kit::TestAppContext) {
+        let fetched = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let log = fetched.clone();
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+            cx.set_global(crate::remote_images::RemoteImages::new(
+                std::rc::Rc::new(move |url: &str| log.borrow_mut().push(url.to_owned())),
+                true,
+            ));
+        });
+        let window = cx.add_window(|_, _| Body);
+        let mut cx = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let placeholder = cx
+            .debug_bounds("markdown-image-placeholder")
+            .expect("a placeholder, not the alt text");
+        // 1200 by 600, scaled to fit 360 by 200.
+        assert_eq!(
+            (placeholder.size.width, placeholder.size.height),
+            (gpui_kit::px(360.), gpui_kit::px(180.))
+        );
+        assert!(fetched.borrow().is_empty(), "nothing loads on its own");
+        cx.simulate_click(placeholder.center(), Default::default());
+        assert_eq!(*fetched.borrow(), ["https://cdn.example.com/chart.png"]);
     }
 }
