@@ -153,6 +153,13 @@ pub fn run_with_links(links: Vec<String>) {
             let _ = links_tx.try_send(url);
         }
     });
+    // A dock click, while the app runs with its window closed, brings the
+    // main window back (#614).
+    app.on_reopen(|cx| {
+        if cx.has_global::<MainHandle>() {
+            show_main_window(cx, |_, _, _| {});
+        }
+    });
     app.run(move |cx: &mut App| {
         // Debug builds check that no image is fetched or read from the
         // media cache on this thread (#153).
@@ -219,9 +226,62 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     actions::bind(cx);
     #[cfg(not(target_family = "wasm"))]
     menu::init(cx);
-    cx.set_global(deeplink::Incoming(links));
     open_main_window(cx);
     cx.activate(true);
+    follow_links(links, cx);
+}
+
+/// The main window while one is open. Closing it keeps the app running on
+/// macOS, so a link or a dock click opens it again (#614).
+struct MainHandle {
+    window: gpui_kit::AnyWindowHandle,
+    view: gpui_kit::WeakEntity<main_window::MainWindow>,
+}
+
+impl gpui_kit::Global for MainHandle {}
+
+/// Brings the main window forward, opening a new one if the user closed
+/// it, and runs `then` in it.
+pub(crate) fn show_main_window(
+    cx: &mut App,
+    then: impl FnOnce(
+        &mut main_window::MainWindow,
+        &mut Window,
+        &mut gpui_kit::Context<main_window::MainWindow>,
+    ) + 'static,
+) {
+    let open = cx
+        .try_global::<MainHandle>()
+        .is_some_and(|main| main.view.upgrade().is_some() && cx.windows().contains(&main.window));
+    if !open {
+        open_main_window(cx);
+    }
+    let Some((handle, view)) = cx
+        .try_global::<MainHandle>()
+        .map(|main| (main.window, main.view.clone()))
+    else {
+        return;
+    };
+    cx.activate(true);
+    let _ = handle.update(cx, |_, window, cx| {
+        window.activate_window();
+        let _ = view.update(cx, |main, cx| then(main, window, cx));
+    });
+}
+
+/// Hands each link the OS or a later launch opens to the main window, for
+/// as long as the app runs, so a closed window does not drop them.
+fn follow_links(links: async_channel::Receiver<String>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while let Ok(link) = links.recv().await {
+            cx.update(|cx| {
+                show_main_window(cx, move |main, window, cx| {
+                    main.open_link(&link, window, cx)
+                });
+            });
+        }
+    })
+    .detach();
 }
 
 /// Hooks for the crate's integration tests: the app set up as `launch` does
@@ -387,17 +447,27 @@ fn open_main_window(cx: &mut App) {
         cx.open_window(options, |window, cx| {
             apply_theme(window, cx);
             let main = cx.new(|cx| main_window::MainWindow::new(window, cx));
+            track_main_window(&main, window, cx);
             cx.new(|cx| perf::PerfRoot::new(main, cx))
         })
         .map(|_| ())
     } else {
         cx.open_window(options, |window, cx| {
             apply_theme(window, cx);
-            cx.new(|cx| main_window::MainWindow::new(window, cx))
+            let main = cx.new(|cx| main_window::MainWindow::new(window, cx));
+            track_main_window(&main, window, cx);
+            main
         })
         .map(|_| ())
     };
     opened.expect("open the main window");
+}
+
+fn track_main_window(main: &Entity<main_window::MainWindow>, window: &Window, cx: &mut App) {
+    cx.set_global(MainHandle {
+        window: window.window_handle(),
+        view: main.downgrade(),
+    });
 }
 
 /// Applies the theme choice from settings, following the OS when it is

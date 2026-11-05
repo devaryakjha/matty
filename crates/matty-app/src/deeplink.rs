@@ -7,8 +7,6 @@
 //! opens it through [`crate::links::route`] like a link in a message (#84).
 //! Anything else is logged and ignored, never an error the person sees.
 
-use gpui_kit::{App, Global};
-
 /// A link Matty knows what to do with.
 #[derive(Clone, PartialEq, Eq)]
 pub enum DeepLink {
@@ -197,19 +195,6 @@ pub fn sso_login_url(
         SsoProvider::Saml => "login/sso/saml",
     };
     format!("{server}/{path}?desktop_token={client_token}")
-}
-
-/// The links that arrived before or while the main window runs; the window
-/// takes the receiver and handles them in order.
-pub(crate) struct Incoming(pub async_channel::Receiver<String>);
-
-impl Global for Incoming {}
-
-impl Incoming {
-    pub(crate) fn receiver(cx: &App) -> Option<async_channel::Receiver<String>> {
-        cx.try_global::<Incoming>()
-            .map(|incoming| incoming.0.clone())
-    }
 }
 
 #[cfg(test)]
