@@ -31,6 +31,7 @@ jobs:
       macos: ${{ steps.filter.outputs.macos }}
       bundle: ${{ steps.filter.outputs.bundle }}
       windows: ${{ steps.filter.outputs.windows }}
+      linux-package: ${{ steps.filter.outputs.linux-package }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -85,6 +86,9 @@ jobs:
               - 'packaging/macos/**'
               - 'scripts/macos-bundle'
               - 'scripts/release-bundle'
+            linux-package:
+              - 'packaging/linux/**'
+              - 'scripts/linux-package'
 
   # fmt, clippy and the unit tests of the whole workspace on Linux. This is
   # the check every pull request waits for.
@@ -100,7 +104,8 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev
+            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
+            dbus-daemon
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
@@ -308,6 +313,63 @@ jobs:
           path: target/release/matty.exe
           if-no-files-found: error
 
+  # The Linux packages (#216): a release build packaged as a tarball, .deb,
+  # .rpm and AppImage, with the desktop entry and AppStream data validated.
+  # Nothing is signed or published. A release build is slow, so pull
+  # requests run it only when the packaging changes or with the `linux`
+  # label; master runs it on every merge.
+  linux-package:
+    name: linux packages
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'linux') ||
+      needs.changes.outputs.linux-package == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.event_name == 'push' && format('{0}-master', github.job) || format('{0}-{1}', github.job, github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GPUI's Linux libraries and the packaging tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
+            rpm desktop-file-utils appstream
+          curl -sSfL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          echo "46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1  /usr/local/bin/appimagetool" | sha256sum -c
+          chmod +x /usr/local/bin/appimagetool
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: The desktop entry and AppStream data are valid
+        run: |
+          desktop-file-validate packaging/linux/dev.arya.matty.desktop
+          appstreamcli validate --no-net --explain packaging/linux/dev.arya.matty.metainfo.xml
+      - name: Build the packages
+        run: scripts/linux-package "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "matty") | .version')"
+      - name: The packages hold the app and it runs
+        run: |
+          cd target/dist/linux
+          ls -l
+          dpkg-deb --info matty_*_amd64.deb
+          dpkg-deb --contents matty_*_amd64.deb | grep -q './usr/bin/matty'
+          rpm -qlp matty-*.rpm | grep -q '^/usr/bin/matty$'
+          APPIMAGE_EXTRACT_AND_RUN=1 ./Matty-*-x86_64.AppImage --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matty-linux-x86_64
+          path: target/dist/linux
+          if-no-files-found: error
+
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
     # Mattermost server (docs/dev-server.md). Pull requests run them only
@@ -372,7 +434,7 @@ jobs:
   # were skipped on purpose.
   ci:
     if: ${{ !cancelled() }}
-    needs: [changes, linux, web, deny, macos, macos-universal, windows, integration]
+    needs: [changes, linux, web, deny, macos, macos-universal, windows, linux-package, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -381,7 +443,7 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
           # A master macOS job dropped from the queue for a newer merge is
           # cancelled, and the newer run checks it instead.
-          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }}
+          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }} ${{ needs.linux-package.result }}
           PUSH: ${{ github.event_name == 'push' }}
         run: |
           echo "$RESULTS"

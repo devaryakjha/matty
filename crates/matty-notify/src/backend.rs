@@ -1,5 +1,6 @@
 //! Where notifications go: one backend per platform (PLAN §6.7). The macOS
-//! backend posts through UNUserNotificationCenter (#139); elsewhere, and on
+//! backend posts through UNUserNotificationCenter (#139) and the Linux one
+//! through the freedesktop notification service (#216); elsewhere, and on
 //! macOS outside an app bundle, notifications are only logged.
 
 use crate::Notification;
@@ -129,6 +130,10 @@ pub fn platform(clicked: async_channel::Sender<Clicked>) -> Box<dyn Notifier> {
     #[cfg(target_os = "macos")]
     if let Some(center) = crate::macos::Center::new(clicked.clone()) {
         return Box::new(center);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(service) = crate::linux::Freedesktop::new(clicked.clone()) {
+        return Box::new(service);
     }
     drop(clicked);
     #[cfg(target_os = "macos")]

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Matty's AppStream entry, which software centers and Flathub read. -->
+<component type="desktop-application">
+  <id>dev.arya.matty</id>
+  <name>Matty</name>
+  <summary>Chat on your Mattermost server</summary>
+  <developer id="com.github.devaryakjha">
+    <name>devaryakjha</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Matty is an unofficial native desktop client for Mattermost. It keeps
+      your channels readable offline, opens fast, and works from the keyboard.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.arya.matty.desktop</launchable>
+  <url type="homepage">https://github.com/devaryakjha/matty</url>
+  <url type="bugtracker">https://github.com/devaryakjha/matty/issues</url>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+  <provides>
+    <binary>matty</binary>
+  </provides>
+  <releases>
+    <release version="0.0.1" date="2026-11-05"/>
+  </releases>
+</component>
