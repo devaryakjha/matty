@@ -3654,7 +3654,9 @@ impl MainWindow {
     fn title_bar(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
         // Signed out there is nothing to navigate: window controls only.
         if self.login.is_some() {
-            return TitleBar::new().into_any_element();
+            return TitleBar::new()
+                .h(px(metrics::TITLE_BAR_HEIGHT))
+                .into_any_element();
         }
         let theme = UiTheme::read(cx).clone();
         let platform = Platform::current();
@@ -3682,11 +3684,12 @@ impl MainWindow {
             }));
         let me = self.account.clone();
         TitleBar::new()
+            .h(px(metrics::TITLE_BAR_HEIGHT))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme.space(0.5))
+                    .gap(theme.space(1.))
                     .flex_shrink_0()
                     // The sidebar lives in a drawer at this width; this is
                     // the pointer's way to it.
@@ -3730,8 +3733,8 @@ impl MainWindow {
                 div()
                     .flex()
                     .items_center()
-                    .gap(theme.space(0.5))
-                    .pr(theme.space(2.))
+                    .gap(theme.space(1.))
+                    .pr(theme.space(3.))
                     .flex_shrink_0()
                     .child(Self::icon_button(
                         "titlebar.unreads",
@@ -3765,7 +3768,7 @@ impl MainWindow {
                         true,
                         cx,
                     ))
-                    .child(div().pl(theme.space(1.)).child(me)),
+                    .child(div().pl(theme.space(2.)).child(me)),
             )
             .into_any_element()
     }

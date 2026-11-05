@@ -43,7 +43,7 @@ use crate::style::{self, TypeStyleExt as _};
 use crate::ui::{
     markdown::selection_root,
     theme::UiTheme,
-    title_bar::{TitleBar, title_bar_window_options},
+    title_bar::TitleBar,
     toast::{Notice, ToastState},
 };
 
@@ -379,7 +379,7 @@ fn window_options(saved: Option<WindowGeometry>, cx: &App) -> WindowOptions {
         window_bounds: Some(bounds),
         window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
         app_id: Some(crate::APP_ID.into()),
-        ..title_bar_window_options()
+        ..style::title_bar_window_options()
     }
 }
 
@@ -1718,6 +1718,7 @@ impl Render for PopOutView {
             .type_style(style::UI, &theme)
             .child(
                 TitleBar::new()
+                    .h(px(style::metrics::TITLE_BAR_HEIGHT))
                     .on_close(move |_, window, cx| {
                         view.update(cx, |this, cx| this.close(window, cx)).ok();
                     })
