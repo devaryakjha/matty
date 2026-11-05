@@ -219,6 +219,7 @@ bookmark-copy-link = Copy link
 bookmark-edit-item = Edit…
 bookmark-move-left = Move left
 bookmark-move-right = Move right
+bookmark-bar-label = Channel bookmarks
 bookmark-delete-item = Delete…
 # A file bookmark's tooltip.
 bookmark-file-tip = { $name } (file)
@@ -232,6 +233,25 @@ bookmark-delete-hint = It leaves the bar for everyone in the channel.
 bookmark-delete = Delete
 bookmark-actions = Bookmark actions
 bookmark-menu = Bookmark menu
+
+## Quick switcher (switcher.rs, switcher/places.rs)
+
+switcher-placeholder = Jump to a channel, person or team…
+switcher-forward-placeholder = Forward to a channel or person…
+switcher-open-link = Open link
+switcher-group-link = Link
+switcher-search-messages = Search messages for “{ $query }”
+switcher-group-messages = Messages
+switcher-group-matches = Channels and people
+switcher-group-unread = Unread
+switcher-group-recent = Recent
+switcher-group-servers = Other servers
+switcher-group-teams = Teams
+switcher-no-server-match = No channels on other servers match
+switcher-search-servers = Search all servers for “{ $query }”
+# Words that find a row when typed, lowercase.
+switcher-keyword-team = team
+switcher-keyword-unread = unread
 
 ## Drafts view (drafts.rs)
 
