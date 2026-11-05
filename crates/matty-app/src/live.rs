@@ -109,6 +109,9 @@ pub struct Live {
     search_page: (u32, bool, bool),
     /// The files the search on screen found (#207).
     search_files: Arc<[matty_api::models::FileInfo]>,
+    /// The channel Channel files lists, and its files once they came
+    /// (#208).
+    channel_files: Option<(String, Option<Arc<[matty_api::models::FileInfo]>>)>,
     /// The saved, pinned or mentions listing on screen and its posts once
     /// they come (#130–#132).
     listing: Option<(matty_sync::Listing, Option<Arc<[matty_api::models::Post]>>)>,
@@ -261,6 +264,8 @@ pub struct Update {
     pub profiles: Option<Vec<UserProfile>>,
     /// The ids of the open channel's admins, when its members loaded.
     pub admins: Option<Vec<SharedString>>,
+    /// The files Channel files lists, when they came or changed (#208).
+    pub channel_files: Option<Vec<crate::right_pane::FoundFile>>,
     /// The shown team's public channels, for Browse channels.
     pub directory: Option<Vec<crate::directory::DirectoryChannel>>,
     /// The shown team's people, for a new direct message.
@@ -624,6 +629,7 @@ impl Live {
                 search: None,
                 search_page: (0, false, false),
                 search_files: Arc::from(Vec::new()),
+                channel_files: None,
                 listing: None,
                 saved: Default::default(),
                 uploads: HashMap::new(),
@@ -1041,6 +1047,14 @@ impl Live {
                     .into()
             })
             .collect()
+    }
+
+    /// Whether Channel files lists the file `file_id`.
+    fn listed_file(&self, file_id: &str) -> bool {
+        self.channel_files
+            .as_ref()
+            .and_then(|(_, files)| files.as_ref())
+            .is_some_and(|files| files.iter().any(|file| file.id == file_id))
     }
 
     /// The open channel's members once their full list loaded, admins
@@ -1617,6 +1631,77 @@ impl Live {
         Some(model)
     }
 
+    /// A found file as the pane lists it: its thumbnail when here, its
+    /// channel, who posted it and on which day.
+    fn found_file(
+        &self,
+        info: &matty_api::models::FileInfo,
+        viewer: &crate::transcript::Viewer<'_>,
+    ) -> crate::right_pane::FoundFile {
+        let mut file = crate::attachments::PostFile::from_info(info);
+        if let Some(image) = self.thumbnails.get(&info.id) {
+            file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
+        }
+        let today = viewer.now.to_zoned(viewer.zone.clone()).date();
+        let (_, day, _) = crate::transcript::when(info.create_at, viewer.zone, today);
+        crate::right_pane::FoundFile {
+            file,
+            channel_id: info.channel_id.clone().into(),
+            channel_name: self
+                .channel_name(&info.channel_id)
+                .unwrap_or_else(|| "Another channel".into()),
+            post_id: info.post_id.clone().into(),
+            author: self
+                .users
+                .get(&info.user_id)
+                .map(|user| crate::transcript::display_name_as(user, self.names))
+                .unwrap_or_else(|| "Someone".into())
+                .into(),
+            day,
+        }
+    }
+
+    /// The open channel's files for Channel files, once they came.
+    fn channel_files_model(&self) -> Option<Vec<crate::right_pane::FoundFile>> {
+        let (_, files) = self.channel_files.as_ref()?;
+        let files = files.as_ref()?;
+        let viewer = crate::transcript::Viewer {
+            user_id: &self.me.0,
+            keys: &self.prefs.keys,
+            saved: &self.saved,
+            zone: &self.zone,
+            now: jiff::Timestamp::now(),
+            link_previews: self.link_previews,
+            collapsed_threads: self.threads_on.unwrap_or(false),
+            names: self.names,
+        };
+        Some(
+            files
+                .iter()
+                .map(|info| self.found_file(info, &viewer))
+                .collect(),
+        )
+    }
+
+    /// Lists the open channel's files (#208); they come as
+    /// [`Update::channel_files`].
+    pub fn show_channel_files(&mut self) {
+        let (Some(row), Some(team_id)) = (self.open.as_ref(), self.team.clone()) else {
+            return;
+        };
+        let channel_id = row.id.to_string();
+        self.send(Command::ChannelFiles {
+            team_id,
+            channel_id: channel_id.clone(),
+        });
+        self.channel_files = Some((channel_id, None));
+    }
+
+    /// Channel files closed.
+    pub fn close_channel_files(&mut self) {
+        self.channel_files = None;
+    }
+
     /// The search model for what has come back so far.
     fn search_model(&self) -> Option<crate::right_pane::SearchModel> {
         let (terms, posts) = self.search.as_ref()?;
@@ -1633,29 +1718,7 @@ impl Live {
         let files = self
             .search_files
             .iter()
-            .map(|info| {
-                let mut file = crate::attachments::PostFile::from_info(info);
-                if let Some(image) = self.thumbnails.get(&info.id) {
-                    file.preview = Some(crate::attachments::UploadSource::Image(image.clone()));
-                }
-                let today = viewer.now.to_zoned(viewer.zone.clone()).date();
-                let (_, day, _) = crate::transcript::when(info.create_at, viewer.zone, today);
-                crate::right_pane::FoundFile {
-                    file,
-                    channel_id: info.channel_id.clone().into(),
-                    channel_name: self
-                        .channel_name(&info.channel_id)
-                        .unwrap_or_else(|| "Another channel".into()),
-                    post_id: info.post_id.clone().into(),
-                    author: self
-                        .users
-                        .get(&info.user_id)
-                        .map(|user| crate::transcript::display_name_as(user, self.names))
-                        .unwrap_or_else(|| "Someone".into())
-                        .into(),
-                    day,
-                }
-            })
+            .map(|info| self.found_file(info, &viewer))
             .collect();
         Some(crate::right_pane::SearchModel {
             files,
@@ -1872,6 +1935,24 @@ impl Live {
                 rows.sort_by_key(|row| row.name.to_lowercase());
                 update.directory = Some(rows);
             }
+            ChangeSet::ChannelFiles { channel_id, files } => {
+                if let Some((asked, shown)) = self.channel_files.as_mut()
+                    && asked == channel_id
+                {
+                    *shown = Some(files.clone());
+                    for file in files.iter() {
+                        if crate::attachments::is_image(&file.name)
+                            && self.asked_thumbnails.insert(file.id.clone())
+                        {
+                            self.sync.send(Command::LoadImage {
+                                file_id: file.id.clone(),
+                                size: ImageSize::Thumbnail,
+                            });
+                        }
+                    }
+                    update.channel_files = self.channel_files_model();
+                }
+            }
             ChangeSet::ChannelMembers {
                 channel_id,
                 users,
@@ -1945,6 +2026,9 @@ impl Live {
                 }
                 if self.search_files.iter().any(|file| &file.id == file_id) {
                     update.search = self.search_model();
+                }
+                if self.listed_file(file_id) {
+                    update.channel_files = self.channel_files_model();
                 }
             }
             ChangeSet::Picture {
@@ -2335,6 +2419,7 @@ impl Live {
                 {
                     update.search = self.search_model();
                 }
+                update.channel_files = self.channel_files_model();
                 if self
                     .listing
                     .as_ref()
@@ -3761,6 +3846,51 @@ mod tests {
                 ..Default::default()
             }]),
         });
+    }
+
+    #[test]
+    fn channel_files_list_the_open_channel_until_closed() {
+        let mut live = live();
+        opened(&mut live);
+        live.apply(&ChangeSet::Users(Arc::from(vec![User {
+            id: "ada".into(),
+            username: "ada".into(),
+            first_name: "Ada".into(),
+            ..User::default()
+        }])));
+        live.team = Some("t1".into());
+        live.show_channel_files();
+        let file = |id: &str, channel_id: &str| matty_api::models::FileInfo {
+            id: id.into(),
+            channel_id: channel_id.into(),
+            post_id: "p1".into(),
+            user_id: "ada".into(),
+            name: format!("{id}.pdf"),
+            ..Default::default()
+        };
+        // Another channel's answer is not this list.
+        let update = live.apply(&ChangeSet::ChannelFiles {
+            channel_id: "c2".into(),
+            files: Arc::from(vec![file("f9", "c2")]),
+        });
+        assert!(update.channel_files.is_none());
+
+        let update = live.apply(&ChangeSet::ChannelFiles {
+            channel_id: "c1".into(),
+            files: Arc::from(vec![file("f1", "c1")]),
+        });
+        let files = update.channel_files.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file.name, "f1.pdf");
+        assert_eq!(files[0].post_id, "p1");
+        assert!(files[0].author.contains("Ada"), "{}", files[0].author);
+
+        live.close_channel_files();
+        let update = live.apply(&ChangeSet::ChannelFiles {
+            channel_id: "c1".into(),
+            files: Arc::from(vec![file("f1", "c1")]),
+        });
+        assert!(update.channel_files.is_none());
     }
 
     #[test]

@@ -219,6 +219,12 @@ fn suggestions(query: &str, hints: &SearchHints) -> Vec<Suggestion> {
 pub enum RightPaneContent {
     Thread(Box<ThreadModel>),
     ChannelInfo(ChannelModel),
+    /// The current channel's files, newest first (#208); `None` while
+    /// they load.
+    ChannelFiles {
+        channel_name: SharedString,
+        files: Option<Vec<FoundFile>>,
+    },
     /// The current channel's pinned posts, newest first.
     Pinned {
         channel_name: SharedString,
@@ -355,6 +361,8 @@ pub enum RightPaneEvent {
     ViewImages(Vec<SharedString>),
     /// The channel info pane asked for the pinned listing.
     OpenPinned,
+    /// "Files" in the channel info (#208).
+    OpenChannelFiles,
     /// The user clicked a link or an entity chip in a message (#103).
     /// A slash command in the reply composer needs the server or the
     /// window (#210).
@@ -2835,10 +2843,48 @@ impl RightPaneView {
         )
     }
 
+    /// Channel files (#208): loading, empty, or the files under who posted
+    /// them and when.
+    fn channel_files(
+        &self,
+        files: Option<&[FoundFile]>,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let theme = UiTheme::read(cx).clone();
+        match files {
+            None if self.offline => {
+                let (title, text) = crate::offline::pane_empty("files");
+                style::centered_empty(LucideIcon::WifiOff, title, text, cx).into_any_element()
+            }
+            None => div()
+                .flex_1()
+                .px(theme.space(4.))
+                .py(theme.space(3.))
+                .type_style(style::META, &theme)
+                .text_color(theme.colors.muted_foreground)
+                .child("Loading\u{2026}")
+                .into_any_element(),
+            Some([]) => style::centered_empty(
+                LucideIcon::Paperclip,
+                "No files yet",
+                "Files shared in this channel show up here.",
+                cx,
+            )
+            .into_any_element(),
+            Some(files) => self.found_files(files, false, cx).into_any_element(),
+        }
+    }
+
     /// The files a search found (#207): each under its channel, who posted
     /// it and when, with Jump to its message. An image opens the lightbox
     /// and any other file downloads, as in the transcript.
-    fn found_files(&self, files: &[FoundFile], cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Channel files leaves out the channel, which its header names.
+    fn found_files(
+        &self,
+        files: &[FoundFile],
+        with_channel: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let view = cx.entity().downgrade();
         div()
@@ -2876,7 +2922,11 @@ impl RightPaneView {
                                     .truncate()
                                     .type_style(style::META, &theme)
                                     .text_color(theme.colors.muted_foreground)
-                                    .child(format!("{channel} · {} · {}", found.author, found.day)),
+                                    .child(if with_channel {
+                                        format!("{channel} · {} · {}", found.author, found.day)
+                                    } else {
+                                        format!("{} · {}", found.author, found.day)
+                                    }),
                             )
                             .child(
                                 Button::new(gpui_kit::ElementId::Name(
@@ -3071,7 +3121,7 @@ impl RightPaneView {
                     body.child(self.search_tabs(model, cx))
                 })
                 .when(self.search_files_tab && !model.files.is_empty(), |body| {
-                    body.child(self.found_files(&model.files, cx))
+                    body.child(self.found_files(&model.files, true, cx))
                 })
                 .when(!self.search_files_tab || model.files.is_empty(), |body| {
                     self.search_messages(body, model, cx)
@@ -3357,6 +3407,10 @@ impl RightPaneView {
                     false,
                 )
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::OpenPinned))),
+            )
+            .child(
+                chip("info.files", "Files".into(), LucideIcon::Paperclip, false)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(RightPaneEvent::OpenChannelFiles))),
             );
         // Leaving sits on its own line, away from the toggles.
         let actions = div()
@@ -3685,6 +3739,19 @@ impl Render for RightPaneView {
                         .min_h_0()
                         .child(self.channel_info(&channel, cx)),
                 ),
+            Some(RightPaneContent::ChannelFiles {
+                channel_name,
+                files,
+            }) => root
+                .child(self.header(
+                    "Files".into(),
+                    Some(match channel_name.as_ref() {
+                        name if name.contains(' ') => name.to_string().into(),
+                        name => format!("#{name}").into(),
+                    }),
+                    cx,
+                ))
+                .child(self.channel_files(files.as_deref(), cx)),
             Some(RightPaneContent::Pinned {
                 channel_name,
                 posts,

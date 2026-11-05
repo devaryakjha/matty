@@ -86,6 +86,10 @@ pub fn pane_empty(listing: &str) -> (&'static str, &'static str) {
             TITLE,
             "None of your saved messages are on this computer yet. They load when you're back online.",
         ),
+        "files" => (
+            TITLE,
+            "A channel's files load from the server when you're back online.",
+        ),
         "pinned" => (
             TITLE,
             "None of this channel's pinned messages are on this computer yet. They load when you're back online.",

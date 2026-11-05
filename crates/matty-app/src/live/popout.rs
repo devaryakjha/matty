@@ -119,6 +119,7 @@ impl Live {
             search: None,
             search_page: (0, false, false),
             search_files: Arc::from(Vec::new()),
+            channel_files: None,
             listing: None,
             saved: self.saved.clone(),
             uploads: HashMap::new(),

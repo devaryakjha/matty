@@ -295,6 +295,14 @@ pub enum ChangeSet {
         /// Its people.
         users: Arc<[User]>,
     },
+    /// A channel's files, newest first: the answer to
+    /// [`Command::ChannelFiles`](crate::Command::ChannelFiles).
+    ChannelFiles {
+        /// The channel.
+        channel_id: String,
+        /// Its files.
+        files: Arc<[matty_api::models::FileInfo]>,
+    },
     /// A channel's people, admins first, and which of them are its admins:
     /// the answer to [`Command::ChannelMembers`](crate::Command::ChannelMembers)
     /// and [`Command::SetChannelAdmin`](crate::Command::SetChannelAdmin).

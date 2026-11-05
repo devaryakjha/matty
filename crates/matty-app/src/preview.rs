@@ -1298,6 +1298,25 @@ pub fn pinned(channel: &ChannelModel) -> Vec<ListedPost> {
         .collect()
 }
 
+/// The channel's shared files, newest first (#208).
+pub fn channel_files(channel: &ChannelModel) -> Vec<crate::right_pane::FoundFile> {
+    channel
+        .posts
+        .iter()
+        .rev()
+        .flat_map(|post| {
+            post.files.iter().map(|file| crate::right_pane::FoundFile {
+                file: file.clone(),
+                channel_id: channel.id.clone(),
+                channel_name: channel.name.clone(),
+                post_id: post.id.clone(),
+                author: post.author.clone(),
+                day: post.day.clone(),
+            })
+        })
+        .collect()
+}
+
 /// The user's saved posts across channels, newest first.
 pub fn saved() -> Vec<ListedPost> {
     [listed("general", "p5b"), listed("design", "p4")]

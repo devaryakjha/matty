@@ -211,3 +211,42 @@ async fn a_channel_lists_its_members_and_admins_and_changes_an_admin() {
     });
     next(&changes, |c| matches!(c, ChangeSet::ChannelMembers { .. })).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn channel_files_search_the_channel_newest_first() {
+    let server = server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v4/teams/t1/files/search"))
+        .and(wiremock::matchers::body_partial_json(json!({"terms": "channel:c1"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "order": ["f1", "f2", "f3"],
+            "file_infos": {
+                "f1": {"id": "f1", "channel_id": "c1", "user_id": "ada", "name": "old.png", "create_at": 1},
+                "f2": {"id": "f2", "channel_id": "c1", "user_id": "ada", "name": "new.pdf", "create_at": 3},
+                "f3": {"id": "f3", "channel_id": "c1", "user_id": "ada", "name": "gone.txt", "create_at": 2, "delete_at": 5}
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let sync = matty_sync::spawn(Store::open_in_memory().unwrap()).unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::Connect {
+        client: Client::new(server.uri()).unwrap().with_token("token"),
+    });
+    next(&changes, |c| matches!(c, ChangeSet::Sidebar { .. })).await;
+
+    sync.send(Command::ChannelFiles {
+        team_id: "t1".into(),
+        channel_id: "c1".into(),
+    });
+    let ChangeSet::ChannelFiles { channel_id, files } =
+        next(&changes, |c| matches!(c, ChangeSet::ChannelFiles { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(channel_id, "c1");
+    let names: Vec<_> = files.iter().map(|file| file.name.as_str()).collect();
+    assert_eq!(names, ["new.pdf", "old.png"]);
+}

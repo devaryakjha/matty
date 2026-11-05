@@ -15,6 +15,8 @@ const PAGE: u32 = 200;
 /// users; search covers the rest.
 const BROWSE_PAGES: u32 = 5;
 const PEOPLE_PAGES: u32 = 5;
+/// How many of a channel's files Channel files lists, newest first.
+const CHANNEL_FILES: u32 = 100;
 /// Saved posts and recent mentions show this many, newest first.
 const LISTING_PAGE: u32 = 60;
 /// The unread digest's channels at most, and each one's first unread
@@ -105,6 +107,10 @@ pub(crate) enum Write {
         team_id: String,
     },
     ChannelMembers {
+        channel_id: String,
+    },
+    ChannelFiles {
+        team_id: String,
         channel_id: String,
     },
     Search {
@@ -242,6 +248,7 @@ impl Write {
             Self::Browse { .. } => "browse channels",
             Self::People { .. } => "find people",
             Self::ChannelMembers { .. } => "load channel members",
+            Self::ChannelFiles { .. } => "load channel files",
             Self::ChannelAdmin { admin: true, .. } => "make channel admin",
             Self::ChannelAdmin { admin: false, .. } => "remove channel admin",
             Self::Search { .. } => "search",
@@ -307,6 +314,7 @@ impl Write {
             | Self::RemoveMember { channel_id, .. }
             | Self::ChannelAdmin { channel_id, .. }
             | Self::ChannelMembers { channel_id }
+            | Self::ChannelFiles { channel_id, .. }
             | Self::Privacy { channel_id, .. }
             | Self::Patch { channel_id, .. }
             | Self::Notify { channel_id, .. }
@@ -708,6 +716,25 @@ pub(crate) async fn run(
                     }
                 }
                 Some(Loaded::People { team_id, users })
+            }
+            Write::ChannelFiles {
+                team_id,
+                channel_id,
+            } => {
+                // The webapp's Channel files asks the same way: a file
+                // search for everything in the channel.
+                let mut query = SearchQuery::new(format!("channel:{channel_id}"));
+                query.per_page = CHANNEL_FILES;
+                query.include_deleted_channels = true;
+                let mut files: Vec<_> = client
+                    .search_files(&team_id, &query)
+                    .await?
+                    .ordered()
+                    .filter(|file| file.delete_at == 0)
+                    .cloned()
+                    .collect();
+                files.sort_by_key(|file| std::cmp::Reverse(file.create_at));
+                Some(Loaded::ChannelFiles { channel_id, files })
             }
             Write::ChannelMembers { channel_id } => {
                 Some(channel_members(&client, channel_id).await?)

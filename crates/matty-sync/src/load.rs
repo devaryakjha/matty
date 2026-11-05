@@ -180,6 +180,11 @@ pub(crate) enum Loaded {
     },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
+    /// A channel's files, newest first.
+    ChannelFiles {
+        channel_id: String,
+        files: Vec<matty_api::models::FileInfo>,
+    },
     /// A channel's people, and the ids of its admins.
     ChannelMembers {
         channel_id: String,
