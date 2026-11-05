@@ -4802,6 +4802,7 @@ dependencies = [
  "matty-api",
  "matty-markdown",
  "matty-notify",
+ "matty-spell",
  "matty-sync",
  "matty-update",
  "regex",
