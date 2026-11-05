@@ -125,6 +125,8 @@ impl Live {
             uploads: HashMap::new(),
             thumbnails: self.thumbnails.clone(),
             asked_thumbnails: self.asked_thumbnails.clone(),
+            roles: self.roles.clone(),
+            asked_roles: self.asked_roles.clone(),
             remote_images: self.remote_images.clone(),
             full_images: self.full_images.clone(),
             avatars: self.avatars.clone(),

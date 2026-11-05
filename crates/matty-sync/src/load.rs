@@ -180,6 +180,8 @@ pub(crate) enum Loaded {
     },
     /// A team's active people.
     People { team_id: String, users: Vec<User> },
+    /// Roles and their permissions.
+    Roles(Vec<matty_api::models::Role>),
     /// A team's people who are not in a channel.
     NonMembers {
         channel_id: String,
