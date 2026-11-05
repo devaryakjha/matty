@@ -1188,3 +1188,43 @@ async fn custom_emoji_upload_and_delete() {
             .any(|e| e.id == emoji.id)
     );
 }
+
+/// Changing the email needs the current password (#212); the test puts the
+/// address back afterwards. Runs as a seeded user nobody else's test uses.
+#[tokio::test]
+async fn changing_the_email_checks_the_password() {
+    let Some((url, _, password)) = server() else {
+        return;
+    };
+    let credentials = Credentials {
+        login_id: "alan.allen".into(),
+        password: password.clone(),
+        ..Default::default()
+    };
+    let signed_in = Client::new(url).unwrap().login(&credentials).await.unwrap();
+    let (client, me) = (signed_in.client, signed_in.user);
+    let patch = |email: &str, password: &str| matty_api::ProfilePatch {
+        email: Some(email.into()),
+        password: Some(password.into()),
+        ..Default::default()
+    };
+
+    let wrong = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", "not-the-password"))
+        .await;
+    assert!(wrong.is_err(), "a wrong password changed the email");
+    assert_eq!(client.me().await.unwrap().email, me.email);
+
+    let changed = client
+        .patch_profile(&me.id, &patch("alan@allen.dev", &password))
+        .await
+        .unwrap();
+    assert_eq!(changed.email, "alan@allen.dev");
+    assert_eq!(client.me().await.unwrap().email, "alan@allen.dev");
+
+    client
+        .patch_profile(&me.id, &patch(&me.email, &password))
+        .await
+        .unwrap();
+    assert_eq!(client.me().await.unwrap().email, me.email);
+}

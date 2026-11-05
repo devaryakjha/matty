@@ -4176,6 +4176,8 @@ impl MainWindow {
                     last_name: names.next().unwrap_or_default().to_string(),
                     username: account.username.to_string(),
                     user_id: account.user_id.to_string(),
+                    email: format!("{}@example.com", account.username),
+                    email_editable: true,
                     ..Default::default()
                 }
             }
