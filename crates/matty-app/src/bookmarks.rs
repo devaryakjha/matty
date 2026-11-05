@@ -20,6 +20,7 @@ use matty_api::models::{BookmarkKind, ChannelBookmark};
 
 use crate::attachments::{Upload, UploadSource};
 use crate::style::{self, TypeStyleExt as _, metrics, scaled};
+use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     attachment::{Attachment, AttachmentStatus},
@@ -89,7 +90,7 @@ pub fn model(channel_id: &str, list: &[ChannelBookmark], can_edit: bool) -> Book
                 id: bookmark.id.clone().into(),
                 name: text(&bookmark.display_name)
                     .or_else(|| text(&bookmark.link_url))
-                    .unwrap_or_else(|| "Untitled".into()),
+                    .unwrap_or_else(|| t!("bookmark-untitled")),
                 target: match bookmark.kind {
                     BookmarkKind::Link => Target::Link(bookmark.link_url.clone().into()),
                     BookmarkKind::File => Target::File {
@@ -264,12 +265,12 @@ impl EventEmitter<EditorSave> for BookmarkEditor {}
 
 impl BookmarkEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+        let input = |placeholder: SharedString, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
-        let name = input("A short name", window, cx);
-        let link = input("https://example.com", window, cx);
-        let emoji = input("Emoji name, such as book", window, cx);
+        let name = input(t!("bookmark-name-placeholder"), window, cx);
+        let link = input("https://example.com".into(), window, cx);
+        let emoji = input(t!("bookmark-emoji-placeholder"), window, cx);
         let subscriptions = [&name, &link, &emoji]
             .into_iter()
             .map(|input| {
@@ -299,13 +300,13 @@ impl BookmarkEditor {
         &self.handle
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> SharedString {
         if self.editing.is_some() {
-            "Edit bookmark"
+            t!("bookmark-edit-title")
         } else if self.file.is_some() {
-            "Add a file"
+            t!("bookmark-add-file-title")
         } else {
-            "Add a bookmark"
+            t!("bookmark-add-title")
         }
     }
 
@@ -423,26 +424,28 @@ impl Render for BookmarkEditor {
         }
         let (name, link, _) = self.values(cx);
         let bad_link = self.tried && link.is_none() && !self.is_file();
-        let mut link_field = Field::new("bookmark.edit.link", &self.link).label("Link");
+        let mut link_field =
+            Field::new("bookmark.edit.link", &self.link).label(t!("bookmark-link"));
         if bad_link {
-            link_field = link_field.error("Enter a web address, such as example.com.");
+            link_field = link_field.error(t!("bookmark-link-invalid"));
         }
-        let mut name_field = Field::new("bookmark.edit.name", &self.name).label("Name");
+        let mut name_field =
+            Field::new("bookmark.edit.name", &self.name).label(t!("bookmark-name"));
         name_field = if name.chars().count() > MAX_NAME {
-            name_field.error(format!("At most {MAX_NAME} characters."))
+            name_field.error(t!("bookmark-name-too-long", max = MAX_NAME))
         } else if self.file.is_some() {
-            name_field.description("Shown in the bar instead of the file's name.")
+            name_field.description(t!("bookmark-name-file-hint"))
         } else if self.is_file() {
-            name_field.description("The file keeps its own name on the server.")
+            name_field.description(t!("bookmark-name-server-file-hint"))
         } else {
-            name_field.description("Leave it empty to use the link's address.")
+            name_field.description(t!("bookmark-name-link-hint"))
         };
         let emoji_field = Field::new("bookmark.edit.emoji", &self.emoji)
-            .label("Emoji")
+            .label(t!("bookmark-emoji"))
             .description(if self.is_file() {
-                "Shown instead of the file's icon. Optional."
+                t!("bookmark-emoji-file-hint")
             } else {
-                "Shown instead of the link's icon. Optional."
+                t!("bookmark-emoji-link-hint")
             });
         div()
             .flex()
@@ -456,10 +459,9 @@ impl Render for BookmarkEditor {
                     .child(dialog_title("bookmark.edit.title", cx).child(self.title()))
                     .child(dialog_description("bookmark.edit.description", cx).child(
                         if self.file.is_some() {
-                            "The file uploads to the channel, and everyone in it sees the \
-                                 bookmark in the bar under the header."
+                            t!("bookmark-file-hint")
                         } else {
-                            "Everyone in the channel sees it in the bar under the header."
+                            t!("bookmark-hint")
                         },
                     )),
             )
@@ -485,7 +487,7 @@ impl Render for BookmarkEditor {
                     .child(
                         Button::new("bookmark.edit.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel")
+                            .label(t!("bookmark-cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.handle.close(window, cx);
                             })),
@@ -495,9 +497,9 @@ impl Render for BookmarkEditor {
                             Button::new("bookmark.edit.save")
                                 .variant(ButtonVariant::Default)
                                 .label(if self.editing.is_some() {
-                                    "Save"
+                                    t!("bookmark-save")
                                 } else {
-                                    "Add"
+                                    t!("bookmark-add")
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                         ),
@@ -619,12 +621,16 @@ impl BookmarksBar {
         let id = |name: &str| gpui_kit::ElementId::Name(format!("{prefix}.{name}").into());
         let (link, file) = (cx.entity().downgrade(), cx.entity().downgrade());
         vec![
-            MenuItem::new(id("link"), "Add a link\u{2026}").on_click(move |_, window, cx| {
-                link.update(cx, |this, cx| this.add(window, cx)).ok();
-            }),
-            MenuItem::new(id("file"), "Add a file\u{2026}").on_click(move |_, window, cx| {
-                file.update(cx, |this, cx| this.add_file(window, cx)).ok();
-            }),
+            MenuItem::new(id("link"), t!("bookmark-add-link-item")).on_click(
+                move |_, window, cx| {
+                    link.update(cx, |this, cx| this.add(window, cx)).ok();
+                },
+            ),
+            MenuItem::new(id("file"), t!("bookmark-add-file-item")).on_click(
+                move |_, window, cx| {
+                    file.update(cx, |this, cx| this.add_file(window, cx)).ok();
+                },
+            ),
         ]
     }
 
@@ -785,7 +791,7 @@ impl BookmarksBar {
         let id = |name: &str| {
             gpui_kit::ElementId::Name(format!("{prefix}.{}.{name}", bookmark.id).into())
         };
-        let item = |name: &str, label: &'static str, run: BarAction| {
+        let item = |name: &str, label: SharedString, run: BarAction| {
             let view = view.clone();
             MenuItem::new(id(name), label).on_click(move |_, window, cx| {
                 view.update(cx, |this, cx| run(this, window, cx)).ok();
@@ -796,16 +802,16 @@ impl BookmarksBar {
         items.push(item(
             "open",
             if bookmark.link().is_some() {
-                "Open link"
+                t!("bookmark-open-link")
             } else {
-                "Open file"
+                t!("bookmark-open-file")
             },
             Box::new(move |this, _, cx| this.open(&open, cx)),
         ));
         if let Some(url) = bookmark.link().cloned() {
             items.push(item(
                 "copy",
-                "Copy link",
+                t!("bookmark-copy-link"),
                 Box::new(move |_, _, cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.to_string()))
                 }),
@@ -818,14 +824,14 @@ impl BookmarksBar {
         let edit = bookmark.clone();
         items.push(item(
             "edit",
-            "Edit\u{2026}",
+            t!("bookmark-edit-item"),
             Box::new(move |this, window, cx| this.edit(edit.clone(), window, cx)),
         ));
         let (left, right) = (bookmark.id.clone(), bookmark.id.clone());
         items.push(
             item(
                 "left",
-                "Move left",
+                t!("bookmark-move-left"),
                 Box::new(move |this, _, cx| this.shift(&left, -1, cx)),
             )
             .disabled(at == Some(0)),
@@ -833,7 +839,7 @@ impl BookmarksBar {
         items.push(
             item(
                 "right",
-                "Move right",
+                t!("bookmark-move-right"),
                 Box::new(move |this, _, cx| this.shift(&right, 1, cx)),
             )
             .disabled(at == Some(last)),
@@ -842,7 +848,7 @@ impl BookmarksBar {
         let delete = bookmark.clone();
         items.push(item(
             "delete",
-            "Delete\u{2026}",
+            t!("bookmark-delete-item"),
             Box::new(move |this, window, cx| this.ask_delete(delete.clone(), window, cx)),
         ));
         items
@@ -914,11 +920,11 @@ impl BookmarksBar {
         let menu_for = bookmark.clone();
         let tip: SharedString = match &bookmark.target {
             Target::Link(url) => url.clone(),
-            Target::File { .. } => format!("{} (file)", bookmark.name).into(),
+            Target::File { .. } => t!("bookmark-file-tip", name = bookmark.name.to_string()),
         };
         let label = match &bookmark.target {
-            Target::Link(_) => format!("{}, link", bookmark.name),
-            Target::File { .. } => format!("{}, file", bookmark.name),
+            Target::Link(_) => t!("bookmark-link-label", name = bookmark.name.to_string()),
+            Target::File { .. } => t!("bookmark-file-label", name = bookmark.name.to_string()),
         };
         style::tipped(
             gpui_kit::ElementId::Name(format!("bookmark.{}.tip", bookmark.id).into()),
@@ -970,15 +976,15 @@ impl BookmarksBar {
 
     fn delete_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let name = self.deleting.as_ref().map_or_else(
-            || "this bookmark".to_owned(),
-            |b| format!("\u{201c}{}\u{201d}", b.name),
+        let title = self.deleting.as_ref().map_or_else(
+            || t!("bookmark-delete-this"),
+            |b| t!("bookmark-delete-named", name = b.name.to_string()),
         );
-        let popup = dialog_popup("bookmark.delete.popup", "Delete bookmark", cx)
-            .child(dialog_title("bookmark.delete.title", cx).child(format!("Delete {name}?")))
+        let popup = dialog_popup("bookmark.delete.popup", t!("bookmark-delete-title"), cx)
+            .child(dialog_title("bookmark.delete.title", cx).child(title))
             .child(
                 dialog_description("bookmark.delete.description", cx)
-                    .child("It leaves the bar for everyone in the channel."),
+                    .child(t!("bookmark-delete-hint")),
             )
             .child(
                 div()
@@ -989,12 +995,12 @@ impl BookmarksBar {
                     .child(
                         alert_dialog_cancel("bookmark.delete.cancel")
                             .variant(ButtonVariant::Outline)
-                            .label("Cancel"),
+                            .label(t!("bookmark-cancel")),
                     )
                     .child(
                         alert_dialog_action("bookmark.delete.confirm")
                             .variant(ButtonVariant::Destructive)
-                            .label("Delete"),
+                            .label(t!("bookmark-delete")),
                     ),
             );
         let view = cx.entity().downgrade();
@@ -1039,7 +1045,7 @@ impl Render for BookmarksBar {
                     .children(chips),
             )
             .when(model.can_edit && !full, |bar| {
-                let add = Menu::new(&self.add_menu, "Add a bookmark")
+                let add = Menu::new(&self.add_menu, t!("bookmark-add-title"))
                     .trigger(
                         div()
                             .flex()
@@ -1052,13 +1058,13 @@ impl Render for BookmarksBar {
                                     .size(scaled(&theme, metrics::ICON_SMALL))
                                     .text_color(theme.colors.muted_foreground),
                             )
-                            .when(empty, |trigger| trigger.child("Add a bookmark")),
+                            .when(empty, |trigger| trigger.child(t!("bookmark-add-title"))),
                     )
                     .trigger_style_with({
                         let theme = theme.clone();
                         move |button| {
                             style_button(
-                                button.aria_label("Add a bookmark"),
+                                button.aria_label(t!("bookmark-add-title")),
                                 false,
                                 ButtonVariant::Ghost,
                                 if empty {
@@ -1072,7 +1078,7 @@ impl Render for BookmarksBar {
                     });
                 bar.child(style::tipped(
                     "bookmarks.add.tip",
-                    "Add a bookmark",
+                    t!("bookmark-add-title"),
                     div().debug_selector(|| "bookmarks-add".into()).child(add),
                 ))
             })
@@ -1080,8 +1086,8 @@ impl Render for BookmarksBar {
             .when(!empty, |bar| {
                 bar.child(style::tipped(
                     "bookmarks.more.tip",
-                    "Bookmark actions",
-                    Menu::new(&self.more, "Bookmark actions")
+                    t!("bookmark-actions"),
+                    Menu::new(&self.more, t!("bookmark-actions"))
                         .trigger(
                             lucide(LucideIcon::Ellipsis)
                                 .size(scaled(&theme, metrics::ICON_SMALL))
@@ -1091,7 +1097,7 @@ impl Render for BookmarksBar {
                             let theme = theme.clone();
                             move |button| {
                                 style_button(
-                                    button.aria_label("Bookmark actions"),
+                                    button.aria_label(t!("bookmark-actions")),
                                     false,
                                     ButtonVariant::Ghost,
                                     ButtonSize::IconSm,
@@ -1102,7 +1108,7 @@ impl Render for BookmarksBar {
                 ))
             })
             .child(
-                Menu::new(&self.menu, "Bookmark menu")
+                Menu::new(&self.menu, t!("bookmark-menu"))
                     .context_area(div())
                     .disabled(true),
             )
