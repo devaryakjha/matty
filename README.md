@@ -6,9 +6,9 @@ component library. The goal is a client that opens instantly, switches
 channels without a spinner, and stays usable offline.
 
 > **Status: early alpha.** Matty is under active development toward its first
-> milestone (M1). There are no releases yet: build it from source (see
-> [Install](#install) for what releases will look like). The plan of
-> record is [docs/PLAN.md](docs/PLAN.md), and work is tracked in
+> milestone (M1). There are no releases yet:
+> [build it from source](#building). The plan of record is
+> [docs/PLAN.md](docs/PLAN.md), and work is tracked in
 > [GitHub issues](https://github.com/devaryakjha/matty/issues).
 
 ![Matty showing #general in light mode](docs/screenshots/readme/channel-light.png)
@@ -66,30 +66,25 @@ builds are next. See the [M1 milestones](docs/PLAN.md) for the full list.
 ## Install
 
 Matty is an unofficial client for Mattermost, not made or endorsed by
-Mattermost, Inc. Releases are published on
-[GitHub Releases](https://github.com/devaryakjha/matty/releases); the first
-one comes with the M1 beta.
+Mattermost, Inc.
 
-**macOS 13 or later, Apple silicon or Intel.** Download `Matty-<version>.dmg`
-from the latest release, open it and drag Matty to Applications. Each release
-lists the files' SHA-256 checksums in `SHA256SUMS`:
+**There are no published builds yet.** No GitHub release exists and there is
+no Homebrew tap, so the only way to run Matty today is to
+[build it from source](#building). On macOS, `scripts/release-bundle` builds
+the same universal `Matty.app` a release would ship (see
+[Building](#building)).
 
-```sh
-shasum -a 256 -c SHA256SUMS --ignore-missing
-```
+**Coming with the first release (M1 beta):**
 
-Or install with [Homebrew](https://brew.sh):
-
-```sh
-brew install --cask devaryakjha/matty/matty
-```
-
-Matty updates itself, so `brew upgrade` leaves it alone unless you pass
-`--greedy`. `brew uninstall --zap --cask matty` also removes its settings,
-cache and logs. Your sign-in tokens stay in the keychain under "Matty" until
-you sign out or delete them in Keychain Access.
+- A DMG for macOS 13 or later (Apple silicon and Intel) on
+  [GitHub Releases](https://github.com/devaryakjha/matty/releases), with
+  SHA-256 checksums in `SHA256SUMS`.
+- A Homebrew cask (`brew install --cask devaryakjha/matty/matty`). It does
+  not work yet: the tap doesn't exist.
+- In-app updates from signed release manifests.
 
 Windows and Linux builds come later (M2); until then, build from source.
+Matty also builds for the browser; see [docs/web.md](docs/web.md).
 
 ### Supported servers
 
@@ -106,7 +101,7 @@ getting patches. CI tests against Mattermost 12.0, 11.7, 10.11 and 10.5.
 ### Reporting problems
 
 [Open an issue](https://github.com/devaryakjha/matty/issues/new) with your
-Matty version (`/Applications/Matty.app/Contents/MacOS/matty --version`),
+Matty version (`matty --version`, or the commit you built from),
 your macOS version and your Mattermost server version. Preferences has a
 button that opens the logs folder. Logs leave out tokens and message text
 by default, but look before you attach one.
@@ -132,7 +127,7 @@ MATTY_PREVIEW=1 cargo run -p matty
 
 On macOS, notifications only show from an app bundle. `scripts/dev-bundle`
 builds an ad-hoc signed `target/Matty Dev.app` with its own bundle id and
-URL schemes, so it can sit next to a release install:
+URL schemes, so it can sit next to a release build:
 
 ```sh
 scripts/dev-bundle && open "target/Matty Dev.app"
