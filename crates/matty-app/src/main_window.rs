@@ -238,6 +238,7 @@ pub struct MainWindow {
     categories: Entity<crate::categories::CategoryDialogs>,
     /// "Edit profile…" from the account menu (#212).
     profile_editor: Entity<crate::profile_editor::ProfileEditor>,
+    emoji_manager: Entity<crate::emoji_manager::EmojiManager>,
     /// Channels joined from Browse while in preview, so they open with an
     /// empty transcript until sync owns joining.
     joined: Vec<crate::channel::ChannelModel>,
@@ -448,6 +449,25 @@ impl MainWindow {
             },
         )
         .detach();
+        let emoji_manager = cx.new(|cx| crate::emoji_manager::EmojiManager::new(window, cx));
+        cx.subscribe(
+            &emoji_manager,
+            |this, _, event: &crate::emoji_manager::EmojiManagerEvent, _| {
+                use crate::emoji_manager::EmojiManagerEvent;
+                let Some(live) = &this.live else {
+                    return;
+                };
+                live.send(match event.clone() {
+                    EmojiManagerEvent::Add { name, image } => {
+                        matty_sync::Command::AddEmoji { name, image }
+                    }
+                    EmojiManagerEvent::Delete(emoji_id) => {
+                        matty_sync::Command::DeleteEmoji { emoji_id }
+                    }
+                });
+            },
+        )
+        .detach();
         let profile_editor = cx.new(|cx| crate::profile_editor::ProfileEditor::new(window, cx));
         cx.subscribe(
             &profile_editor,
@@ -510,6 +530,7 @@ impl MainWindow {
                     }
                 }
                 AccountEvent::EditProfile => this.edit_profile(window, cx),
+                AccountEvent::CustomEmoji => this.manage_emoji(window, cx),
                 AccountEvent::SignOut => this.sign_out(window, cx),
             },
         )
@@ -1154,6 +1175,7 @@ impl MainWindow {
             create_channel,
             categories,
             profile_editor,
+            emoji_manager,
             joined: Vec::new(),
             rail,
             team_places: Default::default(),
@@ -4079,6 +4101,21 @@ impl MainWindow {
             .update(cx, |editor, cx| editor.open(fields, window, cx));
     }
 
+    /// Opens "Custom emoji" (#209) for the signed-in user.
+    fn manage_emoji(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (me, admin) = match self.live.as_ref().and_then(|live| live.me_user()) {
+            Some(user) => (
+                user.id.clone(),
+                user.roles
+                    .split_whitespace()
+                    .any(|role| role == "system_admin"),
+            ),
+            None => (self.account.read(cx).account().user_id.to_string(), false),
+        };
+        self.emoji_manager
+            .update(cx, |manager, cx| manager.open(me, admin, window, cx));
+    }
+
     fn category_changed(&mut self, event: &crate::categories::CategoryEvent) {
         use crate::categories::CategoryEvent;
         let Some(live) = &self.live else {
@@ -4397,6 +4434,7 @@ impl MainWindow {
         div()
             .child(self.categories.clone())
             .child(self.profile_editor.clone())
+            .child(self.emoji_manager.clone())
             .child(dialog(
                 "new-message",
                 &message,

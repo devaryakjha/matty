@@ -179,10 +179,11 @@ fn base_name(name: &str) -> String {
         .to_owned()
 }
 
-/// The server's custom emoji, name to id (#153), as an app global the
-/// views read while rendering. [`crate::live::Live`] fills it from sync.
+/// The server's custom emoji, name to id and creator (#153), as an app
+/// global the views read while rendering. [`crate::live::Live`] fills it
+/// from sync.
 #[derive(Clone, Default)]
-pub struct CustomEmoji(Rc<RefCell<HashMap<String, String>>>);
+pub struct CustomEmoji(Rc<RefCell<HashMap<String, (String, String)>>>);
 
 impl Global for CustomEmoji {}
 
@@ -191,13 +192,21 @@ impl CustomEmoji {
     pub fn set(&self, emoji: &[matty_api::models::Emoji]) {
         *self.0.borrow_mut() = emoji
             .iter()
-            .map(|one| (one.name.clone(), one.id.clone()))
+            .map(|one| (one.name.clone(), (one.id.clone(), one.creator_id.clone())))
             .collect();
     }
 
     /// The id of the custom emoji called `name`.
     pub fn id(&self, name: &str) -> Option<String> {
-        self.0.borrow().get(name).cloned()
+        self.0.borrow().get(name).map(|(id, _)| id.clone())
+    }
+
+    /// Who added the custom emoji called `name`.
+    pub fn creator(&self, name: &str) -> Option<String> {
+        self.0
+            .borrow()
+            .get(name)
+            .map(|(_, creator)| creator.clone())
     }
 
     /// Every custom emoji's name, A to Z.

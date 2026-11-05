@@ -514,9 +514,10 @@ impl Picture {
 /// Which of a file's images: the server scales each image it is sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageSize {
-    /// About 120 pixels, for the tile on a post.
+    /// About 120 pixels, for small rows such as search results.
     Thumbnail,
-    /// Up to about 1920 pixels wide, for the lightbox.
+    /// Up to about 1920 pixels wide, for the tile on a post and the
+    /// lightbox.
     Preview,
 }
 

@@ -333,6 +333,21 @@ pub enum Command {
         /// The image's bytes and file name, or `None` to remove it.
         picture: Option<(Vec<u8>, String)>,
     },
+    /// Adds a custom emoji called `name` from an image file's bytes and
+    /// name (#209). [`ChangeSet::CustomEmoji`](crate::ChangeSet::CustomEmoji)
+    /// follows.
+    AddEmoji {
+        /// The shortcode, without colons.
+        name: String,
+        /// The image's bytes and file name.
+        image: (Vec<u8>, String),
+    },
+    /// Removes a custom emoji. [`ChangeSet::CustomEmoji`](crate::ChangeSet::CustomEmoji)
+    /// follows.
+    DeleteEmoji {
+        /// The emoji's id.
+        emoji_id: String,
+    },
     /// Opens the direct message with one user, or the group message with
     /// several (3 to 8 people counting the user), creating it if needed.
     /// [`ChangeSet::ChannelReady`](crate::ChangeSet::ChannelReady) follows.
@@ -880,6 +895,15 @@ impl std::fmt::Debug for Command {
             Self::SetPicture { picture } => f
                 .debug_struct("SetPicture")
                 .field("bytes", &picture.as_ref().map(|(bytes, _)| bytes.len()))
+                .finish(),
+            Self::AddEmoji { name, image } => f
+                .debug_struct("AddEmoji")
+                .field("name", name)
+                .field("bytes", &image.0.len())
+                .finish(),
+            Self::DeleteEmoji { emoji_id } => f
+                .debug_struct("DeleteEmoji")
+                .field("emoji_id", emoji_id)
                 .finish(),
             Self::MoveCategory { .. } => f.write_str("MoveCategory"),
             Self::MoveChannel { .. } => f.write_str("MoveChannel"),
@@ -1721,6 +1745,12 @@ impl Engine {
                 }
                 Message::Command(Command::SetPicture { picture }) => {
                     writes.push(Write::Picture(picture))
+                }
+                Message::Command(Command::AddEmoji { name, image }) => {
+                    writes.push(Write::AddEmoji { name, image })
+                }
+                Message::Command(Command::DeleteEmoji { emoji_id }) => {
+                    writes.push(Write::DeleteEmoji { emoji_id })
                 }
                 Message::Command(Command::SetCollapsedThreads { on }) => {
                     if let Some(me) = &self.me {
