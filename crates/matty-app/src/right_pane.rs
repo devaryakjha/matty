@@ -2324,6 +2324,7 @@ impl RightPaneView {
         let (delete_view, delete_id) = (view.clone(), id.clone());
         let (react_view, react_id) = (view.clone(), id.clone());
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
+            .copy_prefix(crate::channel::copy_prefix(post, cx))
             .status(match post.status {
                 PostStatus::Sent | PostStatus::Ephemeral => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
