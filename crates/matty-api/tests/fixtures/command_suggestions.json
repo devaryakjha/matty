@@ -1,0 +1,23 @@
+[
+  {
+    "Complete": "jira connect",
+    "Suggestion": "connect",
+    "Hint": "",
+    "Description": "Connect your Mattermost account to your Jira account",
+    "IconData": ""
+  },
+  {
+    "Complete": "jira create",
+    "Suggestion": "create",
+    "Hint": "[text]",
+    "Description": "Create a new Issue",
+    "IconData": "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
+  },
+  {
+    "Complete": "jira assign",
+    "Suggestion": "assign",
+    "Hint": "[issue] [user]",
+    "Description": "Change the assignee of a Jira issue",
+    "IconData": ""
+  }
+]

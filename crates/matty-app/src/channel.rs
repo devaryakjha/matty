@@ -2,6 +2,8 @@
 //! view draws a [`ChannelModel`] that sync will fill; until then it shows
 //! the empty state, or the preview fixtures with `MATTY_PREVIEW=1`.
 
+mod slash;
+
 use gpui_icons::{LucideIcon, lucide};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1027,6 +1029,8 @@ pub enum ChannelEvent {
     /// The user pressed an interactive message's button or picked from its
     /// menu (#211).
     PostAction(crate::interactive::ActionChoice),
+    /// A slash command needs the server or the window (#210).
+    Slash(crate::slash::Request),
     /// The user dismissed an ephemeral message (#211); the row is gone.
     DismissEphemeral(SharedString),
     /// The user asked to be reminded of `post` (#213).
@@ -1182,6 +1186,8 @@ pub struct ChannelView {
     split_controls: bool,
     /// Interactive messages' menus (#211).
     action_menus: crate::interactive::Menus,
+    /// Slash commands typed in the composer (#210).
+    slash: crate::slash::Slash,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1226,7 +1232,7 @@ impl ChannelView {
         let people = view.clone();
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(8, window, cx);
-            state.set_triggers(['@', '~', ':'], cx);
+            state.set_triggers(['@', '~', ':', '/'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Up in an empty composer edits the last own post, Shift+Up
             // replies to the newest one; the editor sees arrows first, so
@@ -1333,7 +1339,7 @@ impl ChannelView {
                         )
                         .into_any_element(),
                     )
-                } else if suggestion.value.starts_with('~') {
+                } else if suggestion.value.starts_with(['~', '/']) {
                     None
                 } else {
                     Some(div().child(suggestion.value.clone()).into_any_element())
@@ -1387,6 +1393,7 @@ impl ChannelView {
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
+                        this.slash.edited(&text);
                         // A restored draft is not the user typing.
                         if !this.draft.is_saved(&text) {
                             this.schedule_draft_save(cx);
@@ -1397,7 +1404,13 @@ impl ChannelView {
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.send(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete {
+                        trigger: '/',
+                        query,
+                    } => this.slash_typing(query, cx),
+                    ComposerEvent::AutocompleteClosed => this.slash.closed(),
                     ComposerEvent::Autocomplete { trigger, query } => {
+                        this.slash.closed();
                         this.ask_people(*trigger, query, cx);
                         let suggestions = this.suggestions(*trigger, query);
                         composer
@@ -1466,6 +1479,7 @@ impl ChannelView {
             profile_cards: 0,
             split_controls: false,
             action_menus: Default::default(),
+            slash: Default::default(),
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -1547,6 +1561,7 @@ impl ChannelView {
             .map(|model| crate::composer_draft::DraftKey::channel(model.id.clone()));
         if self.draft.key() != key.as_ref() {
             self.switch_draft(key, window, cx);
+            self.slash.reset();
         }
         self.model = model;
         self.apply_pending_jump(cx);
@@ -2454,6 +2469,9 @@ impl ChannelView {
     /// composer and tells sync (PLAN §4.3: optimistic send through the
     /// outbox). Blank text and text over the limit stay in the composer.
     fn send(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.run_slash(&text, window, cx) {
+            return;
+        }
         let body: SharedString = text.trim().to_string().into();
         if body.chars().count() > self.max_post_size() {
             return;
@@ -4674,6 +4692,11 @@ impl ChannelView {
             .pb(theme.space(4.))
             .children(link_preview)
             .children(tray)
+            .children(crate::slash::error_line(
+                "composer.command-error",
+                self.slash.error(),
+                cx,
+            ))
             .child(
                 Composer::new(&self.composer)
                     .max_height(self.composer_cap)
