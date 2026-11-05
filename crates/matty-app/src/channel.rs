@@ -69,20 +69,18 @@ pub struct PostReaction {
 }
 
 impl PostReaction {
-    /// "You, Priya Nair and Sam Okafor reacted with 👍", shortening past
-    /// three names to "and 2 others".
+    /// "You, Priya Nair and Sam Okafor reacted with 👍": everyone who
+    /// reacted, by name (#621). People whose names have not loaded yet
+    /// count as "and 2 others".
     pub fn summary(&self) -> String {
-        let mut names: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = Vec::new();
         if self.mine {
-            names.push("You".to_string());
+            parts.push("You".to_string());
         }
-        names.extend(self.users.iter().map(|user| user.to_string()));
-        let unnamed = self.count.saturating_sub(names.len());
-        let shown = names.len().min(3);
-        let others = names.len() - shown + unnamed;
-        let mut parts: Vec<String> = names.into_iter().take(shown).collect();
-        if others > 0 {
-            parts.push(match others {
+        parts.extend(self.users.iter().map(|user| user.to_string()));
+        let unnamed = self.count.saturating_sub(parts.len());
+        if unnamed > 0 {
+            parts.push(match unnamed {
                 1 => "1 other".to_string(),
                 n => format!("{n} others"),
             });
@@ -5856,7 +5854,18 @@ mod tests {
         );
         assert_eq!(
             reaction(4, true, &["Priya Nair", "Sam Okafor", "Lena Fischer"]).summary(),
-            "You, Priya Nair, Sam Okafor and 1 other reacted with 👍"
+            "You, Priya Nair, Sam Okafor and Lena Fischer reacted with 👍"
+        );
+        // Everyone by name, however many (#621); only names still
+        // loading are counted.
+        let ten: Vec<String> = (1..=10).map(|n| format!("User {n}")).collect();
+        let ten: Vec<&str> = ten.iter().map(String::as_str).collect();
+        let all = reaction(10, false, &ten).summary();
+        assert!(all.starts_with("User 1, User 2, "), "{all}");
+        assert!(all.ends_with("User 9 and User 10 reacted with 👍"), "{all}");
+        assert_eq!(
+            reaction(5, false, &["Priya Nair", "Sam Okafor"]).summary(),
+            "Priya Nair, Sam Okafor and 3 others reacted with 👍"
         );
         // Sync has the count before the names.
         assert_eq!(

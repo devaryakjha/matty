@@ -4121,6 +4121,8 @@ impl Engine {
                     ids.extend(posts.iter().map(|post| post.user_id.clone()));
                     // Forwards quote another post, named by its author.
                     ids.extend(posts.iter().flat_map(quoted_authors));
+                    // A reaction's tooltip names everyone who reacted.
+                    ids.extend(posts.iter().flat_map(reactors));
                 }
                 // Found files name who posted them.
                 ChangeSet::Search { posts, files, .. } => {
@@ -4313,6 +4315,14 @@ fn quoted_authors(post: &matty_api::models::Post) -> impl Iterator<Item = String
             let id = embed.data.as_ref()?.get("post")?.get("user_id")?.as_str()?;
             (!id.is_empty()).then(|| id.to_owned())
         })
+}
+
+/// Who reacted to `post`, for the reaction tooltips' names (#621).
+fn reactors(post: &matty_api::models::Post) -> impl Iterator<Item = String> + '_ {
+    post.metadata
+        .reactions
+        .iter()
+        .map(|reaction| reaction.user_id.clone())
 }
 
 /// Whether there is a signed-in session to call the server with.
