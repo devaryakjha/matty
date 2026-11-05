@@ -29,6 +29,7 @@ bookmark-copy-link = Copy link
 bookmark-edit-item = Edit…
 bookmark-move-left = Move left
 bookmark-move-right = Move right
+bookmark-bar-label = Channel bookmarks
 bookmark-delete-item = Delete…
 # A file bookmark's tooltip.
 bookmark-file-tip = { $name } (file)

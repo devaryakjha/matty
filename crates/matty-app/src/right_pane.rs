@@ -2324,6 +2324,7 @@ impl RightPaneView {
         let (delete_view, delete_id) = (view.clone(), id.clone());
         let (react_view, react_id) = (view.clone(), id.clone());
         let mut row = Message::new(gpui_kit::ElementId::Name(format!("thread.{id}").into()))
+            .copy_prefix(crate::channel::copy_prefix(post, cx))
             .status(match post.status {
                 PostStatus::Sent | PostStatus::Ephemeral => MessageStatus::Sent,
                 PostStatus::Pending => MessageStatus::Pending,
@@ -3466,10 +3467,10 @@ impl RightPaneView {
                 )
             });
         let is_channel = kind_icon.is_some();
-        let manage_members = is_channel && channel.manage_members;
+        let manage_members = is_channel && channel.rights.members;
         let view = cx.entity().downgrade();
         let me = self.me.clone();
-        let can_manage = channel.can_manage;
+        let can_manage = channel.rights.roles;
         let members = div()
             .flex()
             .flex_col()

@@ -126,6 +126,8 @@ pub struct TeamMember {
     pub user_id: String,
     /// Space-separated role names.
     pub roles: String,
+    /// Whether the team's scheme makes the user its admin.
+    pub scheme_admin: bool,
     /// Milliseconds since the epoch; nonzero when the user left.
     pub delete_at: i64,
 }
