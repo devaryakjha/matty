@@ -33,27 +33,9 @@ pub(super) struct PendingSso {
 }
 
 impl MainWindow {
-    /// Handles links as the OS opens them, for as long as the window lives.
-    pub(super) fn follow_links(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(links) = deeplink::Incoming::receiver(cx) else {
-            return;
-        };
-        cx.spawn_in(window, async move |this, cx| {
-            while let Ok(link) = links.recv().await {
-                let handled = this.update_in(cx, |this, window, cx| {
-                    cx.activate(true);
-                    window.activate_window();
-                    this.open_link(&link, window, cx);
-                });
-                if handled.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn open_link(&mut self, link: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Handles a link the OS or a second launch opened (#84); an empty one
+    /// only brings the window forward.
+    pub(crate) fn open_link(&mut self, link: &str, window: &mut Window, cx: &mut Context<Self>) {
         // A second launch without a link only brings the window forward.
         if link.is_empty() {
             return;
