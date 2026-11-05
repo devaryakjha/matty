@@ -3,6 +3,8 @@
 //! height, separates from the channel with a hairline, and closes on
 //! Escape.
 
+mod slash;
+
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::base::input::{MoveDown, MoveUp};
 use gpui_kit::{
@@ -275,6 +277,9 @@ pub enum RightPaneEvent {
     /// The channel info pane asked for the pinned listing.
     OpenPinned,
     /// The user clicked a link or an entity chip in a message (#103).
+    /// A slash command in the reply composer needs the server or the
+    /// window (#210).
+    Slash(crate::slash::Request),
     OpenLink(SharedString),
     /// View profile on a member's profile card; the window shows it here.
     ViewProfile(UserProfile),
@@ -393,6 +398,8 @@ pub struct RightPaneView {
     popped_out: bool,
     /// The menus on the thread's attachments (#211).
     action_menus: std::rc::Rc<std::cell::RefCell<crate::interactive::Menus>>,
+    /// Slash commands typed in the reply composer (#210).
+    slash: crate::slash::Slash,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -433,7 +440,7 @@ impl RightPaneView {
         let composer = cx.new(|cx| {
             let mut state = ComposerState::new(6, window, cx);
             state.set_placeholder("Reply…", window, cx);
-            state.set_triggers(['@', '~', ':'], cx);
+            state.set_triggers(['@', '~', ':', '/'], cx);
             state.set_submit_on_enter(send_on.submits_on_enter(""));
             // Ctrl+Enter (Cmd+Enter on macOS) always sends; see ChannelView.
             state.set_on_key(move |keystroke, window, cx| {
@@ -505,6 +512,7 @@ impl RightPaneView {
                         let text = composer.read(cx).value(cx);
                         this.draft_len = text.chars().count();
                         this.draft_changed(&text, cx);
+                        this.slash.edited(&text);
                         // A restored draft is not the user typing.
                         if !this.draft.is_saved(&text) {
                             this.schedule_draft_save(cx);
@@ -512,7 +520,13 @@ impl RightPaneView {
                         cx.notify();
                     }
                     ComposerEvent::Submit(text) => this.reply(text.clone(), window, cx),
+                    ComposerEvent::Autocomplete {
+                        trigger: '/',
+                        query,
+                    } => this.slash_typing(query, cx),
+                    ComposerEvent::AutocompleteClosed => this.slash.closed(),
                     ComposerEvent::Autocomplete { trigger, query } => {
+                        this.slash.closed();
                         if let Some(term) = this.people.ask(*trigger, query) {
                             cx.emit(RightPaneEvent::SuggestPeople(term.into()));
                         }
@@ -588,6 +602,7 @@ impl RightPaneView {
             permalink: None,
             popped_out: false,
             action_menus: Default::default(),
+            slash: Default::default(),
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -696,6 +711,9 @@ impl RightPaneView {
     /// current user, clears the composer and tells sync. Blank text with no
     /// files stays in the composer; Enter while files upload waits for them.
     fn reply(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.run_slash(&text, window, cx) {
+            return;
+        }
         let body: SharedString = text.trim().to_string().into();
         if self.thread_mut().is_none() {
             return;
@@ -1419,6 +1437,7 @@ impl RightPaneView {
         cx: &mut Context<Self>,
     ) {
         self._draft_task = None;
+        self.slash.reset();
         let left = self
             .draft
             .switch(key, &self.composer, &mut self.tray, window, cx);
@@ -2558,6 +2577,11 @@ impl RightPaneView {
                         }),
                     ))
                     .children(tray)
+                    .children(crate::slash::error_line(
+                        "right-pane.command-error",
+                        self.slash.error(),
+                        cx,
+                    ))
                     .child(
                         Composer::new(&self.composer)
                             .max_height(self.composer_cap)

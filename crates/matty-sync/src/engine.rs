@@ -600,6 +600,33 @@ pub enum Command {
         /// The user closed it instead.
         cancelled: bool,
     },
+    /// Asks the server what may come next in a slash command the user is
+    /// typing (#210): command names, subcommands or a plugin's argument
+    /// values; [`ChangeSet::CommandSuggestions`](crate::ChangeSet::CommandSuggestions)
+    /// answers, empty when the server has none or could not be asked.
+    SuggestCommands {
+        /// The channel's team.
+        team_id: String,
+        /// The channel the user is typing in.
+        channel_id: String,
+        /// The thread when typing a reply; empty in the channel.
+        root_id: String,
+        /// The line so far, from its `/`.
+        user_input: String,
+    },
+    /// Runs a slash command on the server (#210);
+    /// [`ChangeSet::CommandRan`](crate::ChangeSet::CommandRan) answers, or
+    /// offline a failure with the action `run command`.
+    ExecuteCommand {
+        /// The channel's team; empty for a direct or group message.
+        team_id: String,
+        /// The channel the user typed it in.
+        channel_id: String,
+        /// The thread when typed in a reply; empty in the channel.
+        root_id: String,
+        /// The whole line, from its `/`.
+        command: String,
+    },
     /// Asks the server to remind the user of a post at `target_time`
     /// (Unix seconds); only a failure answers.
     SetReminder {
@@ -953,6 +980,15 @@ impl std::fmt::Debug for Command {
                 .field("action_id", action_id)
                 .finish_non_exhaustive(),
             // The values may hold a password: only the dialog is named.
+            Self::SuggestCommands { user_input, .. } => f
+                .debug_struct("SuggestCommands")
+                .field("user_input", user_input)
+                .finish_non_exhaustive(),
+            // The line may hold anything the user typed.
+            Self::ExecuteCommand { channel_id, .. } => f
+                .debug_struct("ExecuteCommand")
+                .field("channel_id", channel_id)
+                .finish_non_exhaustive(),
             Self::SubmitDialog {
                 callback_id,
                 cancelled,
@@ -1899,6 +1935,28 @@ impl Engine {
                     selected_option,
                     cookie,
                 }),
+                Message::Command(Command::SuggestCommands {
+                    team_id,
+                    channel_id,
+                    root_id,
+                    user_input,
+                }) => writes.push(Write::SuggestCommands {
+                    team_id,
+                    channel_id,
+                    root_id,
+                    user_input,
+                }),
+                Message::Command(Command::ExecuteCommand {
+                    team_id,
+                    channel_id,
+                    root_id,
+                    command,
+                }) => writes.push(Write::ExecuteCommand(matty_api::models::ExecuteCommand {
+                    command,
+                    channel_id,
+                    team_id,
+                    root_id,
+                })),
                 Message::Command(Command::SubmitDialog {
                     url,
                     callback_id,
@@ -3141,6 +3199,23 @@ impl Engine {
                 tx.commit()?;
             }
             Loaded::Changes(changes) => dirty.direct.extend(changes),
+            Loaded::CommandSuggestions {
+                channel_id,
+                root_id,
+                user_input,
+                suggestions,
+            } => dirty.direct.push(ChangeSet::CommandSuggestions {
+                channel_id,
+                root_id,
+                user_input,
+                suggestions: Arc::from(suggestions),
+            }),
+            Loaded::CommandRan { command, outcome } => dirty.direct.push(ChangeSet::CommandRan {
+                channel_id: command.channel_id,
+                root_id: command.root_id,
+                command: command.command,
+                outcome,
+            }),
             Loaded::PostActionDone { post_id, action_id } => dirty
                 .direct
                 .push(ChangeSet::PostActionDone { post_id, action_id }),

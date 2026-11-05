@@ -3,6 +3,7 @@
 pub(crate) mod apps;
 mod bookmarks;
 pub(crate) mod browse;
+mod commands;
 pub(crate) mod files;
 mod initial_load;
 pub(crate) mod posts;

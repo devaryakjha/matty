@@ -183,6 +183,7 @@ mod popouts;
 mod preferences;
 mod quick_switch;
 mod servers;
+mod slash;
 mod sounds;
 mod split;
 mod sso;
@@ -856,6 +857,7 @@ impl MainWindow {
                     this.channel
                         .update(cx, |channel, cx| channel.jump_to(post, cx));
                 }
+                ChannelEvent::Slash(request) => this.slash(request, window, cx),
                 ChannelEvent::PostAction(choice) => {
                     if let Some(live) = &mut this.live {
                         let update = live.run_post_action(choice);
@@ -1785,6 +1787,7 @@ impl MainWindow {
         }
         let update = live.apply(change);
         self.apply_update(update, window, cx);
+        self.slash_change(change, window, cx);
     }
 
     /// Shows what sync's latest change means for the window.
@@ -3066,6 +3069,7 @@ impl MainWindow {
                     live.load_older_replies(root);
                 }
             }
+            RightPaneEvent::Slash(request) => self.slash(request, window, cx),
             RightPaneEvent::PostAction(choice) => {
                 if let Some(live) = &mut self.live {
                     let update = live.run_post_action(choice);

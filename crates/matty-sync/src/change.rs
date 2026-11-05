@@ -105,6 +105,34 @@ pub enum ChangeSet {
         /// The button or menu.
         action_id: String,
     },
+    /// What the server suggests for a slash command being typed: the answer
+    /// to [`Command::SuggestCommands`](crate::Command::SuggestCommands),
+    /// for that `user_input` where it was typed.
+    CommandSuggestions {
+        /// The channel.
+        channel_id: String,
+        /// The thread; empty for the channel.
+        root_id: String,
+        /// The line asked about.
+        user_input: String,
+        /// Its suggestions, in the server's order.
+        suggestions: Arc<[matty_api::models::CommandSuggestion]>,
+    },
+    /// The server ran a slash command, or refused it: the answer to
+    /// [`Command::ExecuteCommand`](crate::Command::ExecuteCommand). The
+    /// refusal is the server's words, such as an unknown command's. A path
+    /// in `goto_location` is made a URL on this server. An ephemeral answer
+    /// also comes as [`ChangeSet::Ephemeral`] from the socket.
+    CommandRan {
+        /// The channel.
+        channel_id: String,
+        /// The thread; empty for the channel.
+        root_id: String,
+        /// The line that ran.
+        command: String,
+        /// The answer, or what the server said instead.
+        outcome: Result<matty_api::models::CommandResponse, String>,
+    },
     /// An integration opened an interactive dialog (#211), in answer to a
     /// button press or slash command of this user's.
     OpenDialog(Arc<matty_api::models::OpenDialogRequest>),

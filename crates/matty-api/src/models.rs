@@ -297,10 +297,12 @@ pub struct UserAutocomplete {
 
 mod apps;
 mod bookmarks;
+mod commands;
 mod dialogs;
 mod posts;
 pub use apps::*;
 pub use bookmarks::*;
+pub use commands::*;
 pub use dialogs::*;
 pub use posts::*;
 

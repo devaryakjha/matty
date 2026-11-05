@@ -236,7 +236,7 @@ pub(crate) fn send_key_preferences(send_on: SendKey) -> Vec<Preference> {
 impl MainWindow {
     /// Changes a setting the account keeps too: the local file now, the
     /// server's preference behind it.
-    fn set_synced(
+    pub(super) fn set_synced(
         &mut self,
         change: impl FnOnce(&mut Settings),
         preferences: impl FnOnce(&Settings) -> Vec<Preference>,
