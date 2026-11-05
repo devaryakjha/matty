@@ -160,8 +160,12 @@ async fn a_waiting_send_can_be_edited_or_discarded() {
     sync.send(Command::Discard {
         pending_post_id: "me:3".into(),
     });
+    // The edit and the discard are two commands, so a snapshot can show
+    // the edit before the discard lands; wait for both.
     let edited = next(&changes, |c| {
-        matches!(c, ChangeSet::Outbox { sends, .. } if sends.iter().any(|s| s.message == "second, fixed"))
+        matches!(c, ChangeSet::Outbox { sends, .. }
+            if sends.iter().any(|s| s.message == "second, fixed")
+                && sends.iter().all(|s| s.pending_post_id != "me:3"))
     })
     .await;
     let ChangeSet::Outbox { sends, .. } = edited else {
