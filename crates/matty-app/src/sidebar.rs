@@ -939,7 +939,6 @@ impl SidebarView {
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let palette = Palette::read(cx);
         let team = Button::new("sidebar.team")
             .variant(ButtonVariant::Ghost)
             .size(ButtonSize::Sm)
@@ -951,7 +950,7 @@ impl SidebarView {
             .child(
                 lucide(LucideIcon::ChevronDown)
                     .size(scaled(&theme, metrics::ICON_SMALL))
-                    .text_color(palette.sidebar_muted),
+                    .text_color(theme.colors.sidebar_muted_foreground()),
             );
         let loading = self.model.loading;
         let button_theme = theme.clone();
@@ -959,7 +958,7 @@ impl SidebarView {
             .trigger(
                 lucide(LucideIcon::SquarePen)
                     .size(scaled(&theme, metrics::ICON))
-                    .text_color(palette.sidebar_muted),
+                    .text_color(theme.colors.sidebar_muted_foreground()),
             )
             .trigger_style_with(move |button| {
                 style_button(
@@ -989,7 +988,7 @@ impl SidebarView {
                     .text_color(if on {
                         theme.colors.sidebar_foreground
                     } else {
-                        palette.sidebar_muted
+                        theme.colors.sidebar_muted_foreground()
                     }),
             );
         let filter_tip = if on {
@@ -1014,7 +1013,7 @@ impl SidebarView {
     }
 
     /// The pencil a row with a draft shows in its icon's slot.
-    fn draft_icon(theme: &UiTheme, palette: &Palette) -> impl IntoElement + use<> {
+    fn draft_icon(theme: &UiTheme) -> impl IntoElement + use<> {
         div()
             .size(scaled(theme, metrics::ROW_SLOT))
             .flex()
@@ -1023,7 +1022,7 @@ impl SidebarView {
             .child(
                 lucide(LucideIcon::Pencil)
                     .size(scaled(theme, metrics::ICON))
-                    .text_color(palette.sidebar_muted),
+                    .text_color(theme.colors.sidebar_muted_foreground()),
             )
     }
 
@@ -1037,7 +1036,7 @@ impl SidebarView {
     ) -> impl IntoElement + use<> {
         let icon_size = scaled(theme, metrics::ICON);
         let slot = scaled(theme, metrics::ROW_SLOT);
-        let color = palette.sidebar_muted;
+        let color = theme.colors.sidebar_muted_foreground();
         let boxed = |inner: gpui_kit::AnyElement| {
             div()
                 .size(slot)
@@ -1117,7 +1116,7 @@ impl SidebarView {
             .icon(if self.model.drafted.contains(&row.id) && !selected {
                 // An unsent draft takes the icon's place, as in Mattermost
                 // (#114).
-                Self::draft_icon(&theme, &palette).into_any_element()
+                Self::draft_icon(&theme).into_any_element()
             } else {
                 Self::row_icon(row, &theme, &palette, cx).into_any_element()
             })
@@ -1136,7 +1135,7 @@ impl SidebarView {
                 }),
             );
         if !strong && !selected {
-            item = item.text_color(palette.sidebar_muted);
+            item = item.text_color(theme.colors.sidebar_muted_foreground());
         }
         if row.muted && !selected {
             item = item.opacity(0.6);
@@ -1152,8 +1151,8 @@ impl SidebarView {
         if row.mentions > 0 {
             trailing.push(
                 Badge::count(row.mentions, 99)
-                    .bg(palette.mention)
-                    .text_color(palette.mention_foreground)
+                    .bg(theme.colors.sidebar_badge())
+                    .text_color(theme.colors.sidebar_badge_foreground())
                     .h(theme.space(4.5))
                     .min_w(theme.space(4.5))
                     .px(theme.space(1.5))
@@ -1193,7 +1192,7 @@ impl SidebarView {
         .child(
             lucide(LucideIcon::Ellipsis)
                 .size(scaled(&theme, metrics::ICON_SMALL))
-                .text_color(palette.sidebar_muted),
+                .text_color(theme.colors.sidebar_muted_foreground()),
         )
         .on_click(
             cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
@@ -1234,7 +1233,6 @@ impl SidebarView {
     /// to read or finish.
     fn fixed_entries(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let palette = Palette::read(cx);
         let entry = |id: &'static str,
                      label: &'static str,
                      glyph: LucideIcon,
@@ -1255,7 +1253,7 @@ impl SidebarView {
                         .child(
                             lucide(glyph)
                                 .size(scaled(&theme, metrics::ICON))
-                                .text_color(palette.sidebar_muted),
+                                .text_color(theme.colors.sidebar_muted_foreground()),
                         ),
                 )
                 .type_style(if strong { style::UI_STRONG } else { style::UI }, &theme)
@@ -1267,8 +1265,8 @@ impl SidebarView {
                 }
                 EntryCount::Mentions(count) => Some(
                     Badge::count(count, 99)
-                        .bg(palette.mention)
-                        .text_color(palette.mention_foreground),
+                        .bg(theme.colors.sidebar_badge())
+                        .text_color(theme.colors.sidebar_badge_foreground()),
                 ),
             };
             if let Some(badge) = badge {
@@ -1283,7 +1281,7 @@ impl SidebarView {
                     ),
                 );
             } else {
-                item = item.text_color(palette.sidebar_muted);
+                item = item.text_color(theme.colors.sidebar_muted_foreground());
             }
             item
         };
@@ -1322,7 +1320,6 @@ impl SidebarView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        let palette = Palette::read(cx);
         let open = !category.collapsed;
         let id = category.id.clone();
         let menu_id = category.id.clone();
@@ -1344,7 +1341,7 @@ impl SidebarView {
             .justify_start()
             .gap(theme.space(1.))
             .type_style(style::LABEL, &theme)
-            .text_color(palette.sidebar_muted)
+            .text_color(theme.colors.sidebar_muted_foreground())
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_category(&id, cx)))
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
@@ -1357,7 +1354,7 @@ impl SidebarView {
                 // (DESIGN.md §1 motion), snapping under reduced motion.
                 lucide(LucideIcon::ChevronRight)
                     .size(scaled(&theme, metrics::ICON_TINY))
-                    .text_color(palette.sidebar_muted)
+                    .text_color(theme.colors.sidebar_muted_foreground())
                     .with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
                         turn * std::f32::consts::FRAC_PI_2,
                     ))),
@@ -1499,7 +1496,6 @@ fn placed_index(full: &[SharedString], shown: &[SharedString], index: usize) -> 
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = UiTheme::read(cx).clone();
-        let palette = Palette::read(cx);
         let mut sidebar = Sidebar::new("sidebar", "Channels")
             .roving_focus(true)
             .header(self.header(cx));
@@ -1517,7 +1513,7 @@ impl Render for SidebarView {
                                 .flex()
                                 .items_center()
                                 .type_style(style::LABEL, &theme)
-                                .text_color(palette.sidebar_muted)
+                                .text_color(theme.colors.sidebar_muted_foreground())
                                 .child(label.to_uppercase()),
                         )
                         .children((0..rows).map(|row| sidebar_menu_skeleton(row % 2 == 0, cx))),

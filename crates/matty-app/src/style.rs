@@ -27,7 +27,7 @@ const THEME_CSS: &str = include_str!("../assets/theme.css");
 /// The CSS is checked by a test, so a parse failure here is a build mistake;
 /// the app still opens, on gpuicn's Neutral palette, rather than panicking.
 pub fn theme(mode: ThemeMode) -> UiTheme {
-    match UiTheme::from_shadcn_css(THEME_CSS, mode) {
+    let mut theme = match UiTheme::from_shadcn_css(THEME_CSS, mode) {
         Ok(theme) => theme,
         Err(error) => {
             eprintln!("matty: theme.css did not parse ({error:?}); using the Neutral palette");
@@ -36,14 +36,18 @@ pub fn theme(mode: ThemeMode) -> UiTheme {
                 ThemeMode::Dark => UiTheme::neutral_dark(),
             }
         }
-    }
+    };
+    // Matty's sidebar reads quiet text and mention counts like the channel
+    // view does; a Mattermost theme (#214) colors them apart.
+    let c = &mut theme.colors;
+    c.sidebar_muted_foreground = Some(c.muted_foreground);
+    c.sidebar_badge = Some(c.primary);
+    c.sidebar_badge_foreground = Some(c.primary_foreground);
+    theme
 }
 
-/// Colors with a meaning shadcn's tokens do not cover (DESIGN.md §2):
-/// presence, and the sidebar's quiet text and mention counts, which a
-/// Mattermost theme (#214) colors apart from the channel view. The "New
-/// messages" line and links use gpuicn's own treatment of `primary` and
-/// `destructive`, so they need no token here.
+/// Colors with a meaning gpuicn's tokens do not cover (DESIGN.md §2):
+/// presence.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     /// Presence dot: online.
@@ -52,13 +56,6 @@ pub struct Palette {
     pub away: Rgba,
     /// Presence dot: do not disturb.
     pub dnd: Rgba,
-    /// Read channels, icons and labels on the sidebar. gpuicn has no
-    /// muted foreground for the sidebar, so this stands in for one.
-    pub sidebar_muted: Rgba,
-    /// Mention counts on the sidebar.
-    pub mention: Rgba,
-    /// Text on [`mention`](Self::mention).
-    pub mention_foreground: Rgba,
 }
 
 impl Global for Palette {}
@@ -66,19 +63,11 @@ impl Global for Palette {}
 impl Palette {
     /// The semantic colors for `mode`.
     pub fn for_mode(mode: ThemeMode) -> Self {
-        let colors = theme(mode).colors;
         let (online, away, dnd) = match mode {
             ThemeMode::Light => (rgb(0x16a34a), rgb(0xcc7a00), rgb(0xd42020)),
             ThemeMode::Dark => (rgb(0x3fb950), rgb(0xf2b038), rgb(0xf0564f)),
         };
-        Self {
-            online,
-            away,
-            dnd,
-            sidebar_muted: colors.muted_foreground,
-            mention: colors.primary,
-            mention_foreground: colors.primary_foreground,
-        }
+        Self { online, away, dnd }
     }
 
     /// The palette for the current theme mode. Falls back to light before
@@ -369,7 +358,7 @@ pub fn presence_dot(
         Presence::Offline => {
             // On the sidebar, the sidebar's own quiet color (#214).
             let color = if ring == theme.colors.sidebar {
-                palette.sidebar_muted
+                theme.colors.sidebar_muted_foreground()
             } else {
                 theme.colors.muted_foreground
             };
