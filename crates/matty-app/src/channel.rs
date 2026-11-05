@@ -4603,33 +4603,18 @@ impl ChannelView {
                 cx.listener(move |_, _, _, cx| cx.emit(ChannelEvent::OpenThread(open_id.clone()))),
             )
             .child(
-                div().flex().items_center().children(
-                    summary
-                        .participants
-                        .iter()
-                        .take(3)
-                        .enumerate()
-                        .map(|(index, name)| {
-                            let initial: String = name.chars().take(1).collect();
-                            let user_id = summary
-                                .participant_ids
-                                .get(index)
-                                .map(SharedString::as_ref)
-                                .unwrap_or_default();
-                            div().when(index > 0, |this| this.ml(px(-4.))).child(
-                                crate::avatars::with_picture(
-                                    Avatar::new(gpui_kit::ElementId::Name(
-                                        format!("post.{id}.thread.{index}").into(),
-                                    ))
-                                    .size(AvatarSize::Sm)
-                                    .fallback(initial)
-                                    .aria_label(name.clone()),
-                                    user_id,
-                                    cx,
-                                ),
-                            )
-                        }),
-                ),
+                crate::avatars::group(
+                    &format!("post.{id}.thread.people"),
+                    summary.participants.iter().zip(
+                        summary
+                            .participant_ids
+                            .iter()
+                            .map(SharedString::as_ref)
+                            .chain(std::iter::repeat("")),
+                    ),
+                    cx,
+                )
+                .max(3),
             )
             .child(
                 div()
