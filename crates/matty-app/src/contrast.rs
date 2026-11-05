@@ -43,6 +43,13 @@ impl Pair {
     pub fn passes(&self) -> bool {
         self.ratio() >= self.kind.minimum()
     }
+
+    /// The pair's name in the user's language, in lower case for the middle
+    /// of a sentence. `name` stays the English one, for the contrast table.
+    pub fn label(&self) -> gpui_kit::SharedString {
+        let id = format!("contrast-{}", self.name.to_lowercase().replace(' ', "-"));
+        crate::i18n::text(&id, &[])
+    }
 }
 
 /// `top` composited over the opaque `bottom`.
@@ -204,6 +211,17 @@ pub fn table() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pair_has_a_translatable_name() {
+        for pair in pairs(ThemeMode::Light) {
+            assert!(
+                !pair.label().starts_with("contrast-"),
+                "contrast.ftl lacks {:?}",
+                pair.name
+            );
+        }
+    }
 
     const DOC: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
