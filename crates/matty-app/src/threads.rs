@@ -324,22 +324,20 @@ impl ThreadsView {
                 // An icon, so the header fits beside a thread in longer
                 // languages (#568); the words are in its tooltip and name.
                 let label = t!("threads-mark-all-read");
-                this.child(
-                    style::tipped(
-                        "threads.mark-all-read.tip",
-                        label.clone(),
-                        Button::new("threads.mark-all-read")
-                            .variant(ButtonVariant::Ghost)
-                            .size(ButtonSize::Icon)
-                            .aria_label(label)
-                            .child(
-                                lucide(LucideIcon::CheckCheck)
-                                    .size(scaled(&theme, metrics::ICON))
-                                    .text_color(theme.colors.muted_foreground),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
-                    ),
-                )
+                this.child(style::tipped(
+                    "threads.mark-all-read.tip",
+                    label.clone(),
+                    Button::new("threads.mark-all-read")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Icon)
+                        .aria_label(label)
+                        .child(
+                            lucide(LucideIcon::CheckCheck)
+                                .size(scaled(&theme, metrics::ICON))
+                                .text_color(theme.colors.muted_foreground),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
+                ))
             })
     }
 
