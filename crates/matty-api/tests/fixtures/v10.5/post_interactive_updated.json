@@ -1,0 +1,56 @@
+{
+  "id": "qojbg5gini84pbobs4udgaauwh",
+  "create_at": 1793839444064,
+  "update_at": 1793839444106,
+  "edit_at": 1793839444105,
+  "delete_at": 0,
+  "is_pinned": false,
+  "user_id": "nm9fsgpzh7rdbmq1yghabki4fe",
+  "channel_id": "8kjitoodsiydufrj6ajmadeszh",
+  "root_id": "",
+  "original_id": "",
+  "message": "Approved by the recorder",
+  "type": "",
+  "props": {
+    "attachments": [
+      {
+        "id": 0,
+        "fallback": "Approved",
+        "color": "good",
+        "pretext": "",
+        "author_name": "",
+        "author_link": "",
+        "author_icon": "",
+        "title": "Deploy approved",
+        "title_link": "",
+        "text": "",
+        "fields": null,
+        "image_url": "",
+        "thumb_url": "",
+        "footer": "",
+        "footer_icon": "",
+        "ts": null,
+        "actions": [
+          {
+            "id": "undo",
+            "type": "button",
+            "name": "Undo"
+          }
+        ]
+      }
+    ]
+  },
+  "hashtags": "",
+  "file_ids": [],
+  "pending_post_id": "",
+  "reply_count": 0,
+  "last_reply_at": 0,
+  "participants": null,
+  "metadata": {
+    "embeds": [
+      {
+        "type": "message_attachment"
+      }
+    ]
+  }
+}
