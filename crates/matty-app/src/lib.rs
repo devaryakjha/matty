@@ -217,6 +217,7 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     #[cfg(not(target_family = "wasm"))]
     fd_limit::raise();
     ui::theme::init(cx);
+    i18n::install_builtin(cx);
     style::install(ThemeMode::Light, cx);
     load_fonts(cx);
     let settings = SettingsStore::init(settings::default_path(), cx);

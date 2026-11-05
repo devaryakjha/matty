@@ -91,6 +91,19 @@ pub fn init() -> &'static str {
     locale
 }
 
+/// Hands gpuicn's built-in strings ("Close", "Search emoji"…) to the
+/// current locale. English is the only language so far, so only the
+/// pseudo-locale changes them; a translation would look up
+/// `UiText::key()` here.
+pub fn install_builtin(cx: &mut gpui_kit::App) {
+    let pseudo = STRINGS.with(|cell| cell.borrow().as_ref().is_some_and(|s| s.pseudo));
+    if pseudo {
+        gpuicn::locale::set_strings(cx, |text| Some(self::pseudo(&text.english()).into()));
+    } else {
+        gpuicn::locale::clear_strings(cx);
+    }
+}
+
 /// The text for `id` with `args`, in the current locale. A missing id
 /// shows as itself, so it is easy to spot.
 pub fn text(id: &str, args: &[(&str, FluentValue<'_>)]) -> SharedString {
