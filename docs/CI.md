@@ -9,6 +9,7 @@
 | `integration` (live Mattermost) | only when `matty-api`, `matty-store`, `matty-sync`, `docker/`, the seed script or the lockfile change; 12.0 and 10.5 | every supported version |
 | `macos`: clippy, tests | only when macOS code changes, or with the `macos` label | always, plus the release build, `matty --version`, the dev bundle and the artifact |
 | `macos universal bundle` | only when `packaging/macos/`, `scripts/macos-bundle` or `scripts/release-bundle` change, or with the `macos` label | always |
+| `linux packages`: release build, tarball, `.deb`, `.rpm`, AppImage, desktop entry and AppStream validation (#216) | only when `packaging/linux/` or `scripts/linux-package` change, or with the `linux` label | always, plus the artifact |
 | `ci` | the one check to wait on | |
 
 Why: macOS runners are scarce (a handful at a time per account), and three
@@ -27,4 +28,8 @@ A new push cancels the older run of the same pull request. Every master run
 goes ahead, but each macOS job on master runs one at a time: a running one
 finishes, and only the newest waiting one is kept. A master macOS job
 dropped that way shows as cancelled, and `ci` still passes because the newer
-run checks the same code.
+run checks the same code. The `linux packages` job on master queues the
+same way.
+
+`linux` also runs a test of the Linux notification backend against a
+stand-in notification service, on a private `dbus-daemon` the test starts.

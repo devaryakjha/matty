@@ -378,7 +378,7 @@ fn window_options(saved: Option<WindowGeometry>, cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(bounds),
         window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
-        app_id: Some("app.matty.Matty".into()),
+        app_id: Some(crate::APP_ID.into()),
         ..title_bar_window_options()
     }
 }
