@@ -29,6 +29,7 @@ pub const LOCALIZED: &[&str] = &[
     "custom_status.rs",
     "dnd.rs",
     "emoji_manager.rs",
+    "format_bar.rs",
     "login.rs",
     "profile.rs",
     "profile_editor.rs",

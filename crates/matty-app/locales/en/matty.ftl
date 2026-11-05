@@ -224,3 +224,13 @@ bookmark-delete-hint = It leaves the bar for everyone in the channel.
 bookmark-delete = Delete
 bookmark-actions = Bookmark actions
 bookmark-menu = Bookmark menu
+
+## Formatting row and preview (channel/format_bar.rs)
+
+format-strikethrough = Strikethrough
+format-link = Link
+format-heading = Heading
+format-quote = Quote
+format-bullets = Bulleted list
+format-numbers = Numbered list
+format-preview = Preview
