@@ -59,11 +59,14 @@ fn click(cx: &mut VisualTestContext, label: &str) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let center = cx.update(|window, _| {
         use gpui_kit::test::TestQueryExt as _;
-        window
-            .elements()
-            .into_iter()
+        let elements = window.elements();
+        elements
+            .iter()
             .find(|element| element.label().is_some_and(|l| l == label))
-            .unwrap_or_else(|| panic!("nothing is labelled {label:?}"))
+            .unwrap_or_else(|| {
+                let labels: Vec<_> = elements.iter().filter_map(|e| e.label()).collect();
+                panic!("nothing is labelled {label:?}: {labels:?}")
+            })
             .bounds()
             .center()
     });
@@ -174,7 +177,26 @@ fn the_new_surfaces_have_no_unnamed_controls(cx: &mut gpui_kit::TestAppContext) 
         close(&mut cx);
     }
 
-    cx.dispatch_action(actions::OpenInSplitView);
+    // Channel info's own surfaces (#208): Add members and its files.
+    cx.dispatch_action(actions::ChannelInfo);
+    click(&mut cx, "Add members");
+    audit(&mut cx, "Add members", "Search people", &mut failures);
+    close(&mut cx);
+    // Escape closed the pane with the dialog.
+    cx.dispatch_action(actions::ChannelInfo);
+    click(&mut cx, "Files");
+    audit(&mut cx, "Channel files", "Back", &mut failures);
+    cx.dispatch_action(actions::CloseRightPane);
+    cx.run_until_parked();
+
+    // The account menu and what it opens (#212).
+    click(&mut cx, "Arya, online");
+    audit(&mut cx, "Account menu", "Edit profile\u{2026}", &mut failures);
+    click(&mut cx, "Edit profile\u{2026}");
+    audit(&mut cx, "Edit profile", "Username", &mut failures);
+    close(&mut cx);
+
+        cx.dispatch_action(actions::OpenInSplitView);
     audit(&mut cx, "Split view", "Swap panes", &mut failures);
     cx.dispatch_action(actions::ClosePane);
     cx.run_until_parked();
