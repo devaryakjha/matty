@@ -236,6 +236,24 @@ pub struct Slash {
     running: Option<String>,
     /// The server's refusal of `running`, and the line refused.
     error: Option<(String, SharedString)>,
+    /// The command line whose arguments the composer suggests now, such
+    /// as `/jira create `: past the name, where `/` no longer triggers.
+    line: Option<String>,
+    /// The composer text last seen by [`Slash::text_changed`].
+    seen: String,
+}
+
+/// Whether `text` is a command past its name, such as `/jira create`,
+/// whose arguments the server suggests for the whole line (gpuicn#136).
+fn arguments_line(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('/') else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_some_and(|c| c != '/' && !c.is_whitespace())
+        && rest.contains(char::is_whitespace)
+        && !text.contains('\n')
 }
 
 impl Slash {
@@ -284,6 +302,69 @@ impl Slash {
         self.query = None;
     }
 
+    /// The composer's whole text is now `text`. Past a command's name the
+    /// server suggests the line's arguments: returns the line to ask about,
+    /// unless it was asked already or Matty is offline.
+    pub fn line_typing(&mut self, text: &str, online: bool) -> Option<String> {
+        if !arguments_line(text) {
+            self.line = None;
+            return None;
+        }
+        self.line = Some(text.to_owned());
+        if !online || self.server.contains_key(text) {
+            return None;
+        }
+        self.server.insert(text.to_owned(), None);
+        Some(text.to_owned())
+    }
+
+    /// Whether the composer's text differs from when this was last asked,
+    /// so a view watching its composer acts on edits, not caret moves.
+    pub fn text_changed(&mut self, text: &str) -> bool {
+        if self.seen == text {
+            return false;
+        }
+        text.clone_into(&mut self.seen);
+        true
+    }
+
+    /// The command line whose arguments are suggested now.
+    pub fn line(&self) -> Option<&str> {
+        self.line.as_deref()
+    }
+
+    /// The server's suggestions for the command line, each the whole line
+    /// it completes to; one that would leave the line as it is is left out.
+    pub fn line_suggestions(&self) -> Vec<ComposerSuggestion> {
+        let Some(line) = &self.line else {
+            return Vec::new();
+        };
+        let typed = line.trim_end();
+        let mut rows: Vec<ComposerSuggestion> = self
+            .server
+            .get(line)
+            .cloned()
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|found| {
+                let complete = found.complete.trim_end();
+                !complete.is_empty() && format!("/{complete}") != typed
+            })
+            .map(|found| {
+                row(
+                    format!("/{}", found.complete.trim_end()),
+                    &found.hint,
+                    &found.description,
+                    LucideIcon::CornerDownRight,
+                )
+            })
+            .collect();
+        rows.dedup_by(|a, b| a.value == b.value);
+        rows.truncate(LIMIT);
+        rows
+    }
+
     /// Whether `trigger` names a command with arguments, as far as Matty
     /// or the server has said.
     fn takes_arguments(&self, trigger: &str) -> bool {
@@ -316,6 +397,9 @@ impl Slash {
         }
         self.server
             .insert(user_input.to_owned(), Some(suggestions.to_vec()));
+        if self.line.as_deref() == Some(user_input) {
+            return (true, None);
+        }
         let Some(query) = self.query.clone() else {
             return (false, None);
         };
@@ -437,6 +521,27 @@ impl Slash {
     pub fn lost(&mut self) -> bool {
         self.running.take().is_some()
     }
+}
+
+/// Shows `slash`'s suggestions for the command line in `composer`, over
+/// the whole line, or closes them once the line is not a command past its
+/// name (gpuicn#136). An empty list hides the popup until the server answers.
+pub fn show_line(
+    slash: &Slash,
+    composer: &gpui_kit::Entity<crate::ui::composer::ComposerState>,
+    cx: &mut App,
+) {
+    composer.update(cx, |composer, cx| match slash.line() {
+        Some(line) => {
+            let rows = slash.line_suggestions();
+            composer.open_suggestions(0..line.len(), rows, cx);
+        }
+        None => {
+            if composer.suggestion_range().is_some() {
+                composer.close_suggestions(cx);
+            }
+        }
+    });
 }
 
 fn row(value: String, hint: &str, description: &str, icon: LucideIcon) -> ComposerSuggestion {
@@ -606,6 +711,36 @@ mod tests {
 
     fn values(rows: &[ComposerSuggestion]) -> Vec<&str> {
         rows.iter().map(|row| row.value.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_command_line_past_its_name_asks_once_and_lists_whole_lines() {
+        let mut slash = Slash::default();
+        assert_eq!(slash.line_typing("/jira", true), None, "still the name");
+        assert_eq!(slash.line_typing("// x", true), None);
+        assert_eq!(slash.line_typing("/ x", true), None);
+        assert_eq!(slash.line_typing("/jira a\nb", true), None);
+        assert_eq!(slash.line(), None);
+        assert_eq!(
+            slash.line_typing("/jira cr", true).as_deref(),
+            Some("/jira cr")
+        );
+        assert_eq!(slash.line_typing("/jira cr", true), None, "asked once");
+        assert_eq!(slash.line_typing("/jira c", false), None, "offline");
+        assert_eq!(slash.line(), Some("/jira c"));
+        slash.line_typing("/jira cr", true);
+        let (shown, next) = slash.suggested(
+            "/jira cr",
+            &[
+                suggestion("jira create ", "[project]", "Create"),
+                suggestion("jira cr", "", ""),
+            ],
+        );
+        assert!(shown);
+        assert_eq!(next, None);
+        assert_eq!(values(&slash.line_suggestions()), ["/jira create"]);
+        slash.line_typing("hello", true);
+        assert!(slash.line_suggestions().is_empty());
     }
 
     #[test]

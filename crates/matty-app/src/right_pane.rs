@@ -597,7 +597,14 @@ impl RightPaneView {
         crate::updater::watch_composer(&composer, cx);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search messages"));
         let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
+        let composer_input = composer.read(cx).input().clone();
         let subscriptions = vec![
+            // Typed or set (a draft, a send, a cleared command): the slash
+            // command line's suggestions follow the text.
+            cx.observe(&composer_input, |this, input, cx| {
+                let text = input.read(cx).value().to_string();
+                this.slash_line(&text, cx);
+            }),
             scheduling,
             cx.subscribe_in(
                 &composer,

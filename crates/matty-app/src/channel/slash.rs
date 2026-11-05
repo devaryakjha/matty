@@ -28,6 +28,25 @@ impl ChannelView {
         self.show_commands(query, cx);
     }
 
+    /// The composer's text changed, typed or set: past a command's name,
+    /// the server is asked about the whole line and its suggestions show
+    /// over it; otherwise they close.
+    pub(super) fn slash_line(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.slash.text_changed(text) {
+            return;
+        }
+        if let Some(user_input) = self.slash.line_typing(text, !self.offline)
+            && let Some(channel_id) = self.channel_id()
+        {
+            cx.emit(ChannelEvent::Slash(Request::Suggest {
+                channel_id,
+                root_id: SharedString::default(),
+                user_input,
+            }));
+        }
+        crate::slash::show_line(&self.slash, &self.composer, cx);
+    }
+
     fn show_commands(&self, query: &str, cx: &mut Context<Self>) {
         let rows = self.slash.suggestions(query);
         self.composer
@@ -143,6 +162,9 @@ impl ChannelView {
                 }
                 if shown && let Some(query) = self.slash.query().map(str::to_owned) {
                     self.show_commands(&query, cx);
+                }
+                if shown && self.slash.line().is_some() {
+                    crate::slash::show_line(&self.slash, &self.composer, cx);
                 }
             }
             Some(Change::Ran { command, outcome }) => {
@@ -327,6 +349,108 @@ mod tests {
         cx.simulate_input("x");
         cx.run_until_parked();
         cx.update(|_, cx| assert_eq!(view.read(cx).slash.error(), None));
+    }
+
+    /// gpuicn#136: past a command's name, the server is asked about the
+    /// whole line and its suggestions open over it; accepting one replaces
+    /// the line, and a line that is no longer a command closes them.
+    #[gpui_kit::test]
+    fn arguments_are_suggested_for_the_whole_line(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            crate::ui::theme::init(cx);
+            crate::settings::SettingsStore::init(None, cx);
+        });
+        let general = crate::preview::channel("general").unwrap();
+        let channel_id = general.id.clone();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            ChannelView::new(Some(general.clone()), "me", window, cx)
+        });
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let asked = asked.clone();
+            cx.subscribe(&view, move |_, event: &ChannelEvent, _| {
+                if let ChannelEvent::Slash(Request::Suggest { user_input, .. }) = event {
+                    asked.borrow_mut().push(user_input.clone());
+                }
+            })
+            .detach();
+            let input = view.read(cx).composer.read(cx).input().clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        cx.simulate_input("/jira cr");
+        cx.run_until_parked();
+        assert_eq!(asked.borrow().last().map(String::as_str), Some("/jira cr"));
+        cx.update(|_, cx| {
+            let composer = view.read(cx).composer.read(cx);
+            assert_eq!(composer.suggestion_range(), Some(0..8));
+            assert!(
+                !composer.is_autocomplete_open(),
+                "nothing until the server answers"
+            );
+        });
+
+        let suggested = matty_sync::ChangeSet::CommandSuggestions {
+            channel_id: channel_id.to_string(),
+            root_id: String::new(),
+            user_input: "/jira cr".into(),
+            suggestions: vec![
+                matty_api::models::CommandSuggestion {
+                    complete: "jira create".into(),
+                    suggestion: "create".into(),
+                    hint: "[project]".into(),
+                    description: "Create an issue".into(),
+                    ..Default::default()
+                },
+                // The line as typed is not offered back.
+                matty_api::models::CommandSuggestion {
+                    complete: "jira cr".into(),
+                    suggestion: "cr".into(),
+                    ..Default::default()
+                },
+            ]
+            .into(),
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.slash_change(&suggested, window, cx))
+        });
+        cx.update(|_, cx| {
+            let composer = view.read(cx).composer.read(cx);
+            assert!(composer.is_autocomplete_open());
+            assert_eq!(
+                composer
+                    .highlighted_suggestion()
+                    .map(|row| row.value.to_string()),
+                Some("/jira create".into())
+            );
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let composer = view.read(cx).composer.read(cx);
+            assert_eq!(composer.value(cx).as_ref(), "/jira create ");
+            assert_eq!(
+                composer.suggestion_range(),
+                Some(0..13),
+                "the next argument"
+            );
+        });
+        assert_eq!(
+            asked.borrow().last().map(String::as_str),
+            Some("/jira create ")
+        );
+
+        // Not a command any more: the suggestions close.
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.composer.update(cx, |composer, cx| {
+                    composer.set_value("hello there", window, cx)
+                })
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(view.read(cx).composer.read(cx).suggestion_range(), None);
+        });
     }
 
     /// #210: offline, a server command is refused with the offline toast
