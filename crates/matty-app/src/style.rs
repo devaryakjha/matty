@@ -337,54 +337,6 @@ pub fn composer_cap(window: &gpui_kit::Window) -> gpui_kit::Pixels {
     window.viewport_size().height * 0.4
 }
 
-/// The presence dot over an avatar's bottom-right corner (DESIGN.md §3,
-/// #135): filled for online, away and Do not disturb, a hollow ring for
-/// offline. `ring` is the surface it sits on, so the dot reads as cut out
-/// of the avatar. The dot has no label of its own; the avatar's label says
-/// the presence (see [`presence_name`]).
-///
-/// Only for the 18px avatars in the sidebar and switcher: gpuicn's
-/// `Avatar::status` sizes its dot for a 24px avatar, too big there
-/// (devaryakjha/gpuicn#127). Every other avatar uses [`avatar_status`].
-pub fn presence_dot(
-    presence: crate::sidebar::Presence,
-    size: Pixels,
-    ring: Rgba,
-    theme: &UiTheme,
-    palette: &Palette,
-) -> gpui_kit::Div {
-    use crate::sidebar::Presence;
-    let dot = gpui_kit::div()
-        .absolute()
-        .bottom(gpui_kit::px(-2.))
-        .right(gpui_kit::px(-2.))
-        .size(size)
-        .rounded_full()
-        .border_2()
-        .border_color(ring);
-    let fill = match presence {
-        Presence::Online => palette.online,
-        Presence::Away => palette.away,
-        Presence::Dnd => palette.dnd,
-        Presence::Offline => {
-            // On the sidebar, the sidebar's own quiet color (#214).
-            let color = if ring == theme.colors.sidebar {
-                palette.sidebar_muted
-            } else {
-                theme.colors.muted_foreground
-            };
-            return dot.bg(ring).child(
-                gpui_kit::div()
-                    .size_full()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(color),
-            );
-        }
-    };
-    dot.bg(fill)
-}
-
 /// An avatar's accessible label with the presence its dot shows, such as
 /// "Ana Lopez, away".
 pub fn presence_name(name: &str, presence: crate::sidebar::Presence) -> SharedString {
