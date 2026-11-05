@@ -12,6 +12,7 @@ use gpui_icons::LucideIcon;
 use gpui_kit::SharedString;
 
 use crate::sidebar::{ChannelKind, ChannelRow, SidebarModel};
+use crate::t;
 use crate::ui::command::CommandItem;
 
 /// The value of a team's row; its id follows.
@@ -185,9 +186,9 @@ pub(super) fn items(
         let place = &places[index];
         let group: SharedString = match rank.first {
             Bucket::Server => place.home.clone(),
-            _ if !query.is_empty() => "Channels and people".into(),
-            Bucket::Unread => "Unread".into(),
-            Bucket::Recent => "Recent".into(),
+            _ if !query.is_empty() => t!("switcher-group-matches"),
+            Bucket::Unread => t!("switcher-group-unread"),
+            Bucket::Recent => t!("switcher-group-recent"),
             Bucket::Rest => place.home.clone(),
         };
         items.push(item(place, group));
@@ -203,17 +204,17 @@ pub(super) fn items(
     }
     if all_servers && !elsewhere.servers.is_empty() && !items.iter().any(is_server) {
         items.push(
-            CommandItem::new(NO_SERVER_MATCH, "No channels on other servers match")
-                .group("Other servers")
+            CommandItem::new(NO_SERVER_MATCH, t!("switcher-no-server-match"))
+                .group(t!("switcher-group-servers"))
                 .icon(LucideIcon::Server)
                 .disabled(true),
         );
     }
     for team in &elsewhere.teams {
         let item = CommandItem::new(format!("{TEAM_PREFIX}{}", team.id), team.name.clone())
-            .group("Teams")
+            .group(t!("switcher-group-teams"))
             .icon(LucideIcon::Building2)
-            .keywords(["team"]);
+            .keywords([t!("switcher-keyword-team")]);
         if query.is_empty() || matches(&query, &item.label, &item.keywords).is_some() {
             items.push(item);
         }
@@ -222,9 +223,9 @@ pub(super) fn items(
         items.push(
             CommandItem::new(
                 ALL_SERVERS,
-                format!("Search all servers for \u{201c}{typed}\u{201d}"),
+                t!("switcher-search-servers", query = typed.to_string()),
             )
-            .group("Other servers")
+            .group(t!("switcher-group-servers"))
             .icon(LucideIcon::Server),
         );
     }
@@ -349,7 +350,7 @@ fn item(place: &Place, group: SharedString) -> CommandItem {
     // the name format shows (#156); and the team a row of another is in.
     let keywords: Vec<SharedString> = row
         .unread
-        .then(|| SharedString::from("unread"))
+        .then(|| t!("switcher-keyword-unread"))
         .into_iter()
         .chain(row.handle.clone())
         .chain(place.note.clone())
