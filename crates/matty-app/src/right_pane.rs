@@ -1807,7 +1807,8 @@ impl RightPaneView {
 
     /// Single keys on the selected row, as in the channel (#107): R
     /// replies, E edits and Delete removes the user's own reply, P pins, S
-    /// saves and U marks unread.
+    /// saves, U marks unread, F forwards, T follows the thread, C copies
+    /// the text and L the link.
     fn selection_key(
         &mut self,
         keystroke: &gpui_kit::Keystroke,
@@ -1847,6 +1848,12 @@ impl RightPaneView {
                 saved: !post.saved,
             }),
             "u" if sent => cx.emit(RightPaneEvent::MarkUnread(id)),
+            "f" if sent => cx.emit(RightPaneEvent::Forward(id)),
+            "t" => self.toggle_follow(cx),
+            "c" => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&post.body)))
+            }
+            "l" if sent => cx.emit(RightPaneEvent::CopyLink(id)),
             _ => return false,
         }
         cx.notify();

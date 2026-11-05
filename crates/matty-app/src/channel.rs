@@ -3102,7 +3102,7 @@ impl ChannelView {
         };
         let body = post.body.clone();
         let markdown_body = post.body.clone();
-        let mut items = vec![
+        let copy_items = [
             act(
                 "copy",
                 "Copy text".into(),
@@ -3123,6 +3123,7 @@ impl ChannelView {
         if post.status == PostStatus::Ephemeral {
             let dismiss_view = view.clone();
             let dismiss_id = id.clone();
+            let mut items = copy_items.to_vec();
             items.push(MenuItem::separator());
             items.push(
                 MenuItem::new("post.menu.dismiss", "Dismiss message").on_click(
@@ -3137,6 +3138,7 @@ impl ChannelView {
             return items;
         }
         if post.status != PostStatus::Sent {
+            let mut items = copy_items.to_vec();
             let (edit_view, edit_id) = (view.clone(), id.clone());
             let (discard_view, discard_id) = (view.clone(), id.clone());
             items.extend(waiting_items(
@@ -3158,40 +3160,14 @@ impl ChannelView {
             ));
             return items;
         }
-        items.extend([
-            {
-                let id = id.clone();
-                act(
-                    "copy-link",
-                    "Copy link".into(),
-                    Box::new(move |_, _, cx| cx.emit(ChannelEvent::CopyLink(id.clone()))),
-                )
-            },
-            {
-                let id = id.clone();
-                act(
-                    "pin",
-                    if post.pinned {
-                        "Unpin from channel".into()
-                    } else {
-                        "Pin to channel".into()
-                    },
-                    Box::new(move |this, _, cx| this.toggle_pin(id.clone(), cx)),
-                )
-            },
-            {
-                let id = id.clone();
-                act(
-                    "save",
-                    if post.saved {
-                        "Unsave".into()
-                    } else {
-                        "Save".into()
-                    },
-                    Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
-                )
-            },
-        ]);
+        // The webapp's order (#213): passing it on, then keeping track,
+        // then the owner's changes with copying among them.
+        let forward_id = id.clone();
+        let mut items = vec![act(
+            "forward",
+            "Forward\u{2026}".into(),
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::Forward(forward_id.clone()))),
+        )];
         if let Some(replies) = &post.replies {
             let follow_id = id.clone();
             items.push(act(
@@ -3204,11 +3180,11 @@ impl ChannelView {
                 Box::new(move |this, _, cx| this.toggle_follow(follow_id.clone(), cx)),
             ));
         }
-        let forward_id = id.clone();
+        let unread_id = id.clone();
         items.push(act(
-            "forward",
-            "Forward\u{2026}".into(),
-            Box::new(move |_, _, cx| cx.emit(ChannelEvent::Forward(forward_id.clone()))),
+            "unread",
+            "Mark as unread".into(),
+            Box::new(move |_, _, cx| cx.emit(ChannelEvent::MarkUnread(unread_id.clone()))),
         ));
         items.push(MenuItem::submenu(
             gpui_kit::ElementId::Name("post.menu.remind".into()),
@@ -3229,6 +3205,40 @@ impl ChannelView {
                 })
             }),
         ));
+        items.extend([
+            {
+                let id = id.clone();
+                act(
+                    "save",
+                    if post.saved {
+                        "Unsave".into()
+                    } else {
+                        "Save".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_save(id.clone(), cx)),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
+                    "pin",
+                    if post.pinned {
+                        "Unpin from channel".into()
+                    } else {
+                        "Pin to channel".into()
+                    },
+                    Box::new(move |this, _, cx| this.toggle_pin(id.clone(), cx)),
+                )
+            },
+            {
+                let id = id.clone();
+                act(
+                    "copy-link",
+                    "Copy link".into(),
+                    Box::new(move |_, _, cx| cx.emit(ChannelEvent::CopyLink(id.clone()))),
+                )
+            },
+        ]);
         let root = (!post.root_id.is_empty()).then_some(&post.root_id);
         items.extend(crate::apps::post_menu_items(
             &view,
@@ -3237,9 +3247,7 @@ impl ChannelView {
             root,
             cx,
         ));
-        if post.mine || deletable(post, away, delete_others) {
-            items.push(MenuItem::separator());
-        }
+        items.push(MenuItem::separator());
         if post.mine {
             let edit_id = id.clone();
             items.push(act(
@@ -3248,6 +3256,7 @@ impl ChannelView {
                 Box::new(move |this, window, cx| this.start_edit(edit_id.clone(), window, cx)),
             ));
         }
+        items.extend(copy_items);
         if deletable(post, away, delete_others) {
             let delete_id = id.clone();
             items.push(act(
@@ -3260,7 +3269,7 @@ impl ChannelView {
     }
 
     /// The right-click menu: reply and react first, then everything the
-    /// "More" button offers, with "Mark as unread" after Save.
+    /// "More" button offers.
     fn context_items_for(
         post: &Post,
         away: bool,
@@ -3286,7 +3295,6 @@ impl ChannelView {
         let reply_id = post.thread_root();
         let window_id = post.thread_root();
         let react_id = id.clone();
-        let unread_id = id.clone();
         let mut items = vec![
             act(
                 "reply",
@@ -3307,17 +3315,7 @@ impl ChannelView {
             ),
             MenuItem::separator(),
         ];
-        let more = Self::more_items_for(post, away, delete_others, cx);
-        // `more` is copy, copy as Markdown, copy link, pin, save, then the
-        // owner's edit and delete.
-        let (keep, own) = more.split_at(5.min(more.len()));
-        items.extend(keep.iter().cloned());
-        items.push(act(
-            "unread",
-            "Mark as unread",
-            Box::new(move |_, _, cx| cx.emit(ChannelEvent::MarkUnread(unread_id.clone()))),
-        ));
-        items.extend(own.iter().cloned());
+        items.extend(Self::more_items_for(post, away, delete_others, cx));
         items
     }
 
@@ -4710,10 +4708,9 @@ impl ChannelView {
         }
     }
 
-    /// Single keys on the selected post, as in Discord: R reply, E edit,
-    /// Delete removes own, + react, P pin, S save, U mark unread, Enter
-    /// views its images. Keys with
-    /// a modifier are left to the keymap. Returns whether the key was used.
+    /// Single keys on the selected post, as in Discord, listed in the
+    /// shortcut sheet from [`actions::MESSAGE_KEYS`]. Keys with a modifier
+    /// are left to the keymap. Returns whether the key was used.
     fn selection_key(
         &mut self,
         keystroke: &gpui_kit::Keystroke,
@@ -4756,6 +4753,12 @@ impl ChannelView {
             "p" => self.toggle_pin(id, cx),
             "s" => self.toggle_save(id, cx),
             "u" => cx.emit(ChannelEvent::MarkUnread(id)),
+            "f" => cx.emit(ChannelEvent::Forward(id)),
+            "t" if post.replies.is_some() => self.toggle_follow(id, cx),
+            "c" => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(plain_text(&post.body)))
+            }
+            "l" => cx.emit(ChannelEvent::CopyLink(id)),
             "enter" => return self.open_selected_images(id, window, cx),
             _ => return false,
         }
