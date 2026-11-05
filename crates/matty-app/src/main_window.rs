@@ -1715,14 +1715,10 @@ impl MainWindow {
     }
 
     fn reminder_set(&mut self, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
-        let when = match at {
-            crate::channel::RemindAt::Tomorrow => "tomorrow at 9:00".to_string(),
-            other => other.label().to_lowercase(),
-        };
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(
                 "reminder",
-                Notice::new(format!("Reminder set for {when}"))
+                Notice::new(crate::popout::reminder_notice(at))
                     .timeout(std::time::Duration::from_secs(4)),
                 cx,
             );
@@ -1768,7 +1764,8 @@ impl MainWindow {
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(
                 "copy-link",
-                Notice::new("Link copied").timeout(std::time::Duration::from_secs(4)),
+                Notice::new(crate::t!("notice-link-copied"))
+                    .timeout(std::time::Duration::from_secs(4)),
                 cx,
             );
         });
@@ -2180,7 +2177,10 @@ impl MainWindow {
             self.say_offline(action, cx);
         }
         if let Some(error) = update.action_refused {
-            self.push_error(format!("The integration couldn't take that: {error}"), cx);
+            self.push_error(
+                crate::t!("notice-integration-refused", error = error.to_string()),
+                cx,
+            );
         }
         if let Some(text) = update.refused.take() {
             self.push_error(text, cx);

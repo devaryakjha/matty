@@ -18,6 +18,7 @@ use matty_api::models::{EmbedKind, MessageAttachment, Post, PostImage};
 use serde_json::Value;
 
 use crate::attachments::PostFile;
+use crate::t;
 use crate::ui::attachment::Attachment;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::embed::{ImagePlaceholder, LinkPreview, MessageEmbed, QuotedMessage};
@@ -83,7 +84,7 @@ fn quoted_post(embed: &matty_api::models::PostEmbed) -> Option<QuotedPost> {
             _ => format!("~{channel}").into(),
         },
         author_id: post.user_id,
-        author: "Someone".into(),
+        author: t!("embed-someone"),
         message: post.message.into(),
         create_at: post.create_at,
         time: 0,
@@ -406,7 +407,7 @@ pub(crate) fn image_name(url: &str) -> SharedString {
         .next()
         .unwrap_or_default();
     if name.is_empty() {
-        "Image".into()
+        t!("embed-image")
     } else {
         name.to_owned().into()
     }
@@ -579,10 +580,12 @@ fn quoted_element(
     }
     if !quoted.day.is_empty() {
         let time = crate::settings::ClockFormat::current(cx).format(quoted.time);
-        card = card.timestamp(if quoted.day == "Today" {
+        // "Today" is the day key sync sends, not shown as is.
+        let today = quoted.day == "Today"; // i18n-ignore
+        card = card.timestamp(if today {
             time.into()
         } else {
-            SharedString::from(format!("{} at {time}", quoted.day))
+            t!("embed-sent-at", date = quoted.day.to_string(), time = time)
         });
     }
     if !quoted.channel_name.is_empty() {
@@ -630,9 +633,9 @@ fn image_element(
 ) -> gpui_kit::AnyElement {
     let name = image_name(&image.url);
     let (icon, label) = if collapsed {
-        (LucideIcon::ChevronRight, "Expand image")
+        (LucideIcon::ChevronRight, t!("embed-expand-image"))
     } else {
-        (LucideIcon::ChevronDown, "Collapse image")
+        (LucideIcon::ChevronDown, t!("embed-collapse-image"))
     };
     let toggle = Button::new((element_id.clone(), "toggle"))
         .variant(ButtonVariant::Ghost)

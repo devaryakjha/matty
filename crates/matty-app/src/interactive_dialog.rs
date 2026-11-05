@@ -135,7 +135,10 @@ impl DialogChange {
                 action: "submit dialog",
                 error,
                 ..
-            }) => Self::Failed(format!("The integration couldn't take that: {error}").into()),
+            }) => Self::Failed(crate::t!(
+                "notice-integration-refused",
+                error = error.to_string()
+            )),
             ChangeSet::Failed(CommandError::Offline {
                 action: "submit dialog",
             }) => Self::Failed("You're offline. Try again once you're back online.".into()),

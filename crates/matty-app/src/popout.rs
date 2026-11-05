@@ -40,6 +40,7 @@ use crate::right_pane::{RightPaneContent, RightPaneEvent, RightPaneView};
 use crate::settings::{PopOutPlace, SettingsChanged, SettingsStore, WindowGeometry};
 use crate::sidebar::ChannelKind;
 use crate::style::{self, TypeStyleExt as _};
+use crate::t;
 use crate::ui::{
     markdown::selection_root,
     theme::UiTheme,
@@ -485,8 +486,8 @@ impl PopOutView {
         };
         let me: SharedString = match live.as_ref().and_then(Live::me_user) {
             Some(user) => crate::transcript::display_name(user).into(),
-            None if crate::preview::enabled() => "Arya".into(),
-            None => "You".into(),
+            None if crate::preview::enabled() => "Arya".into(), // i18n-ignore: preview data
+            None => t!("popout-you"),
         };
         let directory = match &live {
             Some(live) => live.directory(),
@@ -659,9 +660,9 @@ impl PopOutView {
             },
         };
         match (&self.target, shown.is_empty()) {
-            (Target::Thread { .. }, true) => "Thread".into(),
-            (Target::Thread { .. }, false) => format!("Thread in {shown}").into(),
-            (Target::Channel(_), true) => "Matty".into(),
+            (Target::Thread { .. }, true) => t!("popout-thread"),
+            (Target::Thread { .. }, false) => t!("popout-thread-in", place = shown),
+            (Target::Channel(_), true) => "Matty".into(), // i18n-ignore: product name
             (Target::Channel(_), false) => shown.into(),
         }
     }
@@ -894,7 +895,7 @@ impl PopOutView {
             self.ask(Ask::Offline(action), cx);
         }
         if let Some(error) = update.action_refused {
-            let text = format!("The integration couldn't take that: {error}");
+            let text = t!("notice-integration-refused", error = error.to_string());
             self.toast("pop-out.action-refused", text, cx);
         }
         if let Some(text) = update.refused.take() {
@@ -1094,34 +1095,26 @@ impl PopOutView {
         match self.permalink(post_id) {
             Some(link) => {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(link));
-                self.toast("copy-link", "Link copied", cx);
+                self.toast("copy-link", t!("notice-link-copied"), cx);
             }
-            None => self.toast(
-                "copy-link",
-                "Couldn't copy the link. Try again once you're connected.",
-                cx,
-            ),
+            None => self.toast("copy-link", t!("notice-link-failed"), cx),
         }
     }
 
     fn remind(&mut self, post_id: &str, at: crate::channel::RemindAt, cx: &mut Context<Self>) {
         if self.offline {
-            return self.ask(Ask::Offline("set reminder"), cx);
+            return self.ask(Ask::Offline("set reminder"), cx); // i18n-ignore: an offline key
         }
         let Some(live) = &self.live else {
             return;
         };
         live.remind(post_id, at);
-        let when = match at {
-            crate::channel::RemindAt::Tomorrow => "tomorrow at 9:00".to_string(),
-            other => other.label().to_lowercase(),
-        };
-        self.toast("reminder", format!("Reminder set for {when}"), cx);
+        self.toast("reminder", reminder_notice(at), cx);
     }
 
     fn mark_unread(&mut self, post_id: &str, cx: &mut Context<Self>) {
         if self.offline {
-            return self.ask(Ask::Offline("mark unread"), cx);
+            return self.ask(Ask::Offline("mark unread"), cx); // i18n-ignore: an offline key
         }
         if let Some(live) = &self.live {
             live.send(matty_sync::Command::MarkUnread {
@@ -1743,6 +1736,18 @@ impl Render for PopOutView {
             .child(self.interactive_dialog.clone())
             .child(self.toasts.clone())
             .into_any_element()
+    }
+}
+
+/// What the toast says once a reminder is set, in the main window or a
+/// pop-out.
+pub(crate) fn reminder_notice(at: crate::channel::RemindAt) -> SharedString {
+    use crate::channel::RemindAt;
+    match at {
+        RemindAt::In30Minutes => t!("notice-reminder-30-minutes"),
+        RemindAt::In1Hour => t!("notice-reminder-1-hour"),
+        RemindAt::In2Hours => t!("notice-reminder-2-hours"),
+        RemindAt::Tomorrow => t!("notice-reminder-tomorrow"),
     }
 }
 
