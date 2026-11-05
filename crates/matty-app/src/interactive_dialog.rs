@@ -408,7 +408,7 @@ impl InteractiveDialogView {
                 field,
                 query,
                 options,
-            } => self.lookup_options(&callback_id, &field, &query, options, window, cx),
+            } => self.lookup_options(&callback_id, &field, &query, options, cx),
         }
     }
 
