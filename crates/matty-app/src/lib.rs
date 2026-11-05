@@ -37,6 +37,7 @@ pub mod links;
 pub mod live;
 pub mod logging;
 pub mod login;
+pub mod login_item;
 mod main_window;
 pub mod mattermost_theme;
 pub mod menu;
@@ -213,6 +214,8 @@ fn launch(links: async_channel::Receiver<String>, cx: &mut App) {
     if let Some(logs) = logs {
         follow_log_level(&settings, logs, cx);
     }
+    #[cfg(not(target_family = "wasm"))]
+    follow_launch_at_login(&settings, cx);
     actions::bind(cx);
     #[cfg(not(target_family = "wasm"))]
     menu::init(cx);
@@ -308,6 +311,27 @@ fn follow_log_level(settings: &Entity<SettingsStore>, logs: logging::LevelHandle
     logs.set(settings.read(cx).get().log_level);
     cx.subscribe(settings, move |store, _: &settings::SettingsChanged, cx| {
         logs.set(store.read(cx).get().log_level);
+    })
+    .detach();
+}
+
+/// Keeps the system's login item in step with the `launch_at_login`
+/// setting. While it is on, each launch writes the item again so it names
+/// this copy of Matty.
+#[cfg(not(target_family = "wasm"))]
+fn follow_launch_at_login(settings: &Entity<SettingsStore>, cx: &mut App) {
+    let mut applied = settings.read(cx).get().launch_at_login;
+    if applied {
+        cx.background_spawn(async { login_item::apply(true) })
+            .detach();
+    }
+    cx.subscribe(settings, move |store, _: &settings::SettingsChanged, cx| {
+        let wanted = store.read(cx).get().launch_at_login;
+        if wanted != applied {
+            applied = wanted;
+            cx.background_spawn(async move { login_item::apply(wanted) })
+                .detach();
+        }
     })
     .detach();
 }
