@@ -1,4 +1,4 @@
 version = 1
-registry = "https://raw.githubusercontent.com/devaryakjha/gpuicn/v0.8.0/site/pages/r"
+registry = "https://raw.githubusercontent.com/karyalabs/gpuicn/v0.8.0/site/pages/r"
 output = "src/ui"
 mode = "crate"

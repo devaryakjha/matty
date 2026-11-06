@@ -906,8 +906,8 @@ mod tests {
     #[test]
     fn the_first_web_link_in_a_draft_is_previewed() {
         assert_eq!(
-            first_link("see (https://github.com/devaryakjha/matty). Thanks").as_deref(),
-            Some("https://github.com/devaryakjha/matty")
+            first_link("see (https://github.com/karyalabs/matty). Thanks").as_deref(),
+            Some("https://github.com/karyalabs/matty")
         );
         assert_eq!(
             first_link("<http://example.com/a?b=1> and https://x.org").as_deref(),

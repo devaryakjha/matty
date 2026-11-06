@@ -64,7 +64,7 @@ impl Feed {
             ]
         }]);
         Mock::given(method("GET"))
-            .and(path("/repos/devaryakjha/matty/releases"))
+            .and(path("/repos/karyalabs/matty/releases"))
             .respond_with(ResponseTemplate::new(200).set_body_json(list))
             .mount(&self.server)
             .await;
@@ -82,7 +82,7 @@ impl Feed {
     fn updater(&self, current: &str) -> Updater {
         Updater::new(
             &self.server.uri(),
-            "devaryakjha/matty",
+            "karyalabs/matty",
             &self.public_key(),
             current,
             "macos-universal",

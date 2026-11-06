@@ -1385,7 +1385,7 @@
         "channel_id": "61xipzqgjtdtfkuss61jhyk9bh",
         "root_id": "",
         "original_id": "",
-        "message": "[A link](https://mattermost.com) and an autolink https://github.com/devaryakjha/matty and www.example.com",
+        "message": "[A link](https://mattermost.com) and an autolink https://github.com/karyalabs/matty and www.example.com",
         "type": "",
         "props": {
           "matty_seed": 0

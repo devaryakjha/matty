@@ -39,7 +39,7 @@ gpui_kit::actions!(
 const APP_NAME: &str = "Matty"; // i18n-ignore: a name
 
 /// Where "Report a problem" goes.
-const REPORT_URL: &str = "https://github.com/devaryakjha/matty/issues/new";
+const REPORT_URL: &str = "https://github.com/karyalabs/matty/issues/new";
 
 /// Installs the menu bar, the macOS-only shortcuts of its items and the
 /// app-wide handlers of the actions no view owns.

@@ -13,7 +13,7 @@ epic. Pick a task, link it from your pull request with "Closes #N".
   when color or theming changes, and attach a short video or GIF for motion
   and interactions. When a change has no visible effect (API, sync, store, CI,
   docs), write "Not applicable" with the reason in the Screenshots section.
-- Reusable UI comes from [gpuicn](https://github.com/devaryakjha/gpuicn). Do
+- Reusable UI comes from [gpuicn](https://github.com/karyalabs/gpuicn). Do
   not add a local substitute for a gpuicn component; note the gap on the
   matching issue instead.
 

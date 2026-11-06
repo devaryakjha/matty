@@ -6849,7 +6849,7 @@ mod tests {
             let input = view.read(cx).composer.read(cx).input().clone();
             input.read(cx).focus_handle(cx).focus(window, cx);
         });
-        let url = "https://github.com/devaryakjha/matty";
+        let url = "https://github.com/karyalabs/matty";
         let shown = |cx: &mut gpui_kit::VisualTestContext| {
             cx.update(|_, cx| {
                 view.update(cx, |view, cx| {
@@ -6861,7 +6861,7 @@ mod tests {
         };
 
         // Nothing is asked before typing pauses, then the link once.
-        cx.simulate_input("see https://github.com/devaryakjha/matty");
+        cx.simulate_input("see https://github.com/karyalabs/matty");
         cx.run_until_parked();
         cx.executor().advance_clock(PAUSE / 2);
         cx.run_until_parked();
@@ -6888,7 +6888,7 @@ mod tests {
                     Some(crate::embeds::LinkCard {
                         url: url.into(),
                         site_name: "GitHub".into(),
-                        title: "devaryakjha/matty".into(),
+                        title: "karyalabs/matty".into(),
                         description: SharedString::default(),
                         image: None,
                     }),

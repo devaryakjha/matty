@@ -780,7 +780,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                     author: "GitHub Actions".into(),
                     author_link: "".into(),
                     title: "Build 1482 passed".into(),
-                    title_link: "https://github.com/devaryakjha/matty/actions".into(),
+                    title_link: "https://github.com/karyalabs/matty/actions".into(),
                     text: "All checks are green on `release-2026-11`.".into(),
                     fields: vec![
                         crate::embeds::AttachmentFieldCard {
@@ -818,9 +818,9 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
         },
         Post {
             embeds: vec![crate::embeds::Embed::Link(crate::embeds::LinkCard {
-                url: "https://github.com/devaryakjha/matty/releases".into(),
+                url: "https://github.com/karyalabs/matty/releases".into(),
                 site_name: "GitHub".into(),
-                title: "Releases · devaryakjha/matty".into(),
+                title: "Releases · karyalabs/matty".into(),
                 description: "A native desktop client for Mattermost, built with GPUI.".into(),
                 image: Some(crate::embeds::EmbedImage {
                     url: "https://opengraph.githubassets.com/matty/releases".into(),
@@ -836,7 +836,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "Sam Okafor",
                 "09:22",
                 "Yesterday",
-                "Release notes draft: https://github.com/devaryakjha/matty/releases",
+                "Release notes draft: https://github.com/karyalabs/matty/releases",
             )
         },
         Post {
@@ -916,7 +916,7 @@ pub fn channel(id: &str) -> Option<ChannelModel> {
                 "Priya Nair",
                 "08:06",
                 "Today",
-                "Here is the doc Jonas asked for: [DESIGN.md](https://github.com/devaryakjha/matty/blob/master/docs/DESIGN.md)",
+                "Here is the doc Jonas asked for: [DESIGN.md](https://github.com/karyalabs/matty/blob/master/docs/DESIGN.md)",
             )
         },
         post(
@@ -1603,7 +1603,7 @@ pub fn link_card(url: &str) -> Option<crate::embeds::LinkCard> {
         .then(|| crate::embeds::LinkCard {
             url: url.to_owned().into(),
             site_name: "GitHub".into(),
-            title: "devaryakjha/matty: A native Mattermost client".into(),
+            title: "karyalabs/matty: A native Mattermost client".into(),
             description: "Fast, keyboard-first and offline-friendly, built with GPUI.".into(),
             image: None,
         })

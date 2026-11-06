@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn everything_else_opens_in_the_browser() {
         for url in [
-            "https://github.com/devaryakjha/matty",
+            "https://github.com/karyalabs/matty",
             "http://chat.example.com/matty/pl/abc",
             "https://chat.example.com:8443/matty/pl/abc",
             "https://chat.example.com/matty/pl/abc/extra",

@@ -426,7 +426,7 @@ async fn a_posts_properties_reach_the_server() {
         pending_post_id: "me:3".into(),
         channel_id: "c1".into(),
         root_id: String::new(),
-        message: "see https://github.com/devaryakjha/matty".into(),
+        message: "see https://github.com/karyalabs/matty".into(),
         file_ids: Vec::new(),
         local_files: Vec::new(),
         props: [("remove_link_preview".to_owned(), "true".into())].into(),
