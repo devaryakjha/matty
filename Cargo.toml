@@ -4,7 +4,9 @@ default-members = ["crates/matty"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+# The version of the next or current release, pre-release suffix included;
+# a release PR bumps it (docs/releasing.md).
+version = "0.1.0-beta.5"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"

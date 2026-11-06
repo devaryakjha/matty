@@ -4768,14 +4768,14 @@ dependencies = [
 
 [[package]]
 name = "matty"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "matty-app",
 ]
 
 [[package]]
 name = "matty-api"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4802,7 +4802,7 @@ dependencies = [
 
 [[package]]
 name = "matty-app"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -4845,7 +4845,7 @@ dependencies = [
 
 [[package]]
 name = "matty-demo"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "async-channel",
  "matty-api",
@@ -4858,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "matty-markdown"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "insta",
  "pulldown-cmark",
@@ -4868,7 +4868,7 @@ dependencies = [
 
 [[package]]
 name = "matty-notify"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "async-channel",
  "async-executor",
@@ -4888,7 +4888,7 @@ dependencies = [
 
 [[package]]
 name = "matty-spell"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -4897,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "matty-store"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "dirs 6.0.0",
  "matty-api",
@@ -4913,7 +4913,7 @@ dependencies = [
 
 [[package]]
 name = "matty-sync"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -4940,7 +4940,7 @@ dependencies = [
 
 [[package]]
 name = "matty-update"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -4958,7 +4958,7 @@ dependencies = [
 
 [[package]]
 name = "matty-web"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "matty-app",
  "web-sys",
@@ -7780,7 +7780,7 @@ dependencies = [
 
 [[package]]
 name = "spike-s1"
-version = "0.1.0"
+version = "0.1.0-beta.5"
 dependencies = [
  "gpui-icons",
  "gpui-kit",

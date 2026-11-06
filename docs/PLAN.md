@@ -802,9 +802,10 @@ and manually on the reference machines before each release.
   update manifests (`cargo-packager-updater` or Sparkle on macOS), a stable and
   a beta channel, and a "restart to update" prompt that never interrupts
   typing. Flatpak and package managers update themselves.
-- **Release process:** tag → CI builds all platforms → signs → uploads
-  artifacts and checksums → updates feeds. Releases need Arya's explicit go,
-  as with gpuicn.
+- **Release process:** merging a release PR (version bump and changelog) →
+  CI builds all platforms → signs → waits for green CI → tags, uploads
+  artifacts and checksums → updates feeds and matty.jha.sh
+  ([releasing.md](releasing.md)). Merging the release PR is the go.
 - **Licensing and trademarks:** MIT like gpuicn. Do not use the Mattermost
   logo; describe Matty as "an unofficial client for Mattermost".
 
