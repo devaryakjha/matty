@@ -36,7 +36,9 @@ General → Pull Requests:
 Organization → Settings → Repository → **Rulesets** → New branch ruleset:
 
 - Name `default branches`, enforcement Active, no bypass list.
-- Target repositories: all; target branches: "Default branch".
+- Target repositories: matty, gpuicn, gpui-icons and .github (the ones
+  with a `ci` check; homebrew-matty has none); target branches: "Default
+  branch".
 - Rules: Restrict deletions; Require linear history; Block force pushes;
   Require status checks to pass, with the check `ci` (source GitHub
   Actions) and "Require branches to be up to date" left off (the merge
