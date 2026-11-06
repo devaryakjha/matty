@@ -12,6 +12,7 @@ mode when the change touches color or theming. A short video or GIF is
 better for motion and interactions.
 Write "Not applicable: <reason>" for changes with no visible effect
 (API, sync, store, CI, docs).
+Host the images in karyalabs/assets (matty/<PR number>/), never in docs/.
 -->
 
 | Before | After |

@@ -681,8 +681,9 @@ text scale 1; everything multiplies by the user's text scale and zoom.
 
 ## 6. Screens that set the bar
 
-Screenshots live in `docs/screenshots/`; the `design-*` files are the
-reference for each pull request in this series. A change that moves away
+The reference screenshots live in `docs/screenshots/`; the `design-*`
+files are the reference for each pull request in this series. New
+screenshots go to `karyalabs/assets`, not here (AGENTS.md). A change that moves away
 from them needs a reason in its pull request.
 
 To look at the design before sync exists, run the app with

@@ -112,6 +112,7 @@ jobs:
         uses: dorny/paths-filter@v3
         id: filter
         with:
+          list-files: shell
           base: ${{ github.event.merge_group.base_sha }}
           ref: ${{ github.event.merge_group.head_sha }}
           filters: |
@@ -140,6 +141,8 @@ jobs:
             windows-package:
               - 'packaging/windows/**'
               - 'scripts/windows-package'
+            new-images:
+              - added: 'docs/**/*.{png,jpg,jpeg,gif,webp,mp4,mov}'
       # Nightly runs only when master moved since the last good nightly.
       - name: Did master move since the last nightly
         id: moved
@@ -154,6 +157,16 @@ jobs:
           else
             echo "moved=true" >>"$GITHUB_OUTPUT"
           fi
+      # PR screenshots go to karyalabs/assets, not the repository (D6 in
+      # docs/engineering-process.md): every clone carries every image.
+      - name: No new images under docs/
+        if: github.event_name == 'pull_request' && steps.filter.outputs.new-images == 'true'
+        env:
+          FILES: ${{ steps.filter.outputs.new-images_files }}
+        run: |
+          echo "::error::This pull request adds images under docs/: $FILES"
+          echo "Put screenshots in karyalabs/assets (matty/<PR number>/...) and link them from the PR body; see AGENTS.md."
+          exit 1
       # Every decision about what runs is made here, so the jobs below only
       # read a flag.
       - name: Plan the run
