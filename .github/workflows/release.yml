@@ -174,6 +174,12 @@ jobs:
           security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
             -f pkcs12 -T /usr/bin/codesign
           rm -f "$cert"
+          # GitHub's macOS images ship Apple's Developer ID intermediate; a
+          # self-hosted Mac may not, and without it find-identity -v calls
+          # the certificate invalid. Add it to this keychain either way.
+          curl -sSfL --retry 5 -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain" >/dev/null
           # Prepend to the search list so codesign finds the identity. The
@@ -184,6 +190,7 @@ jobs:
           identity="$(security find-identity -v -p codesigning "$keychain" \
             | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
           if [[ -z "$identity" ]]; then
+            security find-identity -p codesigning "$keychain"
             echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE_P12"
             exit 1
           fi
