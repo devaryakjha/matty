@@ -8,5 +8,11 @@
   same view at the same window size (plus dark mode for color changes, and a
   video or GIF for motion). Otherwise write "Not applicable" with the reason.
   Do not open a pull request for a visible change without them.
+- Screenshots never go in this repository (CI rejects new images under
+  `docs/`). Push them to `karyalabs/assets` under `matty/<PR number>/` and
+  link the `https://raw.githubusercontent.com/karyalabs/assets/main/...`
+  URLs from the PR body.
+- How CI, releases and the other Karya Labs repositories fit together:
+  `docs/engineering-process.md`. Releases: `docs/releasing.md`.
 - Reusable UI comes from gpuicn; never build a local substitute for a gpuicn
   component in Matty.
