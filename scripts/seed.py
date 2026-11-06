@@ -75,7 +75,7 @@ MARKDOWN = [
     "1. first\n2. second\n   1. nested\n3. third",
     "- [ ] open task\n- [x] done task",
     "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |\n| longer cell | `code` | **bold** |",
-    "[A link](https://mattermost.com) and an autolink https://github.com/devaryakjha/matty and www.example.com",
+    "[A link](https://mattermost.com) and an autolink https://github.com/karyalabs/matty and www.example.com",
     "Hey @{user}, can you look at ~{channel}? Also @here and @channel.",
     "Emoji :tada: :+1: :white_check_mark: :{emoji}: inline",
     ":rocket: :fire: :100:",

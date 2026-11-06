@@ -1,16 +1,16 @@
 # Matty
 
 A native [Mattermost](https://mattermost.com) desktop client, written in Rust
-on [GPUI](https://www.gpui.rs) with the [gpuicn](https://github.com/devaryakjha/gpuicn)
+on [GPUI](https://www.gpui.rs) with the [gpuicn](https://github.com/karyalabs/gpuicn)
 component library. The goal is a client that opens instantly, switches
 channels without a spinner, and stays usable offline.
 
 > **Status: beta.** Matty is under active development toward its first
 > milestone (M1). Beta builds for macOS are on
-> [GitHub Releases](https://github.com/devaryakjha/matty/releases) (see
+> [GitHub Releases](https://github.com/karyalabs/matty/releases) (see
 > [Install](#install)). The plan of record is
 > [docs/PLAN.md](docs/PLAN.md), and work is tracked in
-> [GitHub issues](https://github.com/devaryakjha/matty/issues).
+> [GitHub issues](https://github.com/karyalabs/matty/issues).
 
 ![Matty showing #general in light mode](docs/screenshots/readme/channel-light.png)
 
@@ -70,10 +70,10 @@ Mattermost, Inc.
 
 **macOS 13 or later, Apple silicon or Intel.** Download
 `Matty-<version>.dmg` from
-[GitHub Releases](https://github.com/devaryakjha/matty/releases), open it and
+[GitHub Releases](https://github.com/karyalabs/matty/releases), open it and
 drag Matty to Applications. Releases are signed and notarized, so macOS opens
 them without a warning. Builds are betas for now (the first is
-[0.1.0-beta.3](https://github.com/devaryakjha/matty/releases/tag/v0.1.0-beta.3)),
+[0.1.0-beta.3](https://github.com/karyalabs/matty/releases/tag/v0.1.0-beta.3)),
 and GitHub marks them as pre-releases. Each release lists the files' SHA-256
 checksums in `SHA256SUMS`:
 
@@ -85,7 +85,7 @@ Matty updates itself from signed releases, so you don't need to download it
 again. Your sign-in tokens stay in the keychain under "Matty" until you sign
 out or delete them in Keychain Access.
 
-**Homebrew: coming soon.** A cask (`devaryakjha/matty/matty`) arrives with the
+**Homebrew: coming soon.** A cask (`karyalabs/matty/matty`) arrives with the
 first stable release; it isn't published for betas.
 
 **From source:** see [Building](#building). Windows and Linux builds come
@@ -106,7 +106,7 @@ getting patches. CI tests against Mattermost 12.0, 11.7, 10.11 and 10.5.
 
 ### Reporting problems
 
-[Open an issue](https://github.com/devaryakjha/matty/issues/new) with your
+[Open an issue](https://github.com/karyalabs/matty/issues/new) with your
 Matty version (`/Applications/Matty.app/Contents/MacOS/matty --version`, or
 the commit you built from),
 your macOS version and your Mattermost server version. Preferences has a

@@ -8,7 +8,7 @@ GitHub's runners, kept to a minimum (docs/CI.md).
 ## How the switch works
 
 Two repository variables decide where the jobs run. Set them at
-<https://github.com/devaryakjha/matty/settings/variables/actions>:
+<https://github.com/karyalabs/matty/settings/variables/actions>:
 
 | Variable | Value once the runners are up | Unset |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ workflow files it runs with, so it could ask for these runners by label and
 run its own code on Arya's machines. CI already sends fork pull requests to
 GitHub's runners, but only an approval step stops an edited workflow:
 
-1. Open <https://github.com/devaryakjha/matty/settings/actions>.
+1. Open <https://github.com/karyalabs/matty/settings/actions>.
 2. Under **Approval for running fork pull request workflows from
    contributors**, choose the strictest option, **Require approval for all
    external contributors** (older pages say "outside collaborators").
@@ -58,13 +58,13 @@ The script installs the packages the jobs expect (the ones GitHub's image
 has), Docker if missing, Rust 1.99.1 and the web build's nightly, creates a
 `matty-ci` user and registers the runners as systemd services.
 
-1. Open <https://github.com/devaryakjha/matty/settings/actions/runners/new>,
+1. Open <https://github.com/karyalabs/matty/settings/actions/runners/new>,
    pick **Linux**, and copy the token from the `./config.sh` line (it starts
    with `A` and is valid for an hour). Do not run the commands on that page.
 2. On the box:
 
    ```sh
-   git clone --depth 1 https://github.com/devaryakjha/matty /tmp/matty-setup
+   git clone --depth 1 https://github.com/karyalabs/matty /tmp/matty-setup
    sudo /tmp/matty-setup/scripts/ci/setup-linux-runners --token <TOKEN>
    ```
 
@@ -73,7 +73,7 @@ has), Docker if missing, Rust 1.99.1 and the web build's nightly, creates a
    a pull request's `linux`, `web` and two `integration` jobs run almost all
    at once. Plan for about 60 GB of disk per runner plus 10 GB for images.
 3. Check the runners show as **Idle** at
-   <https://github.com/devaryakjha/matty/settings/actions/runners>.
+   <https://github.com/karyalabs/matty/settings/actions/runners>.
 4. Set `MATTY_LINUX_RUNNER` to `["self-hosted","Linux","X64","matty"]`.
 
 Running the script again with a fresh token adds runners up to the count and
@@ -99,7 +99,7 @@ use. A runner belongs to one repository, so this does not touch them.
      failing on master" issue.
    - Optionally Rosetta (`softwareupdate --install-rosetta --agree-to-license`),
      so the universal bundle job also runs the Intel slice.
-2. Open <https://github.com/devaryakjha/matty/settings/actions/runners/new>,
+2. Open <https://github.com/karyalabs/matty/settings/actions/runners/new>,
    pick **macOS** and **ARM64**, and copy the version in the download URL and
    the token.
 3. In Terminal, as the user the other runners use:
@@ -108,7 +108,7 @@ use. A runner belongs to one repository, so this does not touch them.
    mkdir ~/actions-runner-matty && cd ~/actions-runner-matty
    curl -sSfLO https://github.com/actions/runner/releases/download/v<VERSION>/actions-runner-osx-arm64-<VERSION>.tar.gz
    tar xzf actions-runner-osx-arm64-<VERSION>.tar.gz
-   ./config.sh --unattended --url https://github.com/devaryakjha/matty \
+   ./config.sh --unattended --url https://github.com/karyalabs/matty \
      --token <TOKEN> --name mac-mini-matty --labels matty --work _work
    echo "$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" > .path
    ./svc.sh install && ./svc.sh start

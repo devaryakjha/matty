@@ -1,14 +1,14 @@
-# Template for the Matty cask in the devaryakjha/homebrew-matty tap (#203).
+# Template for the Matty cask in the karyalabs/homebrew-matty tap (#203).
 # scripts/homebrew-cask fills in @VERSION@ and @SHA256@ from a release's
 # SHA256SUMS; the release workflow opens the bump pull request on the tap.
 cask "matty" do
   version "@VERSION@"
   sha256 "@SHA256@"
 
-  url "https://github.com/devaryakjha/matty/releases/download/v#{version}/Matty-#{version}.dmg"
+  url "https://github.com/karyalabs/matty/releases/download/v#{version}/Matty-#{version}.dmg"
   name "Matty"
   desc "Unofficial native desktop client for Mattermost"
-  homepage "https://github.com/devaryakjha/matty"
+  homepage "https://github.com/karyalabs/matty"
 
   livecheck do
     url :url

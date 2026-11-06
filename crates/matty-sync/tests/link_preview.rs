@@ -16,8 +16,8 @@ async fn a_link_is_asked_about_once() {
         .and(path("/api/v4/opengraph"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "type": "website",
-            "url": "https://github.com/devaryakjha/matty",
-            "title": "devaryakjha/matty",
+            "url": "https://github.com/karyalabs/matty",
+            "title": "karyalabs/matty",
             "description": "A native Mattermost client",
             "site_name": "GitHub",
         })))
@@ -25,7 +25,7 @@ async fn a_link_is_asked_about_once() {
         .mount(&server)
         .await;
     let (sync, changes) = connected(&server).await;
-    let url = "https://github.com/devaryakjha/matty".to_owned();
+    let url = "https://github.com/karyalabs/matty".to_owned();
 
     for _ in 0..3 {
         sync.send(Command::LoadLinkPreview { url: url.clone() });
@@ -38,7 +38,7 @@ async fn a_link_is_asked_about_once() {
         };
         assert_eq!(answered, url);
         let graph = graph.unwrap();
-        assert_eq!(graph.title, "devaryakjha/matty");
+        assert_eq!(graph.title, "karyalabs/matty");
         assert_eq!(graph.site_name, "GitHub");
     }
     // The mock's expect(1) checks there was one request when it drops.

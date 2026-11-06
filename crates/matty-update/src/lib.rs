@@ -53,7 +53,7 @@ pub const CURRENT_VERSION: &str = match option_env!("MATTY_VERSION") {
 pub const PUBLIC_KEY: Option<&str> = option_env!("MATTY_UPDATE_PUBLIC_KEY");
 
 /// The repository whose releases are the feed.
-pub const REPOSITORY: &str = "devaryakjha/matty";
+pub const REPOSITORY: &str = "karyalabs/matty";
 /// The GitHub REST API.
 pub const GITHUB_API: &str = "https://api.github.com";
 /// The manifest's asset name on a release.

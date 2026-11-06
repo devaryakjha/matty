@@ -60,11 +60,11 @@ cat >"$deb/DEBIAN/control" <<EOF
 Package: matty
 Version: $version
 Architecture: $deb_arch
-Maintainer: Matty <https://github.com/devaryakjha/matty>
+Maintainer: Matty <https://github.com/karyalabs/matty>
 Depends: $deb_depends
 Section: net
 Priority: optional
-Homepage: https://github.com/devaryakjha/matty
+Homepage: https://github.com/karyalabs/matty
 Description: Unofficial native desktop client for Mattermost
  Matty keeps your Mattermost channels readable offline, opens fast and
  works from the keyboard.
@@ -81,7 +81,7 @@ Version: $rpm_version
 Release: 1
 Summary: Unofficial native desktop client for Mattermost
 License: MIT
-URL: https://github.com/devaryakjha/matty
+URL: https://github.com/karyalabs/matty
 Requires: $rpm_requires
 AutoReqProv: no
 

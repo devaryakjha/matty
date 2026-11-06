@@ -1,8 +1,8 @@
 # Matty — plan of action
 
 Matty is a native Mattermost desktop client written in Rust on GPUI, built from
-[gpuicn](https://github.com/devaryakjha/gpuicn) components and
-[gpui-icons](https://github.com/devaryakjha/gpui-icons). This document is the
+[gpuicn](https://github.com/karyalabs/gpuicn) components and
+[gpui-icons](https://github.com/karyalabs/gpui-icons). This document is the
 plan for getting it from an empty repository to a client that anyone on a
 Mattermost server can install and use all day instead of the official Electron
 app or the browser.

@@ -333,7 +333,7 @@ jobs:
   homebrew:
     # Opens a pull request on the tap that bumps the cask (#203). Stable
     # releases only, and only once HOMEBREW_TAP_TOKEN (a token that can push
-    # to devaryakjha/homebrew-matty and open pull requests there) is set.
+    # to karyalabs/homebrew-matty and open pull requests there) is set.
     name: Homebrew cask bump
     needs: [build, publish]
     if: needs.build.outputs.prerelease == 'false'
@@ -351,7 +351,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}
-          TAP: devaryakjha/homebrew-matty
+          TAP: karyalabs/homebrew-matty
         run: |
           gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
           gh auth setup-git

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turns an Ubuntu machine into Matty's self-hosted Linux CI runners
 # (docs/self-hosted-runners.md). Run it as root, with a registration token
-# from https://github.com/devaryakjha/matty/settings/actions/runners/new:
+# from https://github.com/karyalabs/matty/settings/actions/runners/new:
 #
 #   sudo scripts/ci/setup-linux-runners --token AAAA... [--count N] [--user matty-ci]
 #
@@ -15,7 +15,7 @@
 # runners are left as they are.
 set -euo pipefail
 
-repo_url="https://github.com/devaryakjha/matty"
+repo_url="https://github.com/karyalabs/matty"
 user="matty-ci"
 token=""
 count=""

@@ -4897,9 +4897,9 @@ mod tests {
             composer.update(cx, |composer, cx| composer.focus(window, cx));
         });
         cx.run_until_parked();
-        let url = "https://github.com/devaryakjha/matty";
+        let url = "https://github.com/karyalabs/matty";
 
-        cx.simulate_input("see https://github.com/devaryakjha/matty");
+        cx.simulate_input("see https://github.com/karyalabs/matty");
         cx.executor().advance_clock(PAUSE / 2);
         cx.run_until_parked();
         assert!(events.borrow().is_empty(), "nothing before the pause");
@@ -4917,7 +4917,7 @@ mod tests {
         let card = crate::embeds::LinkCard {
             url: url.into(),
             site_name: "GitHub".into(),
-            title: "devaryakjha/matty".into(),
+            title: "karyalabs/matty".into(),
             description: SharedString::default(),
             image: None,
         };
