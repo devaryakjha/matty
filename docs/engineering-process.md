@@ -285,7 +285,7 @@ One time:
 | D1 | Adopt the tiers in 5.2 (packaging, Windows, all integration versions and deny move to nightly; master keeps tests, web and one server)? | Yes |
 | D2 | Run macOS clippy on PRs (lint, about 10 s warm on the Mac mini)? | Yes |
 | D3 | Protect `master`/`main`: require `ci`, linear history, squash only, delete merged branches? | Yes |
-| D4 | Move matty, gpuicn and gpui-icons into a GitHub organization, for the merge queue and runners shared by all three repos? | Yes, but it is a bigger move; without it, keep merge trains |
+| D4 | Move matty, gpuicn and gpui-icons into a GitHub organization, for the merge queue and runners shared by all three repos? | **Decided 2026-11-06: yes, as `karyalabs` (Karya Labs).** Plan in section 8 |
 | D5 | Release by merging a release PR (as gpuicn does), or keep pushing tags, now checked against T2? | Release PR |
 | D6 | Where do PR screenshots live instead of `docs/screenshots`? | A separate `matty-assets` repository Arya creates, linked from PRs |
 | D7 | Release cadence: a weekly beta plus hotfixes? | Yes |
@@ -306,3 +306,42 @@ Each step is one small PR, smallest risk first:
 5. Screenshot location (D6) and a check that rejects new images under
    `docs/`.
 6. Settings Arya applies (D3, D4), with exact steps.
+
+## 8. Moving to the karyalabs organization (D4)
+
+Karya Labs (`karyalabs`) is the home for Arya's open-source apps and
+libraries: shared runners, shared signing and notarization secrets, org-wide
+rulesets and the merge queue. The repos move one at a time, the one with the
+least to lose first, and each move is checked before the next.
+
+### Before anything moves (Arya)
+
+Keep offline copies, in a password manager, of everything the secrets hold.
+Apple's side does not change with a transfer (the certificate and the notary
+key belong to the Apple Developer team), but if a secret does not travel it
+must be re-entered from these:
+
+- the Developer ID Application `.p12` and its password;
+- the App Store Connect API key `.p8`, its key ID and issuer ID;
+- the updater's ed25519 private key PEM (`MATTY_UPDATE_SIGNING_KEY`). Every
+  installed Matty checks updates against its public half, so losing it
+  strands every install. This one needs a backup whatever happens.
+
+### Steps
+
+| # | Who | Step | Check |
+| --- | --- | --- | --- |
+| 1 | Arya | Create the free organization `karyalabs`, display name "Karya Labs" | the org page loads |
+| 2 | Arya | Install the Claude GitHub App on the org for its repositories, and reconnect GitHub in claude.ai | Claude can read the org |
+| 3 | Arya | Transfer `gpui-icons` (Settings, General, Transfer ownership) and update its crates.io Trusted Publishing entry to `karyalabs/gpui-icons` | Claude lists which secrets, variables and environments arrived; a manual release dry run passes |
+| 4 | Arya | Transfer `gpuicn`; update Trusted Publishing for `gpuicn` and `gpuicn-cli` | `release` environment and its secrets present; `release-build.yml` run by hand signs and notarizes |
+| 5 | Arya | Transfer `matty` and `homebrew-matty` | secrets, variables (`MATTY_*_RUNNER`, `MATTY_UPDATE_PUBLIC_KEY`) and the `v*` tag ruleset present |
+| 6 | Arya, Claude writes the commands | Register the OVH box and the Mac mini as org runners in a runner group limited to the three repos; remove the old repo runners | CI on matty runs on them; gpuicn can opt in |
+| 7 | Arya | Org-level secrets: one Apple set and the Cloudflare token, shared with the repos that sign or deploy; remove the per-repo copies | release dry runs pass in matty and gpuicn |
+| 8 | Claude | PRs that point every URL at `karyalabs`: Cargo `repository` fields, README badges, the updater's release URL, the Homebrew cask, docs | grep finds no `devaryakjha/` left outside history |
+| 9 | Arya | Org rulesets (D3) and the merge queue on `master`/`main` | a PR merges through the queue |
+
+GitHub redirects the old URLs after a transfer, including release downloads,
+so installed betas keep finding updates. The redirect breaks if a new
+repository is ever created as `devaryakjha/matty` (or the other two names),
+so never reuse them.
