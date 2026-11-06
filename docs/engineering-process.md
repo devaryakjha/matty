@@ -411,6 +411,7 @@ Each step is small PRs, smallest risk first, merged as they go green:
 7. Settings Arya applies, with exact steps: rulesets and merge queue (D3),
    organization variables and secrets, the cross-repository App, the assets
    repository, matty's branch rename.
+   The steps are in [org-settings.md](org-settings.md).
 
 ## 9. Moving to the karyalabs organization (D4)
 
