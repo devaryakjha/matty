@@ -1,11 +1,13 @@
 name: Release
 
-# Runs only for a pushed version tag (PLAN §10, #179), never for branch pushes
-# or pull requests. A tag with a pre-release suffix (v0.1.0-beta.1) makes a
-# GitHub pre-release. Pushing the tag is the go: the release publishes as
-# soon as the build passes, with no approval step. Guard who can push `v*`
-# tags with a tag ruleset instead. Each release carries the signed macOS
-# DMG and zip and the unsigned Linux (#216) and Windows (#215) packages.
+# Merging a release PR is the release (docs/releasing.md): when the version
+# in Cargo.toml's [workspace.package] is not released yet, a push to master
+# builds every platform from that commit, waits for its CI to pass, then
+# tags it v<version>, publishes the GitHub release (a pre-release for a
+# version like 0.1.0-beta.6), bumps the Homebrew cask for a stable version,
+# and deploys matty.jha.sh. Each release carries the signed macOS DMG and
+# zip and the unsigned Linux (#216) and Windows (#215) packages. A manual
+# run, and the Monday run, are dry runs: everything but publishing.
 #
 # Optional repository secrets. Without them the app is ad hoc signed and the
 # release notes say so:
@@ -26,13 +28,31 @@ name: Release
 # organization variables KARYA_MACOS_RUNNER and KARYA_LINUX_RUNNER (or the
 # older MATTY_* repository variables) name, as in
 # CI (docs/self-hosted-runners.md), and on GitHub's runners while they are
-# unset. Only admins push tags, so no outside code reaches those machines.
+# unset. Only master's own commits run here, never a pull request's.
+#
+# The Cloudflare deploy needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+# in the `release` environment; without them it only writes a notice.
 on:
+  # Merging a release PR is the release: it bumps [workspace.package]
+  # version in Cargo.toml and adds the CHANGELOG.md entry.
   push:
-    tags: ["v*"]
+    branches: [master]
+    paths: [Cargo.toml]
+  # A manual run builds, signs and notarizes without publishing, unless
+  # `publish` is ticked (to finish a release whose run failed).
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release (otherwise a dry run)
+        type: boolean
+        default: false
+  # Every Monday, a dry run of the whole pipeline on master, so a broken
+  # step shows up before release day.
+  schedule:
+    - cron: "17 3 * * 1"
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -43,8 +63,67 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          tag="v$version"
+          sha="$(git rev-parse HEAD)"
+          prerelease=false
+          [[ "$version" != *-* ]] || prerelease=true
+          released=false
+          gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false && released=true
+          build=true publish=false
+          case "$EVENT" in
+            push)
+              if [[ "$released" == true ]]; then
+                echo "$tag is released already; a release PR bumps the version."
+                build=false
+              else
+                publish=true
+              fi ;;
+            workflow_dispatch)
+              if [[ "$PUBLISH" == true ]]; then
+                if [[ "$released" == true ]]; then
+                  echo "::error::$tag is released already; bump the version in a release PR."
+                  exit 1
+                fi
+                publish=true
+              fi ;;
+          esac
+          if [[ "$publish" == true ]]; then
+            echo "Releasing $tag from ${sha::7}"
+          elif [[ "$build" == true ]]; then
+            echo "Dry run of $tag from ${sha::7}: build, sign and notarize, publish nothing"
+          fi
+          {
+            echo "build=$build"
+            echo "publish=$publish"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "tag=$tag"
+            echo "sha=$sha"
+          } | tee -a "$GITHUB_OUTPUT"
+
   build:
     name: macos universal
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ${{ fromJSON(vars.KARYA_MACOS_RUNNER || vars.MATTY_MACOS_RUNNER || '"macos-15"') }}
     timeout-minutes: 90
     outputs:
@@ -59,27 +138,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest, including any older release in target/dist.
           clean: ${{ runner.environment != 'self-hosted' }}
       - if: runner.environment == 'self-hosted'
         run: scripts/ci/prepare-workspace
 
-      - name: The tag matches the workspace version
+      - name: The version to build
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
-          version="${TAG#v}"
-          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          if [[ "${version%%-*}" != "$cargo_version" ]]; then
-            echo "::error::tag $TAG does not match the workspace version $cargo_version in Cargo.toml"
-            exit 1
-          fi
-          prerelease=false
-          [[ "$version" != *-* ]] || prerelease=true
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >>"$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -178,11 +251,14 @@ jobs:
   linux:
     # The Linux packages (#216): tarball, .deb, .rpm and AppImage, unsigned.
     name: linux x86_64
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ${{ fromJSON(vars.KARYA_LINUX_RUNNER || vars.MATTY_LINUX_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest, including any older release in target/dist.
           clean: ${{ runner.environment != 'self-hosted' }}
@@ -206,9 +282,8 @@ jobs:
           toolchain: 1.99.1
       - name: Build the packages
         env:
-          MATTY_VERSION: ${{ github.ref_name }}
+          MATTY_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          export MATTY_VERSION="${MATTY_VERSION#v}"
           scripts/linux-package "$MATTY_VERSION"
       - name: The packages hold the app and it runs
         run: |
@@ -226,6 +301,8 @@ jobs:
   windows:
     # The Windows MSI and zip (#215), unsigned.
     name: windows x86_64
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -233,6 +310,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
@@ -240,9 +319,8 @@ jobs:
         run: dotnet tool install --global wix --version 5.0.2
       - name: Build the installer
         env:
-          MATTY_VERSION: ${{ github.ref_name }}
+          MATTY_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          export MATTY_VERSION="${MATTY_VERSION#v}"
           scripts/windows-package "$MATTY_VERSION"
       - uses: actions/upload-artifact@v4
         with:
@@ -252,20 +330,44 @@ jobs:
 
   publish:
     name: GitHub Release
-    needs: [build, linux, windows]
+    needs: [plan, build, linux, windows]
     # A failed Linux or Windows build leaves that platform out rather than
     # holding back the release; macOS is the one the release needs.
-    if: always() && needs.build.result == 'success'
+    if: always() && needs.build.result == 'success' && needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     permissions:
       contents: write
+      checks: read
     env:
       HAS_UPDATE_KEY: ${{ secrets.MATTY_UPDATE_SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts
+          ref: ${{ needs.plan.outputs.sha }}
+          sparse-checkout: |
+            scripts
+            CHANGELOG.md
+      # Nothing is published from a commit whose CI is not green. The builds
+      # above take longer than CI, so this rarely waits.
+      - name: CI passed on the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          for _ in $(seq 1 60); do
+            read -r status conclusion < <(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&filter=latest" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | "\(.status // "missing") \(.conclusion // "none")"')
+            echo "ci on ${SHA::7}: $status $conclusion"
+            if [[ "$status" == completed ]]; then
+              [[ "$conclusion" == success ]] && exit 0
+              echo "::error::CI did not pass on ${SHA::7}; fix master and release again"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::CI on ${SHA::7} did not finish in 30 minutes"
+          exit 1
       - uses: actions/download-artifact@v4
         with:
           pattern: matty-release*
@@ -286,9 +388,9 @@ jobs:
         env:
           MATTY_UPDATE_SIGNING_KEY: ${{ secrets.MATTY_UPDATE_SIGNING_KEY }}
           MATTY_UPDATE_PUBLIC_KEY: ${{ vars.MATTY_UPDATE_PUBLIC_KEY }}
-          MATTY_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          MATTY_RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }}
           VERSION: ${{ needs.build.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           if [[ "$HAS_UPDATE_KEY" != true ]]; then
             echo "MATTY_UPDATE_SIGNING_KEY is not set; the release carries no update manifest"
@@ -305,14 +407,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          SHA: ${{ needs.plan.outputs.sha }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           NOTARIZED: ${{ needs.build.outputs.notarized }}
           LINUX: ${{ needs.linux.result }}
           WINDOWS: ${{ needs.windows.result }}
         run: |
-          args=(--verify-tag --title "Matty $VERSION" --generate-notes)
+          # The tag is created here, on the release commit.
+          args=(--target "$SHA" --title "Matty $VERSION" --generate-notes)
           [[ "$PRERELEASE" != true ]] || args+=(--prerelease)
           if [[ "$NOTARIZED" == true ]]; then
             notes="**macOS:** download the DMG, open it and drag Matty to Applications."
@@ -329,7 +433,19 @@ jobs:
           else
             echo "::warning::the Windows installer did not build; this release has none"
           fi
-          gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
+          # The release PR's CHANGELOG.md entry comes first.
+          if [[ -f CHANGELOG.md ]]; then
+            entry="$(awk -v v="$VERSION" '
+              /^## / { if (found) exit; if (index($0, "[" v "]") || $2 == v) { found = 1; next } }
+              found { print }' CHANGELOG.md)"
+            [[ -z "$entry" ]] || notes="$entry"$'\n\n'"$notes"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # An earlier run published it; add anything missing.
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* --notes "$notes" "${args[@]}"
+          fi
 
   homebrew:
     # Opens a pull request on the tap that bumps the cask (#203). Stable
@@ -373,3 +489,50 @@ jobs:
           git push origin "$branch"
           gh pr create --repo "$TAP" --head "$branch" --title "matty $VERSION" \
             --body "Bumps the cask to [Matty $VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION)."
+
+  # matty.jha.sh, the browser build (docs/web.md), from the release commit.
+  web:
+    name: deploy matty.jha.sh
+    needs: [plan, publish]
+    if: needs.publish.result == 'success'
+    runs-on: ${{ fromJSON(vars.KARYA_LINUX_RUNNER || vars.MATTY_LINUX_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    environment: release
+    env:
+      HAS_CLOUDFLARE: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - if: env.HAS_CLOUDFLARE != 'true'
+        run: echo "::notice::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set in the release environment; deploy matty.jha.sh with scripts/web deploy"
+      - if: env.HAS_CLOUDFLARE == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - if: env.HAS_CLOUDFLARE == 'true' && runner.environment == 'self-hosted'
+        run: scripts/ci/prepare-workspace
+      - if: env.HAS_CLOUDFLARE == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-17
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - name: Install wasm-bindgen and wasm-opt
+        if: env.HAS_CLOUDFLARE == 'true'
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          scripts/ci/fetch-tool wasm-bindgen "$version" \
+            "https://github.com/rustwasm/wasm-bindgen/releases/download/$version/wasm-bindgen-$version-x86_64-unknown-linux-musl.tar.gz" - \
+            "wasm-bindgen-$version-x86_64-unknown-linux-musl/wasm-bindgen" 1
+          scripts/ci/fetch-tool wasm-opt 132 \
+            https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz - \
+            binaryen-version_132/bin/wasm-opt 2
+      - if: env.HAS_CLOUDFLARE == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build and deploy
+        if: env.HAS_CLOUDFLARE == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/web deploy

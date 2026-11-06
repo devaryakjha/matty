@@ -69,6 +69,6 @@ stays there too (see self-hosted-runners.md).
 There is no self-hosted Windows machine, and Windows minutes cost double,
 so the two Windows jobs run nightly (02:23 UTC, with the rest of T3) and on
 master only when Windows code or packaging changes. Use the `windows` label
-to run them on a pull request. A tag still builds the
-Windows installer for the release.
+to run them on a pull request. A release still builds
+the Windows installer ([releasing.md](releasing.md)).
 
