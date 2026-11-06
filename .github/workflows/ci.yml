@@ -1,27 +1,42 @@
 name: CI
 
-# Pull requests only lint: fmt, clippy and the plain-Rust checks on Linux,
-# plus cargo-deny when the dependencies change. Tests, the web build, macOS,
-# packages and the live integration tests run on every master push; a
-# label (`tests`, `web`, `macos`, `linux`, `windows`, `integration`, or
-# `full-ci` for all of them) runs them on a pull request. Windows runs on
-# master only when Windows code changes, and once a night. Linux and macOS jobs run on self-hosted runners
-# when the repository variables MATTY_LINUX_RUNNER and MATTY_MACOS_RUNNER
-# name them. See docs/CI.md and docs/self-hosted-runners.md.
+# The tiers of docs/engineering-process.md, section 5.2:
+#
+# - T1, every pull request push: fmt, Linux clippy, macOS clippy and the
+#   plain-Rust checks; cargo-deny when the dependencies change.
+# - T2, every master push (and the merge queue): T1 plus the workspace tests
+#   on Linux and macOS, the web build and the live tests on Mattermost 12.0.
+#   The packaging jobs join when their own files change.
+# - T3, nightly when master moved (or by hand): the macOS release build and
+#   dev bundle, the universal bundle, the Linux packages, both Windows jobs,
+#   the live tests on every supported Mattermost, and cargo-deny.
+#
+# A label pulls more into a pull request: `tests`, `web`, `macos` (tests and
+# the universal bundle), `linux` (packages), `windows`, `integration`, or
+# `full-ci` for all of them. Use the narrowest one. Linux and macOS jobs run
+# on Karya's self-hosted runners when the organization variables
+# KARYA_LINUX_RUNNER and KARYA_MACOS_RUNNER (or the older repository
+# variables MATTY_*_RUNNER) name them. See docs/CI.md.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   push:
     branches: [master]
+  merge_group:
   schedule:
-    # The nightly Windows run (docs/CI.md). Every other job skips it.
     - cron: "23 2 * * *"
+  workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Every master run
-# goes ahead, except that the macOS jobs on master queue one at a time (see
-# their concurrency below).
+# A new push to a pull request cancels its older run. Adding a label that is
+# not a CI label gets a group of its own, so it never cancels a real run.
+# Every master run goes ahead, except that the master jobs with their own
+# concurrency below queue one at a time.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: >-
+    ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}${{
+    github.event.action == 'labeled' &&
+    !contains(fromJSON('["tests","web","macos","linux","windows","integration","full-ci"]'), github.event.label.name) &&
+    format('-label-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -30,29 +45,40 @@ env:
 
 jobs:
   changes:
-    # Stays on GitHub's runners: it takes seconds, and it decides where the
-    # rest run, so it must not wait behind them for a self-hosted runner.
+    # Stays on GitHub's runners: it takes seconds, and it decides where and
+    # whether the rest run, so it must not wait behind them.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       linux-runner: ${{ steps.runners.outputs.linux }}
       macos-runner: ${{ steps.runners.outputs.macos }}
-      code: ${{ steps.code.outputs.code }}
-      deps: ${{ steps.filter.outputs.deps }}
-      windows: ${{ steps.filter.outputs.windows }}
-      windows-package: ${{ steps.filter.outputs.windows-package }}
+      tier: ${{ steps.plan.outputs.tier }}
+      lint: ${{ steps.plan.outputs.lint }}
+      tests: ${{ steps.plan.outputs.tests }}
+      web: ${{ steps.plan.outputs.web }}
+      deny: ${{ steps.plan.outputs.deny }}
+      macos: ${{ steps.plan.outputs.macos }}
+      macos-tests: ${{ steps.plan.outputs.macos-tests }}
+      macos-release: ${{ steps.plan.outputs.macos-release }}
+      universal: ${{ steps.plan.outputs.universal }}
+      linux-package: ${{ steps.plan.outputs.linux-package }}
+      windows: ${{ steps.plan.outputs.windows }}
+      windows-package: ${{ steps.plan.outputs.windows-package }}
+      integration: ${{ steps.plan.outputs.integration }}
     steps:
-      # MATTY_LINUX_RUNNER and MATTY_MACOS_RUNNER are repository variables
-      # holding a runs-on value: a JSON list of labels such as
-      # ["self-hosted","Linux","X64","matty"], or one label. Unset, the jobs
-      # use GitHub's runners, so deleting a variable is the way back when a
-      # machine is down. Pull requests from forks always get GitHub's
+      # The runner variables hold a runs-on value: a JSON list of labels such
+      # as ["self-hosted","Linux","X64","matty"], or one label. Unset, the
+      # jobs use GitHub's runners, so deleting a variable is the way back
+      # when a machine is down. Pull requests from forks always get GitHub's
       # runners: their code never runs on our machines.
       - name: Pick the runners
         id: runners
         env:
-          LINUX: ${{ vars.MATTY_LINUX_RUNNER }}
-          MACOS: ${{ vars.MATTY_MACOS_RUNNER }}
+          LINUX: ${{ vars.KARYA_LINUX_RUNNER || vars.MATTY_LINUX_RUNNER }}
+          MACOS: ${{ vars.KARYA_MACOS_RUNNER || vars.MATTY_MACOS_RUNNER }}
           TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           pick() {
@@ -65,14 +91,16 @@ jobs:
           }
           {
             echo "linux=$(pick "$LINUX" ubuntu-latest)"
-            echo "macos=$(pick "$MACOS" macos-14)"
+            echo "macos=$(pick "$MACOS" macos-15)"
           } | tee -a "$GITHUB_OUTPUT"
-      - if: github.event_name != 'schedule'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         uses: actions/checkout@v4
-      - if: github.event_name != 'schedule'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v3
         id: code
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           filters: |
             code:
               - '!**/*.md'
@@ -80,15 +108,25 @@ jobs:
               - '!LICENSE'
               - '!NOTICE'
           predicate-quantifier: every
-      - if: github.event_name != 'schedule'
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v3
         id: filter
         with:
+          base: ${{ github.event.merge_group.base_sha }}
+          ref: ${{ github.event.merge_group.head_sha }}
           filters: |
             deps:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
+            packaging:
+              - 'packaging/**'
+              - 'scripts/*-package'
+              - 'scripts/release-*'
+              - 'scripts/dev-bundle'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
             windows:
               - 'crates/matty-notify/**'
               - 'crates/matty-app/src/logging.rs'
@@ -99,16 +137,102 @@ jobs:
               - 'packaging/windows/**'
               - 'Cargo.toml'
               - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
             windows-package:
               - 'packaging/windows/**'
               - 'scripts/windows-package'
+      # Nightly runs only when master moved since the last good nightly.
+      - name: Did master move since the last nightly
+        id: moved
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=schedule&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')"
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "Master is still at ${GITHUB_SHA::7}, which the last nightly checked."
+            echo "moved=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "moved=true" >>"$GITHUB_OUTPUT"
+          fi
+      # Every decision about what runs is made here, so the jobs below only
+      # read a flag.
+      - name: Plan the run
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          MOVED: ${{ steps.moved.outputs.moved }}
+          CODE: ${{ steps.code.outputs.code }}
+          DEPS: ${{ steps.filter.outputs.deps }}
+          PACKAGING: ${{ steps.filter.outputs.packaging }}
+          WINDOWS: ${{ steps.filter.outputs.windows }}
+          WINDOWS_PACKAGE: ${{ steps.filter.outputs.windows-package }}
+        run: |
+          ci_labels=" tests web macos linux windows integration full-ci "
+          has() { [[ " $LABELS " == *" $1 "* || " $LABELS " == *" full-ci "* ]]; }
+          case "$EVENT" in
+            pull_request)
+              if [[ "$ACTION" == labeled && "$ci_labels" != *" $LABEL "* ]]; then
+                tier=none
+              else
+                tier=pr
+              fi ;;
+            push|merge_group) tier=merge ;;
+            schedule) [ "$MOVED" = true ] && tier=nightly || tier=none ;;
+            workflow_dispatch) tier=nightly ;;
+          esac
+          lint=false tests=false web=false deny=false macos=false macos_tests=false
+          macos_release=false universal=false linux_package=false windows=false
+          windows_package=false integration='[]'
+          case "$tier" in
+            pr)
+              if [ "$CODE" = true ]; then
+                lint=true macos=true
+                has tests && tests=true
+                has web && web=true
+                [ "$DEPS" = true ] || has full-ci && deny=true
+                has macos && macos_tests=true universal=true
+                has linux && linux_package=true
+                has windows && windows=true windows_package=true
+                has integration && integration='["12.0","10.5"]'
+              fi ;;
+            merge)
+              if [ "$CODE" = true ]; then
+                lint=true tests=true web=true macos=true macos_tests=true
+                integration='["12.0"]'
+                [ "$DEPS" = true ] && deny=true
+                [ "$PACKAGING" = true ] && universal=true linux_package=true
+                [ "$WINDOWS" = true ] && windows=true
+                [ "$WINDOWS_PACKAGE" = true ] && windows_package=true
+              fi ;;
+            nightly)
+              deny=true macos=true macos_release=true universal=true
+              linux_package=true windows=true windows_package=true
+              integration='["12.0","11.7","10.11","10.5"]' ;;
+          esac
+          {
+            echo "tier=$tier"
+            echo "lint=$lint"
+            echo "tests=$tests"
+            echo "web=$web"
+            echo "deny=$deny"
+            echo "macos=$macos"
+            echo "macos-tests=$macos_tests"
+            echo "macos-release=$macos_release"
+            echo "universal=$universal"
+            echo "linux-package=$linux_package"
+            echo "windows=$windows"
+            echo "windows-package=$windows_package"
+            echo "integration=$integration"
+          } | tee -a "$GITHUB_OUTPUT"
 
-  # fmt, clippy and the plain-Rust checks on Linux, the check every pull
-  # request waits for; master also runs the workspace tests.
+  # fmt, clippy and the plain-Rust checks on Linux (T1); T2 also runs the
+  # workspace tests.
   linux:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.lint == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
     timeout-minutes: 30
     steps:
@@ -147,8 +271,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Pull requests lint only; master runs the tests (docs/CI.md).
-      - if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'tests') || contains(github.event.pull_request.labels.*.name, 'full-ci')
+      - if: needs.changes.outputs.tests == 'true'
         run: cargo test --workspace --locked
       - name: Plain-Rust crates do not depend on GPUI
         run: scripts/check-no-gpui.sh
@@ -159,11 +282,7 @@ jobs:
   # 25 MiB file limit, and the result is kept for a manual deploy.
   web:
     needs: changes
-    if: >-
-      needs.changes.outputs.code == 'true' && (
-        github.event_name != 'pull_request' ||
-        contains(github.event.pull_request.labels.*.name, 'web') ||
-        contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    if: needs.changes.outputs.web == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
     timeout-minutes: 45
     steps:
@@ -201,15 +320,12 @@ jobs:
           name: matty-web
           path: crates/matty-web/dist
           if-no-files-found: error
+          retention-days: 7
 
   deny:
     needs: changes
-    # Pull requests check it only when the dependencies change.
-    if: >-
-      needs.changes.outputs.code == 'true' && (
-        github.event_name != 'pull_request' ||
-        needs.changes.outputs.deps == 'true' ||
-        contains(github.event.pull_request.labels.*.name, 'full-ci'))
+    # When the dependencies change, and nightly for new advisories.
+    if: needs.changes.outputs.deny == 'true'
     # Stays on GitHub's runners: it takes about a minute, and the action
     # runs in a root container that would leave root-owned files in a
     # self-hosted runner's reused checkout.
@@ -221,12 +337,12 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  # macOS clippy on every pull request (it sees the macOS-only code Linux
+  # clippy cannot), the tests in T2, the release build and the dev bundle
+  # nightly.
   macos:
     needs: changes
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'macos') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: needs.changes.outputs.macos == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.macos-runner) }}
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
@@ -256,22 +372,24 @@ jobs:
           shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo clippy --workspace --all-targets --locked --features matty/runtime_shaders -- -D warnings
-      - run: cargo test --workspace --locked --features matty/runtime_shaders
-      - if: github.event_name == 'push'
+      - if: needs.changes.outputs.macos-tests == 'true'
+        run: cargo test --workspace --locked --features matty/runtime_shaders
+      - if: needs.changes.outputs.macos-release == 'true'
         run: cargo build --release --locked -p matty --features runtime_shaders
-      - if: github.event_name == 'push'
+      - if: needs.changes.outputs.macos-release == 'true'
         run: target/release/matty --version
       - name: The development app bundle builds and verifies
-        if: github.event_name == 'push'
+        if: needs.changes.outputs.macos-release == 'true'
         run: MATTY_BIN=target/release/matty scripts/dev-bundle
-      - if: github.event_name == 'push'
+      - if: needs.changes.outputs.macos-release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: matty-macos-arm64
           path: target/release/matty
           if-no-files-found: error
+          retention-days: 7
       - name: Report a macOS break on master
-        if: failure() && github.event_name == 'push'
+        if: failure() && (github.event_name == 'push' || github.event_name == 'schedule')
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -289,14 +407,11 @@ jobs:
     # The release bundle (#177): both slices, lipo, Info.plist, ad hoc
     # signature. The release workflow builds the same thing from a tag and
     # signs it for real when the secrets are there. It is slow and macOS
-    # runners are scarce, so pull requests run it only when the bundle
-    # scripts change or with the `macos` label.
+    # runners are scarce, so it runs nightly, on master when the packaging
+    # changes, and on a pull request with the `macos` label.
     name: macos universal bundle
     needs: changes
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'macos') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: needs.changes.outputs.universal == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.macos-runner) }}
     # On master a running macOS job finishes, and only the newest waiting
     # one is kept, so merges in quick succession do not cancel it forever.
@@ -347,18 +462,14 @@ jobs:
           name: matty-macos-universal
           path: target/dist/Matty-macos-universal.zip
           if-no-files-found: error
+          retention-days: 7
 
   # Windows (#215): clippy and the workspace tests on Windows. There is no
-  # self-hosted Windows machine, and Windows minutes cost double, so pull
-  # requests and master pushes run it only when platform code changes or
-  # with the `windows` label, and master gets a full run every night.
+  # self-hosted Windows machine, so it runs nightly, on master when Windows
+  # code changes, and on a pull request with the `windows` label.
   windows:
     needs: changes
-    if: >-
-      github.event_name == 'schedule' ||
-      contains(github.event.pull_request.labels.*.name, 'windows') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
-      (github.event_name == 'push' && needs.changes.outputs.windows == 'true')
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     concurrency:
       group: ${{ github.event_name == 'push' && 'windows-master' || format('windows-{0}', github.run_id) }}
@@ -388,19 +499,17 @@ jobs:
           name: matty-windows-x86_64
           path: target/release/matty.exe
           if-no-files-found: error
+          retention-days: 7
 
   # The Linux packages (#216): a release build packaged as a tarball, .deb,
   # .rpm and AppImage, with the desktop entry and AppStream data validated.
-  # Nothing is signed or published. A release build is slow, so pull
-  # requests run it only when the packaging changes or with the `linux`
-  # label; master runs it on every merge.
+  # Nothing is signed or published. A release build is slow, so it runs
+  # nightly, on master when the packaging changes, and on a pull request
+  # with the `linux` label.
   linux-package:
     name: linux packages
     needs: changes
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'linux') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: needs.changes.outputs.linux-package == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.linux-runner) }}
     concurrency:
       group: ${{ github.event_name == 'push' && 'linux-package-master' || format('linux-package-{0}', github.run_id) }}
@@ -455,19 +564,16 @@ jobs:
           name: matty-linux-x86_64
           path: target/dist/linux
           if-no-files-found: error
+          retention-days: 7
 
   # The Windows installer (#215): a release build packaged as an MSI and a
   # zip, then installed and uninstalled to check the MSI works. Nothing is
-  # signed or published. Like `windows`, it runs only when the packaging
-  # changes, with the `windows` label, and every night on master.
+  # signed or published. It runs nightly, on master when the Windows
+  # packaging changes, and on a pull request with the `windows` label.
   windows-package:
     name: windows installer
     needs: changes
-    if: >-
-      github.event_name == 'schedule' ||
-      contains(github.event.pull_request.labels.*.name, 'windows') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
-      (github.event_name == 'push' && needs.changes.outputs.windows-package == 'true')
+    if: needs.changes.outputs.windows-package == 'true'
     runs-on: windows-latest
     concurrency:
       group: ${{ github.event_name == 'push' && 'windows-package-master' || format('windows-package-{0}', github.run_id) }}
@@ -509,19 +615,17 @@ jobs:
           name: matty-windows-x86_64-installer
           path: target/dist/windows
           if-no-files-found: error
+          retention-days: 7
 
   integration:
     # The live suites of the plain-Rust crates against the seeded Docker
     # Mattermost server (docs/dev-server.md). They are the slowest part of
-    # CI, so pull requests skip them unless labelled `integration`; every
-    # master push runs every supported version, and a failure there opens
-    # an issue like the macOS job does.
+    # CI, so pull requests skip them unless labelled `integration`; master
+    # runs the current release, the nightly run every supported version,
+    # and a failure there opens an issue like the macOS job does.
     name: integration (Mattermost ${{ matrix.server }})
     needs: changes
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'integration') ||
-      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    if: needs.changes.outputs.integration != '[]'
     # Stays on GitHub's runners. On the self-hosted box the server could
     # not reach the tests' stand-in integrations on the host, and four
     # servers next to the builds made the timing-sensitive tests fail.
@@ -535,7 +639,7 @@ jobs:
       matrix:
         # The current release and the extended support releases still
         # getting patches (PLAN §6.3), plus 10.5, the dev server's default.
-        server: ${{ fromJSON(github.event_name == 'push' && '["12.0","11.7","10.11","10.5"]' || '["12.0","10.5"]') }}
+        server: ${{ fromJSON(needs.changes.outputs.integration) }}
     env:
       MATTY_MM_VERSION: ${{ matrix.server }}
       MATTY_TEST_PASSWORD: Password1!
@@ -594,8 +698,9 @@ jobs:
         with:
           name: mattermost-${{ matrix.server }}-logs
           path: mattermost.log
+          retention-days: 7
       - name: Report an integration break on master
-        if: failure() && github.event_name == 'push'
+        if: failure() && (github.event_name == 'push' || github.event_name == 'schedule')
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -621,20 +726,49 @@ jobs:
     needs: [changes, linux, web, deny, macos, macos-universal, windows, linux-package, windows-package, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      checks: read
     steps:
       - name: Every job passed or was skipped
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-          # A master macOS job dropped from the queue for a newer merge is
-          # cancelled, and the newer run checks it instead.
-          MACOS: ${{ needs.macos.result }} ${{ needs.macos-universal.result }} ${{ needs.windows.result }} ${{ needs.linux-package.result }} ${{ needs.windows-package.result }}
-          PUSH: ${{ github.event_name == 'push' }}
+          TIER: ${{ needs.changes.outputs.tier }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: >-
+            changes=${{ needs.changes.result }}
+            linux=${{ needs.linux.result }}
+            web=${{ needs.web.result }}
+            deny=${{ needs.deny.result }}
+            macos=${{ needs.macos.result }}
+            macos-universal=${{ needs.macos-universal.result }}
+            windows=${{ needs.windows.result }}
+            linux-package=${{ needs.linux-package.result }}
+            windows-package=${{ needs.windows-package.result }}
+            integration=${{ needs.integration.result }}
         run: |
-          echo "$RESULTS"
-          for r in $RESULTS; do
-            case "$r" in
+          # A run for a label that is not a CI label checks nothing itself:
+          # it repeats the result of the latest other `ci` check on the
+          # commit, so it can neither hide a failure nor fail a green PR.
+          if [ "$TIER" = none ] && [ "$EVENT" = pull_request ]; then
+            latest="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=ci&filter=all" \
+              --jq "[.check_runs[] | select(.details_url | contains(\"/runs/$GITHUB_RUN_ID/\") | not)] | sort_by(.started_at) | last | .conclusion // \"\"")"
+            echo "The latest other ci check on ${SHA::7}: ${latest:-none or still running}"
+            [ "$latest" != failure ] && [ "$latest" != timed_out ]
+            exit
+          fi
+          # On master the jobs with their own concurrency group keep only
+          # the newest waiting run, so an older one may be cancelled: the
+          # newer run checks the same code. Nothing else may be cancelled.
+          queued=" macos macos-universal windows linux-package windows-package "
+          status=0
+          for pair in $RESULTS; do
+            job="${pair%%=*}" result="${pair#*=}"
+            echo "$job: $result"
+            case "$result" in
               success|skipped) ;;
-              cancelled) [ "$PUSH" = true ] && [[ " $MACOS " == *" cancelled "* ]] || exit 1 ;;
-              *) exit 1 ;;
+              cancelled) [ "$EVENT" = push ] && [[ "$queued" == *" $job "* ]] || status=1 ;;
+              *) status=1 ;;
             esac
           done
+          exit "$status"
