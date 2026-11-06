@@ -7,13 +7,17 @@ GitHub's runners, kept to a minimum (docs/CI.md).
 
 ## How the switch works
 
-Two repository variables decide where the jobs run. Set them at
-<https://github.com/karyalabs/matty/settings/variables/actions>:
+Two variables decide where the jobs run. The organization variables
+`KARYA_LINUX_RUNNER` and `KARYA_MACOS_RUNNER`
+(<https://github.com/organizations/karyalabs/settings/variables/actions>)
+serve every Karya Labs repository and win when set; until then the older
+repository variables below
+(<https://github.com/karyalabs/matty/settings/variables/actions>) apply:
 
 | Variable | Value once the runners are up | Unset |
 | --- | --- | --- |
 | `MATTY_LINUX_RUNNER` | `["self-hosted","Linux","X64","matty"]` | `ubuntu-latest` |
-| `MATTY_MACOS_RUNNER` | `["self-hosted","macOS","ARM64","matty"]` | `macos-14` |
+| `MATTY_MACOS_RUNNER` | `["self-hosted","macOS","ARM64","matty"]` | `macos-15` (the organization rejects `macos-14`) |
 
 The value is a `runs-on` value written as JSON. CI reads it in its `changes`
 job, the release workflow reads it directly. Deleting a variable sends the
