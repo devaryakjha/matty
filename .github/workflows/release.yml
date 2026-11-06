@@ -142,8 +142,7 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest, including any older release in target/dist.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
 
       - name: The version to build
         id: version
@@ -154,9 +153,8 @@ jobs:
           echo "version=$VERSION" >>"$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >>"$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
         with:
-          toolchain: 1.99.1
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
       - name: Import the Developer ID certificate
@@ -176,6 +174,12 @@ jobs:
           security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
             -f pkcs12 -T /usr/bin/codesign
           rm -f "$cert"
+          # GitHub's macOS images ship Apple's Developer ID intermediate; a
+          # self-hosted Mac may not, and without it find-identity -v calls
+          # the certificate invalid. Add it to this keychain either way.
+          curl -sSfL --retry 5 -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain" >/dev/null
           # Prepend to the search list so codesign finds the identity. The
@@ -186,6 +190,7 @@ jobs:
           identity="$(security find-identity -v -p codesigning "$keychain" \
             | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)"
           if [[ -z "$identity" ]]; then
+            security find-identity -p codesigning "$keychain"
             echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE_P12"
             exit 1
           fi
@@ -262,14 +267,13 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest, including any older release in target/dist.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
-      - name: Install GPUI's Linux libraries and the packaging tools
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - name: Install GPUI's Linux libraries
+        uses: karyalabs/.github/actions/gpui-deps@v1
+        with:
+          extra: rpm desktop-file-utils appstream
+      - name: Install the packaging tools
         run: |
-          scripts/ci/apt-install \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
-            rpm desktop-file-utils appstream
           scripts/ci/fetch-tool appimagetool 1.9.0 \
             https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage \
             46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
@@ -277,9 +281,7 @@ jobs:
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/appimage-runtime-x86_64" \
             https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
           echo "MATTY_APPIMAGE_RUNTIME=$RUNNER_TEMP/appimage-runtime-x86_64" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       - name: Build the packages
         env:
           MATTY_VERSION: ${{ needs.plan.outputs.version }}
@@ -312,9 +314,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       - name: Install WiX
         run: dotnet tool install --global wix --version 5.0.2
       - name: Build the installer
@@ -508,10 +508,10 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: env.HAS_CLOUDFLARE == 'true' && runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
       - if: env.HAS_CLOUDFLARE == 'true'
-        uses: dtolnay/rust-toolchain@master
+        uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - if: env.HAS_CLOUDFLARE == 'true'
+        uses: karyalabs/.github/actions/rust-toolchain@v1
         with:
           toolchain: nightly-2026-08-17
           targets: wasm32-unknown-unknown

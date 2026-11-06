@@ -195,9 +195,8 @@ and gpuicn's idempotent "re-run failed jobs is always safe" release.
    merging green PRs.
 5. One framework for every Karya Labs repository, with the same tier
    names, the same required check name (`ci`) and the same labels.
-6. Every setting lives in one place (toolchain file, a reusable workflow or
-   composite action in `karyalabs/.github`, an organization variable), never
-   copied.
+6. Every setting lives in one place (toolchain file, a composite action
+   in `karyalabs/.github`, an organization variable), never copied.
 7. Upstream repositories never break downstream ones silently: a change to
    gpui-icons or gpuicn is built against its consumers before it is
    released, and a release opens the consumer's pin bump by itself.
@@ -311,7 +310,7 @@ Arya decided all of these on 2026-11-06: "go with the recommendations".
 gpui-icons ──▶ gpuicn ──▶ matty ──▶ homebrew-matty
                   │
                   └──▶ ui.imajha.com (gpuicn's site)
-karyalabs/.github: reusable workflows and actions used by all of them
+karyalabs/.github: shared actions used by all of them
 ```
 
 Today each link is crossed by hand: a gpuicn release needs a hand-made
@@ -320,25 +319,29 @@ until Matty bumps the pin.
 
 ### 7.2 Shared building blocks in `karyalabs/.github`
 
-Reusable workflows (`.github/workflows/*.yml` with `on: workflow_call`) and
-composite actions (`actions/<name>/action.yml`), versioned by tag (`v1`) so a
-change to them is a reviewed release too:
+Composite actions (`actions/<name>/action.yml`), used as
+`karyalabs/.github/actions/<name>@v1`. `v1` is a branch that moves to a
+reviewed `main` commit, so a change to an action ships to every repository
+at once, and only after review. They are composite actions, not reusable
+workflows, so every job stays in the caller's own workflow file: crates.io
+Trusted Publishing trusts that file, and each repository keeps its own
+runner choice, conditions and `ci` gate.
 
-| Block | Kind | Used by |
+| Block | Does | Used by |
 | --- | --- | --- |
-| `rust-toolchain` | action: installs the toolchain named in `rust-toolchain.toml`, plus components | all |
-| `gpui-deps` | action: the apt packages GPUI needs on Linux | matty, gpuicn |
-| `self-hosted-prep` | action: cleans a warm self-hosted workspace, keeps `target/` | matty, gpuicn |
-| `macos-keychain` | action: imports the Developer ID certificate into a temporary keychain | matty, gpuicn |
-| `rust-lint` | workflow: fmt and clippy on Linux and macOS (T1) | all Rust repos |
-| `rust-test` | workflow: tests, MSRV check (T2) | all Rust repos |
-| `release-pr` | workflow: on merge of a version bump, tag, publish to crates.io (Trusted Publishing), GitHub release | gpui-icons, gpuicn, matty (tag + release only) |
-| `notarize` | workflow: sign, notarize and staple a macOS app | matty, gpuicn showcase |
-| `cloudflare-deploy` | workflow: deploy a static site to Cloudflare Pages or Workers | gpuicn site, matty web |
-| `pin-bump` | workflow: open a dependency bump PR in a downstream repository (7.4) | gpui-icons, gpuicn |
+| `pick-runners` | reads `KARYA_*_RUNNER` (or a repository's older variables), hosted runners for forks | new repositories (matty and gpuicn plan theirs in their own `changes` job) |
+| `self-hosted-prep` | cleans a warm self-hosted workspace, keeps `target/` | matty, gpuicn |
+| `rust-toolchain` | installs the toolchain the repository pins (`rust-toolchain.toml`, or another file and key), with its components and targets | all Rust repos |
+| `gpui-deps` | the apt packages GPUI needs on Linux, plus extras | matty, gpuicn |
+| `release-plan` | is this commit's version released yet | gpui-icons |
+| `crates-publish` | publishes crates in order with Trusted Publishing, skipping published ones | gpui-icons |
+| `downstream-canary` | builds a downstream repository against this commit (7.4) | gpui-icons, gpuicn |
+| `bump-downstream` | opens the pin bump PR in a downstream repository (7.4) | gpui-icons, gpuicn |
 
-Each repository's own workflows become thin callers that set inputs. The
-order of migration is gpui-icons (smallest), then gpuicn, then matty.
+Still copied, and next to move: the macOS keychain import and notarization
+(matty's `ci.yml` and `release.yml`, gpuicn's showcase), the Cloudflare
+deploy, and the downloads in `scripts/ci/fetch-tool`. `karyalabs/.github`
+smoke-tests every action on Linux, macOS and Windows.
 
 ### 7.3 Same tiers, runners and secrets everywhere
 

@@ -254,8 +254,7 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
       # Each of matty-app's test binaries links all of GPUI, and together
       # they filled the runner's disk mid cargo test (#575). Drop toolchains
       # this job never uses to make room.
@@ -267,15 +266,10 @@ jobs:
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
           df -h /
       - name: Install GPUI's Linux libraries
-        run: |
-          scripts/ci/apt-install \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
-            dbus-daemon
-      - uses: dtolnay/rust-toolchain@master
+        uses: karyalabs/.github/actions/gpui-deps@v1
         with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
+          extra: dbus-daemon
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -304,13 +298,12 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
-      - uses: dtolnay/rust-toolchain@master
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
         with:
           toolchain: nightly-2026-08-17
-          targets: wasm32-unknown-unknown
           components: rust-src
+          targets: wasm32-unknown-unknown
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -372,12 +365,8 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -438,11 +427,9 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
-      - uses: dtolnay/rust-toolchain@master
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
         with:
-          toolchain: 1.99.1
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
@@ -490,10 +477,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
-          components: clippy
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -534,14 +518,13 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
-      - name: Install GPUI's Linux libraries and the packaging tools
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
+      - name: Install GPUI's Linux libraries
+        uses: karyalabs/.github/actions/gpui-deps@v1
+        with:
+          extra: rpm desktop-file-utils appstream
+      - name: Install the packaging tools
         run: |
-          scripts/ci/apt-install \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libfontconfig-dev libvulkan-dev libx11-xcb-dev libxcb1-dev \
-            rpm desktop-file-utils appstream
           scripts/ci/fetch-tool appimagetool 1.9.0 \
             https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage \
             46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
@@ -549,9 +532,7 @@ jobs:
           curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/appimage-runtime-x86_64" \
             https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
           echo "MATTY_APPIMAGE_RUNTIME=$RUNNER_TEMP/appimage-runtime-x86_64" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -597,9 +578,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
@@ -665,16 +644,13 @@ jobs:
           # A self-hosted runner keeps target/ warm between jobs; the next
           # step clears the rest.
           clean: ${{ runner.environment != 'self-hosted' }}
-      - if: runner.environment == 'self-hosted'
-        run: scripts/ci/prepare-workspace
+      - uses: karyalabs/.github/actions/self-hosted-prep@v1
       - name: Pick a free port for the server
         run: |
           port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
           echo "MATTY_MM_PORT=$port" >>"$GITHUB_ENV"
           echo "MATTY_TEST_SERVER=http://localhost:$port" >>"$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.99.1
+      - uses: karyalabs/.github/actions/rust-toolchain@v1
       # Self-hosted runners keep target/ instead.
       - if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@v2
