@@ -1,14 +1,18 @@
-# Engineering process: audit and proposed framework
+# Engineering process: the Karya Labs framework
 
-Status: **proposal, waiting for Arya's decisions** (section 6). Nothing in the
-workflows changes until Arya picks. Once decided, this file becomes the
-process of record and `docs/CI.md` describes only the mechanics.
+Status: **process of record, decided by Arya on 2026-11-06** (all
+recommendations in section 6 accepted). It covers every Karya Labs
+repository as one project: `karyalabs/matty`, `karyalabs/gpuicn`,
+`karyalabs/gpui-icons`, `karyalabs/homebrew-matty` and `karyalabs/.github`.
+The repositories build on each other (gpui-icons feeds gpuicn, gpuicn feeds
+Matty, Matty feeds the Homebrew tap), so the workflows treat them as one
+pipeline (section 7). `docs/CI.md` describes only the mechanics of Matty's
+workflows; each other repository's CI doc links here.
 
-Scope: every GitHub Actions workflow in `matty`, `gpuicn` and `gpui-icons`,
-how efficient they are, the release pipelines (automated and manual), and a
-single framework for all three repositories. Data comes from the workflow
-files at `a2f9007` (matty), `59c4d58` (gpuicn) and `fb9d0d1` (gpui-icons),
-and from the Actions runs of 2026-11-05.
+Sections 1 to 4 are the audit this framework came from. Data comes from the
+workflow files at `a2f9007` (matty), `59c4d58` (gpuicn) and `fb9d0d1`
+(gpui-icons), and from the Actions runs of 2026-11-05, before the move to
+the organization; run links still resolve through GitHub's redirect.
 
 ## 1. What runs today
 
@@ -189,9 +193,14 @@ and gpuicn's idempotent "re-run failed jobs is always safe" release.
    tree that lands.
 4. Arya makes go/no-go decisions; Claude does everything else, including
    merging green PRs.
-5. One framework for matty, gpuicn and gpui-icons, with the same tier names.
-6. Every setting lives in one place (toolchain file, composite action,
-   repository variable), never copied.
+5. One framework for every Karya Labs repository, with the same tier
+   names, the same required check name (`ci`) and the same labels.
+6. Every setting lives in one place (toolchain file, a reusable workflow or
+   composite action in `karyalabs/.github`, an organization variable), never
+   copied.
+7. Upstream repositories never break downstream ones silently: a change to
+   gpui-icons or gpuicn is built against its consumers before it is
+   released, and a release opens the consumer's pin bump by itself.
 
 ### 5.2 Tiers: what runs when
 
@@ -222,24 +231,23 @@ become zero, and four integration servers become one.
 - Branches are deleted on merge (repository setting).
 - Merging goes through a **merge queue** that runs T2 on the combined tree
   and batches PRs. It replaces both the manual merge trains and the "merge
-  latest master and build" rule. GitHub offers merge queues only on
-  organization-owned repositories, so this needs decision D4; until then,
+  latest master and build" rule. The repositories are in the `karyalabs`
+  organization now (D4), so the queue is available; until Arya turns it on,
   merge trains stay, and T2 runs on the train PR.
 - Stacked PRs stay as they are; a stack enters the queue together.
 - Every PR links its issue and follows the template. Screenshots go in the PR
-  body, hosted outside the repository (decision D6), never in `docs/`.
+  body, hosted in the `karyalabs/assets` repository (D6), never in `docs/`.
 
 ### 5.4 Releases and versioning
 
 - **SemVer, with `Cargo.toml` as the single source of the version.** Betas
   are `0.1.0-beta.N` in `Cargo.toml` too, so `matty --version` and the tag
   always agree.
-- **A release is a release PR** in all three repositories: Claude opens it
-  with the version bump and a hand-written `CHANGELOG.md` entry; Arya
+- **A release is a release PR** in every repository that publishes: Claude
+  opens it with the version bump and a hand-written `CHANGELOG.md` entry;
   merging it is the go. The workflow then tags the commit, runs T4 and
   publishes, exactly as gpuicn already does. Pushing a tag by hand stops
-  being a step. (The alternative is to keep Arya's tag push, plus a check
-  that the tagged commit's T2 passed: decision D5.)
+  being a step (D5).
 - **Dry run:** `release.yml` gets a manual run that builds, signs and
   notarizes without publishing, and T3 runs it every week, so a broken
   pipeline shows up before release day.
@@ -250,8 +258,7 @@ become zero, and four integration servers become one.
   is published for both.
 - **gpuicn coordination:** gpuicn releases when Matty needs something that
   is merged, at most once a day, never in the middle of a Matty release.
-  The Matty pin bump PR is opened by Claude in the same session that ships
-  the gpuicn release.
+  The release opens Matty's pin bump PR by itself (section 7.4).
 
 ### 5.5 Who does what
 
@@ -262,7 +269,7 @@ become zero, and four integration servers become one.
 | Open, review, fix and merge PRs once `ci` is green | | ✓ |
 | Fix a red master before anything else | | ✓ |
 | Open the weekly release PR and changelog | | ✓ |
-| gpuicn releases | ✓ (merge the bump) | prepares the bump, then Matty's pin PR |
+| gpuicn and gpui-icons releases | | ✓ (opens and merges the release PR; the pin bump PR follows by itself) |
 
 ### 5.6 Arya's manual steps after the change
 
@@ -271,43 +278,146 @@ and the update manifest run in the pipeline.
 
 One time:
 
-1. Branch protection and merge settings on the three repos (require `ci`,
-   linear history, squash only, delete branches on merge).
+1. Organization rulesets and merge settings on every repository (require
+   `ci`, linear history, squash only, delete branches on merge, merge
+   queue).
 2. A `release` environment in matty with `CLOUDFLARE_API_TOKEN` and
    `CLOUDFLARE_ACCOUNT_ID`, so CI deploys matty.jha.sh.
 3. `HOMEBREW_TAP_TOKEN`, before the first stable release.
-4. Whatever D4 and D6 need (an organization, an assets repository).
+4. The `karyalabs/assets` repository (D6) and the cross-repository token or
+   GitHub App (section 7.4).
 
-## 6. Decisions for Arya
+## 6. Decisions
 
-| # | Question | Recommendation |
+Arya decided all of these on 2026-11-06: "go with the recommendations".
+
+| # | Question | Decision |
 | --- | --- | --- |
-| D1 | Adopt the tiers in 5.2 (packaging, Windows, all integration versions and deny move to nightly; master keeps tests, web and one server)? | Yes |
+| D1 | Adopt the tiers in 5.2 (packaging, Windows, all integration versions and deny move to nightly; master keeps tests, web and one server)? | Yes, in every repository |
 | D2 | Run macOS clippy on PRs (lint, about 10 s warm on the Mac mini)? | Yes |
-| D3 | Protect `master`/`main`: require `ci`, linear history, squash only, delete merged branches? | Yes |
-| D4 | Move matty, gpuicn and gpui-icons into a GitHub organization, for the merge queue and runners shared by all three repos? | **Decided 2026-11-06: yes, as `karyalabs` (Karya Labs).** Plan in section 8 |
-| D5 | Release by merging a release PR (as gpuicn does), or keep pushing tags, now checked against T2? | Release PR |
-| D6 | Where do PR screenshots live instead of `docs/screenshots`? | A separate `matty-assets` repository Arya creates, linked from PRs |
-| D7 | Release cadence: a weekly beta plus hotfixes? | Yes |
+| D3 | Protect `master`/`main`: require `ci`, linear history, squash only, delete merged branches? | Yes, as organization rulesets |
+| D4 | Move the repositories into a GitHub organization, for the merge queue and shared runners? | Yes, `karyalabs` (done 2026-11-06, section 9) |
+| D5 | Release by merging a release PR, or keep pushing tags? | Release PR, in every repository that publishes |
+| D6 | Where do PR screenshots live instead of `docs/screenshots`? | A separate `karyalabs/assets` repository, linked from PRs |
+| D7 | Release cadence: a weekly beta plus hotfixes? | Yes (Matty); libraries release on demand, at most daily |
 | D8 | Deploy matty.jha.sh from the release pipeline instead of from a Mac? | Yes |
-| D9 | Rewrite history to drop the old screenshots? | No, not now: it breaks every clone and open branch; D3 and D6 stop the growth |
+| D9 | Rewrite history to drop the old screenshots? | No: D3 and D6 stop the growth |
 
-## 7. Order of work once decided
+## 7. One project: how the repositories work together
 
-Each step is one small PR, smallest risk first:
+### 7.1 The dependency chain
 
-1. CI hygiene with no policy change: filter the `labeled` trigger to CI
-   labels, take `ci.yml` out of the Windows filter, tighten the `ci` gate,
-   7-day artifact retention, read the toolchain from `rust-toolchain.toml`,
-   composite actions for the shared setup.
-2. The tier split (D1, D2) in matty, then the same in gpuicn and gpui-icons.
-3. Release dry run and the weekly T3 dry run.
-4. Release PR model and versioning (D5, D7), then the web deploy (D8).
-5. Screenshot location (D6) and a check that rejects new images under
+```
+gpui-icons ──▶ gpuicn ──▶ matty ──▶ homebrew-matty
+                  │
+                  └──▶ ui.imajha.com (gpuicn's site)
+karyalabs/.github: reusable workflows and actions used by all of them
+```
+
+Today each link is crossed by hand: a gpuicn release needs a hand-made
+Matty pin bump PR, and nothing tells gpuicn that a change will break Matty
+until Matty bumps the pin.
+
+### 7.2 Shared building blocks in `karyalabs/.github`
+
+Reusable workflows (`.github/workflows/*.yml` with `on: workflow_call`) and
+composite actions (`actions/<name>/action.yml`), versioned by tag (`v1`) so a
+change to them is a reviewed release too:
+
+| Block | Kind | Used by |
+| --- | --- | --- |
+| `rust-toolchain` | action: installs the toolchain named in `rust-toolchain.toml`, plus components | all |
+| `gpui-deps` | action: the apt packages GPUI needs on Linux | matty, gpuicn |
+| `self-hosted-prep` | action: cleans a warm self-hosted workspace, keeps `target/` | matty, gpuicn |
+| `macos-keychain` | action: imports the Developer ID certificate into a temporary keychain | matty, gpuicn |
+| `rust-lint` | workflow: fmt and clippy on Linux and macOS (T1) | all Rust repos |
+| `rust-test` | workflow: tests, MSRV check (T2) | all Rust repos |
+| `release-pr` | workflow: on merge of a version bump, tag, publish to crates.io (Trusted Publishing), GitHub release | gpui-icons, gpuicn, matty (tag + release only) |
+| `notarize` | workflow: sign, notarize and staple a macOS app | matty, gpuicn showcase |
+| `cloudflare-deploy` | workflow: deploy a static site to Cloudflare Pages or Workers | gpuicn site, matty web |
+| `pin-bump` | workflow: open a dependency bump PR in a downstream repository (7.4) | gpui-icons, gpuicn |
+
+Each repository's own workflows become thin callers that set inputs. The
+order of migration is gpui-icons (smallest), then gpuicn, then matty.
+
+### 7.3 Same tiers, runners and secrets everywhere
+
+- Every repository has the tiers of 5.2 and one required check named `ci`.
+  gpuicn's full macOS test suite moves from T1 to T2; its `verify.yml` and
+  showcase builds stay in T3 and T4.
+- Runners: the OVH box and the Mac mini are organization runners. Every
+  workflow reads `vars.KARYA_LINUX_RUNNER` / `vars.KARYA_MACOS_RUNNER`
+  (organization variables, a JSON `runs-on` value); unset means GitHub's
+  runners (`ubuntu-latest`, `macos-15`; the organization rejects
+  `macos-14`). The per-repository `MATTY_*_RUNNER` and `GPUICN_*_RUNNER`
+  variables are retired after the switch. Fork PRs always get GitHub's
+  runners.
+- Secrets: one Apple set at organization level, shared with the
+  repositories that sign: `APPLE_CERTIFICATE_P12`,
+  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`,
+  `APPLE_API_ISSUER_ID`, `APPLE_TEAM_ID`. One Cloudflare pair
+  (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) for the sites. The
+  updater signing key stays a Matty-only secret.
+- Labels are the same in every repository: `tests`, `macos`, `linux`,
+  `windows`, `web`, `integration`, `full-ci`, `release`.
+
+### 7.4 Upstream changes are checked downstream before they ship
+
+- **Canary.** In T2 (and nightly), gpuicn builds Matty at Matty's default
+  branch against the gpuicn tree under test, through a `[patch.crates-io]`
+  override, running Matty's T1 (`cargo check` and clippy). gpui-icons does
+  the same against gpuicn. A failure is reported on the upstream PR and does
+  not block it at first; once it has been stable for a week it becomes
+  required. A deliberate breaking change is merged with the matching
+  downstream PR ready.
+- **Automatic pin bumps.** When gpui-icons or gpuicn publishes, its release
+  workflow opens the bump PR in the consumer (gpui-icons → gpuicn,
+  gpuicn → matty) with the changelog entry as the body. The bump PR runs
+  the consumer's full T2 and is merged like any other green PR. This needs a
+  token that can open PRs across repositories: a small organization GitHub
+  App (preferred) or a fine-grained token, stored as an organization secret
+  `KARYA_BOT_APP_ID` / `KARYA_BOT_PRIVATE_KEY`.
+- **Release coordination.** Libraries release at most once a day and never
+  while a Matty release PR is open. One changelog convention everywhere:
+  `CHANGELOG.md`, Keep a Changelog headings, newest first, one entry per
+  release PR.
+
+### 7.5 Branch names
+
+matty's default branch is `master`; every other repository uses `main`.
+matty moves to `main` together with the ruleset change, so one ruleset and
+one set of workflow filters fit every repository. GitHub redirects the old
+branch name for PRs and links; workflows and docs are updated in the same
+PR.
+
+## 8. Order of work
+
+Each step is small PRs, smallest risk first, merged as they go green:
+
+1. This document as the process of record.
+2. Hygiene with no policy change, in every repository: filter the
+   `labeled` trigger to CI labels, take `ci.yml` out of the Windows filter,
+   tighten the `ci` gate, 7-day artifact retention, read the toolchain from
+   `rust-toolchain.toml`, `macos-15` fallbacks.
+3. The shared building blocks in `karyalabs/.github` (7.2), then migrate
+   gpui-icons, gpuicn and matty onto them, with the organization runner
+   variables (7.3).
+4. The tier split (D1, D2) in every repository, then the canary and the
+   automatic pin bumps (7.4).
+5. Release dry run and the weekly T3 dry run; the release PR model and
+   versioning (D5, D7); the web deploy (D8).
+6. Screenshot location (D6) and a check that rejects new images under
    `docs/`.
-6. Settings Arya applies (D3, D4), with exact steps.
+7. Settings Arya applies, with exact steps: rulesets and merge queue (D3),
+   organization variables and secrets, the cross-repository App, the assets
+   repository, matty's branch rename.
 
-## 8. Moving to the karyalabs organization (D4)
+## 9. Moving to the karyalabs organization (D4)
+
+Done on 2026-11-06: all four repositories, their secrets, variables and
+runtime settings moved, crates.io Trusted Publishing points at `karyalabs`,
+links were updated (matty#660, gpuicn#151, gpui-icons#12), and the runners
+are registered at organization level. The plan is kept below for the record.
 
 Karya Labs (`karyalabs`) is the home for Arya's open-source apps and
 libraries: shared runners, shared signing and notarization secrets, org-wide
