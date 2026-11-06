@@ -139,15 +139,18 @@ The jobs look after themselves:
 - **Warm builds.** On a self-hosted runner the checkout is reused and
   `target/` is kept between jobs, so cargo builds incrementally instead of
   restoring GitHub's cache (rust-cache is skipped there).
-  `scripts/ci/prepare-workspace` runs after every checkout: it deletes every
-  other untracked file, empties `target/dist` so no job uploads an older
-  package, and deletes `target/` once it passes 60 GB. To change that limit,
-  add `MATTY_CI_TARGET_MAX_GB=40` to the runner folder's `.env` and restart
-  its service.
+  The shared `karyalabs/.github/actions/self-hosted-prep` action runs after
+  every checkout: it deletes every other untracked file, empties
+  `target/dist` so no job uploads an older package, and deletes `target/`
+  once it passes 60 GB. To change that limit for every repository on a
+  runner, add `KARYA_CI_TARGET_MAX_GB=40` to the runner folder's `.env` and
+  restart its service.
 - **Tools.** wasm-bindgen, wasm-opt and appimagetool are downloaded once per
   runner into its tool cache (`scripts/ci/fetch-tool`). Debian packages are
-  installed only if missing (`scripts/ci/apt-install`), so the jobs never
-  need sudo on the box.
+  installed only if missing (the shared `gpui-deps` action), so the jobs
+  never need sudo on the box. The Rust toolchain comes from
+  `rust-toolchain.toml` through the shared `rust-toolchain` action, so a
+  version bump touches that file only.
 - **Test servers.** Each integration job starts its Mattermost server under
   its own Compose project and port, and removes it with its volumes when it
   ends. A daily cron job on the OVH box (`/usr/local/bin/matty-ci-cleanup`)
