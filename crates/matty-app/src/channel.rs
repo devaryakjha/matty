@@ -1160,6 +1160,14 @@ struct Editing {
 /// What a More-menu item does to the view.
 type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<ChannelView>)>;
 
+/// Which of a post's menus to open.
+#[derive(Clone, Copy)]
+enum PostMenu {
+    React,
+    More,
+    Context,
+}
+
 /// The reactions one click away, as Mattermost's recent-emoji row. The full
 /// picker arrives with the emoji data from sync.
 /// Each one's English name stays the key for its ids; [`reaction_name`] is
@@ -1285,9 +1293,6 @@ pub struct ChannelView {
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
-    /// The post under the pointer: only its row builds the hover toolbar,
-    /// which every row used to lay out and paint, invisible, every frame.
-    hovered_post: Option<SharedString>,
     /// The channel is one of split view's two panes: the header offers
     /// Swap panes and Close pane (#222).
     split_controls: bool,
@@ -1616,7 +1621,6 @@ impl ChannelView {
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             connected: crate::preview::enabled(),
             profile_cards: 0,
-            hovered_post: None,
             split_controls: false,
             action_menus: Default::default(),
             bookmarks,
@@ -3171,6 +3175,27 @@ impl ChannelView {
         });
     }
 
+    /// Opens one of `id`'s menus at `at`, built from the post as it is now.
+    fn open_post_menu(
+        &mut self,
+        id: &str,
+        menu: PostMenu,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(post) = self.shown_post(id).cloned() else {
+            return;
+        };
+        let delete_others = self.model.as_ref().is_some_and(|model| model.delete_others);
+        let items = match menu {
+            PostMenu::React => Self::reaction_items_for(&post, cx),
+            PostMenu::More => Self::more_items_for(&post, self.away, delete_others, cx),
+            PostMenu::Context => Self::context_items_for(&post, self.away, delete_others, cx),
+        };
+        self.open_menu(items, at, window, cx);
+    }
+
     fn reaction_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
@@ -4192,14 +4217,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed, delete_others, profile_card, hovered): (
-            bool,
-            bool,
-            bool,
-            bool,
-            usize,
-            bool,
-        ),
+        (menu_open, away, previews_collapsed, profile_card): (bool, bool, bool, usize),
         menus: &crate::interactive::Menus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -4208,18 +4226,22 @@ impl ChannelView {
         let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let author_name = Self::author_name(&id, post, profile, profile_card, cx);
         let thread_id = post.thread_root();
-        let save_id = id.clone();
+        // Menus are built when they open, not for every row on every frame
+        // (#674).
+        let ephemeral = post.status == PostStatus::Ephemeral;
+        let saved = post.saved;
+        // The hover toolbar is built only for the hovered or selected row
+        // (#674).
+        let (actions_view, aid) = (cx.entity().downgrade(), id.clone());
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
         let sent = post.status == PostStatus::Sent;
-        let dismiss_id = id.clone();
-        // The toolbar only shows on the hovered or selected row.
-        let show_actions = hovered || highlight == MessageHighlight::Selected;
-        let actions = show_actions.then(|| {
-            let react_items = Self::reaction_items_for(post, cx);
-            let more_items = Self::more_items_for(post, away, delete_others, cx);
+        let build_actions = move |cx: &mut Context<Self>| {
+            let id = aid;
+            let (react_id, more_id, save_id, dismiss_id) =
+                (id.clone(), id.clone(), id.clone(), id.clone());
             message_actions(cx)
-                .when(post.status == PostStatus::Ephemeral, |actions| {
+                .when(ephemeral, |actions| {
                     actions.child(style::tipped_when(
                         !menu_open,
                         gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
@@ -4251,8 +4273,9 @@ impl ChannelView {
                             )
                             .on_click(cx.listener(
                                 move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                    this.open_menu(
-                                        react_items.clone(),
+                                    this.open_post_menu(
+                                        &react_id,
+                                        PostMenu::React,
                                         event.position(),
                                         window,
                                         cx,
@@ -4279,19 +4302,19 @@ impl ChannelView {
                         .child(style::tipped_when(
                             !menu_open,
                             gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                            if post.saved {
+                            if saved {
                                 t!("chan-unsave")
                             } else {
                                 t!("chan-save")
                             },
                             message_action(
                                 gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                                if post.saved {
+                                if saved {
                                     LucideIcon::BookmarkCheck
                                 } else {
                                     LucideIcon::Bookmark
                                 },
-                                if post.saved {
+                                if saved {
                                     t!("chan-unsave")
                                 } else {
                                     t!("chan-save")
@@ -4315,11 +4338,17 @@ impl ChannelView {
                     )
                     .on_click(cx.listener(
                         move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                            this.open_menu(more_items.clone(), event.position(), window, cx)
+                            this.open_post_menu(
+                                &more_id,
+                                PostMenu::More,
+                                event.position(),
+                                window,
+                                cx,
+                            )
                         },
                     )),
                 ))
-        });
+        };
         let reaction_post = id.clone();
         let view = cx.entity().downgrade();
         let add_view = view.clone();
@@ -4382,7 +4411,11 @@ impl ChannelView {
                         .ok();
                 }
             })
-            .when_some(actions, |row, actions| row.actions(actions))
+            .actions_with(move |_, cx| {
+                actions_view
+                    .update(cx, |_, cx| build_actions(cx).into_any_element())
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
             .when_some(post.reply_to.as_ref(), |row, context| {
@@ -4439,11 +4472,7 @@ impl ChannelView {
             row = row.on_add_reaction(move |event, window, cx| {
                 add_view
                     .update(cx, |this, cx| {
-                        let Some(post) = this.post(&add_id) else {
-                            return;
-                        };
-                        let items = Self::reaction_items_for(&post, cx);
-                        this.open_menu(items, event.position(), window, cx)
+                        this.open_post_menu(&add_id, PostMenu::React, event.position(), window, cx)
                     })
                     .ok();
             });
@@ -4510,28 +4539,13 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let hover_id = id.clone();
         div()
             .id(gpui_kit::ElementId::Name(format!("post.{id}.row").into()))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                let was = this.hovered_post.as_ref() == Some(&hover_id);
-                if *hovered && !was {
-                    this.hovered_post = Some(hover_id.clone());
-                    cx.notify();
-                } else if !*hovered && was {
-                    this.hovered_post = None;
-                    cx.notify();
-                }
-            }))
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
                     this.select_post(&id, window, cx);
-                    let Some(post) = this.post(&id) else {
-                        return;
-                    };
-                    let items = Self::context_items_for(&post, this.away, this.delete_others(), cx);
-                    this.open_menu(items, event.position, window, cx);
+                    this.open_post_menu(&id, PostMenu::Context, event.position, window, cx);
                 }),
             )
             .child(row)
@@ -4826,22 +4840,6 @@ impl ChannelView {
         }
     }
 
-    /// A copy of the loaded post with this id, for an action that needs
-    /// more than its id.
-    fn post(&self, id: &str) -> Option<Post> {
-        self.model
-            .as_ref()?
-            .posts
-            .iter()
-            .find(|post| post.id.as_ref() == id)
-            .cloned()
-    }
-
-    /// Whether the user may delete other people's posts here.
-    fn delete_others(&self) -> bool {
-        self.model.as_ref().is_some_and(|model| model.delete_others)
-    }
-
     fn transcript(
         &self,
         channel: &Rc<ChannelModel>,
@@ -4892,7 +4890,6 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
-                        let delete_others = this.delete_others();
                         let previews_collapsed = SettingsStore::global(cx)
                             .read(cx)
                             .get()
@@ -4902,14 +4899,7 @@ impl ChannelView {
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (
-                                menu_open,
-                                away,
-                                previews_collapsed,
-                                delete_others,
-                                this.profile_cards,
-                                this.hovered_post.as_ref() == Some(&post.id),
-                            ),
+                            (menu_open, away, previews_collapsed, this.profile_cards),
                             &this.action_menus,
                             cx,
                         )
