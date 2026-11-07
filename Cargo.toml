@@ -99,8 +99,35 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+# The crates every frame runs through (GPUI, its layout, text shaping and
+# rendering, GPUI Kit) are built for speed; the rest stays small. Measured
+# in #675: scroll frames about 8% faster for a 5% larger binary, where
+# opt-level 3 everywhere was 10% faster but 35% larger.
+[profile.release.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-sum-tree = { opt-level = 3 }
+gpui-pre-wgpu = { opt-level = 3 }
+gpui-pre-macos = { opt-level = 3 }
+gpui-pre-apple = { opt-level = 3 }
+taffy = { opt-level = 3 }
+harfrust = { opt-level = 3 }
+gpui-base = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+
 # The browser build (scripts/web): small over fast, since every visit downloads it.
 [profile.web]
 inherits = "release"
 opt-level = "z"
 lto = "fat"
+
+# `web` inherits the speed overrides above; size wins in the browser too.
+[profile.web.package]
+gpui-pre = { opt-level = "z" }
+gpui-pre-sum-tree = { opt-level = "z" }
+gpui-pre-wgpu = { opt-level = "z" }
+gpui-pre-macos = { opt-level = "z" }
+gpui-pre-apple = { opt-level = "z" }
+taffy = { opt-level = "z" }
+harfrust = { opt-level = "z" }
+gpui-base = { opt-level = "z" }
+gpui-component = { opt-level = "z" }
