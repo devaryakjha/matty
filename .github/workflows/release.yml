@@ -20,7 +20,7 @@ name: Release
 #   MATTY_UPDATE_SIGNING_KEY    ed25519 private key (PEM) that signs the in-app
 #                               updater's manifest (#180); see scripts/update-manifest
 # Publishing needs the organization secrets KARYA_BOT_APP_ID and
-# KARYA_BOT_PRIVATE_KEY: k-bot, the Karya bot app, creates the v* tag,
+# KARYA_BOT_PRIVATE_KEY: karya-karta, the Karya bot app, creates the v* tag,
 # since only it may bypass the tag ruleset (docs/org-settings.md).
 # and one repository variable, the public half the app checks against:
 #   MATTY_UPDATE_PUBLIC_KEY     base64 of the 32-byte ed25519 public key
@@ -406,15 +406,15 @@ jobs:
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG" || status=$?
           rm -f "$MATTY_UPDATE_SIGNING_KEY_FILE"
           exit "$status"
-      # The `v*` tag ruleset lets only k-bot (the Karya bot GitHub App,
+      # The `v*` tag ruleset lets only karya-karta (the Karya bot GitHub App,
       # docs/org-settings.md step 4) create tags; GitHub Actions can't be a
-      # bypass actor, so the tag and release are made with k-bot's token.
-      - name: k-bot is configured
+      # bypass actor, so the tag and release are made with karya-karta's token.
+      - name: karya-karta is configured
         env:
           HAS_BOT: ${{ secrets.KARYA_BOT_APP_ID != '' && secrets.KARYA_BOT_PRIVATE_KEY != '' }}
         run: |
           if [[ "$HAS_BOT" != true ]]; then
-            echo "::error::KARYA_BOT_APP_ID or KARYA_BOT_PRIVATE_KEY is not set; the release workflow needs k-bot to create the v* tag (docs/org-settings.md step 5)"
+            echo "::error::KARYA_BOT_APP_ID or KARYA_BOT_PRIVATE_KEY is not set; the release workflow needs karya-karta to create the v* tag (docs/org-settings.md step 5)"
             exit 1
           fi
       - id: bot

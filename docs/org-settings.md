@@ -53,25 +53,25 @@ through the queue. Claude checks it by sending one PR through the queue in
 each repository. With the queue on, Claude merges by enabling auto-merge,
 which queues the PR.
 
-## 4. Let k-bot create release tags
+## 4. Let karya-karta create release tags
 
 Matty's release workflow now creates the `v*` tag itself
-([releasing.md](releasing.md)), with a k-bot token: GitHub Actions can't
+([releasing.md](releasing.md)), with a karya-karta token: GitHub Actions can't
 be a bypass actor on a repository ruleset, so the app from step 5 is. Do
 step 5 first, then in karyalabs/matty → Settings → Rules → Rulesets → the
 `v*` tag ruleset (`admin-only-tag-release`) → Bypass list → Add bypass →
-**k-bot** (Apps; always allow). Without it the first release through a
+**karya-karta** (Apps; always allow). Without it the first release through a
 release PR fails at "Create the release", and re-running it after this
 change finishes it.
 
-## 5. k-bot, the Karya bot app
+## 5. karya-karta, the Karya bot app
 
-k-bot creates Matty's release tags (step 4), and opens the pin bump pull
+karya-karta creates Matty's release tags (step 4), and opens the pin bump pull
 requests: a gpui-icons release opens gpuicn's bump PR and a gpuicn release
 opens Matty's (section 7.4 of the process). Organization → Settings →
 Developer settings → GitHub Apps → New GitHub App:
 
-- Name `k-bot`, homepage `https://github.com/karyalabs`, webhook off.
+- Name `karya-karta`, homepage `https://github.com/karyalabs`, webhook off.
 - Repository permissions: Contents read and write, Pull requests read and
   write, Metadata read. Nothing else.
 - "Only on this account". Create, then Generate a private key (a `.pem`
@@ -84,7 +84,7 @@ Developer settings → GitHub Apps → New GitHub App:
   - `KARYA_BOT_PRIVATE_KEY`: the whole `.pem` file.
 
 Claude checks it with the next Matty release (the `v*` tag's creator is
-k-bot) and the next gpui-icons or gpuicn release: the release run's "bump"
+karya-karta) and the next gpui-icons or gpuicn release: the release run's "bump"
 job links the pull request it opened. Pull requests the app
 opens run CI like any other.
 
@@ -118,7 +118,7 @@ under `<repo>/<PR number>/`, and matty's CI rejects new images under
   them first, and the per-repository copies can go after a release dry run
   passes. `MATTY_UPDATE_SIGNING_KEY` stays a matty secret.
 - **`HOMEBREW_TAP_TOKEN`** in matty, before the first stable release, or
-  install k-bot on homebrew-matty (done in step 5) and Claude
+  install karya-karta on homebrew-matty (done in step 5) and Claude
   switches the cask bump to it.
 - **Rename matty's `master` to `main`** (Settings → General → Default
   branch → rename) after Claude's PR that updates the workflows and docs
