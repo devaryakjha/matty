@@ -11,6 +11,7 @@ use crate::t;
 use crate::ui::{
     alert_dialog::{alert_dialog, alert_dialog_action, alert_dialog_cancel},
     button::ButtonVariant,
+    collapsible::ShowMore,
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
     markdown::{
         CustomEmoji as CustomEmojiImages, EntityLinks, MarkdownImages, MarkdownView, markdown,
@@ -118,8 +119,24 @@ fn server_target(url: &str, server: &str, teams: Option<&[&str]>) -> Option<Link
 
 /// A message body: Markdown with `~channel`, `@user` and `#hashtag` as
 /// gpuicn entity chips, and every click, chip or link, handed to
-/// `on_link` with its URL.
+/// `on_link` with its URL. A body taller than about 600 px collapses
+/// behind Show more, as in Mattermost (#682).
 pub fn message_body(
+    id: impl Into<ElementId>,
+    body: &str,
+    image_sizes: &[(SharedString, u32, u32)],
+    on_link: impl Fn(&SharedString, &mut Window, &mut App) + Clone + Send + Sync + 'static,
+    cx: &App,
+) -> ShowMore {
+    let id = id.into();
+    ShowMore::new(
+        (id.clone(), "more"),
+        markdown_body(id, body, image_sizes, on_link, cx),
+    )
+}
+
+/// The Markdown view of [`message_body`], without the Show more clip.
+pub fn markdown_body(
     id: impl Into<ElementId>,
     body: &str,
     image_sizes: &[(SharedString, u32, u32)],
@@ -128,7 +145,7 @@ pub fn message_body(
 ) -> MarkdownView {
     let custom = cx.try_global::<crate::emoji::CustomEmoji>().cloned();
     let is_custom = |name: &str| custom.as_ref().is_some_and(|known| known.contains(name));
-    let source = matty_markdown::link_entities_in_source(body, &is_custom);
+    let source = body_source(body, &is_custom);
     let chip = on_link.clone();
     let image_link = on_link.clone();
     markdown(id, source, cx)
@@ -154,6 +171,17 @@ pub fn message_body(
             }),
         )
         .on_link_click(move |url, _, window, cx| on_link(url, window, cx))
+}
+
+/// `body` with its entities as links. Other clients send emoji as `:name:`
+/// text (#677): system ones become their glyph, the custom ones
+/// `is_custom` knows an image, and unknown names stay text.
+fn body_source(body: &str, is_custom: &dyn Fn(&str) -> bool) -> String {
+    matty_markdown::link_entities_and_emoji_in_source(
+        body,
+        &|name| crate::emoji::lookup(name).is_some() || is_custom(name),
+        &|name| crate::emoji::lookup(name).map(|emoji| emoji.as_str().to_owned()),
+    )
 }
 
 /// What to do with the channel a link named, once found.
@@ -386,6 +414,18 @@ mod tests {
         assert!(!looks_like_link("design"));
         assert!(!looks_like_link("https://a.com b"));
         assert!(!looks_like_link("ftp://a.com"));
+    }
+
+    #[test]
+    fn system_emoji_shortcodes_show_as_emoji() {
+        let custom = |name: &str| name == "partyparrot";
+        assert_eq!(
+            body_source(
+                ":clown_face: :+1_medium_skin_tone: :thumbsup: :partyparrot: :nope:",
+                &custom
+            ),
+            "🤡 👍🏽 👍 ![:partyparrot:](emoji:partyparrot) :nope:"
+        );
     }
 
     /// A message body drawing one Markdown image, for the tests below.
