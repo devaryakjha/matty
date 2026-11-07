@@ -1160,6 +1160,14 @@ struct Editing {
 /// What a More-menu item does to the view.
 type MenuAction = Box<dyn Fn(&mut ChannelView, &mut Window, &mut Context<ChannelView>)>;
 
+/// Which of a post's menus to open.
+#[derive(Clone, Copy)]
+enum PostMenu {
+    React,
+    More,
+    Context,
+}
+
 /// The reactions one click away, as Mattermost's recent-emoji row. The full
 /// picker arrives with the emoji data from sync.
 /// Each one's English name stays the key for its ids; [`reaction_name`] is
@@ -3153,6 +3161,27 @@ impl ChannelView {
         });
     }
 
+    /// Opens one of `id`'s menus at `at`, built from the post as it is now.
+    fn open_post_menu(
+        &mut self,
+        id: &str,
+        menu: PostMenu,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(post) = self.shown_post(id).cloned() else {
+            return;
+        };
+        let delete_others = self.model.as_ref().is_some_and(|model| model.delete_others);
+        let items = match menu {
+            PostMenu::React => Self::reaction_items_for(&post, cx),
+            PostMenu::More => Self::more_items_for(&post, self.away, delete_others, cx),
+            PostMenu::Context => Self::context_items_for(&post, self.away, delete_others, cx),
+        };
+        self.open_menu(items, at, window, cx);
+    }
+
     fn reaction_items_for(post: &Post, cx: &Context<Self>) -> Vec<MenuItem> {
         let view = cx.entity().downgrade();
         let id = post.id.clone();
@@ -4174,13 +4203,7 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed, delete_others, profile_card): (
-            bool,
-            bool,
-            bool,
-            bool,
-            usize,
-        ),
+        (menu_open, away, previews_collapsed, profile_card): (bool, bool, bool, usize),
         menus: &crate::interactive::Menus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -4189,108 +4212,130 @@ impl ChannelView {
         let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let author_name = Self::author_name(&id, post, profile, profile_card, cx);
         let thread_id = post.thread_root();
-        let react_items = Self::reaction_items_for(post, cx);
-        let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, away, delete_others, cx);
-        let save_id = id.clone();
+        // Menus are built when they open, not for every row on every frame
+        // (#674).
+        let add_id = id.clone();
+        let ephemeral = post.status == PostStatus::Ephemeral;
+        let saved = post.saved;
+        // The hover toolbar is built only for the hovered or selected row
+        // (#674).
+        let (actions_view, aid) = (cx.entity().downgrade(), id.clone());
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
         let sent = post.status == PostStatus::Sent;
-        let dismiss_id = id.clone();
-        let actions = message_actions(cx)
-            .when(post.status == PostStatus::Ephemeral, |actions| {
-                actions.child(style::tipped_when(
-                    !menu_open,
-                    gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
-                    t!("chan-dismiss"),
-                    message_action(
-                        gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
-                        LucideIcon::X,
-                        t!("chan-dismiss"),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.delete_post(dismiss_id.clone(), window, cx)
-                    })),
-                ))
-            })
-            .when(sent, |actions| {
-                actions
-                    .child(style::tipped_when(
+        let build_actions = move |cx: &mut Context<Self>| {
+            let id = aid;
+            let (react_id, more_id, save_id, dismiss_id) =
+                (id.clone(), id.clone(), id.clone(), id.clone());
+            message_actions(cx)
+                .when(ephemeral, |actions| {
+                    actions.child(style::tipped_when(
                         !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
-                        t!("chan-add-reaction"),
+                        gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
+                        t!("chan-dismiss"),
                         message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                            LucideIcon::FaceSlightlySmilingPlus,
-                            t!("chan-add-reaction"),
+                            gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
+                            LucideIcon::X,
+                            t!("chan-dismiss"),
                             cx,
                         )
                         .on_click(cx.listener(
-                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                this.open_menu(react_items.clone(), event.position(), window, cx)
+                            move |this, _, window, cx| {
+                                this.delete_post(dismiss_id.clone(), window, cx)
                             },
                         )),
                     ))
-                    .child(style::tipped_when(
-                        !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
-                        t!("chan-reply-in-thread"),
-                        message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
-                            LucideIcon::MessageSquareReply,
+                })
+                .when(sent, |actions| {
+                    actions
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
+                            t!("chan-add-reaction"),
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                                LucideIcon::FaceSlightlySmilingPlus,
+                                t!("chan-add-reaction"),
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                    this.open_post_menu(
+                                        &react_id,
+                                        PostMenu::React,
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        ))
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
                             t!("chan-reply-in-thread"),
-                            cx,
-                        )
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
-                        })),
-                    ))
-                    .child(style::tipped_when(
-                        !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                        if post.saved {
-                            t!("chan-unsave")
-                        } else {
-                            t!("chan-save")
-                        },
-                        message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                            if post.saved {
-                                LucideIcon::BookmarkCheck
-                            } else {
-                                LucideIcon::Bookmark
-                            },
-                            if post.saved {
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
+                                LucideIcon::MessageSquareReply,
+                                t!("chan-reply-in-thread"),
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
+                                },
+                            )),
+                        ))
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
+                            if saved {
                                 t!("chan-unsave")
                             } else {
                                 t!("chan-save")
                             },
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.toggle_save(save_id.clone(), cx)
-                            }),
-                        ),
-                    ))
-            })
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
-                t!("chan-more-actions"),
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
-                    LucideIcon::Ellipsis,
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                                if saved {
+                                    LucideIcon::BookmarkCheck
+                                } else {
+                                    LucideIcon::Bookmark
+                                },
+                                if saved {
+                                    t!("chan-unsave")
+                                } else {
+                                    t!("chan-save")
+                                },
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.toggle_save(save_id.clone(), cx),
+                            )),
+                        ))
+                })
+                .child(style::tipped_when(
+                    !menu_open,
+                    gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
                     t!("chan-more-actions"),
-                    cx,
-                )
-                .on_click(cx.listener(
-                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        this.open_menu(more_items.clone(), event.position(), window, cx)
-                    },
-                )),
-            ));
+                    message_action(
+                        gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
+                        LucideIcon::Ellipsis,
+                        t!("chan-more-actions"),
+                        cx,
+                    )
+                    .on_click(cx.listener(
+                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                            this.open_post_menu(
+                                &more_id,
+                                PostMenu::More,
+                                event.position(),
+                                window,
+                                cx,
+                            )
+                        },
+                    )),
+                ))
+        };
         let reaction_post = id.clone();
         let view = cx.entity().downgrade();
         let add_view = view.clone();
@@ -4353,7 +4398,11 @@ impl ChannelView {
                         .ok();
                 }
             })
-            .actions(actions)
+            .actions_with(move |_, cx| {
+                actions_view
+                    .update(cx, |_, cx| build_actions(cx).into_any_element())
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
             .when_some(post.reply_to.as_ref(), |row, context| {
@@ -4407,10 +4456,9 @@ impl ChannelView {
             // The chip row gets an add button; posts without reactions use
             // the hover toolbar, so the transcript stays quiet.
             row = row.on_add_reaction(move |event, window, cx| {
-                let items = add_items.clone();
                 add_view
                     .update(cx, |this, cx| {
-                        this.open_menu(items, event.position(), window, cx)
+                        this.open_post_menu(&add_id, PostMenu::React, event.position(), window, cx)
                     })
                     .ok();
             });
@@ -4477,13 +4525,12 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, away, delete_others, cx);
         div()
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
                     this.select_post(&id, window, cx);
-                    this.open_menu(context_items.clone(), event.position, window, cx);
+                    this.open_post_menu(&id, PostMenu::Context, event.position, window, cx);
                 }),
             )
             .child(row)
@@ -4833,8 +4880,6 @@ impl ChannelView {
                         let highlight = this.row_highlight(index, &post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
-                        let delete_others =
-                            this.model.as_ref().is_some_and(|model| model.delete_others);
                         let previews_collapsed = SettingsStore::global(cx)
                             .read(cx)
                             .get()
@@ -4844,13 +4889,7 @@ impl ChannelView {
                             profile,
                             editor.as_ref(),
                             highlight,
-                            (
-                                menu_open,
-                                away,
-                                previews_collapsed,
-                                delete_others,
-                                this.profile_cards,
-                            ),
+                            (menu_open, away, previews_collapsed, this.profile_cards),
                             &this.action_menus,
                             cx,
                         )

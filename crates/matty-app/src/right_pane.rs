@@ -2422,8 +2422,13 @@ impl RightPaneView {
                 crate::emoji::reaction(&reaction.emoji, reaction.count, reaction.mine, cx)
             }))
             .reaction_tooltip(reaction_tooltip(post.reactions.clone()))
+            // The hover toolbar is built only for the hovered or selected
+            // row (#674).
             .when(reactable, |row| {
-                row.actions(Self::hover_actions(view, post, away, !root, cx))
+                let (view, post) = (view.clone(), post.clone());
+                row.actions_with(move |_, cx| {
+                    Self::hover_actions(&view, &post, away, !root, cx).into_any_element()
+                })
             })
             .when(post.status == PostStatus::Ephemeral, |row| {
                 let (view, id) = (view.clone(), id.clone());
@@ -2530,9 +2535,9 @@ impl RightPaneView {
         ));
         if reactable && !post.reactions.is_empty() {
             // The chip row gets an add button, as in the channel (#620).
-            let (add_view, items) = (view.clone(), Self::reaction_items(view, post));
+            let (add_view, add_post) = (view.clone(), std::rc::Rc::new(post.clone()));
             row = row.on_add_reaction(move |event, window, cx| {
-                let items = items.clone();
+                let items = Self::reaction_items(&add_view, &add_post);
                 add_view
                     .update(cx, |this, cx| {
                         this.open_menu(items, event.position(), window, cx)
@@ -2541,7 +2546,9 @@ impl RightPaneView {
             });
         }
         // Right-click selects the row and opens its menu (design-42).
-        let items = Self::thread_items_for(view, post, away, !root);
+        // Menus are built when they open, not for every row on every frame
+        // (#674).
+        let menu_post = std::rc::Rc::new(post.clone());
         let menu_view = view.clone();
         let selector = format!("thread.{id}");
         div()
@@ -2549,7 +2556,7 @@ impl RightPaneView {
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 move |event: &gpui_kit::MouseDownEvent, window, cx| {
-                    let items = items.clone();
+                    let items = Self::thread_items_for(&menu_view, &menu_post, away, !root);
                     menu_view
                         .update(cx, |this, cx| {
                             this.select_post(&id, window, cx);
@@ -2575,12 +2582,10 @@ impl RightPaneView {
         let menu_open = view
             .upgrade()
             .is_some_and(|pane| pane.read(cx).menu.read(cx).is_open());
-        let (react_view, react_items) = (view.clone(), Self::reaction_items(view, post));
+        let post = std::rc::Rc::new(post.clone());
+        let (react_view, react_post) = (view.clone(), post.clone());
         let react_selector = format!("thread.{id}.react");
-        let (more_view, more_items) = (
-            view.clone(),
-            Self::thread_items_for(view, post, away, reply),
-        );
+        let (more_view, more_post) = (view.clone(), post);
         message_actions(cx)
             .child(
                 style::tipped_when(
@@ -2595,7 +2600,7 @@ impl RightPaneView {
                     )
                     .on_click(
                         move |event: &gpui_kit::ClickEvent, window, cx| {
-                            let items = react_items.clone();
+                            let items = Self::reaction_items(&react_view, &react_post);
                             react_view
                                 .update(cx, |this, cx| {
                                     this.open_menu(items, event.position(), window, cx)
@@ -2617,7 +2622,7 @@ impl RightPaneView {
                     cx,
                 )
                 .on_click(move |event: &gpui_kit::ClickEvent, window, cx| {
-                    let items = more_items.clone();
+                    let items = Self::thread_items_for(&more_view, &more_post, away, reply);
                     more_view
                         .update(cx, |this, cx| {
                             this.open_menu(items, event.position(), window, cx)
