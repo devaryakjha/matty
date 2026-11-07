@@ -45,6 +45,7 @@ pane-sent-at = { $date } at { $time }
 ## A message's menu and hover toolbar
 
 pane-add-reaction = Add reaction
+pane-add-reaction-menu = Add reaction…
 pane-more-actions = More actions
 pane-copy-text = Copy text
 pane-copy-markdown = Copy as Markdown

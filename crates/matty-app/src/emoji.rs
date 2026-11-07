@@ -119,6 +119,23 @@ pub fn glyph(name: &str) -> Option<SharedString> {
     lookup(name).map(|emoji| emoji.as_str().into())
 }
 
+/// The Mattermost name behind a reaction value: a glyph's shortcode, or
+/// `name` for a custom emoji's `:name:`.
+pub fn name_for(emoji: &str) -> Option<String> {
+    if let Some(name) = emoji.strip_prefix(':').and_then(|e| e.strip_suffix(':')) {
+        return Some(name.to_owned());
+    }
+    emojis::get(emoji).and_then(name_of)
+}
+
+/// A reaction value as Mattermost writes it in "reacted with :tada:".
+pub fn shortcode(emoji: &str) -> String {
+    match name_for(emoji) {
+        Some(name) => format!(":{name}:"),
+        None => emoji.to_owned(),
+    }
+}
+
 /// Mattermost's tones, lightest first: `+1_medium_skin_tone` is 👍🏽.
 const TONES: [(emojis::SkinTone, &str); 5] = [
     (emojis::SkinTone::Light, "_light_skin_tone"),
