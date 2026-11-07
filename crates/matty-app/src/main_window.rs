@@ -3476,10 +3476,10 @@ impl MainWindow {
     /// turned into a channel width from the space the split has.
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.threads_open {
-            return self.threads.clone().into_any_element();
+            return cached_pane(&self.threads);
         }
         if self.drafts_open {
-            return self.drafts.clone().into_any_element();
+            return cached_pane(&self.drafts);
         }
         if !self.right_pane_open || Self::narrow_right_pane(window) {
             return self.channel_area(window, cx);
@@ -4776,7 +4776,14 @@ impl Render for MainWindow {
                         selection_root("window.selection")
                             .flex()
                             .when(self.rail.read(cx).is_multi(), |row| {
-                                row.child(self.rail.clone())
+                                row.child(
+                                    self.rail.clone().cached(
+                                        gpui_kit::StyleRefinement::default()
+                                            .w(scaled(&theme, metrics::RAIL_WIDTH))
+                                            .h_full()
+                                            .flex_shrink_0(),
+                                    ),
+                                )
                             })
                             .child(div().flex_1().min_w_0().h_full().child(frame)),
                     )
@@ -4800,10 +4807,13 @@ impl Render for MainWindow {
 /// hovering the channel then leaves the sidebar's and the right pane's
 /// layout and paint as they were. On the web every frame costs several times
 /// what it does natively, and these panes were about a fifth of a scroll
-/// frame. Theme and zoom changes refresh the window (`apply_theme`).
-fn cached_pane<V: Render>(view: &Entity<V>) -> impl IntoElement {
+/// frame. Theme and zoom changes refresh the window (`apply_theme`). The
+/// channel, the split's panes, Threads and Drafts are drawn this way too, so
+/// a keystroke or scroll in one pane does not rebuild the others (#672).
+pub(crate) fn cached_pane<V: Render>(view: &Entity<V>) -> gpui_kit::AnyElement {
     view.clone()
         .cached(gpui_kit::StyleRefinement::default().size_full())
+        .into_any_element()
 }
 
 /// Opens or closes `handle` to match `wanted`, remembering in `shown`

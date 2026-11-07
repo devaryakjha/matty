@@ -634,7 +634,7 @@ impl MainWindow {
     /// pane's share, so it holds as the window changes size.
     pub(super) fn channel_area(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(second) = self.shown_split().cloned() else {
-            return self.channel.clone().into_any_element();
+            return super::cached_pane(&self.channel);
         };
         let theme = UiTheme::read(cx).clone();
         let settings = self.settings.read(cx).get().clone();
@@ -671,13 +671,8 @@ impl MainWindow {
             .read(cx)
             .channel_view()
             .and_then(|view| view.read(cx).model().map(|model| model.name.clone()));
-        let main = self.pane_frame(
-            Pane::Main,
-            main_name,
-            self.channel.clone().into_any_element(),
-            cx,
-        );
-        let second = self.pane_frame(Pane::Second, second_name, second.into_any_element(), cx);
+        let main = self.pane_frame(Pane::Main, main_name, super::cached_pane(&self.channel), cx);
+        let second = self.pane_frame(Pane::Second, second_name, super::cached_pane(&second), cx);
         let store = self.settings.clone();
         Resizable::new(
             "main.channel-split",
