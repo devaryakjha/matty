@@ -53,10 +53,14 @@ skips it.
 
 Nothing in the demo talks to a server. It is a snapshot of the cache the
 desktop app would have after signing in to a seeded server: one SQLite file,
-`crates/matty-web/demo/demo.sqlite` (under 1 MB), with the avatars and
-images inside it. The page bakes it in, opens it in memory and moves every
-timestamp forward so the story always reads as the last three weeks. What
-you send stays in the outbox, since there is no server to take it.
+`crates/matty-web/demo/demo.sqlite` (about 4 MB, 6,000 posts), with the
+avatars and images inside it. `scripts/web build` gzips it next to the app
+(`demo.sqlite.gz`, about 1 MB), the page downloads both side by side, and
+the app opens the snapshot in memory and moves every timestamp forward so
+the story always reads as the last three weeks, with about half a year of
+older history (`scripts/demo/history.py`) behind it. Scrolling up pages
+through that history from the snapshot. What you send stays in the outbox,
+since there is no server to take it.
 
 To change it, edit `scripts/demo/content.py` (people, channels and every
 post), then rebuild the snapshot and commit it:
@@ -97,6 +101,34 @@ with **Workers Scripts: Edit** and **Zone: Workers Routes: Edit** on
 Without the toolchain: every CI run uploads the release build as the
 `matty-web` artifact. Unzip it into `crates/matty-web/dist` and run
 `cd crates/matty-web && npx wrangler@4 deploy`.
+
+## Performance
+
+Everything, including the sync engine, runs on the page's one thread, and a
+GPUI frame costs a few times what it does natively, so the web build is
+where slow frames show first. What keeps it smooth:
+
+- The `web` build profile uses `opt-level = "s"`: `"z"` made every frame
+  about 30% slower for 15% less download.
+- The sidebar and the right pane are cached views (`cached_pane` in
+  `main_window.rs`): scrolling or hovering the channel doesn't lay them out
+  again. A view that reads a global must be refreshed when it changes
+  (`apply_theme` refreshes the windows).
+- Transcript rows read posts from the shared channel model instead of a
+  copy per frame, and only the hovered or selected row builds the hover
+  toolbar.
+- GPUI's background tasks run on the main thread too, unless the page has
+  `threads=1`. The browser forbids blocking the main thread, so with web
+  workers, the first time the main thread finds a lock a worker holds (GPUI
+  Kit's text views share a channel with their background parser),
+  `Atomics.wait` traps, the App stays borrowed and the page stops
+  responding for good. Signed in under live traffic that happened in most
+  runs; without workers it hasn't happened, and frames cost the same.
+
+To measure, `node scripts/web-bench.mjs <label> <dist dir or URL> --headed`
+drives Chrome (through Playwright) over a build or the live site: startup,
+wheel scrolling, hovering, typing, with the main-thread time of every frame.
+`--trace` also writes a Chrome trace per scenario.
 
 ## What differs from the desktop
 

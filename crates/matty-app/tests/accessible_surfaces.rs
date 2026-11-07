@@ -56,8 +56,22 @@ fn audit(cx: &mut VisualTestContext, surface: &str, expected: &str, failures: &m
 
 /// Clicks the first control labelled `label`.
 fn click(cx: &mut VisualTestContext, label: &str) {
+    let center = center_of(cx, label);
+    cx.simulate_click(center, gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// Moves the mouse over the first element labelled `label`.
+fn hover(cx: &mut VisualTestContext, label: &str) {
+    let center = center_of(cx, label);
+    cx.simulate_mouse_move(center, None, gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// The center of the first element labelled `label`.
+fn center_of(cx: &mut VisualTestContext, label: &str) -> gpui_kit::Point<gpui_kit::Pixels> {
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let center = cx.update(|window, _| {
+    cx.update(|window, _| {
         use gpui_kit::test::TestQueryExt as _;
         let elements = window.elements();
         elements
@@ -69,9 +83,7 @@ fn click(cx: &mut VisualTestContext, label: &str) {
             })
             .bounds()
             .center()
-    });
-    cx.simulate_click(center, gpui_kit::Modifiers::none());
-    cx.run_until_parked();
+    })
 }
 
 fn close(cx: &mut VisualTestContext) {
@@ -105,6 +117,10 @@ fn the_new_surfaces_have_no_unnamed_controls(cx: &mut gpui_kit::TestAppContext) 
         ("Post menu", "More actions", "Copy link"),
     ];
     for (surface, opener, expected) in menus {
+        if opener == "More actions" {
+            // A post draws its actions while the mouse is over it.
+            hover(&mut cx, "Acknowledge");
+        }
         click(&mut cx, opener);
         audit(&mut cx, surface, expected, &mut failures);
         close(&mut cx);

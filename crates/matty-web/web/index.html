@@ -24,7 +24,17 @@
       if (!crossOriginIsolated) {
         loading.textContent = "Matty needs a cross-origin isolated page (COOP and COEP headers).";
       } else {
-        init({ module_or_path: "./matty-web_bg.wasm" })
+        // The app and the demo workspace download side by side; the app
+        // reads the demo from window.mattyDemo as it starts (?demo=0 skips it).
+        // The demo is gzipped by scripts/web, since hosts only compress text.
+        const app = fetch("./matty-web_bg.wasm");
+        const demo = new URLSearchParams(location.search).get("demo") === "0"
+          ? Promise.resolve(null)
+          : fetch("./demo.sqlite.gz")
+              .then((r) => (r.ok ? new Response(r.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer() : null))
+              .catch(() => null);
+        demo
+          .then((bytes) => { window.mattyDemo = bytes; return init({ module_or_path: app }); })
           .then(() => { loading.hidden = true; })
           .catch((error) => { loading.textContent = "Matty could not start: " + error; });
       }
