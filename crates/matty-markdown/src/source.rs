@@ -18,6 +18,17 @@ use crate::parse::options;
 /// to their `matty://` URLs, and the emoji `is_emoji` knows as
 /// `![:name:](emoji:name)` images, the form gpuicn's `CustomEmoji` draws.
 pub fn link_entities_in_source(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> String {
+    link_entities_and_emoji_in_source(text, is_emoji, &|_| None)
+}
+
+/// [`link_entities_in_source`], with the emoji `glyph` knows (system emoji,
+/// such as `:clown_face:`) written as their glyph instead of an image link.
+/// `is_emoji` must know them too.
+pub fn link_entities_and_emoji_in_source(
+    text: &str,
+    is_emoji: &dyn Fn(&str) -> bool,
+    glyph: &dyn Fn(&str) -> Option<String>,
+) -> String {
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     for run in text_runs(text) {
@@ -38,6 +49,11 @@ pub fn link_entities_in_source(text: &str, is_emoji: &dyn Fn(&str) -> bool) -> S
             }
             out.push_str(&text[copied..start]);
             let emoji = entity.url.strip_prefix("matty://emoji/");
+            if let Some(glyph) = emoji.and_then(glyph) {
+                out.push_str(&glyph);
+                copied = end;
+                continue;
+            }
             if emoji.is_some() {
                 out.push('!');
             }
@@ -122,6 +138,24 @@ mod tests {
             rewrite("hi @ana, see ~town-square and #release :tada:"),
             "hi [@ana](matty://user/ana), see [~town-square](matty://channel/town-square) \
              and [#release](matty://hashtag/release) ![:tada:](emoji:tada)"
+        );
+    }
+
+    #[test]
+    fn system_emoji_become_glyphs() {
+        let glyph = |name: &str| match name {
+            "clown_face" => Some("🤡".to_owned()),
+            "+1_medium_skin_tone" => Some("👍🏽".to_owned()),
+            _ => None,
+        };
+        let known = |name: &str| glyph(name).is_some() || name == "tada";
+        assert_eq!(
+            link_entities_and_emoji_in_source(
+                "lol :clown_face: :+1_medium_skin_tone: :tada: :nope: `:clown_face:`",
+                &known,
+                &glyph
+            ),
+            "lol 🤡 👍🏽 ![:tada:](emoji:tada) :nope: `:clown_face:`"
         );
     }
 

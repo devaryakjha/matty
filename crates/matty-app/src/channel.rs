@@ -2446,7 +2446,11 @@ impl ChannelView {
                     None => file.image()?,
                 };
                 items.push(LightboxItem::File(file.id.clone()));
-                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
+                Some(
+                    LightboxImage::new(image, file.name.clone())
+                        .dimensions(file.width, file.height)
+                        .caption(caption.clone()),
+                )
             })
             .collect();
         for embed in &post.embeds {
@@ -2459,6 +2463,7 @@ impl ChannelView {
                         gpui_kit::ImageSource::Image(loaded.clone()),
                         crate::embeds::image_name(&image.url),
                     )
+                    .dimensions(image.width, image.height)
                     .caption(caption.clone()),
                 );
             }

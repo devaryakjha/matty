@@ -2819,7 +2819,7 @@ impl Live {
                             if let Some(status) =
                                 person.and_then(crate::custom_status::StatusLine::of)
                             {
-                                row = row.status_emoji(status.emoji);
+                                row = row.status(status);
                             }
                         }
                         if let Some(person) = &channel.dm_user {

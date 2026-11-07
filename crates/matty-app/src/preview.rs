@@ -268,6 +268,12 @@ pub fn sidebar() -> SidebarModel {
     let dm = |id: &str, name: &str, presence| {
         ChannelRow::new(id, name, ChannelKind::Direct { presence }).person(format!("u-{id}"))
     };
+    let preview_status = |emoji: &str, text: &str| crate::custom_status::StatusLine {
+        emoji: emoji.to_owned().into(),
+        text: text.to_owned().into(),
+        until: None,
+        duration: crate::custom_status::Duration::DontClear,
+    };
     SidebarModel {
         loading: false,
         selected: Some("general".into()),
@@ -284,7 +290,7 @@ pub fn sidebar() -> SidebarModel {
                 vec![
                     public("design", "design").unread().mentions(2),
                     dm("priya", "Priya Nair", Presence::Online)
-                        .status_emoji("calendar")
+                        .status(preview_status("calendar", "In a meeting"))
                         .unread(),
                 ],
             ),
@@ -306,7 +312,7 @@ pub fn sidebar() -> SidebarModel {
                 vec![
                     dm("sam", "Sam Okafor", Presence::Away),
                     dm("lena", "Lena Fischer", Presence::Dnd)
-                        .status_emoji("headphones")
+                        .status(preview_status("headphones", "Focusing"))
                         .unread()
                         .mentions(1),
                     ChannelRow::new("priya-sam", "Priya, Sam", ChannelKind::Group { members: 3 }),

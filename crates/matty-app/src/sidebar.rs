@@ -56,9 +56,9 @@ pub struct ChannelRow {
     /// finds the row by it whatever the name format shows (#156); for a
     /// channel, its URL name, which `~` mentions use.
     pub handle: Option<SharedString>,
-    /// A direct message's other person's custom status emoji, shown after
-    /// the name (#221).
-    pub status_emoji: Option<SharedString>,
+    /// A direct message's other person's custom status: its emoji after
+    /// the name (#221), its text in the emoji's tooltip (#681).
+    pub status: Option<crate::custom_status::StatusLine>,
 }
 
 impl ChannelRow {
@@ -76,7 +76,7 @@ impl ChannelRow {
             muted: false,
             person: None,
             handle: None,
-            status_emoji: None,
+            status: None,
         }
     }
 
@@ -86,9 +86,9 @@ impl ChannelRow {
         self
     }
 
-    /// The other person's custom status emoji.
-    pub fn status_emoji(mut self, emoji: impl Into<SharedString>) -> Self {
-        self.status_emoji = Some(emoji.into());
+    /// The other person's custom status.
+    pub fn status(mut self, status: crate::custom_status::StatusLine) -> Self {
+        self.status = Some(status);
         self
     }
 
@@ -1145,14 +1145,25 @@ impl SidebarView {
         if row.muted && !selected {
             item = item.opacity(0.6);
         }
-        let mut trailing: Vec<gpui_kit::AnyElement> = Vec::new();
-        if let Some(emoji) = &row.status_emoji {
-            trailing.push(crate::custom_status::emoji(
-                emoji,
-                scaled(&theme, metrics::ICON_SMALL),
-                cx,
-            ));
+        // The status emoji follows the name, where the options button never
+        // covers it, and its tooltip reads the status (#681).
+        if let Some(status) = &row.status {
+            let mut tooltip = status.label();
+            if let Some(until) = status.until_label(
+                &jiff::Zoned::now(),
+                crate::settings::ClockFormat::current(cx),
+            ) {
+                tooltip = format!("{tooltip} · {until}");
+            }
+            item = item
+                .label_suffix(crate::custom_status::emoji(
+                    &status.emoji,
+                    scaled(&theme, metrics::ICON_SMALL),
+                    cx,
+                ))
+                .label_suffix_tooltip(tooltip);
         }
+        let mut trailing: Vec<gpui_kit::AnyElement> = Vec::new();
         if row.mentions > 0 {
             trailing.push(
                 Badge::count(row.mentions, 99)
@@ -1175,7 +1186,7 @@ impl SidebarView {
                     .into_any_element(),
             );
         }
-        // The emoji and the count or dot hide while the row is hovered,
+        // The count or dot hides while the row is hovered,
         // where the options button takes their place, as in Mattermost.
         if !trailing.is_empty() {
             item = item.trailing(
