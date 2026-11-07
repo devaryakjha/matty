@@ -117,6 +117,13 @@ where slow frames show first. What keeps it smooth:
 - Transcript rows read posts from the shared channel model instead of a
   copy per frame, and only the hovered or selected row builds the hover
   toolbar.
+- GPUI's background tasks run on the main thread too, unless the page has
+  `threads=1`. The browser forbids blocking the main thread, so with web
+  workers, the first time the main thread finds a lock a worker holds (GPUI
+  Kit's text views share a channel with their background parser),
+  `Atomics.wait` traps, the App stays borrowed and the page stops
+  responding for good. Signed in under live traffic that happened in most
+  runs; without workers it hasn't happened, and frames cost the same.
 
 To measure, `node scripts/web-bench.mjs <label> <dist dir or URL> --headed`
 drives Chrome (through Playwright) over a build or the live site: startup,

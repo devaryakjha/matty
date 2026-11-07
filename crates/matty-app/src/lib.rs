@@ -179,8 +179,18 @@ pub fn run_with_links(links: Vec<String>) {
 ///
 /// `demo` is a sample workspace `matty-demo` wrote; it opens instead of the
 /// sign-in card while no account is saved.
+///
+/// `threads` runs GPUI's background tasks on web workers. It is off by
+/// default: the main thread may not block in the browser, so when it meets a
+/// lock a worker holds (GPUI Kit's text views share a channel with their
+/// background parser), `Atomics.wait` traps and the app stops for good.
 #[cfg(target_family = "wasm")]
-pub fn run_web(fallback_font: &'static [u8], webgl: bool, demo: Option<&'static [u8]>) {
+pub fn run_web(
+    fallback_font: &'static [u8],
+    webgl: bool,
+    threads: bool,
+    demo: Option<&'static [u8]>,
+) {
     if let Some(demo) = demo {
         let _ = DEMO_SNAPSHOT.set(demo);
     }
@@ -190,7 +200,7 @@ pub fn run_web(fallback_font: &'static [u8], webgl: bool, demo: Option<&'static 
     } else {
         gpui_kit::platform::WebBackendPreference::Auto
     };
-    let platform = gpui_kit::web::WebPlatform::new_with_backend(true, backend);
+    let platform = gpui_kit::web::WebPlatform::new_with_backend(threads, backend);
     // Image URLs load through the browser's fetch.
     let http_client = std::sync::Arc::new(platform.fetch_http_client());
     let app = gpui_kit::Application::with_platform(std::rc::Rc::new(platform))
