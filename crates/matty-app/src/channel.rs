@@ -5164,7 +5164,6 @@ impl ChannelView {
             .flex_shrink_0()
             .px(scaled(&theme, metrics::GUTTER))
             .pt(theme.space(1.))
-            .pb(theme.space(4.))
             .children(self.scheduled_hint(cx))
             .children(self.priority_tag(cx))
             .children(link_preview)
@@ -5525,8 +5524,8 @@ impl Render for ChannelView {
                 view.child(self.bookmarks.clone())
             })
             .child(div().flex_1().min_h_0().child(body))
-            .child(Self::typing_line(&channel, cx))
             .child(self.composer(cx))
+            .child(Self::typing_line(&channel, cx))
             .children(overlay)
             // Zero-size host for the shared post menu; it opens at the pointer.
             // Disabled so the empty host is not a tab stop.
@@ -5624,8 +5623,10 @@ pub(crate) fn typing_text(names: &[SharedString]) -> String {
     }
 }
 
-/// The typing line under a transcript (#137); it keeps its height when
-/// nobody is typing, so the transcript does not jump.
+/// The typing line under the composer (#137), as in Mattermost. It is the
+/// composer's bottom margin, so it keeps its height when nobody is typing
+/// and the transcript does not jump, and no empty strip sits between the
+/// last message and the composer (#678).
 pub(crate) fn typing_line(names: &[SharedString], cx: &App) -> gpui_kit::Div {
     let theme = UiTheme::read(cx);
     div()
