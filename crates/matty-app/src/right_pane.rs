@@ -3079,7 +3079,6 @@ impl RightPaneView {
                 this.add_sources(paths.paths().iter().cloned().map(UploadSource::Path), cx)
             }))
             .child(div().flex_1().min_h_0().child(transcript))
-            .child(crate::channel::typing_line(&self.typing, cx))
             .child(
                 div()
                     .flex_shrink_0()
@@ -3088,7 +3087,6 @@ impl RightPaneView {
                     }))
                     .px(theme.space(4.))
                     .pt(theme.space(1.))
-                    .pb(theme.space(4.))
                     .children(self.link.preview(
                         "right-pane.link-preview",
                         cx,
@@ -3174,6 +3172,7 @@ impl RightPaneView {
                             )),
                     ),
             )
+            .child(crate::channel::typing_line(&self.typing, cx))
             .children(overlay)
     }
 
