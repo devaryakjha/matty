@@ -429,6 +429,15 @@ pub enum RightPaneEvent {
 /// replies divider, and the row that pages in older replies (#122).
 const THREAD_HEAD: usize = 3;
 
+/// What a lightbox image is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LightboxItem {
+    /// A file on the post, by id.
+    File(SharedString),
+    /// An image the message links to, by URL.
+    Link(SharedString),
+}
+
 pub struct RightPaneView {
     /// `style::composer_cap` as of the last render.
     composer_cap: gpui_kit::Pixels,
@@ -482,7 +491,9 @@ pub struct RightPaneView {
     /// The image viewer over a post's images.
     lightbox: Entity<LightboxState>,
     lightbox_handle: DialogHandle,
-    lightbox_files: Vec<SharedString>,
+    /// What each lightbox image is: a file id to download, or the URL of
+    /// an image the message links to (#683).
+    lightbox_items: Vec<LightboxItem>,
     /// The "Leave channel?" confirmation.
     leave: DialogHandle,
     /// The connection is down, so pending replies wait for it (#195).
@@ -732,7 +743,7 @@ impl RightPaneView {
             suggestion_at: None,
             lightbox: cx.new(|_| LightboxState::new([])),
             lightbox_handle: DialogHandle::new(false),
-            lightbox_files: Vec::new(),
+            lightbox_items: Vec::new(),
             leave: DialogHandle::new(false),
             away: crate::preview::connection() != crate::main_window::ConnectionState::Online,
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
@@ -760,7 +771,9 @@ impl RightPaneView {
         }
     }
 
-    /// Opens the lightbox over `post`'s images at image `index`.
+    /// Opens the lightbox over `post`'s images at image `index`: its image
+    /// files first, then the images its message links to, as the channel
+    /// does.
     fn open_lightbox(
         &mut self,
         post: &Post,
@@ -768,13 +781,83 @@ impl RightPaneView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let caption: SharedString = format!(
+        let caption = Self::caption(post, cx);
+        let mut items = Vec::new();
+        let mut images = Self::file_images(&post.files, &caption, &mut items);
+        for embed in &post.embeds {
+            if let crate::embeds::Embed::Image(image) = embed
+                && let Some(loaded) = &image.loaded
+            {
+                items.push(LightboxItem::Link(image.url.clone()));
+                images.push(
+                    LightboxImage::new(
+                        gpui_kit::ImageSource::Image(loaded.clone()),
+                        crate::embeds::image_name(&image.url),
+                    )
+                    .dimensions(image.width, image.height)
+                    .caption(caption.clone()),
+                );
+            }
+        }
+        self.show_images(items, images, index, window, cx);
+    }
+
+    /// Opens the lightbox at the image `url` that `post` links to; one
+    /// still loading opens in the browser.
+    fn open_linked_image(
+        &mut self,
+        post: &Post,
+        url: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let files = post
+            .files
+            .iter()
+            .filter(|file| file.image().is_some())
+            .count();
+        let index = post
+            .embeds
+            .iter()
+            .filter_map(|embed| match embed {
+                crate::embeds::Embed::Image(image) if image.loaded.is_some() => Some(&image.url),
+                _ => None,
+            })
+            .position(|linked| *linked == url);
+        match index {
+            Some(index) => self.open_lightbox(post, files + index, window, cx),
+            None => cx.open_url(&url),
+        }
+    }
+
+    fn caption(post: &Post, cx: &App) -> SharedString {
+        format!(
             "{} · {}",
             post.author,
             ClockFormat::current(cx).format(post.time)
         )
-        .into();
-        self.open_images(&post.files, caption, index, window, cx);
+        .into()
+    }
+
+    /// `files`' images for the lightbox, each under `caption`, noting each
+    /// in `items`.
+    fn file_images(
+        files: &[crate::attachments::PostFile],
+        caption: &SharedString,
+        items: &mut Vec<LightboxItem>,
+    ) -> Vec<LightboxImage> {
+        files
+            .iter()
+            .filter_map(|file| {
+                let image = file.image()?;
+                items.push(LightboxItem::File(file.id.clone()));
+                Some(
+                    LightboxImage::new(image, file.name.clone())
+                        .dimensions(file.width, file.height)
+                        .caption(caption.clone()),
+                )
+            })
+            .collect()
     }
 
     /// Opens `files`' images in the lightbox at the `index`th, each under
@@ -787,23 +870,36 @@ impl RightPaneView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut ids = Vec::new();
-        let images: Vec<LightboxImage> = files
-            .iter()
-            .filter_map(|file| {
-                let image = file.image()?;
-                ids.push(file.id.clone());
-                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
-            })
-            .collect();
+        let mut items = Vec::new();
+        let images = Self::file_images(files, &caption, &mut items);
+        self.show_images(items, images, index, window, cx);
+    }
+
+    fn show_images(
+        &mut self,
+        items: Vec<LightboxItem>,
+        images: Vec<LightboxImage>,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if images.is_empty() {
             return;
         }
-        self.lightbox_files = ids.clone();
+        let files: Vec<SharedString> = items
+            .iter()
+            .filter_map(|item| match item {
+                LightboxItem::File(id) => Some(id.clone()),
+                LightboxItem::Link(_) => None,
+            })
+            .collect();
+        self.lightbox_items = items;
         self.lightbox
             .update(cx, |lightbox, cx| lightbox.set_images(images, index, cx));
         self.lightbox_handle.open(window, cx);
-        cx.emit(RightPaneEvent::ViewImages(ids));
+        if !files.is_empty() {
+            cx.emit(RightPaneEvent::ViewImages(files));
+        }
         cx.notify();
     }
 
@@ -815,7 +911,11 @@ impl RightPaneView {
         image: std::sync::Arc<gpui_kit::Image>,
         cx: &mut Context<Self>,
     ) {
-        let Some(position) = self.lightbox_files.iter().position(|id| id == file_id) else {
+        let Some(position) = self
+            .lightbox_items
+            .iter()
+            .position(|item| *item == LightboxItem::File(file_id.clone()))
+        else {
             return;
         };
         self.lightbox.update(cx, |lightbox, cx| {
@@ -841,8 +941,10 @@ impl RightPaneView {
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 let index = this.lightbox.read(cx).index();
-                if let Some(id) = this.lightbox_files.get(index) {
-                    cx.emit(RightPaneEvent::OpenFile(id.clone()));
+                match this.lightbox_items.get(index) {
+                    Some(LightboxItem::File(id)) => cx.emit(RightPaneEvent::OpenFile(id.clone())),
+                    Some(LightboxItem::Link(url)) => cx.open_url(url),
+                    None => {}
                 }
             }))
             .into_any_element();
@@ -2703,10 +2805,14 @@ impl RightPaneView {
                 });
             }
         });
-        let link_view = view.clone();
-        let on_image: crate::embeds::ImageHandler = std::rc::Rc::new(move |url, _, cx| {
-            let event = RightPaneEvent::OpenLink(url);
-            link_view.update(cx, |_, cx| cx.emit(event)).ok();
+        // A linked image opens in the image viewer, as in the channel (#683).
+        let (image_view, image_post) = (view.clone(), post.clone());
+        let on_image: crate::embeds::ImageHandler = std::rc::Rc::new(move |url, window, cx| {
+            image_view
+                .update(cx, |this, cx| {
+                    this.open_linked_image(&image_post, url, window, cx)
+                })
+                .ok();
         });
         let jump_view = view.clone();
         let on_jump: crate::embeds::OnJump = std::rc::Rc::new(move |channel, post, _, cx| {
@@ -2943,6 +3049,27 @@ impl RightPaneView {
                 picker.update(cx, |picker, cx| picker.open(window, cx));
                 emoji_popup(EmojiPicker::new(&picker).bordered(false), cx)
             });
+        let format_bar = SettingsStore::global(cx).read(cx).get().format_bar;
+        let format_tool =
+            |id: &'static str,
+             label: SharedString,
+             action: &'static str,
+             glyph: LucideIcon,
+             (before, after): (&'static str, &'static str)| {
+                let composer = self.composer.clone();
+                style::tipped(
+                    SharedString::from(format!("{id}.tip")),
+                    actions::tooltip_text(&label, action),
+                    tool(id, label, glyph).on_click(move |_, window, cx| {
+                        composer.update(cx, |composer, cx| {
+                            crate::channel::format_bar::toggle_format(
+                                composer, before, after, window, cx,
+                            );
+                            composer.focus(window, cx);
+                        })
+                    }),
+                )
+            };
         div()
             .size_full()
             .relative()
@@ -2971,6 +3098,7 @@ impl RightPaneView {
                         }),
                     ))
                     .children(tray)
+                    .children(crate::channel::format_bar::format_row(&self.composer, cx))
                     .children(crate::slash::error_line(
                         "right-pane.command-error",
                         self.slash.error(),
@@ -2987,6 +3115,54 @@ impl RightPaneView {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_files(window, cx)
                                     })),
+                            ))
+                            // The channel composer's formats, so a reply
+                            // writes the same way (#683).
+                            .child(format_tool(
+                                "right-pane.bold",
+                                t!("chan-bold"),
+                                "Bold", // i18n-ignore: the shortcut table's action name
+                                LucideIcon::Bold,
+                                ("**", "**"),
+                            ))
+                            .child(format_tool(
+                                "right-pane.italic",
+                                t!("chan-italic"),
+                                "Italic", // i18n-ignore: the shortcut table's action name
+                                LucideIcon::Italic,
+                                ("_", "_"),
+                            ))
+                            .child(format_tool(
+                                "right-pane.code",
+                                t!("chan-code"),
+                                "Inline code", // i18n-ignore: the shortcut table's action name
+                                LucideIcon::Code,
+                                ("`", "`"),
+                            ))
+                            .child(style::tipped(
+                                "right-pane.formatting.tip",
+                                if format_bar {
+                                    t!("chan-hide-formatting")
+                                } else {
+                                    t!("chan-show-formatting")
+                                },
+                                tool(
+                                    "right-pane.formatting",
+                                    if format_bar {
+                                        t!("chan-hide-formatting")
+                                    } else {
+                                        t!("chan-show-formatting")
+                                    },
+                                    LucideIcon::Type,
+                                )
+                                .variant(if format_bar {
+                                    ButtonVariant::Secondary
+                                } else {
+                                    ButtonVariant::Ghost
+                                })
+                                .on_click(|_, _, cx| {
+                                    crate::channel::format_bar::toggle_format_bar(cx)
+                                }),
                             ))
                             .child(emoji_popover)
                             .child(div().flex_1())

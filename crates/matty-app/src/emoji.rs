@@ -148,11 +148,21 @@ const TONES: [(emojis::SkinTone, &str); 5] = [
 /// The emoji a Mattermost name stands for, in a skin tone when the name
 /// ends in one (the `emojis` crate names only the default tone).
 pub fn lookup(name: &str) -> Option<&'static emojis::Emoji> {
-    if let Some(emoji) = emojis::get_by_shortcode(name) {
+    if let Some(emoji) = base(name) {
         return Some(emoji);
     }
-    TONES.iter().find_map(|(tone, suffix)| {
-        emojis::get_by_shortcode(name.strip_suffix(suffix)?)?.with_skin_tone(*tone)
+    TONES
+        .iter()
+        .find_map(|(tone, suffix)| base(name.strip_suffix(suffix)?)?.with_skin_tone(*tone))
+}
+
+/// A default-tone emoji by its gemoji shortcode, or by Mattermost's name
+/// for a flag (`flag-us`), which gemoji names by country (`us`).
+fn base(name: &str) -> Option<&'static emojis::Emoji> {
+    emojis::get_by_shortcode(name).or_else(|| {
+        let country = name.strip_prefix("flag-")?;
+        emojis::get_by_shortcode(country)
+            .or_else(|| emojis::get_by_shortcode(&format!("flag_{country}")))
     })
 }
 
@@ -367,6 +377,20 @@ mod tests {
         assert_eq!(ranked[0], "smiley_cat");
         assert_eq!(ranked.len(), 3);
         assert_eq!(ranked.iter().filter(|n| *n == "smiley_cat").count(), 1);
+    }
+
+    #[test]
+    fn mattermost_names_find_their_emoji() {
+        for (name, glyph) in [
+            ("clown_face", "🤡"),
+            ("slightly_smiling_face", "🙂"),
+            ("thumbsup", "👍"),
+            ("+1", "👍"),
+            ("flag-us", "🇺🇸"),
+        ] {
+            assert_eq!(lookup(name).map(|e| e.as_str()), Some(glyph), "{name}");
+        }
+        assert!(lookup("not_an_emoji").is_none());
     }
 
     #[test]
