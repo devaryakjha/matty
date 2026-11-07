@@ -9,6 +9,7 @@ mod slash;
 use gpui_icons::{LucideIcon, lucide};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
@@ -1190,8 +1191,10 @@ enum LightboxItem {
 }
 
 pub struct ChannelView {
-    model: Option<ChannelModel>,
-    rows: Vec<Row>,
+    /// Shared with each frame's row renderer, so drawing never copies the
+    /// posts (#671); changes go through `Rc::make_mut`.
+    model: Option<Rc<ChannelModel>>,
+    rows: Rc<Vec<Row>>,
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
     /// One menu for every post: its items are set when it opens.
@@ -1492,7 +1495,7 @@ impl ChannelView {
             }),
             cx.subscribe(&add_members, |this, _, event: &AddMembersEvent, cx| {
                 let AddMembersEvent::Add(people) = event;
-                if let Some(model) = this.model.as_mut() {
+                if let Some(model) = this.model.as_mut().map(Rc::make_mut) {
                     model.members += people.len();
                 }
                 cx.notify();
@@ -1503,7 +1506,7 @@ impl ChannelView {
                     muted,
                     notifications,
                 } = *event;
-                if let Some(model) = this.model.as_mut() {
+                if let Some(model) = this.model.as_mut().map(Rc::make_mut) {
                     model.muted = muted;
                     model.notifications = notifications;
                 }
@@ -1562,7 +1565,7 @@ impl ChannelView {
         ];
         let mut this = Self {
             model: None,
-            rows,
+            rows: Rc::new(rows),
             list,
             composer,
             menu,
@@ -1624,7 +1627,7 @@ impl ChannelView {
     }
 
     pub fn model(&self) -> Option<&ChannelModel> {
-        self.model.as_ref()
+        self.model.as_deref()
     }
 
     /// Shows or hides the header's split view buttons (#222).
@@ -1653,7 +1656,7 @@ impl ChannelView {
             model.as_ref().is_some_and(|model| model.loading),
             model.as_ref().map_or(0, |model| model.posts.len()),
         );
-        self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
+        self.rows = Rc::new(model.as_ref().map(ChannelModel::rows).unwrap_or_default());
         if model.as_ref().map(|m| &m.id) != self.model.as_ref().map(|m| &m.id) {
             crate::apps::forget(cx.entity_id(), cx);
             if let Some((bookmarks, apps)) = model
@@ -1716,7 +1719,7 @@ impl ChannelView {
             self.switch_draft(key, window, cx);
             self.slash.reset();
         }
-        self.model = model;
+        self.model = model.map(Rc::new);
         self.apply_pending_jump(cx);
         cx.notify();
     }
@@ -1771,7 +1774,7 @@ impl ChannelView {
         if posts.is_empty() {
             return;
         }
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         // Joins and other system rows are not messages to catch up on.
@@ -1785,7 +1788,7 @@ impl ChannelView {
         let rows = model.rows();
         let before = self.rows.len();
         let added = rows.len().saturating_sub(before);
-        self.rows = rows;
+        self.rows = Rc::new(rows);
         self.history.loading_newer = false;
         let scrolled_up = self.list.read(cx).is_scrolled_up();
         self.list.update(cx, |list, cx| {
@@ -1804,7 +1807,7 @@ impl ChannelView {
     /// gpuicn's list anchors the scroll on the row that was at the top.
     pub fn prepend_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
         self.history.loading = false;
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let before = self.rows.len();
@@ -1814,7 +1817,7 @@ impl ChannelView {
             cx.notify();
             return;
         }
-        self.rows = model.rows();
+        self.rows = Rc::new(model.rows());
         let added = self.rows.len().saturating_sub(before);
         self.selection = self.selection.map(|row| row + added);
         self.list.update(cx, |list, cx| {
@@ -2063,7 +2066,7 @@ impl ChannelView {
     /// Removes a post the server deleted. Only its rows leave the list, so
     /// the scroll and the New messages line stay where they were (#164).
     pub fn remove_post(&mut self, id: &SharedString, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
@@ -2075,7 +2078,7 @@ impl ChannelView {
             let first = if at < first { first - 1 } else { first };
             (first < model.posts.len()).then_some(first)
         });
-        self.rows = model.rows();
+        self.rows = Rc::new(model.rows());
         let (range, count) = changed_rows(&before, &model.row_keys(&self.rows));
         let rows = self.rows.len();
         self.list.update(cx, |list, cx| {
@@ -2122,7 +2125,7 @@ impl ChannelView {
 
     /// Sync or the info pane changed the star; the header follows.
     pub fn set_favorite(&mut self, favorite: bool, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.favorite = favorite;
             cx.notify();
         }
@@ -2131,7 +2134,7 @@ impl ChannelView {
     /// Sync loaded the channel's header, purpose and counts; the scroll
     /// stays where it is.
     pub fn set_details(&mut self, details: crate::live::Details, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.header = details.header;
             model.purpose = details.purpose;
             model.members = details.members;
@@ -2149,7 +2152,7 @@ impl ChannelView {
                 .update(cx, |bar, cx| bar.set_model(details.bookmarks, cx));
             if menu_changed {
                 let model = self.model.clone();
-                self.refresh_header_menu(model.as_ref(), cx);
+                self.refresh_header_menu(model.as_deref(), cx);
             }
             cx.notify();
         }
@@ -2163,7 +2166,7 @@ impl ChannelView {
         notifications: ChannelNotifications,
         cx: &mut Context<Self>,
     ) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && (model.muted, model.notifications) != (muted, notifications)
         {
             model.muted = muted;
@@ -2175,7 +2178,7 @@ impl ChannelView {
     /// The people typing in the channel now, for the line under the
     /// transcript.
     pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.typing != names
         {
             model.typing = names;
@@ -2186,7 +2189,7 @@ impl ChannelView {
     /// Profiles for the avatar card and `@` autocomplete, as sync learns
     /// of people.
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.profiles != profiles
         {
             model.profiles = profiles;
@@ -2196,7 +2199,7 @@ impl ChannelView {
 
     /// The channel's admins, once its full member list loaded (#208).
     pub fn set_admins(&mut self, admins: Vec<SharedString>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.admins != admins
         {
             model.admins = admins;
@@ -2206,7 +2209,7 @@ impl ChannelView {
 
     /// Sync or the info pane muted or unmuted the channel.
     pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.muted = muted;
             cx.notify();
         }
@@ -2667,7 +2670,7 @@ impl ChannelView {
             .map(PostFile::from_upload)
             .collect();
         let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
-        let Some(mut model) = self.model.clone() else {
+        let Some(mut model) = self.model.as_deref().cloned() else {
             return;
         };
         let priority = self.take_priority(cx);
@@ -2886,11 +2889,12 @@ impl ChannelView {
         change: impl FnOnce(&mut Post),
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(post) = self
-            .model
-            .as_mut()
-            .and_then(|channel| channel.posts.iter_mut().find(|post| &post.id == id))
-        else {
+        let Some(post) = self.model.as_mut().and_then(|channel| {
+            Rc::make_mut(channel)
+                .posts
+                .iter_mut()
+                .find(|post| &post.id == id)
+        }) else {
             return false;
         };
         change(post);
@@ -3100,7 +3104,7 @@ impl ChannelView {
             cx,
         );
         if changed {
-            if let Some(channel) = self.model.as_mut() {
+            if let Some(channel) = self.model.as_mut().map(Rc::make_mut) {
                 channel.pinned = if now_pinned {
                     channel.pinned + 1
                 } else {
@@ -3114,7 +3118,7 @@ impl ChannelView {
     /// Removes the post from the transcript and tells sync. The rows are
     /// rebuilt because the dividers around it may go too.
     fn delete_post(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut model) = self.model.clone() else {
+        let Some(mut model) = self.model.as_deref().cloned() else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| post.id == id) else {
@@ -3647,7 +3651,7 @@ impl ChannelView {
 
     /// Applies a saved edit to the model and tells sync.
     fn apply_edit(&mut self, field: ChannelField, value: SharedString, cx: &mut Context<Self>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let optional = (!value.is_empty()).then(|| value.clone());
@@ -4780,9 +4784,13 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
+        // Both are shared, not copied: a frame must not cost more as the
+        // channel's history grows (#671).
         let rows = self.rows.clone();
-        let posts = channel.posts.clone();
-        let profiles = channel.profiles.clone();
+        let channel = self
+            .model
+            .clone()
+            .unwrap_or_else(|| Rc::new(channel.clone()));
         let view = cx.entity();
         MessageList::new(
             "channel.transcript",
@@ -4807,12 +4815,13 @@ impl ChannelView {
                         .into_any_element()
                 }
                 Some(Row::System(post)) => {
-                    let post = posts[*post].clone();
+                    let post = channel.posts[*post].clone();
                     view.update(cx, |_, cx| Self::system_row(&post, cx).into_any_element())
                 }
                 Some(Row::Post(post)) => {
-                    let post = posts[*post].clone();
-                    let profile = profiles
+                    let post = channel.posts[*post].clone();
+                    let profile = channel
+                        .profiles
                         .iter()
                         .find(|profile| profile.display_name == post.author);
                     view.update(cx, |this, cx| {
