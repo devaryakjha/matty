@@ -20,9 +20,9 @@ use crate::attachments::{
     AttachmentStatus, PostFile, SendGate, UploadSource, UploadTray, post_files,
 };
 use crate::channel::{
-    ChannelModel, Post, PostKind, PostStatus, QUICK_REACTIONS, delete_popup, edit_composer,
+    ChannelModel, Post, PostKind, PostStatus, delete_popup, edit_composer, emoji_popup,
     message_density, plain_text, post_editor, post_markers, post_time, queued, queued_marker,
-    reaction_tooltip, waiting_items, waiting_to_send,
+    quick_reaction_buttons, reaction_tooltip, waiting_items, waiting_to_send,
 };
 use crate::profile::{ProfileActions, UserProfile, profile_card, profile_pane};
 use crate::settings::{ClockFormat, SettingsChanged, SettingsStore};
@@ -37,6 +37,7 @@ use crate::ui::{
     button::{Button, ButtonSize, ButtonVariant},
     composer::{Composer, ComposerEvent, ComposerState, ComposerSuggestion},
     dialog::{DialogHandle, dialog_description, dialog_popup, dialog_title},
+    emoji_picker::{EmojiPicker, EmojiPickerEvent, EmojiPickerState},
     input::{Input, InputEvent, InputState},
     lightbox::{LightboxImage, LightboxState, lightbox},
     menu::{Menu, MenuItem, MenuState},
@@ -521,6 +522,12 @@ pub struct RightPaneView {
     slash: crate::slash::Slash,
     /// Picks a custom time for "Schedule message" (#220).
     schedule_dialog: Entity<crate::scheduled::ScheduleDialog>,
+    /// The full emoji picker, on the reply composer's emoji button, for the
+    /// reply or for a reaction, as in the channel (#679).
+    picker: Entity<EmojiPickerState>,
+    picker_open: bool,
+    /// The post the picker reacts to; `None` types into the reply.
+    picker_target: Option<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -627,7 +634,17 @@ impl RightPaneView {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("pane-search-placeholder")));
         let (schedule_dialog, scheduling) = schedule::schedule_dialog(window, cx);
         let composer_input = composer.read(cx).input().clone();
+        let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let subscriptions = vec![
+            cx.subscribe_in(
+                &picker,
+                window,
+                |this, _, event: &EmojiPickerEvent, window, cx| match event {
+                    EmojiPickerEvent::Pick(name) => this.pick_emoji(name.clone(), window, cx),
+                    EmojiPickerEvent::Cancel => this.close_picker(window, cx),
+                    EmojiPickerEvent::SkinTone(tone) => crate::emoji::save_skin_tone(*tone, cx),
+                },
+            ),
             // Typed or set (a draft, a send, a cleared command): the slash
             // command line's suggestions follow the text.
             cx.observe(&composer_input, |this, input, cx| {
@@ -738,6 +755,9 @@ impl RightPaneView {
             action_menus: Default::default(),
             slash: Default::default(),
             schedule_dialog,
+            picker,
+            picker_open: false,
+            picker_target: None,
             _permalink_task: None,
             pending_jump: None,
             _subscriptions: subscriptions,
@@ -2061,26 +2081,37 @@ impl RightPaneView {
         });
     }
 
-    /// The quick reactions for a thread post, checked where they are
-    /// mine: the hover toolbar's menu and the right-click submenu (#620).
-    fn reaction_items(view: &gpui_kit::WeakEntity<Self>, post: &Post) -> Vec<MenuItem> {
-        QUICK_REACTIONS
-            .iter()
-            .map(|(emoji, name)| {
-                let (view, id) = (view.clone(), post.id.clone());
-                let emoji: SharedString = (*emoji).into();
-                MenuItem::new(
-                    gpui_kit::ElementId::Name(format!("thread.react.{name}").into()),
-                    format!("{emoji}  {}", crate::channel::reaction_name(name)),
-                )
-                .checked(post.reactions.iter().any(|r| r.emoji == emoji && r.mine))
-                .on_click(move |_, _, cx| {
-                    let (id, emoji) = (id.clone(), emoji.clone());
-                    view.update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
-                        .ok();
+    /// Opens the picker for `target` (a post to react to, or the reply).
+    fn open_picker(&mut self, target: Option<SharedString>, cx: &mut Context<Self>) {
+        self.picker.update(cx, crate::emoji::prepare_picker);
+        self.picker_target = target;
+        self.picker_open = true;
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker_open {
+            self.picker_open = false;
+            self.picker_target = None;
+            self.composer
+                .update(cx, |composer, cx| composer.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    fn pick_emoji(&mut self, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let glyph = crate::emoji::glyph(&name).unwrap_or_else(|| format!(":{name}:").into());
+        match self.picker_target.take() {
+            // Reacting counts the pick itself.
+            Some(post) => self.toggle_reaction(post, glyph, cx),
+            None => {
+                crate::emoji::record_pick(&name, cx);
+                self.composer.update(cx, |composer, cx| {
+                    composer.insert(format!("{glyph} "), window, cx);
                 })
-            })
-            .collect()
+            }
+        }
+        self.close_picker(window, cx);
     }
 
     /// The right-click menu of a thread row: a reaction submenu and copy;
@@ -2093,12 +2124,18 @@ impl RightPaneView {
         reply: bool,
     ) -> Vec<MenuItem> {
         let body = post.body.clone();
-        let reactions = Self::reaction_items(view, post);
         let markdown_body = post.body.clone();
         // The server does not have an unsent reply yet: nothing to react to.
         let mut items = if post.status == PostStatus::Sent {
+            let (view, id) = (view.clone(), post.id.clone());
             vec![
-                MenuItem::submenu("thread.context.react", t!("pane-add-reaction"), reactions),
+                MenuItem::new("thread.context.react", t!("pane-add-reaction-menu")).on_click(
+                    move |_, _, cx| {
+                        let id = id.clone();
+                        view.update(cx, |this, cx| this.open_picker(Some(id), cx))
+                            .ok();
+                    },
+                ),
                 MenuItem::separator(),
             ]
         } else {
@@ -2637,13 +2674,11 @@ impl RightPaneView {
         ));
         if reactable && !post.reactions.is_empty() {
             // The chip row gets an add button, as in the channel (#620).
-            let (add_view, add_post) = (view.clone(), std::rc::Rc::new(post.clone()));
-            row = row.on_add_reaction(move |event, window, cx| {
-                let items = Self::reaction_items(&add_view, &add_post);
+            let (add_view, add_id) = (view.clone(), post.id.clone());
+            row = row.on_add_reaction(move |_, _, cx| {
+                let id = add_id.clone();
                 add_view
-                    .update(cx, |this, cx| {
-                        this.open_menu(items, event.position(), window, cx)
-                    })
+                    .update(cx, |this, cx| this.open_picker(Some(id), cx))
                     .ok();
             });
         }
@@ -2684,11 +2719,24 @@ impl RightPaneView {
         let menu_open = view
             .upgrade()
             .is_some_and(|pane| pane.read(cx).menu.read(cx).is_open());
+        let quick_view = view.clone();
+        let quick_id = id.clone();
+        let quick = quick_reaction_buttons(
+            &id,
+            move |emoji, cx| {
+                let id = quick_id.clone();
+                quick_view
+                    .update(cx, |this, cx| this.toggle_reaction(id, emoji, cx))
+                    .ok();
+            },
+            cx,
+        );
         let post = std::rc::Rc::new(post.clone());
-        let (react_view, react_post) = (view.clone(), post.clone());
+        let (react_view, react_id) = (view.clone(), id.clone());
         let react_selector = format!("thread.{id}.react");
         let (more_view, more_post) = (view.clone(), post);
         message_actions(cx)
+            .children(quick)
             .child(
                 style::tipped_when(
                     !menu_open,
@@ -2700,16 +2748,12 @@ impl RightPaneView {
                         t!("pane-add-reaction"),
                         cx,
                     )
-                    .on_click(
-                        move |event: &gpui_kit::ClickEvent, window, cx| {
-                            let items = Self::reaction_items(&react_view, &react_post);
-                            react_view
-                                .update(cx, |this, cx| {
-                                    this.open_menu(items, event.position(), window, cx)
-                                })
-                                .ok();
-                        },
-                    ),
+                    .on_click(move |_, _, cx| {
+                        let id = react_id.clone();
+                        react_view
+                            .update(cx, |this, cx| this.open_picker(Some(id), cx))
+                            .ok();
+                    }),
                 )
                 .debug_selector(move || react_selector.clone()),
             )
@@ -2973,6 +3017,38 @@ impl RightPaneView {
                         .text_color(theme.colors.muted_foreground),
                 )
         };
+        // The full picker, for the reply or a reaction, as in the channel
+        // (#679).
+        let picker = self.picker.clone();
+        let picker_open = self.picker_open;
+        let emoji_tool = tool(
+            "right-pane.emoji",
+            t!("pane-emoji"),
+            LucideIcon::FaceSlightlySmiling,
+        );
+        let emoji_popover = popover("right-pane.emoji.popover")
+            .open(picker_open)
+            .offset(px(6.))
+            .trigger_with(move |_, _, _| {
+                style::tipped_when(
+                    !picker_open,
+                    "right-pane.emoji.tip",
+                    t!("pane-emoji"),
+                    emoji_tool,
+                )
+                .into_any_element()
+            })
+            .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                if *open {
+                    this.open_picker(None, cx);
+                } else {
+                    this.close_picker(window, cx);
+                }
+            }))
+            .content(move |_, window, cx| {
+                picker.update(cx, |picker, cx| picker.open(window, cx));
+                emoji_popup(EmojiPicker::new(&picker).bordered(false), cx)
+            });
         let format_bar = SettingsStore::global(cx).read(cx).get().format_bar;
         let format_tool =
             |id: &'static str,
@@ -3086,23 +3162,7 @@ impl RightPaneView {
                                     crate::channel::format_bar::toggle_format_bar(cx)
                                 }),
                             ))
-                            .child(style::tipped(
-                                "right-pane.emoji.tip",
-                                t!("pane-emoji"),
-                                tool(
-                                    "right-pane.emoji",
-                                    t!("pane-emoji"),
-                                    LucideIcon::FaceSlightlySmiling,
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.composer.update(cx, |composer, cx| {
-                                            composer.insert(":", window, cx);
-                                            composer.focus(window, cx);
-                                        })
-                                    },
-                                )),
-                            ))
+                            .child(emoji_popover)
                             .child(div().flex_1())
                             .children(self.schedule_button(cx))
                             .child(style::tipped(
@@ -4490,8 +4550,8 @@ mod tests {
         );
     }
 
-    /// #620: a thread post shows the channel's hover toolbar, and its
-    /// add-reaction button opens the quick reactions.
+    /// #620, #680: a thread post shows the channel's hover toolbar, and
+    /// its add-reaction button opens the full emoji picker.
     #[gpui_kit::test]
     fn a_thread_post_can_be_reacted_to_from_its_hover_toolbar(cx: &mut gpui_kit::TestAppContext) {
         let (view, _, mut cx) = pane(cx);
@@ -4508,7 +4568,7 @@ mod tests {
             .debug_bounds("thread.r1.react")
             .expect("hovering shows the add-reaction button");
         cx.simulate_click(react.center(), Default::default());
-        assert!(view.read_with(&cx, |pane, cx| pane.menu.read(cx).is_open()));
+        assert!(view.read_with(&cx, |pane, _| pane.picker_open));
     }
 
     /// #620: a reaction a reply doesn't have yet shows at once and is

@@ -595,7 +595,10 @@ pub fn post_files(
                     Attachment::new(id, file.name.clone())
                         .image(image)
                         .dimensions(file.width, file.height)
-                        .on_click(move |_, window, cx| open(index, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            open(index, window, cx)
+                        }),
                 );
             }
             Shown::Card => {
@@ -611,7 +614,10 @@ pub fn post_files(
                                 |state| state.icon(&file.name),
                             ),
                         )
-                        .on_click(move |_, window, cx| open(file_id.clone(), window, cx)),
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            open(file_id.clone(), window, cx)
+                        }),
                 );
             }
         }

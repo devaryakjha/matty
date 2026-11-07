@@ -520,7 +520,10 @@ pub fn post_embeds(
                     }
                     if opens(&link.url) {
                         let url = link.url.clone();
-                        card = card.on_click(move |_, _, cx| cx.open_url(&url));
+                        card = card.on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.open_url(&url)
+                        });
                     }
                     card.into_any_element()
                 }
@@ -641,7 +644,10 @@ fn image_element(
         .variant(ButtonVariant::Ghost)
         .size(ButtonSize::IconXs)
         .aria_label(label)
-        .on_click(move |_, window, cx| on_toggle(!collapsed, window, cx))
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_toggle(!collapsed, window, cx)
+        })
         .child(
             lucide(icon)
                 .size(theme.space(3.5))
@@ -685,7 +691,10 @@ fn image_element(
                 .max_size(theme.space(120.), theme.space(87.5));
             if opens(&image.url) {
                 let url = image.url.clone();
-                picture = picture.on_click(move |_, window, cx| on_image(url.clone(), window, cx));
+                picture = picture.on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    on_image(url.clone(), window, cx)
+                });
             }
             div()
                 .debug_selector(|| "post-image".into())

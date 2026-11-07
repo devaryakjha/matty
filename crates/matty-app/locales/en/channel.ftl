@@ -12,13 +12,9 @@ chan-reaction-nobody = Nobody
 chan-list-and = { $rest } and { $last }
 chan-list-separator = {", "}
 chan-reacted-with = { $who } reacted with { $emoji }
-chan-reaction-thumbs-up = Thumbs up
-chan-reaction-heart = Heart
-chan-reaction-joy = Joy
-chan-reaction-tada = Tada
-chan-reaction-eyes = Eyes
-chan-reaction-rocket = Rocket
-chan-more-emoji = More emoji…
+chan-react-with = React with { $emoji }
+chan-reaction-click-add = (click to add)
+chan-reaction-click-remove = (click to remove)
 
 ## A post's header
 

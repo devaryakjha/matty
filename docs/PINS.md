@@ -8,7 +8,7 @@ silently**: a pin change is its own pull request that updates this table.
 | Dependency | Pin | Source of truth | Checked |
 | --- | --- | --- | --- |
 | Rust toolchain | 1.99.1 (`rust-toolchain.toml`; MSRV 1.98) | gpuicn `release-pins.toml` `[rust]` | 2026-11-03, Claude for Arya |
-| gpuicn | `=0.9.10` (tag `v0.9.10`), crate mode | crates.io `gpuicn` | 2026-11-07, Claude for Arya |
+| gpuicn | `=0.9.11` (tag `v0.9.11`), crate mode | crates.io `gpuicn` | 2026-11-07, Claude for Arya |
 | GPUI Kit | `gpui-kit =0.9.0` (`7591a35`) | gpuicn `release-pins.toml` `[gpui_kit]` | 2026-11-03, Claude for Arya |
 | GPUI runtime | `gpui-pre-platform =0.3.11` (`gpui-pre` `f816e1f`) | gpuicn `release-pins.toml` `[gpui]` | 2026-11-03, Claude for Arya |
 | gpui-icons | `=0.6.0` (Lucide 1.63.0) | gpuicn `release-pins.toml` `[gpui_icons]` | 2026-11-03, Claude for Arya |

@@ -533,7 +533,10 @@ pub fn actions(
                 let button = button
                     .aria_label(name)
                     .disabled(off)
-                    .on_click(move |_, window, cx| on_action(choice.clone(), window, cx))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        on_action(choice.clone(), window, cx)
+                    })
                     .child(
                         div()
                             .flex()
