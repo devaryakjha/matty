@@ -1199,8 +1199,9 @@ enum LightboxItem {
 }
 
 pub struct ChannelView {
-    /// Shared with each frame's row renderer, so drawing never copies the
-    /// posts (#671); changes go through `Rc::make_mut`.
+    /// Shared with each frame's transcript rows, which read posts from it
+    /// instead of copying the whole channel every frame; changes go through
+    /// [`Rc::make_mut`].
     model: Option<Rc<ChannelModel>>,
     rows: Rc<Vec<Row>>,
     list: Entity<MessageListState>,
@@ -2449,7 +2450,11 @@ impl ChannelView {
                     None => file.image()?,
                 };
                 items.push(LightboxItem::File(file.id.clone()));
-                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
+                Some(
+                    LightboxImage::new(image, file.name.clone())
+                        .dimensions(file.width, file.height)
+                        .caption(caption.clone()),
+                )
             })
             .collect();
         for embed in &post.embeds {
@@ -2462,6 +2467,7 @@ impl ChannelView {
                         gpui_kit::ImageSource::Image(loaded.clone()),
                         crate::embeds::image_name(&image.url),
                     )
+                    .dimensions(image.width, image.height)
                     .caption(caption.clone()),
                 );
             }
@@ -2713,6 +2719,14 @@ impl ChannelView {
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
+        // Your own message always shows, as in Mattermost, even when the
+        // list was scrolled up (#678).
+        self.unseen = 0;
+        if self.history.at_end {
+            self.list.update(cx, |list, cx| list.scroll_to_end(cx));
+        } else {
+            self.jump_latest(cx);
+        }
         self._draft_task = None;
         if let Some(cleared) = self.draft.sent(cx) {
             cx.emit(ChannelEvent::SaveDraft(cleared));
@@ -2897,12 +2911,12 @@ impl ChannelView {
         change: impl FnOnce(&mut Post),
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(post) = self.model.as_mut().and_then(|channel| {
-            Rc::make_mut(channel)
-                .posts
-                .iter_mut()
-                .find(|post| &post.id == id)
-        }) else {
+        let Some(post) = self
+            .model
+            .as_mut()
+            .map(Rc::make_mut)
+            .and_then(|channel| channel.posts.iter_mut().find(|post| &post.id == id))
+        else {
             return false;
         };
         change(post);
@@ -4214,7 +4228,6 @@ impl ChannelView {
         let thread_id = post.thread_root();
         // Menus are built when they open, not for every row on every frame
         // (#674).
-        let add_id = id.clone();
         let ephemeral = post.status == PostStatus::Ephemeral;
         let saved = post.saved;
         // The hover toolbar is built only for the hovered or selected row
@@ -4455,6 +4468,7 @@ impl ChannelView {
         if !post.reactions.is_empty() {
             // The chip row gets an add button; posts without reactions use
             // the hover toolbar, so the transcript stays quiet.
+            let add_id = id.clone();
             row = row.on_add_reaction(move |event, window, cx| {
                 add_view
                     .update(cx, |this, cx| {
@@ -4526,6 +4540,7 @@ impl ChannelView {
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
         div()
+            .id(gpui_kit::ElementId::Name(format!("post.{id}.row").into()))
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
@@ -4827,17 +4842,12 @@ impl ChannelView {
 
     fn transcript(
         &self,
-        channel: &ChannelModel,
+        channel: &Rc<ChannelModel>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
-        // Both are shared, not copied: a frame must not cost more as the
-        // channel's history grows (#671).
         let rows = self.rows.clone();
-        let channel = self
-            .model
-            .clone()
-            .unwrap_or_else(|| Rc::new(channel.clone()));
+        let channel = channel.clone();
         let view = cx.entity();
         MessageList::new(
             "channel.transcript",
@@ -4862,11 +4872,11 @@ impl ChannelView {
                         .into_any_element()
                 }
                 Some(Row::System(post)) => {
-                    let post = channel.posts[*post].clone();
-                    view.update(cx, |_, cx| Self::system_row(&post, cx).into_any_element())
+                    let post = &channel.posts[*post];
+                    view.update(cx, |_, cx| Self::system_row(post, cx).into_any_element())
                 }
                 Some(Row::Post(post)) => {
-                    let post = channel.posts[*post].clone();
+                    let post = &channel.posts[*post];
                     let profile = channel
                         .profiles
                         .iter()
@@ -4877,7 +4887,7 @@ impl ChannelView {
                             .as_ref()
                             .filter(|editing| editing.post == post.id)
                             .map(|editing| (editing.composer.clone(), this.composer_cap));
-                        let highlight = this.row_highlight(index, &post);
+                        let highlight = this.row_highlight(index, post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
                         let previews_collapsed = SettingsStore::global(cx)
@@ -4885,7 +4895,7 @@ impl ChannelView {
                             .get()
                             .previews_collapsed(&post.id);
                         Self::post_row(
-                            &post,
+                            post,
                             profile,
                             editor.as_ref(),
                             highlight,

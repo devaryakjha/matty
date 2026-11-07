@@ -689,6 +689,9 @@ fn image_element(
             }
             div()
                 .debug_selector(|| "post-image".into())
+                // Shrinks with a narrow column, such as beside the thread
+                // pane, instead of running past it (#683).
+                .max_w_full()
                 .child(picture)
                 .into_any_element()
         });

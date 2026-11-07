@@ -114,6 +114,8 @@ build() {
             --enable-multivalue "$dist/matty-web_bg.wasm" -o "$dist/matty-web_bg.wasm"
     fi
     cp "$crate"/web/* "$dist/"
+    # The demo workspace, gzipped: index.html unpacks it in the browser.
+    gzip -9 -c "$crate/demo/demo.sqlite" > "$dist/demo.sqlite.gz"
     cp "$crate/assets/IBMPlexSans-LICENSE.txt" "$dist/"
 
     local largest

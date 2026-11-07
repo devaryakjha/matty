@@ -3476,10 +3476,10 @@ impl MainWindow {
     /// turned into a channel width from the space the split has.
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.threads_open {
-            return cached_full(&self.threads);
+            return cached_pane(&self.threads);
         }
         if self.drafts_open {
-            return cached_full(&self.drafts);
+            return cached_pane(&self.drafts);
         }
         if !self.right_pane_open || Self::narrow_right_pane(window) {
             return self.channel_area(window, cx);
@@ -3501,7 +3501,7 @@ impl MainWindow {
         let store = self.settings.clone();
         Resizable::new("main.right-split", "Resize right pane", px(channel_width))
             .first(self.channel_area(window, cx))
-            .second(cached_full(&self.right_pane))
+            .second(cached_pane(&self.right_pane))
             .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
             .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
             .on_resize(move |width: &Pixels, _, cx| {
@@ -4617,15 +4617,6 @@ impl MainWindow {
     }
 }
 
-/// `view` drawn at its parent's full size and reused from the last frame
-/// unless it, or an entity it read while drawing, changed since: a scroll or
-/// a keystroke in one pane must not rebuild the others (#672).
-pub(crate) fn cached_full<V: Render>(view: &Entity<V>) -> gpui_kit::AnyElement {
-    view.clone()
-        .cached(gpui_kit::StyleRefinement::default().size_full())
-        .into_any_element()
-}
-
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let reduce_motion = self.settings.read(cx).get().reduce_motion;
@@ -4643,7 +4634,7 @@ impl Render for MainWindow {
         let content = self.content(window, cx);
         let frame = if self.sidebar_visible && !narrow_sidebar {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
-                .first(cached_full(&self.sidebar))
+                .first(cached_pane(&self.sidebar))
                 .second(content)
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
@@ -4810,6 +4801,19 @@ impl Render for MainWindow {
             .child(switcher_element)
             .child(self.toasts.clone())
     }
+}
+
+/// `view` filling its pane, drawn again only when it changes: scrolling or
+/// hovering the channel then leaves the sidebar's and the right pane's
+/// layout and paint as they were. On the web every frame costs several times
+/// what it does natively, and these panes were about a fifth of a scroll
+/// frame. Theme and zoom changes refresh the window (`apply_theme`). The
+/// channel, the split's panes, Threads and Drafts are drawn this way too, so
+/// a keystroke or scroll in one pane does not rebuild the others (#672).
+pub(crate) fn cached_pane<V: Render>(view: &Entity<V>) -> gpui_kit::AnyElement {
+    view.clone()
+        .cached(gpui_kit::StyleRefinement::default().size_full())
+        .into_any_element()
 }
 
 /// Opens or closes `handle` to match `wanted`, remembering in `shown`

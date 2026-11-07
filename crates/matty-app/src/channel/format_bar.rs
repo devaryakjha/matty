@@ -131,114 +131,122 @@ pub(crate) fn toggle_lines(
     });
 }
 
-impl ChannelView {
-    /// A toolbar button: an inline format or a line format on `composer`.
-    fn format_button<F>(
-        id: &'static str,
-        label: SharedString,
-        glyph: LucideIcon,
-        composer: &Entity<ComposerState>,
-        run: F,
-        theme: &UiTheme,
-    ) -> impl IntoElement + use<F>
-    where
-        F: Fn(&mut ComposerState, &mut Window, &mut Context<ComposerState>) + 'static,
-    {
-        let composer = composer.clone();
-        style::tipped(
-            SharedString::from(format!("{id}.tip")),
-            label.clone(),
-            Button::new(id)
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::IconSm)
-                .aria_label(label)
-                .child(
-                    lucide(glyph)
-                        .size(scaled(theme, metrics::ICON))
-                        .text_color(theme.colors.muted_foreground),
-                )
-                .on_click(move |_, window, cx| {
-                    composer.update(cx, |composer, cx| {
-                        run(composer, window, cx);
-                        composer.focus(window, cx);
-                    })
-                }),
-        )
-    }
+/// A toolbar button: an inline format or a line format on `composer`.
+fn format_button<F>(
+    id: &'static str,
+    label: SharedString,
+    glyph: LucideIcon,
+    composer: &Entity<ComposerState>,
+    run: F,
+    theme: &UiTheme,
+) -> impl IntoElement + use<F>
+where
+    F: Fn(&mut ComposerState, &mut Window, &mut Context<ComposerState>) + 'static,
+{
+    let composer = composer.clone();
+    style::tipped(
+        SharedString::from(format!("{id}.tip")),
+        label.clone(),
+        Button::new(id)
+            .variant(ButtonVariant::Ghost)
+            .size(ButtonSize::IconSm)
+            .aria_label(label)
+            .child(
+                lucide(glyph)
+                    .size(scaled(theme, metrics::ICON))
+                    .text_color(theme.colors.muted_foreground),
+            )
+            .on_click(move |_, window, cx| {
+                composer.update(cx, |composer, cx| {
+                    run(composer, window, cx);
+                    composer.focus(window, cx);
+                })
+            }),
+    )
+}
 
-    /// The row of formats beyond bold, italic and code, when the user
-    /// turned it on.
-    pub(super) fn format_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
-        if !SettingsStore::global(cx).read(cx).get().format_bar {
-            return None;
+/// The row of formats beyond bold, italic and code over `composer`, when
+/// the user turned it on: the channel's and the thread's composers share
+/// it (#683).
+pub(crate) fn format_row(
+    composer: &Entity<ComposerState>,
+    cx: &App,
+) -> Option<impl IntoElement + use<>> {
+    if !SettingsStore::global(cx).read(cx).get().format_bar {
+        return None;
+    }
+    let theme = UiTheme::read(cx).clone();
+    let inline = |before: &'static str, after: &'static str| {
+        move |composer: &mut ComposerState, window: &mut Window, cx: &mut Context<_>| {
+            toggle_format(composer, before, after, window, cx)
         }
-        let theme = UiTheme::read(cx).clone();
-        let composer = &self.composer;
-        let inline = |before: &'static str, after: &'static str| {
-            move |composer: &mut ComposerState, window: &mut Window, cx: &mut Context<_>| {
-                toggle_format(composer, before, after, window, cx)
-            }
-        };
-        let lines = |format: LineFormat| {
-            move |composer: &mut ComposerState, window: &mut Window, cx: &mut Context<_>| {
-                toggle_lines(composer, format, window, cx)
-            }
-        };
-        Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(theme.space(0.5))
-                .pb(theme.space(1.))
-                .child(Self::format_button(
-                    "composer.format.strike",
-                    t!("format-strikethrough"),
-                    LucideIcon::Strikethrough,
-                    composer,
-                    inline("~~", "~~"),
-                    &theme,
-                ))
-                .child(Self::format_button(
-                    "composer.format.link",
-                    t!("format-link"),
-                    LucideIcon::Link,
-                    composer,
-                    inline("[", "](url)"),
-                    &theme,
-                ))
-                .child(Self::format_button(
-                    "composer.format.heading",
-                    t!("format-heading"),
-                    LucideIcon::Heading,
-                    composer,
-                    lines(LineFormat::Heading),
-                    &theme,
-                ))
-                .child(Self::format_button(
-                    "composer.format.quote",
-                    t!("format-quote"),
-                    LucideIcon::TextQuote,
-                    composer,
-                    lines(LineFormat::Quote),
-                    &theme,
-                ))
-                .child(Self::format_button(
-                    "composer.format.bullets",
-                    t!("format-bullets"),
-                    LucideIcon::List,
-                    composer,
-                    lines(LineFormat::Bullets),
-                    &theme,
-                ))
-                .child(Self::format_button(
-                    "composer.format.numbers",
-                    t!("format-numbers"),
-                    LucideIcon::ListOrdered,
-                    composer,
-                    lines(LineFormat::Numbers),
-                    &theme,
-                )),
-        )
+    };
+    let lines = |format: LineFormat| {
+        move |composer: &mut ComposerState, window: &mut Window, cx: &mut Context<_>| {
+            toggle_lines(composer, format, window, cx)
+        }
+    };
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap(theme.space(0.5))
+            .pb(theme.space(1.))
+            .child(format_button(
+                "composer.format.strike",
+                t!("format-strikethrough"),
+                LucideIcon::Strikethrough,
+                composer,
+                inline("~~", "~~"),
+                &theme,
+            ))
+            .child(format_button(
+                "composer.format.link",
+                t!("format-link"),
+                LucideIcon::Link,
+                composer,
+                inline("[", "](url)"),
+                &theme,
+            ))
+            .child(format_button(
+                "composer.format.heading",
+                t!("format-heading"),
+                LucideIcon::Heading,
+                composer,
+                lines(LineFormat::Heading),
+                &theme,
+            ))
+            .child(format_button(
+                "composer.format.quote",
+                t!("format-quote"),
+                LucideIcon::TextQuote,
+                composer,
+                lines(LineFormat::Quote),
+                &theme,
+            ))
+            .child(format_button(
+                "composer.format.bullets",
+                t!("format-bullets"),
+                LucideIcon::List,
+                composer,
+                lines(LineFormat::Bullets),
+                &theme,
+            ))
+            .child(format_button(
+                "composer.format.numbers",
+                t!("format-numbers"),
+                LucideIcon::ListOrdered,
+                composer,
+                lines(LineFormat::Numbers),
+                &theme,
+            )),
+    )
+}
+
+impl ChannelView {
+    /// The formatting row over the channel's composer.
+    pub(super) fn format_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        format_row(&self.composer, cx)
     }
 }
 
@@ -270,7 +278,7 @@ impl ChannelView {
                         .text_color(theme.colors.muted_foreground)
                         .child(t!("format-preview")),
                 )
-                .child(crate::links::message_body(
+                .child(crate::links::markdown_body(
                     "composer.preview.body",
                     &text,
                     &[],
