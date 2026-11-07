@@ -4551,8 +4551,8 @@ mod tests {
         );
     }
 
-    /// #620: a thread post shows the channel's hover toolbar, and its
-    /// add-reaction button opens the quick reactions.
+    /// #620, #680: a thread post shows the channel's hover toolbar, and
+    /// its add-reaction button opens the full emoji picker.
     #[gpui_kit::test]
     fn a_thread_post_can_be_reacted_to_from_its_hover_toolbar(cx: &mut gpui_kit::TestAppContext) {
         let (view, _, mut cx) = pane(cx);
@@ -4569,7 +4569,7 @@ mod tests {
             .debug_bounds("thread.r1.react")
             .expect("hovering shows the add-reaction button");
         cx.simulate_click(react.center(), Default::default());
-        assert!(view.read_with(&cx, |pane, cx| pane.menu.read(cx).is_open()));
+        assert!(view.read_with(&cx, |pane, _| pane.picker_open));
     }
 
     /// #620: a reaction a reply doesn't have yet shows at once and is

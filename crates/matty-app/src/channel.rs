@@ -6111,14 +6111,14 @@ mod tests {
                 .map(|u| SharedString::from(u.to_string()))
                 .collect(),
         };
-        assert_eq!(reaction(1, true, &[]).summary(), "You reacted with 👍");
+        assert_eq!(reaction(1, true, &[]).summary(), "You reacted with :+1:");
         assert_eq!(
             reaction(2, false, &["Priya Nair", "Sam Okafor"]).summary(),
-            "Priya Nair and Sam Okafor reacted with 👍"
+            "Priya Nair and Sam Okafor reacted with :+1:"
         );
         assert_eq!(
             reaction(4, true, &["Priya Nair", "Sam Okafor", "Lena Fischer"]).summary(),
-            "You, Priya Nair, Sam Okafor and Lena Fischer reacted with 👍"
+            "You, Priya Nair, Sam Okafor and Lena Fischer reacted with :+1:"
         );
         // Everyone by name, however many (#621); only names still
         // loading are counted.
@@ -6126,15 +6126,15 @@ mod tests {
         let ten: Vec<&str> = ten.iter().map(String::as_str).collect();
         let all = reaction(10, false, &ten).summary();
         assert!(all.starts_with("User 1, User 2, "), "{all}");
-        assert!(all.ends_with("User 9 and User 10 reacted with 👍"), "{all}");
+        assert!(all.ends_with("User 9 and User 10 reacted with :+1:"), "{all}");
         assert_eq!(
             reaction(5, false, &["Priya Nair", "Sam Okafor"]).summary(),
-            "Priya Nair, Sam Okafor and 3 others reacted with 👍"
+            "Priya Nair, Sam Okafor and 3 others reacted with :+1:"
         );
         // Sync has the count before the names.
         assert_eq!(
             reaction(3, false, &[]).summary(),
-            "3 others reacted with 👍"
+            "3 others reacted with :+1:"
         );
     }
 
