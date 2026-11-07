@@ -3501,7 +3501,7 @@ impl MainWindow {
         let store = self.settings.clone();
         Resizable::new("main.right-split", "Resize right pane", px(channel_width))
             .first(self.channel_area(window, cx))
-            .second(self.right_pane.clone())
+            .second(cached_pane(&self.right_pane))
             .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
             .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
             .on_resize(move |width: &Pixels, _, cx| {
@@ -4634,7 +4634,7 @@ impl Render for MainWindow {
         let content = self.content(window, cx);
         let frame = if self.sidebar_visible && !narrow_sidebar {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
-                .first(self.sidebar.clone())
+                .first(cached_pane(&self.sidebar))
                 .second(content)
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
@@ -4794,6 +4794,16 @@ impl Render for MainWindow {
             .child(switcher_element)
             .child(self.toasts.clone())
     }
+}
+
+/// `view` filling its pane, drawn again only when it changes: scrolling or
+/// hovering the channel then leaves the sidebar's and the right pane's
+/// layout and paint as they were. On the web every frame costs several times
+/// what it does natively, and these panes were about a fifth of a scroll
+/// frame. Theme and zoom changes refresh the window (`apply_theme`).
+fn cached_pane<V: Render>(view: &Entity<V>) -> impl IntoElement {
+    view.clone()
+        .cached(gpui_kit::StyleRefinement::default().size_full())
 }
 
 /// Opens or closes `handle` to match `wanted`, remembering in `shown`

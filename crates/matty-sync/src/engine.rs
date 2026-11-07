@@ -2428,7 +2428,26 @@ impl Engine {
             return;
         }
         let Some(session) = self.session.as_ref().filter(|s| !s.user_id.is_empty()) else {
-            dirty.direct.push(history.change(&channel_id, true));
+            // Without a server (the web demo) the store is all there is,
+            // so older pages come from it, and its oldest post is the start.
+            let failed = !matches!(page, Page::Older) || history.anchor.is_some();
+            if !failed {
+                let roots_only = matches!(cached_crt(self.store.conn()), Ok(true));
+                let shown = POSTS_WINDOW + history.extra;
+                match posts::posts_window(
+                    self.store.conn(),
+                    &channel_id,
+                    Window::Latest,
+                    shown + OFFLINE_PAGE,
+                    roots_only,
+                ) {
+                    Ok(stored) if stored.len() > shown => history.extra += OFFLINE_PAGE,
+                    Ok(_) => history.at_start = true,
+                    Err(error) => tracing::error!(%error, "could not read a posts snapshot"),
+                }
+                dirty.channels.insert(channel_id.clone());
+            }
+            dirty.direct.push(history.change(&channel_id, failed));
             return;
         };
         let roots_only = session.collapsed_threads;
@@ -4513,6 +4532,10 @@ fn image_key(file_id: &str, size: ImageSize) -> String {
 
 /// Posts per page of history (PLAN §4.2).
 const HISTORY_PAGE: u32 = 60;
+
+/// Posts an older page adds from the store when there is no server (the
+/// web demo).
+const OFFLINE_PAGE: usize = HISTORY_PAGE as usize;
 
 /// Replies per page of a long thread (#122).
 const THREAD_PAGE: u32 = 50;

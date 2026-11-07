@@ -117,7 +117,7 @@ impl ChannelView {
             Local::Header => self.edit_channel(ChannelField::Header, window, cx),
             Local::Purpose => self.edit_channel(ChannelField::Purpose, window, cx),
             Local::Mute => {
-                if let Some(model) = self.model.as_mut() {
+                if let Some(model) = self.model.as_mut().map(std::rc::Rc::make_mut) {
                     model.muted = !model.muted;
                     let (muted, notifications) = (model.muted, model.notifications);
                     cx.emit(ChannelEvent::SetNotifications {

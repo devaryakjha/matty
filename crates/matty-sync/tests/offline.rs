@@ -214,3 +214,61 @@ async fn a_dropped_network_reads_as_offline_and_listings_fall_back_to_the_cache(
     sync.send(Command::LoadListing(pinned.clone()));
     assert_eq!(ids(&next(&changes, listed(pinned)).await), ["p1"]);
 }
+
+/// The web demo has no server: an older page comes from its snapshot until
+/// the channel's first post, instead of failing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_demo_pages_older_posts_from_its_snapshot() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../matty-web/demo/demo.sqlite");
+    let snapshot = std::fs::read(path).unwrap();
+    // The demo's busiest channel, and how many posts it holds.
+    let (channel_id, stored): (String, i64) = rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT channel_id, count(*) FROM posts WHERE root_id = '' \
+             GROUP BY channel_id ORDER BY count(*) DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        stored as usize > matty_sync::POSTS_WINDOW,
+        "the demo has a long channel"
+    );
+    let (sync, _) = matty_sync::spawn_demo(&snapshot).unwrap().unwrap();
+    let changes = sync.subscribe();
+    sync.send(Command::OpenChannel {
+        channel_id: channel_id.clone(),
+    });
+    let shown = |change: &ChangeSet| match change {
+        ChangeSet::Posts {
+            channel_id: id,
+            posts,
+        } if *id == channel_id => Some(posts.len()),
+        _ => None,
+    };
+    let mut before = shown(&next(&changes, |c| shown(c).is_some()).await).unwrap();
+    loop {
+        sync.send(Command::LoadOlder {
+            channel_id: channel_id.clone(),
+        });
+        let history = next(
+            &changes,
+            |c| matches!(c, ChangeSet::History { channel_id: id, .. } if *id == channel_id),
+        )
+        .await;
+        let ChangeSet::History {
+            at_start, failed, ..
+        } = history
+        else {
+            unreachable!()
+        };
+        assert!(!failed, "a page from the snapshot does not fail");
+        if at_start {
+            break;
+        }
+        let after = shown(&next(&changes, |c| shown(c).is_some()).await).unwrap();
+        assert!(after > before, "each page adds older posts");
+        before = after;
+    }
+}
