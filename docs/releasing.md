@@ -42,8 +42,10 @@ MSI keeps only `0.1.0`.
 
 ## Settings this needs (Arya, once)
 
-- The `v*` tag ruleset must let the release workflow create tags: add
-  "GitHub Actions" (or the Karya bot app) to its bypass list.
+- The `v*` tag ruleset must let the release workflow create tags: k-bot,
+  the Karya bot app, is on its bypass list, and its `KARYA_BOT_APP_ID` and
+  `KARYA_BOT_PRIVATE_KEY` organization secrets reach matty
+  ([org-settings.md](org-settings.md) steps 4 and 5).
 - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the `release`
   environment, for the matty.jha.sh deploy.
 - `HOMEBREW_TAP_TOKEN`, before the first stable release.

@@ -33,12 +33,13 @@ General → Pull Requests:
 
 ## 3. A ruleset for every default branch (D3)
 
-Organization → Settings → Repository → **Rulesets** → New branch ruleset:
+The organization is on the Free plan, which has no organization rulesets,
+so each repository gets its own copy. In matty, gpuicn, gpui-icons and
+.github (the ones with a `ci` check; homebrew-matty has none): Settings →
+Rules → **Rulesets** → New ruleset → New branch ruleset:
 
 - Name `default branches`, enforcement Active, no bypass list.
-- Target repositories: matty, gpuicn, gpui-icons and .github (the ones
-  with a `ci` check; homebrew-matty has none); target branches: "Default
-  branch".
+- Target branches: Add target → "Include default branch".
 - Rules: Restrict deletions; Require linear history; Block force pushes;
   Require status checks to pass, with the check `ci` (source GitHub
   Actions) and "Require branches to be up to date" left off (the merge
@@ -52,22 +53,25 @@ through the queue. Claude checks it by sending one PR through the queue in
 each repository. With the queue on, Claude merges by enabling auto-merge,
 which queues the PR.
 
-## 4. Let release workflows create tags
+## 4. Let k-bot create release tags
 
 Matty's release workflow now creates the `v*` tag itself
-([releasing.md](releasing.md)). In karyalabs/matty → Settings → Rules →
-Rulesets → the `v*` tag ruleset (`admin-only-tag-release`) → Bypass list →
-Add bypass → **GitHub Actions** (always allow). Without it the first
-release through a release PR fails at "Create the release", and re-running
-it after this change finishes it.
+([releasing.md](releasing.md)), with a k-bot token: GitHub Actions can't
+be a bypass actor on a repository ruleset, so the app from step 5 is. Do
+step 5 first, then in karyalabs/matty → Settings → Rules → Rulesets → the
+`v*` tag ruleset (`admin-only-tag-release`) → Bypass list → Add bypass →
+**k-bot** (Apps; always allow). Without it the first release through a
+release PR fails at "Create the release", and re-running it after this
+change finishes it.
 
-## 5. The Karya bot app, for pin bump pull requests
+## 5. k-bot, the Karya bot app
 
-So a gpui-icons release opens gpuicn's bump PR and a gpuicn release opens
-Matty's (section 7.4 of the process). Organization → Settings → Developer
-settings → GitHub Apps → New GitHub App:
+k-bot creates Matty's release tags (step 4), and opens the pin bump pull
+requests: a gpui-icons release opens gpuicn's bump PR and a gpuicn release
+opens Matty's (section 7.4 of the process). Organization → Settings →
+Developer settings → GitHub Apps → New GitHub App:
 
-- Name `karya-bot`, homepage `https://github.com/karyalabs`, webhook off.
+- Name `k-bot`, homepage `https://github.com/karyalabs`, webhook off.
 - Repository permissions: Contents read and write, Pull requests read and
   write, Metadata read. Nothing else.
 - "Only on this account". Create, then Generate a private key (a `.pem`
@@ -79,8 +83,9 @@ settings → GitHub Apps → New GitHub App:
   - `KARYA_BOT_APP_ID`: the App ID;
   - `KARYA_BOT_PRIVATE_KEY`: the whole `.pem` file.
 
-Claude checks it with the next gpui-icons or gpuicn release: the release
-run's "bump" job links the pull request it opened. Pull requests the app
+Claude checks it with the next Matty release (the `v*` tag's creator is
+k-bot) and the next gpui-icons or gpuicn release: the release run's "bump"
+job links the pull request it opened. Pull requests the app
 opens run CI like any other.
 
 ## 6. Cloudflare for matty.jha.sh (D8)
@@ -113,7 +118,7 @@ under `<repo>/<PR number>/`, and matty's CI rejects new images under
   them first, and the per-repository copies can go after a release dry run
   passes. `MATTY_UPDATE_SIGNING_KEY` stays a matty secret.
 - **`HOMEBREW_TAP_TOKEN`** in matty, before the first stable release, or
-  install the Karya bot on homebrew-matty (done in step 5) and Claude
+  install k-bot on homebrew-matty (done in step 5) and Claude
   switches the cask bump to it.
 - **Rename matty's `master` to `main`** (Settings → General → Default
   branch → rename) after Claude's PR that updates the workflows and docs
