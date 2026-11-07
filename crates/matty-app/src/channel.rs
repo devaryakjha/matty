@@ -6127,7 +6127,10 @@ mod tests {
         let ten: Vec<&str> = ten.iter().map(String::as_str).collect();
         let all = reaction(10, false, &ten).summary();
         assert!(all.starts_with("User 1, User 2, "), "{all}");
-        assert!(all.ends_with("User 9 and User 10 reacted with :+1:"), "{all}");
+        assert!(
+            all.ends_with("User 9 and User 10 reacted with :+1:"),
+            "{all}"
+        );
         assert_eq!(
             reaction(5, false, &["Priya Nair", "Sam Okafor"]).summary(),
             "Priya Nair, Sam Okafor and 3 others reacted with :+1:"

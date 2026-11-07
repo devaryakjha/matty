@@ -16,7 +16,7 @@ publish = false
 # Every shared dependency version lives here. Upstream UI pins are exact and
 # move together; see docs/PINS.md before changing any of them.
 [workspace.dependencies]
-gpuicn = "=0.9.10"
+gpuicn = "=0.9.11"
 gpui-kit = { version = "=0.9.0", default-features = false, features = ["component"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit"] }
 gpui-icons = "=0.6.0"
