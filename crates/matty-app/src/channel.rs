@@ -2702,6 +2702,14 @@ impl ChannelView {
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
+        // Your own message always shows, as in Mattermost, even when the
+        // list was scrolled up (#678).
+        self.unseen = 0;
+        if self.history.at_end {
+            self.list.update(cx, |list, cx| list.scroll_to_end(cx));
+        } else {
+            self.jump_latest(cx);
+        }
         self._draft_task = None;
         if let Some(cleared) = self.draft.sent(cx) {
             cx.emit(ChannelEvent::SaveDraft(cleared));
