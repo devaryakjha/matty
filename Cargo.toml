@@ -16,7 +16,7 @@ publish = false
 # Every shared dependency version lives here. Upstream UI pins are exact and
 # move together; see docs/PINS.md before changing any of them.
 [workspace.dependencies]
-gpuicn = "=0.9.7"
+gpuicn = "=0.9.9"
 gpui-kit = { version = "=0.9.0", default-features = false, features = ["component"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit"] }
 gpui-icons = "=0.6.0"
@@ -114,20 +114,24 @@ harfrust = { opt-level = 3 }
 gpui-base = { opt-level = 3 }
 gpui-component = { opt-level = 3 }
 
-# The browser build (scripts/web): small over fast, since every visit downloads it.
+# The browser build (scripts/web). "s", not "z": measured on the demo, "z"
+# makes every frame about 30% slower for 15% less download (18.7 against
+# 22.0 MB, 7.1 against 8.2 MB gzipped), and "3" is no faster than "s" but
+# outgrows Cloudflare's 25 MiB file limit. See docs/web.md.
 [profile.web]
 inherits = "release"
-opt-level = "z"
+opt-level = "s"
 lto = "fat"
 
-# `web` inherits the speed overrides above; size wins in the browser too.
+# `web` inherits the speed overrides above; it keeps them at its own "s",
+# since "3" would push the download past Cloudflare's file limit.
 [profile.web.package]
-gpui-pre = { opt-level = "z" }
-gpui-pre-sum-tree = { opt-level = "z" }
-gpui-pre-wgpu = { opt-level = "z" }
-gpui-pre-macos = { opt-level = "z" }
-gpui-pre-apple = { opt-level = "z" }
-taffy = { opt-level = "z" }
-harfrust = { opt-level = "z" }
-gpui-base = { opt-level = "z" }
-gpui-component = { opt-level = "z" }
+gpui-pre = { opt-level = "s" }
+gpui-pre-sum-tree = { opt-level = "s" }
+gpui-pre-wgpu = { opt-level = "s" }
+gpui-pre-macos = { opt-level = "s" }
+gpui-pre-apple = { opt-level = "s" }
+taffy = { opt-level = "s" }
+harfrust = { opt-level = "s" }
+gpui-base = { opt-level = "s" }
+gpui-component = { opt-level = "s" }

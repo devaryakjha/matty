@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import content as C  # noqa: E402
+import history  # noqa: E402
 
 PASSWORD = "Password1!"
 ADMIN = "admin"
@@ -448,6 +449,8 @@ class Seeder:
         plan += [(("community", name), posts) for name, posts in C.COMMUNITY.items()]
         plan += [(("dm", other), posts) for other, posts in C.DIRECT.items()]
         plan += [(key, self.filler(key, lines)) for key, lines in FILLER.items()]
+        members = {name: who for (name, _, _, _, _, who) in C.TEAMS["lumen"][1]}
+        plan += list(history.history(members).items())
         with concurrent.futures.ThreadPoolExecutor(8) as pool:
             futures = [pool.submit(self.channel_posts, self.channels[key], posts) for key, posts in plan]
             written = sum(f.result() for f in futures)

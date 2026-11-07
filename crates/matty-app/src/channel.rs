@@ -9,6 +9,7 @@ mod slash;
 use gpui_icons::{LucideIcon, lucide};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
@@ -1190,8 +1191,11 @@ enum LightboxItem {
 }
 
 pub struct ChannelView {
-    model: Option<ChannelModel>,
-    rows: Vec<Row>,
+    /// Shared with each frame's transcript rows, which read posts from it
+    /// instead of copying the whole channel every frame; changes go through
+    /// [`Rc::make_mut`].
+    model: Option<Rc<ChannelModel>>,
+    rows: Rc<Vec<Row>>,
     list: Entity<MessageListState>,
     composer: Entity<ComposerState>,
     /// One menu for every post: its items are set when it opens.
@@ -1281,6 +1285,9 @@ pub struct ChannelView {
     /// Part of every profile card's id: bumping it after a card's action
     /// closes the card, since a new id starts closed.
     profile_cards: usize,
+    /// The post under the pointer: only its row builds the hover toolbar,
+    /// which every row used to lay out and paint, invisible, every frame.
+    hovered_post: Option<SharedString>,
     /// The channel is one of split view's two panes: the header offers
     /// Swap panes and Close pane (#222).
     split_controls: bool,
@@ -1492,7 +1499,7 @@ impl ChannelView {
             }),
             cx.subscribe(&add_members, |this, _, event: &AddMembersEvent, cx| {
                 let AddMembersEvent::Add(people) = event;
-                if let Some(model) = this.model.as_mut() {
+                if let Some(model) = this.model.as_mut().map(Rc::make_mut) {
                     model.members += people.len();
                 }
                 cx.notify();
@@ -1503,7 +1510,7 @@ impl ChannelView {
                     muted,
                     notifications,
                 } = *event;
-                if let Some(model) = this.model.as_mut() {
+                if let Some(model) = this.model.as_mut().map(Rc::make_mut) {
                     model.muted = muted;
                     model.notifications = notifications;
                 }
@@ -1562,7 +1569,7 @@ impl ChannelView {
         ];
         let mut this = Self {
             model: None,
-            rows,
+            rows: Rc::new(rows),
             list,
             composer,
             menu,
@@ -1609,6 +1616,7 @@ impl ChannelView {
             offline: crate::preview::connection() == crate::main_window::ConnectionState::Offline,
             connected: crate::preview::enabled(),
             profile_cards: 0,
+            hovered_post: None,
             split_controls: false,
             action_menus: Default::default(),
             bookmarks,
@@ -1624,7 +1632,7 @@ impl ChannelView {
     }
 
     pub fn model(&self) -> Option<&ChannelModel> {
-        self.model.as_ref()
+        self.model.as_deref()
     }
 
     /// Shows or hides the header's split view buttons (#222).
@@ -1653,7 +1661,7 @@ impl ChannelView {
             model.as_ref().is_some_and(|model| model.loading),
             model.as_ref().map_or(0, |model| model.posts.len()),
         );
-        self.rows = model.as_ref().map(ChannelModel::rows).unwrap_or_default();
+        self.rows = Rc::new(model.as_ref().map(ChannelModel::rows).unwrap_or_default());
         if model.as_ref().map(|m| &m.id) != self.model.as_ref().map(|m| &m.id) {
             crate::apps::forget(cx.entity_id(), cx);
             if let Some((bookmarks, apps)) = model
@@ -1716,7 +1724,7 @@ impl ChannelView {
             self.switch_draft(key, window, cx);
             self.slash.reset();
         }
-        self.model = model;
+        self.model = model.map(Rc::new);
         self.apply_pending_jump(cx);
         cx.notify();
     }
@@ -1771,7 +1779,7 @@ impl ChannelView {
         if posts.is_empty() {
             return;
         }
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         // Joins and other system rows are not messages to catch up on.
@@ -1785,7 +1793,7 @@ impl ChannelView {
         let rows = model.rows();
         let before = self.rows.len();
         let added = rows.len().saturating_sub(before);
-        self.rows = rows;
+        self.rows = Rc::new(rows);
         self.history.loading_newer = false;
         let scrolled_up = self.list.read(cx).is_scrolled_up();
         self.list.update(cx, |list, cx| {
@@ -1804,7 +1812,7 @@ impl ChannelView {
     /// gpuicn's list anchors the scroll on the row that was at the top.
     pub fn prepend_posts(&mut self, posts: Vec<Post>, cx: &mut Context<Self>) {
         self.history.loading = false;
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let before = self.rows.len();
@@ -1814,7 +1822,7 @@ impl ChannelView {
             cx.notify();
             return;
         }
-        self.rows = model.rows();
+        self.rows = Rc::new(model.rows());
         let added = self.rows.len().saturating_sub(before);
         self.selection = self.selection.map(|row| row + added);
         self.list.update(cx, |list, cx| {
@@ -2063,7 +2071,7 @@ impl ChannelView {
     /// Removes a post the server deleted. Only its rows leave the list, so
     /// the scroll and the New messages line stay where they were (#164).
     pub fn remove_post(&mut self, id: &SharedString, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| &post.id == id) else {
@@ -2075,7 +2083,7 @@ impl ChannelView {
             let first = if at < first { first - 1 } else { first };
             (first < model.posts.len()).then_some(first)
         });
-        self.rows = model.rows();
+        self.rows = Rc::new(model.rows());
         let (range, count) = changed_rows(&before, &model.row_keys(&self.rows));
         let rows = self.rows.len();
         self.list.update(cx, |list, cx| {
@@ -2122,7 +2130,7 @@ impl ChannelView {
 
     /// Sync or the info pane changed the star; the header follows.
     pub fn set_favorite(&mut self, favorite: bool, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.favorite = favorite;
             cx.notify();
         }
@@ -2131,7 +2139,7 @@ impl ChannelView {
     /// Sync loaded the channel's header, purpose and counts; the scroll
     /// stays where it is.
     pub fn set_details(&mut self, details: crate::live::Details, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.header = details.header;
             model.purpose = details.purpose;
             model.members = details.members;
@@ -2149,7 +2157,7 @@ impl ChannelView {
                 .update(cx, |bar, cx| bar.set_model(details.bookmarks, cx));
             if menu_changed {
                 let model = self.model.clone();
-                self.refresh_header_menu(model.as_ref(), cx);
+                self.refresh_header_menu(model.as_deref(), cx);
             }
             cx.notify();
         }
@@ -2163,7 +2171,7 @@ impl ChannelView {
         notifications: ChannelNotifications,
         cx: &mut Context<Self>,
     ) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && (model.muted, model.notifications) != (muted, notifications)
         {
             model.muted = muted;
@@ -2175,7 +2183,7 @@ impl ChannelView {
     /// The people typing in the channel now, for the line under the
     /// transcript.
     pub fn set_typing(&mut self, names: Vec<SharedString>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.typing != names
         {
             model.typing = names;
@@ -2186,7 +2194,7 @@ impl ChannelView {
     /// Profiles for the avatar card and `@` autocomplete, as sync learns
     /// of people.
     pub fn set_profiles(&mut self, profiles: Vec<UserProfile>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.profiles != profiles
         {
             model.profiles = profiles;
@@ -2196,7 +2204,7 @@ impl ChannelView {
 
     /// The channel's admins, once its full member list loaded (#208).
     pub fn set_admins(&mut self, admins: Vec<SharedString>, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut()
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut)
             && model.admins != admins
         {
             model.admins = admins;
@@ -2206,7 +2214,7 @@ impl ChannelView {
 
     /// Sync or the info pane muted or unmuted the channel.
     pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
-        if let Some(model) = self.model.as_mut() {
+        if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.muted = muted;
             cx.notify();
         }
@@ -2438,7 +2446,11 @@ impl ChannelView {
                     None => file.image()?,
                 };
                 items.push(LightboxItem::File(file.id.clone()));
-                Some(LightboxImage::new(image, file.name.clone()).caption(caption.clone()))
+                Some(
+                    LightboxImage::new(image, file.name.clone())
+                        .dimensions(file.width, file.height)
+                        .caption(caption.clone()),
+                )
             })
             .collect();
         for embed in &post.embeds {
@@ -2451,6 +2463,7 @@ impl ChannelView {
                         gpui_kit::ImageSource::Image(loaded.clone()),
                         crate::embeds::image_name(&image.url),
                     )
+                    .dimensions(image.width, image.height)
                     .caption(caption.clone()),
                 );
             }
@@ -2667,7 +2680,7 @@ impl ChannelView {
             .map(PostFile::from_upload)
             .collect();
         let file_ids: Vec<SharedString> = files.iter().map(|file| file.id.clone()).collect();
-        let Some(mut model) = self.model.clone() else {
+        let Some(mut model) = self.model.as_deref().cloned() else {
             return;
         };
         let priority = self.take_priority(cx);
@@ -2702,6 +2715,14 @@ impl ChannelView {
         };
         model.posts.push(post);
         self.set_model(Some(model), window, cx);
+        // Your own message always shows, as in Mattermost, even when the
+        // list was scrolled up (#678).
+        self.unseen = 0;
+        if self.history.at_end {
+            self.list.update(cx, |list, cx| list.scroll_to_end(cx));
+        } else {
+            self.jump_latest(cx);
+        }
         self._draft_task = None;
         if let Some(cleared) = self.draft.sent(cx) {
             cx.emit(ChannelEvent::SaveDraft(cleared));
@@ -2889,6 +2910,7 @@ impl ChannelView {
         let Some(post) = self
             .model
             .as_mut()
+            .map(Rc::make_mut)
             .and_then(|channel| channel.posts.iter_mut().find(|post| &post.id == id))
         else {
             return false;
@@ -3100,7 +3122,7 @@ impl ChannelView {
             cx,
         );
         if changed {
-            if let Some(channel) = self.model.as_mut() {
+            if let Some(channel) = self.model.as_mut().map(Rc::make_mut) {
                 channel.pinned = if now_pinned {
                     channel.pinned + 1
                 } else {
@@ -3114,7 +3136,7 @@ impl ChannelView {
     /// Removes the post from the transcript and tells sync. The rows are
     /// rebuilt because the dividers around it may go too.
     fn delete_post(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mut model) = self.model.clone() else {
+        let Some(mut model) = self.model.as_deref().cloned() else {
             return;
         };
         let Some(at) = model.posts.iter().position(|post| post.id == id) else {
@@ -3647,7 +3669,7 @@ impl ChannelView {
 
     /// Applies a saved edit to the model and tells sync.
     fn apply_edit(&mut self, field: ChannelField, value: SharedString, cx: &mut Context<Self>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().map(Rc::make_mut) else {
             return;
         };
         let optional = (!value.is_empty()).then(|| value.clone());
@@ -4170,12 +4192,13 @@ impl ChannelView {
         profile: Option<&UserProfile>,
         editor: Option<&(Entity<ComposerState>, Pixels)>,
         highlight: MessageHighlight,
-        (menu_open, away, previews_collapsed, delete_others, profile_card): (
+        (menu_open, away, previews_collapsed, delete_others, profile_card, hovered): (
             bool,
             bool,
             bool,
             bool,
             usize,
+            bool,
         ),
         menus: &crate::interactive::Menus,
         cx: &mut Context<Self>,
@@ -4185,108 +4208,118 @@ impl ChannelView {
         let avatar = Self::avatar(id.clone(), post, profile, profile_card, cx);
         let author_name = Self::author_name(&id, post, profile, profile_card, cx);
         let thread_id = post.thread_root();
-        let react_items = Self::reaction_items_for(post, cx);
-        let add_items = react_items.clone();
-        let more_items = Self::more_items_for(post, away, delete_others, cx);
         let save_id = id.clone();
         // A post the server does not have yet can only be copied, edited
         // or discarded, all in More (#195).
         let sent = post.status == PostStatus::Sent;
         let dismiss_id = id.clone();
-        let actions = message_actions(cx)
-            .when(post.status == PostStatus::Ephemeral, |actions| {
-                actions.child(style::tipped_when(
-                    !menu_open,
-                    gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
-                    t!("chan-dismiss"),
-                    message_action(
-                        gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
-                        LucideIcon::X,
-                        t!("chan-dismiss"),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.delete_post(dismiss_id.clone(), window, cx)
-                    })),
-                ))
-            })
-            .when(sent, |actions| {
-                actions
-                    .child(style::tipped_when(
+        // The toolbar only shows on the hovered or selected row.
+        let show_actions = hovered || highlight == MessageHighlight::Selected;
+        let actions = show_actions.then(|| {
+            let react_items = Self::reaction_items_for(post, cx);
+            let more_items = Self::more_items_for(post, away, delete_others, cx);
+            message_actions(cx)
+                .when(post.status == PostStatus::Ephemeral, |actions| {
+                    actions.child(style::tipped_when(
                         !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
-                        t!("chan-add-reaction"),
+                        gpui_kit::ElementId::Name(format!("post.{id}.dismiss.tip").into()),
+                        t!("chan-dismiss"),
                         message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
-                            LucideIcon::FaceSlightlySmilingPlus,
-                            t!("chan-add-reaction"),
+                            gpui_kit::ElementId::Name(format!("post.{id}.dismiss").into()),
+                            LucideIcon::X,
+                            t!("chan-dismiss"),
                             cx,
                         )
                         .on_click(cx.listener(
-                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                this.open_menu(react_items.clone(), event.position(), window, cx)
+                            move |this, _, window, cx| {
+                                this.delete_post(dismiss_id.clone(), window, cx)
                             },
                         )),
                     ))
-                    .child(style::tipped_when(
-                        !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
-                        t!("chan-reply-in-thread"),
-                        message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
-                            LucideIcon::MessageSquareReply,
+                })
+                .when(sent, |actions| {
+                    actions
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.react.tip").into()),
+                            t!("chan-add-reaction"),
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.react").into()),
+                                LucideIcon::FaceSlightlySmilingPlus,
+                                t!("chan-add-reaction"),
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                    this.open_menu(
+                                        react_items.clone(),
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        ))
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.reply.tip").into()),
                             t!("chan-reply-in-thread"),
-                            cx,
-                        )
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
-                        })),
-                    ))
-                    .child(style::tipped_when(
-                        !menu_open,
-                        gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
-                        if post.saved {
-                            t!("chan-unsave")
-                        } else {
-                            t!("chan-save")
-                        },
-                        message_action(
-                            gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
-                            if post.saved {
-                                LucideIcon::BookmarkCheck
-                            } else {
-                                LucideIcon::Bookmark
-                            },
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.reply").into()),
+                                LucideIcon::MessageSquareReply,
+                                t!("chan-reply-in-thread"),
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(ChannelEvent::OpenThread(thread_id.clone()))
+                                },
+                            )),
+                        ))
+                        .child(style::tipped_when(
+                            !menu_open,
+                            gpui_kit::ElementId::Name(format!("post.{id}.save.tip").into()),
                             if post.saved {
                                 t!("chan-unsave")
                             } else {
                                 t!("chan-save")
                             },
-                            cx,
-                        )
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.toggle_save(save_id.clone(), cx)
-                            }),
-                        ),
-                    ))
-            })
-            .child(style::tipped_when(
-                !menu_open,
-                gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
-                t!("chan-more-actions"),
-                message_action(
-                    gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
-                    LucideIcon::Ellipsis,
+                            message_action(
+                                gpui_kit::ElementId::Name(format!("post.{id}.save").into()),
+                                if post.saved {
+                                    LucideIcon::BookmarkCheck
+                                } else {
+                                    LucideIcon::Bookmark
+                                },
+                                if post.saved {
+                                    t!("chan-unsave")
+                                } else {
+                                    t!("chan-save")
+                                },
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.toggle_save(save_id.clone(), cx),
+                            )),
+                        ))
+                })
+                .child(style::tipped_when(
+                    !menu_open,
+                    gpui_kit::ElementId::Name(format!("post.{id}.more.tip").into()),
                     t!("chan-more-actions"),
-                    cx,
-                )
-                .on_click(cx.listener(
-                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        this.open_menu(more_items.clone(), event.position(), window, cx)
-                    },
-                )),
-            ));
+                    message_action(
+                        gpui_kit::ElementId::Name(format!("post.{id}.more").into()),
+                        LucideIcon::Ellipsis,
+                        t!("chan-more-actions"),
+                        cx,
+                    )
+                    .on_click(cx.listener(
+                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                            this.open_menu(more_items.clone(), event.position(), window, cx)
+                        },
+                    )),
+                ))
+        });
         let reaction_post = id.clone();
         let view = cx.entity().downgrade();
         let add_view = view.clone();
@@ -4349,7 +4382,7 @@ impl ChannelView {
                         .ok();
                 }
             })
-            .actions(actions)
+            .when_some(actions, |row, actions| row.actions(actions))
             .density(message_density(cx))
             .px(scaled(&theme, metrics::GUTTER))
             .when_some(post.reply_to.as_ref(), |row, context| {
@@ -4402,10 +4435,14 @@ impl ChannelView {
         if !post.reactions.is_empty() {
             // The chip row gets an add button; posts without reactions use
             // the hover toolbar, so the transcript stays quiet.
+            let add_id = id.clone();
             row = row.on_add_reaction(move |event, window, cx| {
-                let items = add_items.clone();
                 add_view
                     .update(cx, |this, cx| {
+                        let Some(post) = this.post(&add_id) else {
+                            return;
+                        };
+                        let items = Self::reaction_items_for(&post, cx);
                         this.open_menu(items, event.position(), window, cx)
                     })
                     .ok();
@@ -4473,13 +4510,28 @@ impl ChannelView {
         }
         // Right-click selects the row and opens the same actions as the
         // toolbar's "More" button, plus reply and react (PLAN §4.2).
-        let context_items = Self::context_items_for(post, away, delete_others, cx);
+        let hover_id = id.clone();
         div()
+            .id(gpui_kit::ElementId::Name(format!("post.{id}.row").into()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                let was = this.hovered_post.as_ref() == Some(&hover_id);
+                if *hovered && !was {
+                    this.hovered_post = Some(hover_id.clone());
+                    cx.notify();
+                } else if !*hovered && was {
+                    this.hovered_post = None;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 gpui_kit::MouseButton::Right,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
                     this.select_post(&id, window, cx);
-                    this.open_menu(context_items.clone(), event.position, window, cx);
+                    let Some(post) = this.post(&id) else {
+                        return;
+                    };
+                    let items = Self::context_items_for(&post, this.away, this.delete_others(), cx);
+                    this.open_menu(items, event.position, window, cx);
                 }),
             )
             .child(row)
@@ -4774,15 +4826,30 @@ impl ChannelView {
         }
     }
 
+    /// A copy of the loaded post with this id, for an action that needs
+    /// more than its id.
+    fn post(&self, id: &str) -> Option<Post> {
+        self.model
+            .as_ref()?
+            .posts
+            .iter()
+            .find(|post| post.id.as_ref() == id)
+            .cloned()
+    }
+
+    /// Whether the user may delete other people's posts here.
+    fn delete_others(&self) -> bool {
+        self.model.as_ref().is_some_and(|model| model.delete_others)
+    }
+
     fn transcript(
         &self,
-        channel: &ChannelModel,
+        channel: &Rc<ChannelModel>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = UiTheme::read(cx).clone();
         let rows = self.rows.clone();
-        let posts = channel.posts.clone();
-        let profiles = channel.profiles.clone();
+        let channel = channel.clone();
         let view = cx.entity();
         MessageList::new(
             "channel.transcript",
@@ -4807,12 +4874,13 @@ impl ChannelView {
                         .into_any_element()
                 }
                 Some(Row::System(post)) => {
-                    let post = posts[*post].clone();
-                    view.update(cx, |_, cx| Self::system_row(&post, cx).into_any_element())
+                    let post = &channel.posts[*post];
+                    view.update(cx, |_, cx| Self::system_row(post, cx).into_any_element())
                 }
                 Some(Row::Post(post)) => {
-                    let post = posts[*post].clone();
-                    let profile = profiles
+                    let post = &channel.posts[*post];
+                    let profile = channel
+                        .profiles
                         .iter()
                         .find(|profile| profile.display_name == post.author);
                     view.update(cx, |this, cx| {
@@ -4821,17 +4889,16 @@ impl ChannelView {
                             .as_ref()
                             .filter(|editing| editing.post == post.id)
                             .map(|editing| (editing.composer.clone(), this.composer_cap));
-                        let highlight = this.row_highlight(index, &post);
+                        let highlight = this.row_highlight(index, post);
                         let menu_open = this.menu.read(cx).is_open();
                         let away = this.away;
-                        let delete_others =
-                            this.model.as_ref().is_some_and(|model| model.delete_others);
+                        let delete_others = this.delete_others();
                         let previews_collapsed = SettingsStore::global(cx)
                             .read(cx)
                             .get()
                             .previews_collapsed(&post.id);
                         Self::post_row(
-                            &post,
+                            post,
                             profile,
                             editor.as_ref(),
                             highlight,
@@ -4841,6 +4908,7 @@ impl ChannelView {
                                 previews_collapsed,
                                 delete_others,
                                 this.profile_cards,
+                                this.hovered_post.as_ref() == Some(&post.id),
                             ),
                             &this.action_menus,
                             cx,
