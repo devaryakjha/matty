@@ -3476,10 +3476,10 @@ impl MainWindow {
     /// turned into a channel width from the space the split has.
     fn content(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.threads_open {
-            return self.threads.clone().into_any_element();
+            return cached_full(&self.threads);
         }
         if self.drafts_open {
-            return self.drafts.clone().into_any_element();
+            return cached_full(&self.drafts);
         }
         if !self.right_pane_open || Self::narrow_right_pane(window) {
             return self.channel_area(window, cx);
@@ -3501,7 +3501,7 @@ impl MainWindow {
         let store = self.settings.clone();
         Resizable::new("main.right-split", "Resize right pane", px(channel_width))
             .first(self.channel_area(window, cx))
-            .second(self.right_pane.clone())
+            .second(cached_full(&self.right_pane))
             .first_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
             .second_limits(PaneLimits::new(px(RIGHT_PANE_MIN), px(RIGHT_PANE_MAX)))
             .on_resize(move |width: &Pixels, _, cx| {
@@ -4617,6 +4617,15 @@ impl MainWindow {
     }
 }
 
+/// `view` drawn at its parent's full size and reused from the last frame
+/// unless it, or an entity it read while drawing, changed since: a scroll or
+/// a keystroke in one pane must not rebuild the others (#672).
+pub(crate) fn cached_full<V: Render>(view: &Entity<V>) -> gpui_kit::AnyElement {
+    view.clone()
+        .cached(gpui_kit::StyleRefinement::default().size_full())
+        .into_any_element()
+}
+
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let reduce_motion = self.settings.read(cx).get().reduce_motion;
@@ -4634,7 +4643,7 @@ impl Render for MainWindow {
         let content = self.content(window, cx);
         let frame = if self.sidebar_visible && !narrow_sidebar {
             Resizable::new("main.sidebar-split", "Resize sidebar", sidebar_width)
-                .first(self.sidebar.clone())
+                .first(cached_full(&self.sidebar))
                 .second(content)
                 .first_limits(PaneLimits::new(px(SIDEBAR_MIN), px(SIDEBAR_MAX)))
                 .second_limits(PaneLimits::new(px(CONTENT_MIN), px(100_000.)))
@@ -4776,7 +4785,14 @@ impl Render for MainWindow {
                         selection_root("window.selection")
                             .flex()
                             .when(self.rail.read(cx).is_multi(), |row| {
-                                row.child(self.rail.clone())
+                                row.child(
+                                    self.rail.clone().cached(
+                                        gpui_kit::StyleRefinement::default()
+                                            .w(scaled(&theme, metrics::RAIL_WIDTH))
+                                            .h_full()
+                                            .flex_shrink_0(),
+                                    ),
+                                )
                             })
                             .child(div().flex_1().min_w_0().h_full().child(frame)),
                     )
