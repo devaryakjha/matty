@@ -565,7 +565,10 @@ pub(crate) fn apply_theme(window: &Window, cx: &mut App) {
     {
         let (theme, palette) = imported.ui();
         style::install_theme(theme, palette, cx);
-        return;
+    } else {
+        style::install(mode, cx);
     }
-    style::install(mode, cx);
+    // Cached views (the sidebar, the right pane) only redraw on their own
+    // notify, and the theme is a global.
+    cx.refresh_windows();
 }

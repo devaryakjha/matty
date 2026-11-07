@@ -13,3 +13,5 @@
   Cache-Control: no-cache
 /*.js
   Cache-Control: no-cache
+/*.gz
+  Cache-Control: no-cache

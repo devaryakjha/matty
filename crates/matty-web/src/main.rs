@@ -5,8 +5,10 @@
 //! the design fixtures `MATTY_PREVIEW` shows on the desktop, and
 //! `backend=webgl` to skip WebGPU, and `demo=0` to start at the sign-in
 //! card instead of the sample workspace in `demo/demo.sqlite` (made by
-//! `scripts/demo/run`), which opens while no account is signed in. Off the web
-//! this binary does nothing.
+//! `scripts/demo/run`), which opens while no account is signed in. The page
+//! downloads that file next to the app, in parallel, and hands it over as
+//! `window.mattyDemo` (see `web/index.html`), so the app's own download
+//! stays small. Off the web this binary does nothing.
 
 fn main() {
     #[cfg(target_family = "wasm")]
@@ -19,12 +21,23 @@ fn main() {
             matty_app::preview::set(preview);
         }
         let webgl = get("backend").as_deref() == Some("webgl");
-        let demo: &'static [u8] = include_bytes!("../demo/demo.sqlite");
-        let demo = (get("demo").as_deref() != Some("0")).then_some(demo);
+        let demo = (get("demo").as_deref() != Some("0"))
+            .then(demo_snapshot)
+            .flatten();
         matty_app::run_web(
             include_bytes!("../assets/IBMPlexSans-Regular.ttf"),
             webgl,
             demo,
         );
     }
+}
+
+/// The demo snapshot the page fetched, kept for the life of the page.
+#[cfg(target_family = "wasm")]
+fn demo_snapshot() -> Option<&'static [u8]> {
+    use wasm_bindgen::JsCast as _;
+    let window = web_sys::window()?;
+    let value = js_sys::Reflect::get(&window, &"mattyDemo".into()).ok()?;
+    let bytes = value.dyn_into::<js_sys::ArrayBuffer>().ok()?;
+    Some(js_sys::Uint8Array::new(&bytes).to_vec().leak())
 }
